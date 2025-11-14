@@ -30,6 +30,11 @@ class Type:
         raise NotImplementedError()
 
 
+@dataclass
+class LooselyTypedScalar(Type):
+    value: Any
+
+
 # ============== None Type ===============
 
 class NoneType(Type):
@@ -124,21 +129,12 @@ UNDEFINED = UndefinedType()
 
 # ============== String Type ===============
 
+@dataclass(frozen=True, repr=False)
 class StringTy(Type):
-    def __init__(self):
-        pass
+    value: str
 
-    def __str__(self):
-        return "Str"
-
-    def __eq__(self, other: Type):
-        return isinstance(other, StringTy)
-
-    def __hash__(self):
-        return hash("str")
-
-
-str_ = StringTy()
+    def __repr__(self):
+        return f"<string constant '{self.value}'>"
 
 
 # ============== Type of DType ===============

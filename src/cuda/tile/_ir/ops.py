@@ -5,13 +5,14 @@ import enum
 import math
 import operator
 import types
+from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Sequence, Tuple, Optional, Union, Any, List, Iterator, Callable
 
 from typing_extensions import override
 
 import cuda.tile._stub as ct
-from cuda.tile import _datatype as datatype
+from cuda.tile import _datatype as datatype, TileValueError
 from cuda.tile import RoundingMode, MemoryOrder, MemoryScope
 from cuda.tile._mutex import tile_mutex
 from cuda.tile._exception import (
@@ -35,22 +36,25 @@ from .op_impl import (
     require_list_type, require_integer_dtype, require_scalar_or_0d_tile_type,
     require_index_or_index_tuple_type, require_constant_shape, require_constant_axis_order,
     require_constant_enum, require_optional_constant_int, require_optional_constant_bool,
-    require_optional_constant_str, PrintfValidator)
+    require_optional_constant_str, PrintfValidator, require_tile_or_scalar_maybe_loose_type,
+    require_scalar_or_0d_tile_maybe_loose_type)
 from .ops_utils import (
     BINOP_REGISTRY, UNARYOP_REGISTRY,
     check_dtype_autocast,
     check_rd_and_ftz, PaddingMode,
     rounding_mode_to_bytecode, get_dtype, change_dtype, memory_order_to_bytecode,
-    memory_scope_to_bytecode
+    memory_scope_to_bytecode, broadcast_shapes2, is_shape_broadcastable_to, BroadcastError,
+    promote_types, promote_dtypes
 )
-from .typing_support import typeof_pyval, dtype_registry
+from .typing_support import typeof_pyval, dtype_registry, loose_type_of_pyval
 from .type import (
     TupleTy, TileTy, NoneType, BoundMethodTy, SizeTy, ArrayTy,
     ListTy, make_tile_ty, SliceType, DTypeConstructor, PointerTy, RangeIterType, Type,
-    UNDEFINED, NONE, ModuleTy, TypeTy
+    UNDEFINED, NONE, ModuleTy, TypeTy, LooselyTypedScalar, DTypeSpec, StringTy
 )
-from cuda.tile._datatype import DType, BroadcastError, broadcast_shapes2, \
-    is_shape_broadcastable_to, is_integral, is_float, is_signed, is_boolean, is_restricted_float
+from cuda.tile._datatype import (
+    DType, is_integral, is_float, is_signed, is_boolean, is_restricted_float
+)
 from cuda.tile._ir2bytecode import (
     lower_reduce,
     lower_reduce_argmax_argmin, lower_scan,
@@ -492,8 +496,7 @@ class EndBranch(Operation):
     def infer_type(self, typing_context: TypingContext) -> TypeResult:
         if self.ifelse_results is not None:
             for branch_res, ifelse_res in zip(self.outputs, self.ifelse_results.vars):
-                branch_res_type = typing_context.get_type(branch_res)
-                propagate_type(typing_context, ifelse_res.name, branch_res_type)
+                propagate_type(branch_res, ifelse_res)
                 typing_context.phi_propagate_constant(branch_res, ifelse_res)
         return []
 
@@ -580,9 +583,19 @@ class TypedConst(TypedOperation):
             return [()]
 
 
-def typed_const(value: Any, ty: Optional[Type] = None) -> Var:
+def loosely_typed_const(value: Any,
+                        ty: Optional[Type] = None,
+                        loose_ty: Optional[Type] = None) -> Var:
     if ty is None:
         ty = typeof_pyval(value)
+    ret = strictly_typed_const(value, ty)
+    if loose_ty is None:
+        loose_ty = loose_type_of_pyval(value)
+    ret.set_loose_type(loose_ty)
+    return ret
+
+
+def strictly_typed_const(value: Any, ty: Type) -> Var:
     ret = add_operation(TypedConst, ty, value=value)
     if not isinstance(ty, TileTy):
         # We currently don't have a way to represent a tile constant
@@ -647,29 +660,80 @@ def raw_comparison(fn: str, x: Var, y: Var) -> Var:
     return add_operation(RawComparisonOperation, res_ty, fn=fn, lhs=x, rhs=y)
 
 
+@contextmanager
+def _reraise_tile_exception():
+    try:
+        yield
+    except (ZeroDivisionError, ValueError) as e:
+        raise TileValueError(str(e))
+    except TypeError as e:
+        raise TileTypeError(str(e))
+
+
+def _binop_propagate_constant(fn: str, x: Any, y: Any, type: Optional[Type]) -> Var:
+    impl = BINOP_REGISTRY[fn].impl
+    with _reraise_tile_exception():
+        res = impl(x, y)
+
+    if type is None:
+        return loosely_typed_const(res)
+    else:
+        return strictly_typed_const(res, type)
+
+
 @impl(ct.equal, fixed_args=["eq"])
 @impl(ct.greater, fixed_args=["gt"])
 @impl(ct.not_equal, fixed_args=["ne"])
 @impl(ct.greater_equal, fixed_args=["ge"])
 @impl(ct.less, fixed_args=["lt"])
 @impl(ct.less_equal, fixed_args=["le"])
+def comparison(fn: str, x: Var, y: Var) -> Var:
+    x_ty = require_tile_or_scalar_maybe_loose_type(x)
+    y_ty = require_tile_or_scalar_maybe_loose_type(y)
+
+    if isinstance(x_ty, LooselyTypedScalar) and isinstance(y_ty, LooselyTypedScalar):
+        return _binop_propagate_constant(fn, x_ty.value, y_ty.value, None)
+
+    common_ty = promote_types(x_ty, y_ty)
+    x = _promote_and_broadcast_to(x, common_ty)
+    y = _promote_and_broadcast_to(y, common_ty)
+
+    if x.is_constant() and y.is_constant():
+        res_ty = change_dtype(common_ty, datatype.bool_)
+        return _binop_propagate_constant(fn, x.get_constant(), y.get_constant(), res_ty)
+
+    return raw_comparison(fn, x, y)
+
+
+@impl(operator.is_)
+def operator_is_impl(x: Var, y: Var):
+    x_ty = x.get_type()
+    y_ty = y.get_type()
+    if x_ty is NONE:
+        return loosely_typed_const(y_ty is NONE)
+    elif y_ty is NONE:
+        return loosely_typed_const(x_ty is NONE)
+    else:
+        raise TileTypeError("Operator 'is' expects one of the operands to be None")
+
+
 @impl(operator.eq, fixed_args=["eq"])
 @impl(operator.ne, fixed_args=["ne"])
 @impl(operator.lt, fixed_args=["lt"])
 @impl(operator.le, fixed_args=["le"])
 @impl(operator.gt, fixed_args=["gt"])
 @impl(operator.ge, fixed_args=["ge"])
-@impl(operator.is_, fixed_args=["is"])
-def comparison(fn: str, x: Var, y: Var) -> Var:
-    if fn in BINOP_REGISTRY and x.is_constant() and y.is_constant():
-        return typed_const(BINOP_REGISTRY[fn].impl(x.get_constant(), y.get_constant()))
+def comparison_operator_impl(fn: str, x: Var, y: Var) -> Var:
+    x_ty = x.get_type()
+    y_ty = y.get_type()
 
-    x_ty = require_tile_or_scalar_type(x)
-    y_ty = require_tile_or_scalar_type(y)
-    common_ty = datatype.promote_types(x_ty, y_ty)
-    x = _promote_and_broadcast_to(x, common_ty)
-    y = _promote_and_broadcast_to(y, common_ty)
-    return raw_comparison(fn, x, y)
+    match x_ty, y_ty:
+        case DTypeSpec(), DTypeSpec():
+            return _binop_propagate_constant(fn, x_ty.dtype, y_ty.dtype, None)
+        case StringTy(), StringTy():
+            return _binop_propagate_constant(fn, x_ty.value, y_ty.value, None)
+        case _, _:
+            return comparison(fn, x, y)
 
 
 def _promote_and_broadcast_to(x: Var, ty: TileTy | DType) -> Var:
@@ -703,9 +767,6 @@ class RawBinaryBitwiseOperation(TypedOperation):
 
 
 def raw_binary_bitwise(fn: str, x: Var, y: Var) -> Var:
-    if fn in BINOP_REGISTRY and x.is_constant() and y.is_constant():
-        return typed_const(BINOP_REGISTRY[fn].impl(x.get_constant(), y.get_constant()))
-
     ty = x.get_type()
     assert ty == y.get_type()
     return add_operation(RawBinaryBitwiseOperation, ty, fn=fn, lhs=x, rhs=y)
@@ -718,19 +779,23 @@ def raw_binary_bitwise(fn: str, x: Var, y: Var) -> Var:
 @impl(operator.or_, fixed_args=["or_"])
 @impl(operator.xor, fixed_args=["xor"])
 def binary_bitwise(fn: str, x: Var, y: Var) -> Var:
-    x_ty = require_tile_or_scalar_type(x)
-    y_ty = require_tile_or_scalar_type(y)
+    x_ty = require_tile_or_scalar_maybe_loose_type(x)
+    y_ty = require_tile_or_scalar_maybe_loose_type(y)
+
+    if isinstance(x_ty, LooselyTypedScalar) and isinstance(y_ty, LooselyTypedScalar):
+        return _binop_propagate_constant(fn, x_ty.value, y_ty.value, None)
+
     lhs_dtype = get_dtype(x_ty)
     rhs_dtype = get_dtype(y_ty)
 
     if not (datatype.is_integral(lhs_dtype) or datatype.is_boolean(lhs_dtype)) \
             or not (datatype.is_integral(rhs_dtype) or datatype.is_boolean(rhs_dtype)):
-        raise TileTypeError("Bitwise operations require integers."
+        raise TileTypeError("Bitwise operations require integers or booleans."
                             " Use an explicit cuda.tile.bitcast() for non-integer operands.")
 
-    both_tiles = isinstance(x_ty, TileTy) and isinstance(y_ty, TileTy)
-    both_scalars = isinstance(x_ty, DType) and isinstance(y_ty, DType)
-    if (both_tiles or both_scalars) and lhs_dtype != rhs_dtype:
+    x_loose = isinstance(x_ty, LooselyTypedScalar)
+    y_loose = isinstance(y_ty, LooselyTypedScalar)
+    if x_loose == y_loose and lhs_dtype != rhs_dtype:
         msg = "Bitwise operands must have same data type, got:"
         msg += f" {lhs_dtype} and {rhs_dtype}"
         raise TileTypeError(msg)
@@ -738,9 +803,13 @@ def binary_bitwise(fn: str, x: Var, y: Var) -> Var:
     if {lhs_dtype, rhs_dtype} == {datatype.bool_, datatype.int8}:
         raise TileTypeError("Bitwise op does not support bool and int8")
 
-    common_ty = datatype.promote_types(x_ty, y_ty)
+    common_ty = promote_types(x_ty, y_ty)
     x = _promote_and_broadcast_to(x, common_ty)
     y = _promote_and_broadcast_to(y, common_ty)
+
+    if x.is_constant() and y.is_constant():
+        return _binop_propagate_constant(fn, x.get_constant(), y.get_constant(), common_ty)
+
     return raw_binary_bitwise(fn, x, y)
 
 
@@ -771,9 +840,6 @@ class RawBitwiseShiftOperation(TypedOperation):
 
 
 def raw_bitwise_shift(fn: str, x: Var, y: Var) -> Var:
-    if fn in BINOP_REGISTRY and x.is_constant() and y.is_constant():
-        return typed_const(BINOP_REGISTRY[fn].impl(x.get_constant(), y.get_constant()))
-
     ty = x.get_type()
     assert ty == y.get_type()
     return add_operation(RawBitwiseShiftOperation, ty, fn=fn, lhs=x, rhs=y)
@@ -784,8 +850,11 @@ def raw_bitwise_shift(fn: str, x: Var, y: Var) -> Var:
 @impl(operator.lshift, fixed_args=["lshift"])
 @impl(operator.rshift, fixed_args=["rshift"])
 def bitwise_shift(fn: str, x: Var, y: Var) -> Var:
-    x_ty = require_tile_or_scalar_type(x)
-    y_ty = require_tile_or_scalar_type(y)
+    x_ty = require_tile_or_scalar_maybe_loose_type(x)
+    y_ty = require_tile_or_scalar_maybe_loose_type(y)
+
+    if isinstance(x_ty, LooselyTypedScalar) and isinstance(y_ty, LooselyTypedScalar):
+        return _binop_propagate_constant(fn, x_ty.value, y_ty.value, None)
 
     lhs_dtype = get_dtype(x_ty)
     if not datatype.is_integral(lhs_dtype):
@@ -797,9 +866,13 @@ def bitwise_shift(fn: str, x: Var, y: Var) -> Var:
         msg = f'Bitwise shift requires an integer for right-hand side, got: {rhs_dtype}'
         raise TileTypeError(msg)
 
-    common_ty = datatype.promote_types(x_ty, y_ty)
+    common_ty = promote_types(x_ty, y_ty)
     x = _promote_and_broadcast_to(x, common_ty)
     y = _promote_and_broadcast_to(y, common_ty)
+
+    if x.is_constant() and y.is_constant():
+        return _binop_propagate_constant(fn, x.get_constant(), y.get_constant(), common_ty)
+
     return raw_bitwise_shift(fn, x, y)
 
 
@@ -890,9 +963,6 @@ class RawBinaryArithmeticOperation(TypedOperation):
 
 def raw_binary_arithmetic(fn: str, x: Var, y: Var, rounding_mode: Optional[RoundingMode] = None,
                           flush_to_zero: bool = False) -> Var:
-    if fn in BINOP_REGISTRY and x.is_constant() and y.is_constant():
-        return typed_const(BINOP_REGISTRY[fn].impl(x.get_constant(), y.get_constant()))
-
     ty = x.get_type()
     assert ty == y.get_type(), f"{ty} != {y.get_type()}"
     check_rd_and_ftz(fn, rounding_mode, flush_to_zero, get_dtype(ty))
@@ -902,15 +972,25 @@ def raw_binary_arithmetic(fn: str, x: Var, y: Var, rounding_mode: Optional[Round
 
 def binary_arithmetic(fn: str, x: Var, y: Var, rounding_mode: Optional[RoundingMode] = None,
                       flush_to_zero: bool = False) -> Var:
-    x_ty = require_tile_or_scalar_type(x)
-    y_ty = require_tile_or_scalar_type(y)
+    x_ty = require_tile_or_scalar_maybe_loose_type(x)
+    y_ty = require_tile_or_scalar_maybe_loose_type(y)
+
     if get_dtype(x_ty) == get_dtype(y_ty) == datatype.bool_:
         raise TileTypeError(f'Binary arithmetic op `{fn}` does not support bool, '
                             f'please cast bool to int')
+
+    if isinstance(x_ty, LooselyTypedScalar) and isinstance(y_ty, LooselyTypedScalar):
+        return _binop_propagate_constant(fn, x_ty.value, y_ty.value, None)
+
     force_float = (fn == "truediv")
-    common_ty = datatype.promote_types(x_ty, y_ty, force_float=force_float)
+    common_ty = promote_types(x_ty, y_ty, force_float=force_float)
+
     x = _promote_and_broadcast_to(x, common_ty)
     y = _promote_and_broadcast_to(y, common_ty)
+
+    if x.is_constant() and y.is_constant():
+        return _binop_propagate_constant(fn, x.get_constant(), y.get_constant(), common_ty)
+
     return raw_binary_arithmetic(fn, x, y, rounding_mode, flush_to_zero)
 
 
@@ -950,23 +1030,32 @@ def binary_arithmetic_impl_with_rd_and_ftz(fn: str, x: Var, y: Var,
 @impl(operator.mod)
 @impl(ct.mod)
 def mod(x: Var, y: Var) -> Var:
-    # TileOR rem follows the C behavior while Python's mod behavior differs.
-    # So we generate the C-style mod first and then apply a correction.
-
-    # Usual promote & broadcast logic
-    x_ty = require_tile_or_scalar_type(x)
-    y_ty = require_tile_or_scalar_type(y)
+    x_ty = require_tile_or_scalar_maybe_loose_type(x)
+    y_ty = require_tile_or_scalar_maybe_loose_type(y)
     if get_dtype(x_ty) == get_dtype(y_ty) == datatype.bool_:
         raise TileTypeError('Modulo operation does not support bool')
-    common_ty = datatype.promote_types(x_ty, y_ty)
+
+    if isinstance(x_ty, LooselyTypedScalar) and isinstance(y_ty, LooselyTypedScalar):
+        with _reraise_tile_exception():
+            res = x_ty.value % y_ty.value
+        return loosely_typed_const(res)
+
+    # Usual promote & broadcast logic
+    common_ty = promote_types(x_ty, y_ty)
     x = _promote_and_broadcast_to(x, common_ty)
     y = _promote_and_broadcast_to(y, common_ty)
 
-    # Dispatch a C-style modulo first
+    if x.is_constant() and y.is_constant():
+        with _reraise_tile_exception():
+            res = x.get_constant() % y.get_constant()
+        return strictly_typed_const(res, common_ty)
+
+    # TileOR rem follows the C behavior while Python's mod behavior differs.
+    # So we generate the C-style mod first and then apply a correction.
     value = raw_binary_arithmetic("c_mod", x, y)
 
     # If the sign of `value` does not match the sign of `y`, apply a correction.
-    zero = typed_const(0, common_ty)
+    zero = strictly_typed_const(0, common_ty)
     value_sign = comparison("lt", value, zero)
     y_sign = comparison("lt", y, zero)
 
@@ -983,7 +1072,8 @@ def mod(x: Var, y: Var) -> Var:
 def slice_impl(start: Var, stop: Var, step: Var) -> Var:
     if not (start.is_constant() and stop.is_constant() and step.is_constant()):
         raise TileTypeError("Non-constant slices are not supported")
-    return typed_const(slice(start.get_constant(), stop.get_constant(), step.get_constant()))
+    return loosely_typed_const(
+        slice(start.get_constant(), stop.get_constant(), step.get_constant()))
 
 
 class TupleItemOperation(TypedOperation):
@@ -1012,19 +1102,23 @@ def tuple_item(x: Var, index: int) -> Var:
     except IndexError:
         raise TileTypeError(f"Index {index} is out of range for a tuple of length {len(tuple_ty)}")
 
+    loose_tuple_ty = x.get_loose_type()
+    assert isinstance(loose_tuple_ty, TupleTy) and len(loose_tuple_ty) == len(tuple_ty)
+    loose_item_ty = loose_tuple_ty[index]
+
     if index < 0:
         index += len(tuple_ty)
 
     if x.is_constant():
         item_const = x.get_constant()[index]
-        return typed_const(item_const, item_ty)
+        return loosely_typed_const(item_const)
 
-    if isinstance(item_ty, SizeTy):
-        if item_ty.maybe_value is not None:
-            return typed_const(item_ty.value)
-        item_ty = datatype.default_int_type
+    if isinstance(loose_item_ty, LooselyTypedScalar):
+        return loosely_typed_const(loose_item_ty.value)
 
-    return add_operation(TupleItemOperation, item_ty, x=x, index=index)
+    res = add_operation(TupleItemOperation, item_ty, x=x, index=index)
+    res.set_loose_type(loose_item_ty)
+    return res
 
 
 class TupleSliceOperation(TypedOperation):
@@ -1059,11 +1153,22 @@ def tuple_slice(x: Var, slc: slice) -> Var:
     item_types = tuple_ty.value_types[slc]
     subtuple_ty = TupleTy(item_types)
 
+    loose_tuple_ty = x.get_loose_type()
+    assert isinstance(loose_tuple_ty, TupleTy) and len(loose_tuple_ty) == len(tuple_ty)
+    loose_item_types = loose_tuple_ty.value_types[slc]
+    loose_subtuple_ty = TupleTy(loose_item_types)
+
     if x.is_constant():
         subtuple_constant = tuple(x.get_constant()[slc])
-        return typed_const(subtuple_constant, subtuple_ty)
+        return loosely_typed_const(subtuple_constant, subtuple_ty, loose_subtuple_ty)
 
-    return add_operation(TupleSliceOperation, subtuple_ty, x=x, slc=slc)
+    if all(isinstance(item_ty, LooselyTypedScalar) for item_ty in loose_subtuple_ty):
+        subtuple_constant = tuple(item_ty.value for item_ty in loose_subtuple_ty)
+        return loosely_typed_const(subtuple_constant, subtuple_ty, loose_subtuple_ty)
+
+    ret = add_operation(TupleSliceOperation, subtuple_ty, x=x, slc=slc)
+    ret.set_loose_type(loose_subtuple_ty)
+    return ret
 
 
 def tuple_getitem(x: Var, key: Var) -> Var:
@@ -1215,7 +1320,7 @@ class ListLen(TypedOperation):
 def len_impl(x: Var) -> Var:
     x_type = x.get_type()
     if isinstance(x_type, TupleTy):
-        return typed_const(len(x_type), datatype.int32)
+        return loosely_typed_const(len(x_type))
     require_list_type(x)
     return add_operation(ListLen, datatype.int32, x=x)
 
@@ -1234,11 +1339,15 @@ class BuildTuple(TypedOperation):
 
 @impl(ct._build_tuple)
 def build_tuple(items: tuple[Var, ...]) -> Var:
-    if all(x.is_constant() for x in items):
-        return typed_const(tuple(x.get_constant() for x in items))
-
     ty = TupleTy(tuple(x.get_type() for x in items))
-    return add_operation(BuildTuple, ty, items=items)
+    loose_ty = TupleTy(tuple(x.get_loose_type() for x in items))
+
+    if all(x.is_constant() for x in items):
+        return loosely_typed_const(tuple(x.get_constant() for x in items), ty=ty, loose_ty=loose_ty)
+
+    ret = add_operation(BuildTuple, ty, items=items)
+    ret.set_loose_type(loose_ty)
+    return ret
 
 
 class Unary(TypedOperation):
@@ -1317,14 +1426,20 @@ class _UnaryBehavior:
     float_handler: Optional[Callable[[Var], Var]]
 
 
+def _unary_propagate_constant(fn: str, arg: Any) -> Any:
+    impl = UNARYOP_REGISTRY[fn].impl
+    with _reraise_tile_exception():
+        return impl(arg)
+
+
 def unary(fn: str, behavior: _UnaryBehavior, x: Var,
           rounding_mode: Optional[RoundingMode] = None, flush_to_zero: bool = False) -> Var:
-    x_type = require_tile_or_scalar_type(x)
+    x_type = require_tile_or_scalar_maybe_loose_type(x)
+    if isinstance(x_type, LooselyTypedScalar):
+        res = _unary_propagate_constant(fn, x_type.value)
+        return loosely_typed_const(res)
+
     input_dtype = get_dtype(x_type)
-
-    if x.is_constant():
-        return typed_const(UNARYOP_REGISTRY[fn].impl(x.get_constant()))
-
     if is_boolean(input_dtype):
         if behavior.bool_handler is None:
             raise TileTypeError("Boolean inputs are not supported")
@@ -1341,6 +1456,10 @@ def unary(fn: str, behavior: _UnaryBehavior, x: Var,
         raise TileTypeError(f"Unexpected input dtype {input_dtype}")
 
     ty = x.get_type()
+    if x.is_constant():
+        res = _unary_propagate_constant(fn, x.get_constant())
+        return strictly_typed_const(res, ty)
+
     check_rd_and_ftz(fn, rounding_mode, flush_to_zero, get_dtype(ty))
     return add_operation(Unary, ty, fn=fn, operand=x,
                          rounding_mode=rounding_mode, flush_to_zero=flush_to_zero)
@@ -1355,21 +1474,26 @@ _UNARY_ANYTHING = _UnaryBehavior(_unary_preserve, _unary_preserve, _unary_preser
 
 @impl(operator.not_)
 def logical_not_impl(x: Var) -> Var:
-    if x.is_constant():
-        return typed_const(not x.get_constant())
+    ty = require_scalar_or_0d_tile_maybe_loose_type(x)
 
-    require_scalar_or_0d_tile_type(x)
+    if isinstance(ty, LooselyTypedScalar):
+        return loosely_typed_const(not ty.value)
+
     x = astype(x, datatype.bool_)
+    if x.is_constant():
+        return strictly_typed_const(not x.get_constant(), x.get_type())
+
     return add_operation(Unary, x.get_type(), fn="invert", operand=x,
                          rounding_mode=None, flush_to_zero=False)
 
 
 @impl(operator.pos)
 def pos_impl(x: Var):
-    if x.is_constant():
-        return typed_const(+x.get_constant())
+    ty = require_tile_or_scalar_maybe_loose_type(x)
 
-    ty = require_tile_or_scalar_type(x)
+    if isinstance(ty, LooselyTypedScalar):
+        return loosely_typed_const(+ty.value)
+
     if get_dtype(ty) == datatype.bool_:
         return astype(x, datatype.default_int_type)
     else:
@@ -1416,13 +1540,13 @@ def getattr_impl(object: Var, name: Var) -> Var:
     ty = object.get_type()
     attr_name = require_constant_str(name)
     match ty, attr_name:
-        case ArrayTy(), "dtype": return typed_const(ty.dtype)
-        case ArrayTy(), "ndim": return typed_const(ty.ndim)
+        case ArrayTy(), "dtype": return loosely_typed_const(ty.dtype)
+        case ArrayTy(), "ndim": return loosely_typed_const(ty.ndim)
         case ArrayTy(), "shape": return get_array_shape(object)
 
-        case TileTy(), "dtype": return typed_const(ty.dtype)
-        case TileTy(), "shape": return typed_const(ty.shape_value)
-        case TileTy(), "ndim": return typed_const(ty.ndim)
+        case TileTy(), "dtype": return loosely_typed_const(ty.dtype)
+        case TileTy(), "shape": return loosely_typed_const(ty.shape_value)
+        case TileTy(), "ndim": return loosely_typed_const(ty.ndim)
 
         case TileTy(), "extract": return bind_method(object, ct.extract)
         case TileTy(), "reshape": return bind_method(object, ct.reshape)
@@ -1433,13 +1557,13 @@ def getattr_impl(object: Var, name: Var) -> Var:
 
         case ModuleTy(), _:
             try:
-                return typed_const(getattr(ty.py_mod, attr_name))
+                return loosely_typed_const(getattr(ty.py_mod, attr_name))
             except AttributeError:
                 pass
 
         case TypeTy(), _:
             try:
-                return typed_const(getattr(ty.ty, attr_name))
+                return loosely_typed_const(getattr(ty.ty, attr_name))
             except AttributeError:
                 pass
 
@@ -1477,8 +1601,13 @@ class GetArrayShape(TypedOperation):
 
 def get_array_shape(array: Var) -> Var:
     array_ty = require_array_type(array)
-    shape_ty = array_ty.shape
-    return add_operation(GetArrayShape, shape_ty, value=array)
+    shape_ty = TupleTy((datatype.default_int_type,) * array_ty.ndim)
+    loose_shape_ty = TupleTy(tuple(datatype.default_int_type
+                                   if sz.maybe_value is None else LooselyTypedScalar(sz.value)
+                                   for sz in array_ty.shape))
+    ret = add_operation(GetArrayShape, shape_ty, value=array)
+    ret.set_loose_type(loose_shape_ty)
+    return ret
 
 
 class GetArrayStrides(TypedOperation):
@@ -1557,7 +1686,7 @@ def assign_untyped(value: Var, res: Var):
 @impl(ct._identity)
 def identity_impl(x: Var) -> Var:
     if x.is_constant():
-        return typed_const(x.get_constant(), x.get_type())
+        return loosely_typed_const(x.get_constant(), x.get_type(), x.get_loose_type())
     else:
         return x
 
@@ -1590,12 +1719,12 @@ def range_(args: Tuple[Var, ...]) -> Var:
             raise TileTypeError(f"Expected a signed integer, got {arg_ty}")
 
     if len(args) == 1:
-        start = typed_const(0, datatype.default_int_type)
+        start = strictly_typed_const(0, datatype.default_int_type)
         stop = args[0]
-        step = typed_const(1, datatype.default_int_type)
+        step = strictly_typed_const(1, datatype.default_int_type)
     elif len(args) == 2:
         start, stop = args[0], args[1]
-        step = typed_const(1, datatype.default_int_type)
+        step = strictly_typed_const(1, datatype.default_int_type)
     else:
         start, stop, step = args[0], args[1], args[2]
         # FIXME(Issue 314): Support negative step.
@@ -1640,7 +1769,7 @@ def dtype_constructor_impl(new_dtype: DType, x: Var) -> Var:
             const_value = new_dtype._py_type(x.get_constant())
         except (ValueError, TypeError):
             raise TileTypeError(f"Invalid argument type for {new_dtype}")
-        return typed_const(const_value, ty=new_dtype)
+        return strictly_typed_const(const_value, ty=new_dtype)
 
     x_ty = require_scalar_or_0d_tile_type(x)
     if isinstance(x_ty, TileTy):
@@ -2124,9 +2253,9 @@ def _gather_scatter_pointer_and_mask(array: Var,
             offset_delta = ind
         else:
             if static_stride is None:
-                stride = tuple_item(array_stride, dim)
+                stride = astype(tuple_item(array_stride, dim), datatype.uint64)
             else:
-                stride = typed_const(static_stride, datatype.uint64)
+                stride = loosely_typed_const(static_stride)
             offset_delta = binary_arithmetic("mul", ind, stride)
 
         if offset is None:
@@ -2435,7 +2564,7 @@ def num_tiles_impl(array: Var, axis: Var, shape: Var, order: Var) -> Var:
 
 def full_const(shape: Sequence[int], fill_value: int | float, dtype: DType) -> Var:
     res_ty = make_tile_ty(dtype, shape)
-    return typed_const(fill_value, res_ty)
+    return strictly_typed_const(fill_value, res_ty)
 
 
 def full(shape: Sequence[int], fill_value: Var, dtype: DType) -> Var:
@@ -2558,7 +2687,7 @@ def matmul(x: Var, y: Var) -> Var:
     x_shape_orig = x_tile_type.shape
     y_shape_orig = y_tile_type.shape
     x_shape, y_shape, acc_shape, output_shape = _matmul_broadcast_shape(x_shape_orig, y_shape_orig)
-    common_dtype = datatype.promote_dtypes(x_tile_type.dtype, y_tile_type.dtype)
+    common_dtype = promote_dtypes(x_tile_type.dtype, y_tile_type.dtype)
     acc_dtype = datatype._resolve_mma_supported_dtype(common_dtype, common_dtype, None)
     x = _promote_and_broadcast_to(x, TileTy(common_dtype, x_shape))
     if len(y_shape_orig) == 1:
@@ -2570,7 +2699,7 @@ def matmul(x: Var, y: Var) -> Var:
         y = reshape(y, y_shape_2d)
     y = _promote_and_broadcast_to(y, TileTy(common_dtype, y_shape))
     acc_ty = TileTy(acc_dtype, acc_shape)
-    acc_value = typed_const(0, acc_ty)
+    acc_value = strictly_typed_const(0, acc_ty)
     matmul_result = add_operation(TileMma, acc_ty, x=x, y=y, acc=acc_value)
     matmul_result = astype(matmul_result, common_dtype)
     ret = reshape(matmul_result, tuple(dim.value for dim in output_shape))
@@ -2874,14 +3003,15 @@ def raw_where(cond: Var, x: Var, y: Var) -> Var:
 
 @impl(ct.where)
 def where(cond, x, y) -> Var:
-    cond_ty = require_tile_or_scalar_type(cond)
-    x_ty = require_tile_or_scalar_type(x)
-    y_ty = require_tile_or_scalar_type(y)
+    cond_ty = require_tile_or_scalar_maybe_loose_type(cond)
+    x_ty = require_tile_or_scalar_maybe_loose_type(x)
+    y_ty = require_tile_or_scalar_maybe_loose_type(y)
 
-    xy_ty = datatype.promote_types(x_ty, y_ty)
+    xy_ty = promote_types(x_ty, y_ty)
     dtype = get_dtype(xy_ty)
-    con_like_ty = change_dtype(cond_ty, dtype)
-    res_ty = datatype.promote_types(con_like_ty, xy_ty)
+    cond_like_ty = change_dtype(cond_ty, dtype)
+    res_ty = promote_types(cond_like_ty, xy_ty)
+
     cond = _promote_and_broadcast_to(cond, change_dtype(res_ty, datatype.bool_))
     x = _promote_and_broadcast_to(x, res_ty)
     y = _promote_and_broadcast_to(y, res_ty)
@@ -3016,6 +3146,11 @@ def astype(x: Var, dtype: DType) -> Var:
     from_dtype = get_dtype(x_ty)
     if from_dtype == dtype:
         return x
+
+    if x.is_constant():
+        val = dtype._py_type(x.get_constant())
+        return strictly_typed_const(val, dtype)
+
     result_ty = dtype if isinstance(x_ty, DType) else make_tile_ty(dtype, x_ty.shape_value)
     return add_operation(TileAsType, result_ty, x=x)
 

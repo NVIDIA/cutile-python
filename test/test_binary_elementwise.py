@@ -10,8 +10,8 @@ from torch.testing import make_tensor
 
 import cuda.tile as ct
 from util import (
-    get_int_dtype_of_same_size, launch_binary, assert_equal, assert_close, jit_kernel, filecheck,
-    get_bytecode
+    launch_binary, assert_equal, assert_close, jit_kernel, filecheck,
+    get_bytecode, raises_if
 )
 from conftest import float_dtypes, int_dtypes, bool_dtypes, dtype_id
 from cuda.tile._exception import TileTypeError
@@ -145,10 +145,11 @@ def test_scalar_add(shape, tile, is_constant, float_dtype, tmp_path):
 def test_array_scalar_add(shape, tile, dtype, tmp_path):
     x = make_tensor(shape, dtype=dtype, device='cuda')
     y = 5.0
-    z = (x + y).zero_()
+    res_dtype = torch.promote_types(x.dtype, torch.float32)
+    z = torch.zeros_like(x, dtype=res_dtype)
     kernel = array_scalar_kernel("add", "tz = tx + y", tmp_path)
     launch_binary(kernel, x, y, z, tile)
-    assert_equal(z, (x + y))
+    assert_equal(z, (x.to(res_dtype) + y))
 
 
 @ct.kernel
@@ -308,7 +309,8 @@ def test_scalar_max(shape, tile, is_constant, tmp_path, max_func):
 def test_array_scalar_max(shape, tile, dtype, tmp_path, max_func):
     x = make_tensor(shape, dtype=dtype, device='cuda')
     y = 5.0
-    ref = torch.maximum(x, torch.tensor(y, device="cuda"))
+    res_dtype = torch.promote_types(dtype, torch.float32)
+    ref = torch.maximum(x.to(res_dtype), torch.tensor(y, device="cuda"))
     z = torch.zeros_like(ref)
     kernel = array_scalar_kernel("max", f"tz = {max_func}(tx, y)", tmp_path)
     launch_binary(kernel, x, y, z, tile)
@@ -430,7 +432,7 @@ def test_scalar_cdiv(shape, tile, x, y, is_constant, tmp_path):
 def test_array_scalar_div(shape, tile, int_dtype, tmp_path, op_symbol, ref_impl, force_float):
     x = torch.randint(0, 100, shape, dtype=int_dtype, device='cuda')
     y = 23
-    result_type = x.dtype if not force_float else torch.float32
+    result_type = torch.float32 if force_float else torch.promote_types(x.dtype, torch.int32)
     z = torch.zeros_like(x, dtype=result_type)
     # TODO: torch.ceil always return f32, should we align?
     ref = ref_impl(x, y).to(result_type)
@@ -452,8 +454,9 @@ def test_array_scalar_div(shape, tile, int_dtype, tmp_path, op_symbol, ref_impl,
 def test_array_scalar_truediv_float(shape, tile, float_dtype, tmp_path, op_symbol, ref_impl):
     x = make_tensor(shape, dtype=float_dtype, device='cuda')
     y = 23.0
-    z = torch.zeros_like(x, dtype=x.dtype)
-    ref = ref_impl(x, y)
+    res_dtype = torch.promote_types(x.dtype, torch.float32)
+    ref = ref_impl(x.to(res_dtype), y)
+    z = torch.zeros_like(ref)
     kernel = array_scalar_kernel('truediv',
                                  f'tz = {op_symbol}(tx, y)' if op_symbol.startswith("ct.") else
                                  f'tz = tx {op_symbol} y',
@@ -519,10 +522,11 @@ def test_array_scalar_truediv_float_rounding_mode(
     shape, tile, float_dtype, tmp_path, rounding_mode
 ):
     should_raise_rounding_mode = rounding_mode in [RMd.RZI]
-    should_raise_dtype = rounding_mode in [RMd.APPROX, RMd.FULL] and float_dtype != torch.float32
     x = make_tensor(shape, dtype=float_dtype, device='cuda')
     y = 23.0
-    z = torch.zeros_like(x, dtype=x.dtype)
+    result_type = torch.promote_types(x.dtype, torch.float32)
+    should_raise_dtype = rounding_mode in [RMd.APPROX, RMd.FULL] and result_type != torch.float32
+    z = torch.zeros_like(x, dtype=result_type)
     kernel = array_scalar_kernel('truediv_rounding_mode',
                                  f'tz = ct.truediv(tx, y, rounding_mode={rounding_mode})',
                                  tmp_path,
@@ -615,18 +619,28 @@ def test_scalar_pow(shape, tile, is_constant, tmp_path):
 def test_array_scalar_pow(shape, tile, float_dtype, tmp_path):
     x = torch.rand(shape, dtype=float_dtype, device='cuda')
     y = 5.0
-    z = torch.zeros_like(x)
+    res_dtype = torch.promote_types(x.dtype, torch.float32)
+    z = torch.zeros_like(x, dtype=res_dtype)
     kernel = array_scalar_kernel('pow', 'tz = tx ** y', tmp_path)
     launch_binary(kernel, x, y, z, tile)
-    torch.testing.assert_close(z, (x ** y))
+    torch.testing.assert_close(z, (x.to(res_dtype) ** y))
 
 
 def bitwise_reference(op_symbol: str, x: torch.Tensor, y: torch.Tensor | int):
-    int_dtype = get_int_dtype_of_same_size(x.dtype)
-    xi = x.view(int_dtype)  # noqa
-    yi = y.view(int_dtype) if isinstance(y, torch.Tensor) else y  # noqa
-    zi = eval(f'xi {op_symbol} yi')
-    return zi.view(x.dtype)
+    res_dtype = torch.promote_types(x.dtype,
+                                    y.dtype if isinstance(y, torch.Tensor) else torch.int32)
+    # Workaround for the missing kernel in torch
+    if res_dtype == torch.uint32:
+        impl_dtype = torch.int32
+    elif res_dtype == torch.uint64:
+        impl_dtype = torch.int64
+    else:
+        impl_dtype = res_dtype
+
+    x = x.to(impl_dtype)
+    y = torch.tensor(y).to(impl_dtype)
+    res = eval(f'x {op_symbol} y', None, dict(x=x, y=y))
+    return res.to(res_dtype)
 
 
 bitwise_logcal_cases = [
@@ -715,16 +729,33 @@ def test_scalar_bitwise(shape, tile, is_constant, op, tmp_path):
 
 
 @pytest.mark.parametrize('dtype', [torch.int32, torch.int64, torch.uint32], ids=dtype_id)
-@pytest.mark.parametrize('op', ['&', '|', '^', '<<', '>>'],
-                         ids=['bit_and', 'bit_or', 'bit_xor', 'bit_lshift', 'bit_rshift'])
+@pytest.mark.parametrize('op', ['&', '|', '^'],
+                         ids=['bit_and', 'bit_or', 'bit_xor'])
 def test_array_scalar_bitwise(shape, dtype, tile, op, tmp_path):
     x = make_tensor(shape, dtype=dtype, device='cuda')
     y = 5
     z = torch.zeros_like(x)
     kernel = array_scalar_kernel('bitwise', f'tz = tx {op} y', tmp_path)
-    launch_binary(kernel, x, y, z, tile)
-    ref = bitwise_reference(op, x, y)
-    assert_equal(z, ref)
+    with raises_if(dtype != torch.int32, TileTypeError,
+                   match="Bitwise operands must have same data type"):
+        launch_binary(kernel, x, y, z, tile)
+        ref = bitwise_reference(op, x, y)
+        assert_equal(z, ref)
+
+
+@pytest.mark.parametrize('dtype', [torch.int32, torch.int64, torch.uint32], ids=dtype_id)
+@pytest.mark.parametrize('op', ['<<', '>>'],
+                         ids=['bit_lshift', 'bit_rshift'])
+def test_array_scalar_shift(shape, dtype, tile, op, tmp_path):
+    x = make_tensor(shape, dtype=dtype, device='cuda')
+    y = 5
+    z = torch.zeros_like(x)
+    kernel = array_scalar_kernel('bitwise', f'tz = tx {op} y', tmp_path)
+    with raises_if(not dtype.is_signed, TileTypeError,
+                   match="Implicit promotion of .* and int32 is not supported"):
+        launch_binary(kernel, x, y, z, tile)
+        ref = bitwise_reference(op, x, y)
+        assert_equal(z, ref)
 
 
 def test_array_implicit_cast_happy(tmp_path):

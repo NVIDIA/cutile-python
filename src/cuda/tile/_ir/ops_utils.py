@@ -1,20 +1,24 @@
 # SPDX-FileCopyrightText: Copyright (c) <2025> NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 #
 # SPDX-License-Identifier: Apache-2.0
-
+import itertools
 import math
 
 from dataclasses import dataclass
-from typing import Optional, Tuple, Dict, Any
+from typing import Optional, Tuple, Dict, Any, Sequence
 from enum import Enum
 from cuda.tile import _datatype as datatype
+
 from cuda.tile._numeric_semantics import RoundingMode, PaddingMode
-from cuda.tile._exception import Loc, TileTypeError
+from cuda.tile._exception import Loc, TileTypeError, TileValueError
 from cuda.tile._memory_model import MemoryOrder, MemoryScope
 import cuda.tile._bytecode as bc
 
 from .ir import Operation
-from .type import TileTy, PointerTy
+from .type import TileTy, PointerTy, LooselyTypedScalar, make_tile_ty
+from .typing_support import typeof_pyval
+from .._datatype import DType, _DTypePromotionImpl, NumericDTypeCategory, NumericDTypeCategories, \
+    get_int_min_max
 
 
 class ComparisonPredicates(Enum):
@@ -181,13 +185,15 @@ def memory_order_has_release(memory_order: MemoryOrder):
     return memory_order in (MemoryOrder.RELEASE, MemoryOrder.ACQ_REL)
 
 
-def get_dtype(ty: TileTy | datatype.DType) -> datatype.DType | PointerTy:
+def get_dtype(ty: TileTy | datatype.DType | LooselyTypedScalar) -> datatype.DType | PointerTy:
     if isinstance(ty, TileTy):
         return ty.dtype
     elif isinstance(ty, datatype.DType):
         return ty
     elif isinstance(ty, PointerTy):
         return ty
+    elif isinstance(ty, LooselyTypedScalar):
+        return typeof_pyval(ty.value)
     else:
         raise TypeError(f"Cannot get dtype from {ty}")
 
@@ -232,3 +238,86 @@ padding_mode_to_bytecode = {
     PaddingMode.POS_INF: bc.PaddingValue.PosInf,
     PaddingMode.NEG_INF: bc.PaddingValue.NegInf,
 }
+
+
+def _promote_dtype_and_loosely_typed_constant(dtype: DType,
+                                              loose_const: Any,
+                                              force_float: bool) -> DType:
+    loose_dtype = typeof_pyval(loose_const)
+    assert isinstance(loose_dtype, DType)
+
+    cat = NumericDTypeCategories.get_category(dtype)
+    if cat == NumericDTypeCategory.RestrictedFloat:
+        # Treat restricted floats as regular floats.
+        cat = NumericDTypeCategory.Float
+    loose_cat = NumericDTypeCategories.get_category(loose_dtype)
+
+    if loose_cat == cat:
+        # Both values are of the same dtype category. Use the concrete dtype in this case.
+        ret = dtype
+
+        # For integers, verify that the loosely typed constant is within the range of dtype.
+        if cat == NumericDTypeCategory.Integral and not force_float:
+            min, max = get_int_min_max(dtype)
+            if not (min <= loose_const <= max):
+                raise TileValueError(f"Integer constant {loose_const} is out of range of {dtype}")
+    else:
+        # Strongest category always wins
+        ret = loose_dtype if loose_cat > cat else dtype
+
+    return ret if not force_float or datatype.is_float(ret) else datatype.default_float_type
+
+
+def promote_dtypes(t1: DType | LooselyTypedScalar,
+                   t2: DType | LooselyTypedScalar,
+                   force_float: bool = False) -> DType:
+    match t1, t2:
+        case LooselyTypedScalar(val1), LooselyTypedScalar(val2):
+            dtype1 = typeof_pyval(val1)
+            assert isinstance(dtype1, DType)
+            dtype2 = typeof_pyval(val2)
+            assert isinstance(dtype2, DType)
+            return _DTypePromotionImpl.promote_dtypes(dtype1, dtype2, force_float)
+        case LooselyTypedScalar(val), dtype:
+            return _promote_dtype_and_loosely_typed_constant(dtype, val, force_float)
+        case dtype, LooselyTypedScalar(val):
+            return _promote_dtype_and_loosely_typed_constant(dtype, val, force_float)
+        case dtype1, dtype2:
+            return _DTypePromotionImpl.promote_dtypes(dtype1, dtype2, force_float)
+
+
+def promote_types(t1: TileTy | DType | LooselyTypedScalar,
+                  t2: TileTy | DType | LooselyTypedScalar,
+                  force_float: bool = False) -> TileTy | DType:
+    dtype_1 = t1 if isinstance(t1, LooselyTypedScalar) else get_dtype(t1)
+    dtype_2 = t2 if isinstance(t2, LooselyTypedScalar) else get_dtype(t2)
+    dtype = promote_dtypes(dtype_1, dtype_2, force_float)
+
+    is_tile_1 = isinstance(t1, TileTy)
+    is_tile_2 = isinstance(t2, TileTy)
+
+    if is_tile_1 or is_tile_2:
+        shape_1 = t1.shape_value if is_tile_1 else ()
+        shape_2 = t2.shape_value if is_tile_2 else ()
+        shape = broadcast_shapes2(shape_1, shape_2)
+        return make_tile_ty(dtype, shape)
+    else:
+        return dtype
+
+
+class BroadcastError(Exception):
+    pass
+
+
+# FIXME: rename to broadcast_shapes() after we remove broadcast_shapes()
+def broadcast_shapes2(s1: Sequence[int], s2: Sequence[int]) -> Tuple[int, ...]:
+    result_shape = []
+    for d1, d2 in itertools.zip_longest(reversed(s1), reversed(s2), fillvalue=1):
+        if d1 != d2 and d1 != 1 and d2 != 1:
+            raise BroadcastError(f"Shapes are not broadcastable: {tuple(s1)}, {tuple(s2)}")
+        result_shape.append(max(d1, d2))
+    return tuple(reversed(result_shape))
+
+
+def is_shape_broadcastable_to(src: Sequence[int], dst: Sequence[int]) -> bool:
+    return len(src) <= len(dst) and all(x in (y, 1) for x, y in zip(reversed(src), reversed(dst)))

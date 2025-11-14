@@ -103,17 +103,24 @@ class TypingContext:
             self.set_constant(dst, phi.constant_value)
 
 
-def propagate_type(context: TypingContext, name: str, typ: Type) -> None:
+def propagate_type(src: Var, dst: Var) -> None:
     # Propagate the type of the variable to the destination variable.
     # Undefined types are propagated to the destination variable.
-    if name not in context.typemap or typ is UNDEFINED:
-        context.typemap[name] = typ
-    elif context.typemap[name] is UNDEFINED:
+    existing_ty = dst.try_get_type()
+    src_ty = src.get_type()
+    if existing_ty is None or src_ty is UNDEFINED:
+        dst.set_type(src_ty, force=True)
+        dst.set_loose_type(src.get_loose_type(), force=True)
+    elif existing_ty is UNDEFINED:
         pass
-    elif context.typemap[name] != typ:
+    elif existing_ty != src.get_type():
         # TODO: better error message to show the variable location.
-        raise TypeError(f"Types mismatch for {name} in propagation: "
-                        f"{context.typemap[name]} != {typ}")
+        raise TileTypeError(f"Types mismatch for {dst.name} in propagation: "
+                            f"{existing_ty} != {src.get_type()}")
+
+    # If the loose types don't match exactly, "unify" them to the concrete type
+    if dst.get_loose_type() != src.get_loose_type():
+        dst.set_loose_type(existing_ty, force=True)
 
 
 def infer_type(op: Operation, context: TypingContext) -> None:
@@ -187,7 +194,7 @@ def _have_break_or_continue(ops):
 
 
 def _bind_args(sig_func, args, kwargs) -> Sequence[Var]:
-    from cuda.tile._ir.ops import typed_const
+    from cuda.tile._ir.ops import loosely_typed_const
 
     sig = get_signature(sig_func)
     try:
@@ -202,7 +209,7 @@ def _bind_args(sig_func, args, kwargs) -> Sequence[Var]:
             ret.append(())
         else:
             assert param.default is not param.empty
-            ret.append(typed_const(param.default))
+            ret.append(loosely_typed_const(param.default))
     return ret
 
 
@@ -214,14 +221,14 @@ def _check_recursive_call(call_loc: Loc, callee: Callable):
 
 
 def _replace_call_or_const(block: Block, idx: int):
-    from cuda.tile._ir.ops import assign, typed_const, get_bound_self, Const
+    from cuda.tile._ir.ops import assign, loosely_typed_const, get_bound_self, Const
 
     op = block[idx]
 
     remap_result = True
     with ir.Builder(block.ctx, op.loc) as ir_builder:
         if isinstance(op, Const):
-            result = typed_const(op.value)
+            result = loosely_typed_const(op.value)
         else:
             args = []
             ty = op.func.get_type()
@@ -241,7 +248,7 @@ def _replace_call_or_const(block: Block, idx: int):
             if callee in op_implementations:
                 result = op_implementations[callee](*arg_list)
                 if result is None:
-                    result = typed_const(None)
+                    result = loosely_typed_const(None)
                 assert isinstance(result, Var)
 
                 if all(result.name != r.name
@@ -325,9 +332,10 @@ def infer_types_in_func(context: TypingContext, func: Function, args: Tuple[Argu
 
     # Initialize the typemap and const map with input args
     for var, arg in zip(func.parameters, args):
-        context.set_type(var, arg.type)
+        var.set_type(arg.type)
+        var.set_loose_type(arg.loose_type)
         if arg.is_const:
-            context.set_constant(var, arg.const_value)
+            var.set_constant(arg.const_value)
 
     infer_types_in_block(context, func.root_block)
 

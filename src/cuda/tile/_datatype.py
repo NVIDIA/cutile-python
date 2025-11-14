@@ -4,15 +4,11 @@
 
 from __future__ import annotations
 
-import itertools
-from typing import Optional, Any, Callable, Tuple, Sequence
+from typing import Optional, Any, Callable, Tuple
 from enum import IntEnum
 
 from cuda.tile._exception import TileTypeError
-from cuda.tile._ir.type import (
-        Type, TileTy,
-        TupleTy, SizeTy
-)
+from cuda.tile._ir.type import Type, TupleTy, SizeTy
 from cuda.tile._execution import function
 import cuda.tile._bytecode as bc
 
@@ -282,29 +278,6 @@ def is_restricted_arithmetic(t: DType) -> bool:
     return t in NumericDTypeCategories.RestrictedFloat
 
 
-def promote_types(t1: Type,
-                  t2: Type,
-                  force_float: bool = False,
-                  fixed_result_type: Optional[Type] = None) -> TileTy | DType:
-    dtype = fixed_result_type if fixed_result_type else None
-    # tile and tile
-    if isinstance(t1, TileTy) and isinstance(t2, TileTy):
-        dtype = dtype if dtype else promote_dtypes(t1.dtype, t2.dtype, force_float)
-        return TileTy(dtype, broadcast_shapes(t1.shape, t2.shape))
-    # tile and scalar
-    elif isinstance(t1, TileTy) and isinstance(t2, DType):
-        dtype = dtype if dtype else promote_tensor_scalar_dtypes(t1.dtype, t2, force_float)
-        return TileTy(dtype, t1.shape)
-    # scalar and tile
-    elif isinstance(t1, DType) and isinstance(t2, TileTy):
-        dtype = dtype if dtype else promote_tensor_scalar_dtypes(t2.dtype, t1, force_float)
-        return TileTy(dtype, t2.shape)
-    elif isinstance(t1, DType) and isinstance(t2, DType):
-        return dtype if dtype else promote_dtypes(t1, t2, force_float)
-    else:
-        raise TypeError(f'Cannot promote types: {t1}, {t2}')
-
-
 def broadcast_shapes(s1: TupleTy, s2: TupleTy) -> TupleTy:
     if len(s1) > len(s2):
         s1, s2 = s2, s1
@@ -322,24 +295,6 @@ def broadcast_shapes(s1: TupleTy, s2: TupleTy) -> TupleTy:
         else:
             result_shape.append(d1)
     return TupleTy(tuple(result_shape))
-
-
-class BroadcastError(Exception):
-    pass
-
-
-# FIXME: rename to broadcast_shapes() after we remove broadcast_shapes()
-def broadcast_shapes2(s1: Sequence[int], s2: Sequence[int]) -> Tuple[int, ...]:
-    result_shape = []
-    for d1, d2 in itertools.zip_longest(reversed(s1), reversed(s2), fillvalue=1):
-        if d1 != d2 and d1 != 1 and d2 != 1:
-            raise BroadcastError(f"Shapes are not broadcastable: {tuple(s1)}, {tuple(s2)}")
-        result_shape.append(max(d1, d2))
-    return tuple(reversed(result_shape))
-
-
-def is_shape_broadcastable_to(src: Sequence[int], dst: Sequence[int]) -> bool:
-    return len(src) <= len(dst) and all(x in (y, 1) for x, y in zip(reversed(src), reversed(dst)))
 
 
 # ============= Arithmetic Promotion ==============
@@ -418,50 +373,13 @@ class _DTypePromotionImpl:
         return res_type if not force_float or is_float(res_type) else default_float_type
 
 
-def promote_dtypes(t1: DType, t2: DType, force_float: bool = False) -> DType:
-    """
-    Promote dtype between two tensors.
-
-    Args:
-        t1: tensor type's dtype
-        t2: tensor type's dtype
-        force_float: if True, force the result to be a float type
-
-    Returns:
-        t: common dtype
-    """
-    return _DTypePromotionImpl.promote_dtypes(t1, t2, force_float)
-
-
-def promote_tensor_scalar_dtypes(tensor_dtype: DType,
-                                 scalar_dtype: DType,
-                                 force_float: bool = False) -> DType:
-    """
-    Promote dtype between a tensor and a scalar.
-
-    The behavior is different from `promote_dtype`:
-        a tensor's dtype is prefered over scalar's dtype
-        unless scalar's dtype is of a higher category.
-
-    Args:
-        tensor_dtype: dtype of a tensor
-        scalar_dtype: dtype of a scalar
-        force_float: if True, force the result to be a float type
-
-    Returns:
-        t: common dtype
-    """
-    if is_restricted_arithmetic(tensor_dtype) or is_restricted_arithmetic(scalar_dtype):
-        raise TypeError(
-            f"Implicit promotion of {tensor_dtype} and {scalar_dtype} is not supported as it "
-            f"involves restricted arithmetic dtypes in an unsupported way. "
-            f"Please perform an explicit cast instead."
-        )
-
-    k1 = NumericDTypeCategories.get_category(tensor_dtype)
-    k2 = NumericDTypeCategories.get_category(scalar_dtype)
-    res_type = tensor_dtype if k1 >= k2 else scalar_dtype
-    return res_type if not force_float or is_float(res_type) else default_float_type
+def get_int_min_max(t: DType) -> Tuple[int, int]:
+    assert is_integral(t)
+    if is_signed(t):
+        n = 1 << (t.bitwidth - 1)
+        return -n, n - 1
+    else:
+        return 0, (1 << t.bitwidth) - 1
 
 
 # TODO: bitwidth now is presenting the storage size, bool is 8-bit.

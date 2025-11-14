@@ -10,8 +10,8 @@ from cuda.tile import _datatype as datatype
 from cuda.tile._exception import TileTypeError
 from cuda.tile._cext import ArraySpecialization
 
-from .type import Type, SizeTy, TupleTy, DTypeConstructor, DTypeSpec, ListTy, NONE, str_, \
-    ELLIPSIS, SLICE, ModuleTy, FunctionTy, ArrayTy, EnumTy, TypeTy
+from .type import Type, SizeTy, TupleTy, DTypeConstructor, DTypeSpec, ListTy, NONE, StringTy, \
+    ELLIPSIS, SLICE, ModuleTy, FunctionTy, ArrayTy, EnumTy, TypeTy, LooselyTypedScalar
 
 # Store mapping from 3rd party dtype objects
 # e.g. np.float32 -> float32, torch.bfloat16 -> bfloat16
@@ -137,7 +137,7 @@ def typeof_pyval(val) -> Type:
     if isinstance(val, float):
         return datatype.default_float_type
     if isinstance(val, str):
-        return str_
+        return StringTy(val)
     if isinstance(val, tuple):
         return TupleTy(tuple(typeof_pyval(v) for v in val))
     if val is Ellipsis:
@@ -189,6 +189,15 @@ def typeof_pyval(val) -> Type:
 
     # TODO: should we add dlpack?
     raise TypeError(f'Python value {val} of type {type(val)} is not supported.')
+
+
+def loose_type_of_pyval(value: Any) -> Type:
+    if isinstance(value, bool | int | float):
+        return LooselyTypedScalar(value)
+    elif isinstance(value, tuple):
+        return TupleTy(tuple(loose_type_of_pyval(x) for x in value))
+    else:
+        return typeof_pyval(value)
 
 
 def get_constant_value(val: Any) -> Any:

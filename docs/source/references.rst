@@ -47,6 +47,9 @@
 .. |constant embedded| replace:: :ref:`constant embedded <execution:Constant Embedding>`
 .. |Constant embedded| replace:: :ref:`Constant embedded <execution:Constant Embedding>`
 
+.. |loosely typed numeric constant| replace:: :ref:`loosely typed numeric constant <execution:Constant Expressions & Objects>`
+.. |loosely typed numeric constants| replace:: :ref:`loosely typed numeric constants <execution:Constant Expressions & Objects>`
+
 .. |data model| replace:: :ref:`data model <data:Data Model>`
 .. |Data model| replace:: :ref:`Data model <data:Data Model>`
 
@@ -90,6 +93,8 @@
 .. |Arithmetic dtype| replace:: :ref:`Arithmetic dtype <data:Numeric & Arithmetic Data Types>`
 .. |arithmetic dtypes| replace:: :ref:`arithmetic dtypes <data:Numeric & Arithmetic Data Types>`
 .. |Arithmetic dtypes| replace:: :ref:`Arithmetic dtypes <data:Numeric & Arithmetic Data Types>`
+
+.. |type promotion| replace:: :ref:`type promotion <data:Arithmetic Promotion>`
 
 .. |tile space| replace:: :ref:`tile space <data:Element & Tile Space>`
 .. |Tile space| replace:: :ref:`Tile space <data:Element & Tile Space>`

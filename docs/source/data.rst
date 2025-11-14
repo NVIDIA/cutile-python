@@ -106,39 +106,34 @@ A *numeric* data type represents numbers. An *arithmetic* data type is a numeric
 that supports general arithmetic operations such as addition, subtraction, multiplication,
 and division.
 
+
 Arithmetic Promotion
 --------------------
 
-Tile-Tile & Scalar-Scalar Promotion
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Binary operations can be performed on two |tile| or |scalar| operands of different |numeric dtypes|.
 
-When performing a binary operation on either two |tiles| or two |scalars|, if the objects have different
-|numeric dtypes|, both shall be *promoted* to the |dtype| specified in the table below.
+When both operands are |loosely typed numeric constants|, then the result is also
+a loosely typed constant: for example, ``5 + 7`` is a loosely typed integral constant 12,
+and ``5 + 3.0`` is a loosely typed floating-point constant 8.0.
 
-Such promotions follow these principles:
+If any of the operands is not a |loosely typed numeric constant|, then both are *promoted*
+to a common dtype using the following process:
 
-- If one |dtype| is an integer type and the other is a floating-point type, the result is a floating-point type.
-- If both |dtypes| are integer types, the result is the |dtype| with the larger number of bits.
-- If both |dtypes| are floating-point types, the result is the |dtype| with the larger number of bits.
-- If one |dtype| is a signed integer and the other is an unsigned integer, an error occurs.
+- Each operand is classified into one of the three categories:
+  *boolean*, *integral* or *floating-point*.
+  The categories are ordered as follows: *boolean* < *integral* < *floating-point*.
+- If either operand is a |loosely typed numeric constant|, a concrete dtype is picked for it:
+  integral constants are treated as `int32`, and floating-point constants as treated as `float32`.
+- If one of the two operands has a higher category than the other, then its concrete dtype
+  is chosen as the common dtype.
+- If both operands are of the same category, but one of them is a |loosely typed numeric constant|,
+  then the other operand's dtype is picked as the common dtype.
+- Otherwise, the common dtype is computed according to the table below.
 
 .. rst-class:: compact-table
 
 .. include:: generated/includes/dtype_promotion_table.rst
 
-Tile-Scalar Promotion
-~~~~~~~~~~~~~~~~~~~~~
-
-When performing a binary operation between a |tile| and a |scalar| with different |numeric dtypes|,
-promotion is determined by comparing their respective |dtype| categories:
-
-- When the category of the |scalar| is less than or equal to the category of the |tile|, the
-  |scalar| is promoted or demoted to match the |tile|'s |dtype|.
-- When the category of the |scalar| is greater than the category of the |tile|, the |tile| is
-  promoted to match the |scalar|'s |dtype|.
-
-These rules ensure that operations between tiles and scalars follow a consistent pattern of type
-promotion that preserves numeric precision while allowing for efficient computation.
 
 Scalars
 -------

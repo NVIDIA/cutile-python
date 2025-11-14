@@ -17,8 +17,8 @@ from cuda.tile._ir.ops_utils import get_dtype
 
 from .ir import Var
 from .typing_support import get_signature
-from .type import TupleTy, TileTy, DTypeSpec, EnumTy, str_, ArrayTy, SliceType, \
-    ListTy, PointerTy
+from .type import TupleTy, TileTy, DTypeSpec, EnumTy, StringTy, ArrayTy, SliceType, \
+    ListTy, PointerTy, LooselyTypedScalar
 
 
 def _verify_params_match(stub_sig: inspect.Signature, func_sig: inspect.Signature):
@@ -105,9 +105,9 @@ def require_constant_str(var: Var) -> str:
     if not var.is_constant():
         raise _make_type_error("Expected a string constant, but given value is not constant", var)
     ty = var.get_type()
-    if ty != str_:
+    if not isinstance(ty, StringTy):
         raise _make_type_error(f"Expected a string constant, but given value has type {ty}", var)
-    return var.get_constant()
+    return ty.value
 
 
 def require_optional_constant_str(var: Var) -> Optional[str]:
@@ -241,12 +241,28 @@ def require_tile_or_scalar_type(var: Var) -> TileTy | DType | PointerTy:
     return ty
 
 
+def require_tile_or_scalar_maybe_loose_type(var: Var) \
+        -> TileTy | DType | PointerTy | LooselyTypedScalar:
+    ty = var.get_loose_type()
+    if isinstance(ty, LooselyTypedScalar):
+        return ty
+    return require_tile_or_scalar_type(var)
+
+
 def require_scalar_or_0d_tile_type(var: Var) -> TileTy | DType | PointerTy:
     ty = var.get_type()
     if not (isinstance(ty, DType | PointerTy) or (isinstance(ty, TileTy) and ty.ndim == 0)):
         raise _make_type_error(f"Expected a scalar or a 0D tile, but given value has type {ty}",
                                var)
     return ty
+
+
+def require_scalar_or_0d_tile_maybe_loose_type(var: Var) \
+        -> TileTy | DType | PointerTy | LooselyTypedScalar:
+    ty = var.get_loose_type()
+    if isinstance(ty, LooselyTypedScalar):
+        return ty
+    return require_scalar_or_0d_tile_type(var)
 
 
 def require_array_type(var: Var) -> ArrayTy:

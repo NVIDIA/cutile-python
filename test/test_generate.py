@@ -13,14 +13,14 @@ from conftest import int_dtypes, dtype_id
 
 @ct.kernel
 def arange(x, TILE: ct.Constant[int]):
-    bid = ct.bid(0)
+    bid = ct.astype(ct.bid(0), x.dtype)
     start = bid * TILE
     tx = start + ct.arange(TILE, dtype=x.dtype)
     ct.store(x, index=(bid,), tile=tx)
 
 
-@pytest.mark.parametrize("shape", [(256,)])
-@pytest.mark.parametrize("tile", [128])
+@pytest.mark.parametrize("shape", [(128,)])
+@pytest.mark.parametrize("tile", [64])
 @pytest.mark.parametrize("dtype", int_dtypes, ids=dtype_id)
 def test_arange(shape, dtype, tile):
     x = torch.zeros(shape, dtype=dtype, device='cuda')

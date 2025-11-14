@@ -99,9 +99,8 @@ def test_is_op_on_constant():
 
     def kernel():
         None is None
-        ... is ...
-        True is True
-        False is False
+        None is ct.bid(0)
+        ct.bid(0) is None
 
     compile_tile(kernel, (), CompilerOptions())
 
@@ -113,7 +112,7 @@ def test_is_op_on_none_constant():
         ty = ct.full((1,), 0, ct.float32)
         tx is ty
 
-    msg = re.escape('"is" only supports constants')
+    msg = re.escape("Operator 'is' expects one of the operands to be None")
     with pytest.raises(TileTypeError, match=msg):
         compile_tile(kernel, (), CompilerOptions())
 

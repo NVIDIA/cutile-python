@@ -20,7 +20,7 @@ from typing import (
 from typing_extensions import override
 
 from .type import Type, UNDEFINED
-from .typing_support import typeof_pyval, get_constant_value
+from .typing_support import typeof_pyval, get_constant_value, loose_type_of_pyval
 from cuda.tile._exception import (
     TileTypeError,
     TileValueError,
@@ -44,6 +44,7 @@ class IRContext:
         self._temp_counter = itertools.count()
         self.typemap: Dict[str, Type] = dict()
         self.constants: Dict[str, Any] = dict()
+        self._loose_typemap: Dict[str, Type] = dict()
         self.range_infos: Dict[str, RangeInfo] = dict()
 
     #  Make a Var with a unique name based on `name`.
@@ -66,6 +67,8 @@ class IRContext:
     def copy_type_information(self, src: Var, dst: Var):
         if src.name in self.typemap:
             self.typemap[dst.name] = self.typemap[src.name]
+        if src.name in self._loose_typemap:
+            self._loose_typemap[dst.name] = self._loose_typemap[src.name]
         if src.name in self.constants:
             self.constants[dst.name] = self.constants[src.name]
         if src.name in self.range_infos:
@@ -90,8 +93,9 @@ class Var:
                 return UNDEFINED
             raise TileInternalError(f"Type of variable {self.name} not found")
 
-    def set_type(self, ty: Type):
-        assert self.name not in self.ctx.typemap
+    def set_type(self, ty: Type, force: bool = False):
+        if not force:
+            assert self.name not in self.ctx.typemap
         self.ctx.typemap[self.name] = ty
 
     def is_constant(self) -> bool:
@@ -103,6 +107,15 @@ class Var:
     def set_constant(self, value):
         assert self.name not in self.ctx.constants
         self.ctx.constants[self.name] = value
+
+    def get_loose_type(self) -> Type:
+        ty = self.ctx._loose_typemap.get(self.name, None)
+        return self.get_type() if ty is None else ty
+
+    def set_loose_type(self, ty: Type, force: bool = False):
+        if not force:
+            assert self.name not in self.ctx._loose_typemap
+        self.ctx._loose_typemap[self.name] = ty
 
     def has_range_info(self) -> bool:
         return self.name in self.ctx.range_infos
@@ -560,6 +573,8 @@ class Function:
         for param, arg_value in zip(self.parameters, args):
             const_val = None
             is_const = param.name in constant_args
+            ty = typeof_pyval(arg_value)
+            loose_type = ty
             if is_const:
                 try:
                     const_val = get_constant_value(arg_value)
@@ -567,7 +582,9 @@ class Function:
                     raise TileTypeError(
                         f"Argument {param.name} is a constexpr, "
                         f"but the value is not a supported constant.", self.loc)
-            ir_args.append(Argument(typeof_pyval(arg_value),
+                loose_type = loose_type_of_pyval(arg_value)
+            ir_args.append(Argument(type=ty,
+                                    loose_type=loose_type,
                                     is_const=is_const,
                                     const_value=const_val))
         return tuple(ir_args)
@@ -601,9 +618,11 @@ class Function:
 class Argument:
     def __init__(self,
                  type: Type,
+                 loose_type: Type,
                  is_const: bool = False,
                  const_value: Any = None):
         self._type = type
+        self._loose_type = loose_type
         self._is_const = is_const
         self._const_value = const_value
 
@@ -618,6 +637,10 @@ class Argument:
     @property
     def type(self) -> Type:
         return self._type
+
+    @property
+    def loose_type(self) -> Type:
+        return self._loose_type
 
     def __eq__(self, value: object) -> bool:
         if not isinstance(value, Argument):

@@ -4,9 +4,10 @@
 
 import pytest
 
+from cuda.tile import TileValueError
 from cuda.tile._exception import TileTypeError
 from cuda.tile._ir.type import (
-    TupleTy, TileTy, ArrayTy, SizeTy, NONE
+    TupleTy, TileTy, ArrayTy, SizeTy, NONE, LooselyTypedScalar
 )
 from cuda.tile._datatype import (
     DType,
@@ -15,8 +16,9 @@ from cuda.tile._datatype import (
     uint64, uint32, uint16, uint8, bfloat16,
     tfloat32, float8_e4m3fn, float8_e5m2,
     is_boolean, is_integral, is_float, is_restricted_float, is_signed,
-    promote_dtypes, promote_tensor_scalar_dtypes, can_autocast_dtypes
+    can_autocast_dtypes
 )
+from cuda.tile._ir.ops_utils import promote_dtypes
 from cuda.tile._ir.typing_support import to_dtype, typeof_pyval
 import torch
 import numpy as np
@@ -101,6 +103,10 @@ def test_promote_dtypes():
         with pytest.raises(TileTypeError):
             promote_dtypes(t1, t2)
 
+    def assert_out_of_range(t1, t2):
+        with pytest.raises(TileValueError, match="is out of range"):
+            promote_dtypes(t1, t2)
+
     # Bool
     assert promote_dtypes(bool_, uint8) == uint8
     assert promote_dtypes(bool_, int16) == int16
@@ -132,9 +138,15 @@ def test_promote_dtypes():
     assert_no_promote(float16, tfloat32)
     assert_no_promote(float16, float8_e5m2)
 
-    assert promote_tensor_scalar_dtypes(float16, int32) == float16
-    assert promote_tensor_scalar_dtypes(int32, float16) == float16
-    assert promote_tensor_scalar_dtypes(float16, float64) == float16
+    # Loosely typed scalars
+    assert promote_dtypes(int16, LooselyTypedScalar(5)) == int16
+    assert promote_dtypes(LooselyTypedScalar(5), int8) == int8
+    assert promote_dtypes(LooselyTypedScalar(5), LooselyTypedScalar(7)) == int32
+    assert promote_dtypes(LooselyTypedScalar(5), LooselyTypedScalar(7.0)) == float32
+    assert promote_dtypes(int16, LooselyTypedScalar(5.0)) == float32
+    assert promote_dtypes(float16, LooselyTypedScalar(5.0)) == float16
+    assert promote_dtypes(bool_, LooselyTypedScalar(5)) == int32
+    assert_out_of_range(int8, LooselyTypedScalar(128))
 
 
 def test_autocast_dtypes():
