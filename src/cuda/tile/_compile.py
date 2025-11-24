@@ -3,6 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 from dataclasses import dataclass
+import datetime
 import functools
 from functools import cache
 import logging
@@ -15,12 +16,17 @@ import tempfile
 import threading
 import traceback
 from typing import Callable, Optional
+import zipfile
 
 from cuda.tile._ast2ir import get_function_ir
 from cuda.tile._cext import get_compute_capability, TileContext, default_tile_context
 from cuda.tile._compiler_options import CompilerOptions
 from cuda.tile._const_utils import get_constant_annotations
-from cuda.tile._exception import TileCompilerError, TileCompilerTimeoutError
+from cuda.tile._exception import (
+    TileCompilerError,
+    TileCompilerExecutionError,
+    TileCompilerTimeoutError,
+)
 from cuda.tile._ir import ir
 from cuda.tile._passes.code_motion import hoist_loop_invariants
 from cuda.tile._passes.loop_split import split_loops
@@ -36,6 +42,7 @@ from cuda.tile._passes.typeinfer import infer_types_pass
 from cuda.tile._passes.dce import dead_code_elimination_pass
 from cuda.tile._passes.token_order import token_order_pass
 from cuda.tile._ir2bytecode import generate_bytecode_for_kernel
+from cuda.tile._version import __version__ as cutile_version
 import cuda.tile._bytecode as bc
 
 
@@ -101,6 +108,38 @@ def _log_mlir(bytecode_buf):
     print(f"Lowering\n==== TILEIR MLIR module ====\n\n{text}", file=sys.stderr)
 
 
+def _compiler_crash_dump(func_ir,
+                         bytecode_generator,
+                         error_msg,
+                         compiler_flags,
+                         compiler_version):
+    debug_info = (
+        f"error:\n{error_msg}\n\n"
+        f"compiler flags:\n{compiler_flags}\n\n"
+        f"compiler version:\n{compiler_version or 'Unkown'}\n\n"
+        f"cutile version:\n{cutile_version}\n"
+    )
+
+    # Anonymize debug attributes in the bytecode
+    bytecode_buf = bytearray()
+    with bc.write_bytecode(num_functions=1, buf=bytecode_buf) as writer:
+        bytecode_generator(writer, anonymize_debug_attr=True)
+
+    artifacts = {
+        f"{func_ir.qualname}.bytecode": bytes(bytecode_buf),
+        f"{func_ir.qualname}.cutileir": f"{func_ir.to_string(include_loc=False)}\n",
+        "debug_info.txt": debug_info,
+    }
+
+    timestamp = datetime.datetime.now().timestamp()
+    zip_filename = os.path.abspath(f"crash_dump_{func_ir.qualname}_{timestamp}.zip")
+    print(f"Dumping crash artifacts to {zip_filename}\n", file=sys.stderr)
+
+    with zipfile.ZipFile(zip_filename, "w") as z:
+        for filename, content in artifacts.items():
+            z.writestr(filename, content)
+
+
 @global_compiler_lock
 def compile_tile(pyfunc,
                  args,
@@ -115,9 +154,12 @@ def compile_tile(pyfunc,
 
     sm_arch = get_sm_arch()
 
+    bytecode_generator = functools.partial(generate_bytecode_for_kernel,
+                                           func_ir, compiler_options, sm_arch)
+
     bytecode_buf = bytearray()
     with bc.write_bytecode(num_functions=1, buf=bytecode_buf) as writer:
-        generate_bytecode_for_kernel(func_ir, compiler_options, sm_arch, writer)
+        bytecode_generator(writer, anonymize_debug_attr=False)
 
     if 'TILEIR' in context.config.log_keys:
         _log_mlir(bytecode_buf)
@@ -150,14 +192,21 @@ def compile_tile(pyfunc,
             print("Can't print MLIR because the internal extension is missing", file=sys.stderr)
 
     # Compile MLIR module and generate cubin
-    with tempfile.NamedTemporaryFile(suffix='.mlirbc', prefix=func_ir.qualname,
+    with tempfile.NamedTemporaryFile(suffix='.bytecode', prefix=func_ir.qualname,
                                      dir=context.config.temp_dir, delete=False) as f:
         f.write(bytecode_buf)
         f.flush()
-        cubin_file = compile_cubin(f.name,
-                                   compiler_options,
-                                   sm_arch,
-                                   timeout_sec=context.config.compiler_timeout_sec)
+
+        try:
+            cubin_file = compile_cubin(f.name, compiler_options, sm_arch,
+                                       timeout_sec=context.config.compiler_timeout_sec)
+        except TileCompilerError as e:
+            if context.config.enable_crash_dump:
+                _compiler_crash_dump(func_ir, bytecode_generator, e.message,
+                                     e.compiler_flags, e.compiler_version)
+
+            raise e
+
     return TileLibrary(func_ir.qualname, cubin_file, bytecode_buf, func_ir)
 
 
@@ -223,6 +272,15 @@ def _find_compiler_bin() -> tuple[str, str, str]:
                             f"make sure it is available in $PATH or ${cuda_home_var}/bin")
 
 
+def _try_get_compiler_version(compiler_bin) -> Optional[str]:
+    try:
+        res = subprocess.run([str(compiler_bin), "--version"],
+                             check=True, capture_output=True, text=True)
+        return res.stdout
+    except Exception:
+        return None
+
+
 @cache
 def get_sm_arch() -> str:
     major, minor = get_compute_capability()
@@ -237,30 +295,37 @@ def compile_cubin(
     compiler_bin, bin_path, ld_path = _find_compiler_bin()
     fname_cubin = Path(fname_bytecode).with_suffix(".cubin")
     compiler_hints = compiler_options.specialize_for_target(sm_arch)
+
     command = [
         str(compiler_bin),
         str(fname_bytecode),
-        "--gpu-name",
-        sm_arch,
-        f"-O{compiler_hints.opt_level}",
         "-o",
         str(fname_cubin),
     ]
-    # compile with line info
-    command.append("--lineinfo")
-    logger.debug(f"Invoke tile compiler: {' '.join(command)}\n"
+
+    flags = [
+        "--gpu-name",
+        sm_arch,
+        f"-O{compiler_hints.opt_level}",
+        "--lineinfo"
+    ]
+
+    logger.debug(f"Invoke tile compiler: {' '.join(command + flags)}\n"
                  f"LD_LIBRARY_PATH:{ld_path}\n"
                  f"PATH:{bin_path}")
     try:
         env = os.environ.copy()
         env['LD_LIBRARY_PATH'] = ld_path
         env['PATH'] = bin_path
-        subprocess.run(command, env=env, check=True, capture_output=True, timeout=timeout_sec)
+        subprocess.run(command + flags, env=env, check=True, capture_output=True,
+                       timeout=timeout_sec)
     except subprocess.CalledProcessError as e:
-        raise TileCompilerError(e.returncode, e.stderr.decode())
+        raise TileCompilerExecutionError(e.returncode, e.stderr.decode(), ' '.join(flags),
+                                         _try_get_compiler_version(compiler_bin))
     except subprocess.TimeoutExpired:
         message = (f"`tileiras` compiler exceeded timeout {timeout_sec}s. "
                    "Using a smaller tile size may reduce compilation time.")
-        raise TileCompilerTimeoutError(message)
+        raise TileCompilerTimeoutError(message, ' '.join(flags),
+                                       _try_get_compiler_version(compiler_bin))
 
     return fname_cubin

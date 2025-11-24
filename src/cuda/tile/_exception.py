@@ -156,12 +156,32 @@ def _parse_tileir_stderr(stderr: str) -> tuple[str, Optional[Loc]]:
 
 
 class TileCompilerError(TileInternalError):
-    def __init__(self, return_code: int, stderr: str):
+    def __init__(self,
+                 message: str,
+                 loc: Loc,
+                 compiler_flags: str,
+                 compiler_version: Optional[str]):
+        super().__init__(message, loc)
+        self.compiler_flags = compiler_flags
+        self.compiler_version = compiler_version
+
+
+class TileCompilerExecutionError(TileCompilerError):
+    def __init__(self,
+                 return_code: int,
+                 stderr: str,
+                 compiler_flags: str,
+                 compiler_version: Optional[str]):
         message, loc = _parse_tileir_stderr(stderr)
         if loc is None:
             loc = _unknown_loc
-        super().__init__(f"Return code {return_code}\n{message}", loc)
+        super().__init__(f"Return code {return_code}\n{message}", loc,
+                         compiler_flags, compiler_version)
 
 
-class TileCompilerTimeoutError(TileInternalError):
-    pass
+class TileCompilerTimeoutError(TileCompilerError):
+    def __init__(self,
+                 message: str,
+                 compiler_flags: str,
+                 compiler_version: Optional[str]):
+        super().__init__(message, _unknown_loc, compiler_flags, compiler_version)

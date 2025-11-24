@@ -2,6 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+import logging
 import os
 
 # Comma separated string for selective debug logging
@@ -36,3 +37,6 @@ CUDA_TILE_TESTING_DISABLE_DIV = (
 
 CUDA_TILE_TESTING_DISABLE_TOKEN_ORDER = (
     os.environ.get("CUDA_TILE_TESTING_DISABLE_TOKEN_ORDER", "0") == "1")
+
+
+logger = logging.getLogger(__name__)

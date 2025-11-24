@@ -466,10 +466,11 @@ def lower_scan(ctx: "BytecodeContext", x: bc.Value, input_ty: Type,
 
 
 class DebugAttrMap:
-    def __init__(self, debug_attr_table: bc.DebugAttrTable, linkage_name: str):
+    def __init__(self, debug_attr_table: bc.DebugAttrTable, linkage_name: str, anonymize: bool):
         self._subprogram_cache = {}
         self._debug_attr_table = debug_attr_table
         self._linkage_name = linkage_name
+        self._anonymize = anonymize
 
     def get_subprogram(self, pyfunc) -> bc.DebugAttrId:
         try:
@@ -495,6 +496,9 @@ class DebugAttrMap:
         return ret
 
     def get_debugattr(self, loc: Loc) -> bc.DebugAttrId:
+        if self._anonymize:
+            return bc.MISSING_DEBUG_ATTR_ID
+
         subprogram = self.get_subprogram(loc.function)
         attr = self._debug_attr_table.loc(subprogram, loc.filename, loc.line, loc.col)
         if loc.call_site is not None:
@@ -809,7 +813,8 @@ def generate_bytecode_for_block(ctx: BytecodeContext, block: Block):
 def generate_bytecode_for_kernel(func_ir: Function,
                                  compiler_options: CompilerOptions,
                                  sm_arch: str,
-                                 writer: bc.BytecodeWriter):
+                                 writer: bc.BytecodeWriter,
+                                 anonymize_debug_attr: bool):
     target_options = compiler_options.specialize_for_target(sm_arch)
     entry_hints = bc.EntryHints(num_cta_in_cga=target_options.num_ctas,
                                 occupancy=target_options.occupancy)
@@ -822,7 +827,7 @@ def generate_bytecode_for_kernel(func_ir: Function,
         param_type_ids.extend(typeid_tuple(writer.type_table, ty))
     param_offsets.append(len(param_type_ids))
 
-    debug_attr_map = DebugAttrMap(writer.debug_attr_table, func_ir.qualname)
+    debug_attr_map = DebugAttrMap(writer.debug_attr_table, func_ir.qualname, anonymize_debug_attr)
     func_debug_attr = debug_attr_map.get_debugattr(func_ir.loc)
 
     with writer.function(name=func_ir.qualname,
