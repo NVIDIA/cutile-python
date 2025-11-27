@@ -21,6 +21,12 @@ jobs:
         docker --version
         docker run --rm hello-world
         
+    - name: Check GPU Hardware
+      run: |
+        echo "=== Host GPU Information ==="
+        lspci | grep -i nvidia || echo "No NVIDIA GPU found via lspci"
+        nvidia-smi || echo "nvidia-smi not available on host"
+        
     - name: Test CUDA Image
       run: |
         docker pull nvidia/cuda:13.0.2-base-ubuntu24.04
@@ -29,3 +35,13 @@ jobs:
           cat /etc/os-release
           which nvcc || echo 'nvcc not in PATH'
         "
+        
+    - name: Test CUDA Image with GPU Access
+      run: |
+        echo "=== Testing GPU access in container ==="
+        docker run --rm --gpus all nvidia/cuda:13.0.2-base-ubuntu24.04 bash -c "
+          echo 'Container with GPU access:'
+          nvidia-smi || echo 'nvidia-smi not available in container'
+          echo 'CUDA Runtime version:'
+          cat /usr/local/cuda/version.txt 2>/dev/null || echo 'CUDA version file not found'
+        " || echo "GPU access failed - may not be available on this runner"
