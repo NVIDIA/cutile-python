@@ -1,0 +1,31 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: Test Environment
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+      
+    - name: Test Docker
+      run: |
+        docker --version
+        docker run --rm hello-world
+        
+    - name: Test CUDA Image
+      run: |
+        docker pull nvidia/cuda:13.0.2-base-ubuntu24.04
+        docker run --rm nvidia/cuda:13.0.2-base-ubuntu24.04 bash -c "
+          echo 'CUDA container test successful'
+          cat /etc/os-release
+          which nvcc || echo 'nvcc not in PATH'
+        "
