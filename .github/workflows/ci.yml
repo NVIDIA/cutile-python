@@ -10,7 +10,7 @@ on:
 jobs:
   test:
     name: Test Environment
-    runs-on: ubuntu-latest
+    runs-on: linux-amd64-gpu-rtxpro6000-latest-1
     
     steps:
     - name: Checkout
