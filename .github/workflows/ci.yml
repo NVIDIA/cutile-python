@@ -2,15 +2,16 @@ name: CI
 
 on:
   push:
-    branches: [ main ]
-  pull_request:
-    branches: [ main ]
+    branches: 
+      - main
+      - "pull-request/[0-9]+"
   workflow_dispatch:
 
 jobs:
   test:
     name: Test Environment
     runs-on: linux-amd64-gpu-rtxpro6000-latest-1
+    timeout-minutes: 30
     
     steps:
     - name: Checkout
