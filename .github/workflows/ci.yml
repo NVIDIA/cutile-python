@@ -26,16 +26,6 @@ jobs:
             os: linux
             gpu: false
             timeout: 15
-          - name: "CPU Linux ARM64"
-            runner: ubuntu-24.04-arm64
-            os: linux
-            gpu: false
-            timeout: 15
-          - name: "GPU Windows x86_64"
-            runner: windows-amd64-gpu-rtxpro6000-latest-1
-            os: windows
-            gpu: true
-            timeout: 30
           - name: "CPU Windows x86_64"
             runner: windows-latest
             os: windows
@@ -76,7 +66,13 @@ jobs:
         echo === Host Hardware Information ===
         echo Runner: ${{ matrix.runner }}
         if "${{ matrix.gpu }}"=="true" (
-          nvidia-smi || echo nvidia-smi not available
+          echo Checking PATH for nvidia-smi:
+          where nvidia-smi
+          echo Trying nvidia-smi from PATH:
+          nvidia-smi || echo nvidia-smi failed from PATH
+          echo Trying common NVIDIA locations:
+          "C:\Program Files\NVIDIA Corporation\NVSMI\nvidia-smi.exe" || echo Not in NVSMI folder
+          "C:\Windows\System32\nvidia-smi.exe" || echo Not in System32
           echo Checking GPU via wmic:
           wmic path win32_VideoController get name
         ) else (
@@ -118,9 +114,10 @@ jobs:
       shell: cmd
       run: |
         echo === Testing with GPU access ===
-        nvidia-smi || echo nvidia-smi not available on Windows runner
-        echo Checking for GPU via wmic...
-        wmic path win32_VideoController get name
+        echo Trying nvidia-smi from different locations:
+        nvidia-smi || "C:\Program Files\NVIDIA Corporation\NVSMI\nvidia-smi.exe" || "C:\Windows\System32\nvidia-smi.exe" || echo All nvidia-smi attempts failed
+        echo Checking Docker GPU support:
+        docker run --rm --gpus all hello-world || echo Docker GPU support not available
         echo Windows GPU runner test completed
         
     - name: Test Windows Container CPU Only
