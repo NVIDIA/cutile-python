@@ -26,6 +26,16 @@ jobs:
             os: linux
             gpu: false
             timeout: 15
+          - name: "GPU Windows x86_64"
+            runner: windows-amd64-gpu-rtxpro6000-latest-1
+            os: windows
+            gpu: true
+            timeout: 30
+          - name: "CPU Windows x86_64"
+            runner: windows-amd64-gpu-rtxpro6000-latest-1
+            os: windows
+            gpu: false
+            timeout: 15
     
     steps:
     - name: Checkout
@@ -65,8 +75,8 @@ jobs:
           Write-Host "CPU-only mode (no GPU access)"
         }
         
-    - name: Test CUDA Image with GPU
-      if: matrix.gpu == true
+    - name: Test CUDA Image with GPU (Linux)
+      if: matrix.gpu == true && matrix.os == 'linux'
       timeout-minutes: 10
       run: |
         docker pull nvidia/cuda:13.0.2-base-ubuntu24.04
@@ -79,8 +89,8 @@ jobs:
           cat /usr/local/cuda/version.txt 2>/dev/null || echo 'CUDA version file not found'
         " || echo "GPU access failed - may not be available on this runner"
         
-    - name: Test CUDA Image CPU Only
-      if: matrix.gpu == false
+    - name: Test CUDA Image CPU Only (Linux)
+      if: matrix.gpu == false && matrix.os == 'linux'
       timeout-minutes: 10
       run: |
         docker pull nvidia/cuda:13.0.2-base-ubuntu24.04
@@ -89,5 +99,31 @@ jobs:
           echo 'CUDA container test successful (CPU only - no GPU access)'
           cat /etc/os-release
           which nvcc || echo 'nvcc not in PATH'
+          nvidia-smi 2>/dev/null || echo 'nvidia-smi not available without --gpus flag (expected)'
+        "
+
+    - name: Test CUDA Image with GPU (Windows)
+      if: matrix.gpu == true && matrix.os == 'windows'
+      timeout-minutes: 10
+      shell: pwsh
+      run: |
+        docker pull nvidia/cuda:13.0.2-base-ubuntu24.04
+        Write-Host "=== Testing with GPU access ==="
+        docker run --rm --gpus all nvidia/cuda:13.0.2-base-ubuntu24.04 bash -c "
+          echo 'Container with GPU access:'
+          nvidia-smi || echo 'nvidia-smi not available in container'
+          cat /etc/os-release
+        "
+        
+    - name: Test CUDA Image CPU Only (Windows)
+      if: matrix.gpu == false && matrix.os == 'windows'
+      timeout-minutes: 10
+      shell: pwsh
+      run: |
+        docker pull nvidia/cuda:13.0.2-base-ubuntu24.04
+        Write-Host "=== Testing without GPU access (CPU only) ==="
+        docker run --rm nvidia/cuda:13.0.2-base-ubuntu24.04 bash -c "
+          echo 'CUDA container test successful (CPU only - no GPU access)'
+          cat /etc/os-release
           nvidia-smi 2>/dev/null || echo 'nvidia-smi not available without --gpus flag (expected)'
         "
