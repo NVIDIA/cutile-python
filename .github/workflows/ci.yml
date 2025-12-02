@@ -22,7 +22,12 @@ jobs:
             gpu: true
             timeout: 30
           - name: "CPU Linux x86_64"
-            runner: linux-amd64-gpu-rtxpro6000-latest-1
+            runner: ubuntu-latest
+            os: linux
+            gpu: false
+            timeout: 15
+          - name: "CPU Linux ARM64"
+            runner: ubuntu-24.04-arm64
             os: linux
             gpu: false
             timeout: 15
@@ -32,7 +37,7 @@ jobs:
             gpu: true
             timeout: 30
           - name: "CPU Windows x86_64"
-            runner: windows-amd64-gpu-rtxpro6000-latest-1
+            runner: windows-latest
             os: windows
             gpu: false
             timeout: 15
@@ -53,14 +58,14 @@ jobs:
       timeout-minutes: 5
       run: |
         echo "=== Host Hardware Information ==="
-        lspci | grep -i nvidia || echo "No NVIDIA GPU found via lspci"
+        echo "Runner: ${{ matrix.runner }}"
+        echo "Architecture: $(uname -m)"
         if [ "${{ matrix.gpu }}" = "true" ]; then
+          lspci | grep -i nvidia || echo "No NVIDIA GPU found via lspci"
           nvidia-smi || echo "nvidia-smi not available on host"
         else
-          echo "CPU-only mode (same hardware, no --gpus flag)"
-        fi
-        if [ "${{ matrix.runner }}" = "ubuntu-latest" ]; then
-          echo "Architecture: $(uname -m)"
+          echo "CPU-only runner (no GPU access)"
+          lscpu | head -10 || echo "CPU info not available"
         fi
         
     - name: Check Hardware (Windows)
@@ -69,11 +74,14 @@ jobs:
       shell: pwsh
       run: |
         Write-Host "=== Host Hardware Information ==="
+        Write-Host "Runner: ${{ matrix.runner }}"
         if ("${{ matrix.gpu }}" -eq "true") {
           nvidia-smi
         } else {
-          Write-Host "CPU-only mode (no GPU access)"
+          Write-Host "CPU-only runner (no GPU access)"
+          Get-ComputerInfo | Select-Object CsProcessors, TotalPhysicalMemory
         }
+        
         
     - name: Test CUDA Image with GPU (Linux)
       if: matrix.gpu == true && matrix.os == 'linux'
@@ -127,3 +135,4 @@ jobs:
           cat /etc/os-release
           nvidia-smi 2>/dev/null || echo 'nvidia-smi not available without --gpus flag (expected)'
         "
+
