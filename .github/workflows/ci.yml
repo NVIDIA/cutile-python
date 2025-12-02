@@ -12,7 +12,6 @@ jobs:
     name: Test ${{ matrix.name }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: ${{ matrix.timeout }}
-    if: ${{ matrix.enabled }}
     strategy:
       fail-fast: false
       matrix:
@@ -22,31 +21,11 @@ jobs:
             os: linux
             gpu: true
             timeout: 30
-            enabled: true
           - name: "CPU Linux x86_64"
             runner: linux-amd64-gpu-rtxpro6000-latest-1
             os: linux
             gpu: false
             timeout: 15
-            enabled: true
-          - name: "CPU Linux aarch64"
-            runner: ubuntu-latest  # TODO: Replace with ARM64 runner
-            os: linux
-            gpu: false
-            timeout: 15
-            enabled: false
-          - name: "CPU Windows x86_64"
-            runner: windows-amd64-gpu-rtxpro6000-latest-1
-            os: windows
-            gpu: false
-            timeout: 15
-            enabled: false
-          - name: "GPU Windows x86_64"
-            runner: windows-amd64-gpu-rtxpro6000-latest-1
-            os: windows
-            gpu: true
-            timeout: 30
-            enabled: false
     
     steps:
     - name: Checkout
@@ -60,51 +39,56 @@ jobs:
         docker --version
         docker run --rm hello-world
         
-    - name: Check Hardware
+    - name: Check Hardware (Linux)
+      if: matrix.os == 'linux'
       timeout-minutes: 5
-      shell: ${{ matrix.os == 'windows' && 'pwsh' || 'bash' }}
       run: |
-        if [ "${{ matrix.os }}" = "windows" ]; then
-          Write-Host "=== Host Hardware Information ==="
-          if [ "${{ matrix.gpu }}" = "true" ]; then
-            nvidia-smi
-          else
-            Write-Host "CPU-only mode (no GPU access)"
-          fi
+        echo "=== Host Hardware Information ==="
+        lspci | grep -i nvidia || echo "No NVIDIA GPU found via lspci"
+        if [ "${{ matrix.gpu }}" = "true" ]; then
+          nvidia-smi || echo "nvidia-smi not available on host"
         else
-          echo "=== Host Hardware Information ==="
-          lspci | grep -i nvidia || echo "No NVIDIA GPU found via lspci"
-          if [ "${{ matrix.gpu }}" = "true" ]; then
-            nvidia-smi || echo "nvidia-smi not available on host"
-          else
-            echo "CPU-only mode (same hardware, no --gpus flag)"
-          fi
-          if [ "${{ matrix.runner }}" = "ubuntu-latest" ]; then
-            echo "Architecture: $(uname -m)"
-          fi
+          echo "CPU-only mode (same hardware, no --gpus flag)"
+        fi
+        if [ "${{ matrix.runner }}" = "ubuntu-latest" ]; then
+          echo "Architecture: $(uname -m)"
         fi
         
-    - name: Test CUDA Image
+    - name: Check Hardware (Windows)
+      if: matrix.os == 'windows'
+      timeout-minutes: 5
+      shell: pwsh
+      run: |
+        Write-Host "=== Host Hardware Information ==="
+        if ("${{ matrix.gpu }}" -eq "true") {
+          nvidia-smi
+        } else {
+          Write-Host "CPU-only mode (no GPU access)"
+        }
+        
+    - name: Test CUDA Image with GPU
+      if: matrix.gpu == true
       timeout-minutes: 10
-      shell: ${{ matrix.os == 'windows' && 'pwsh' || 'bash' }}
       run: |
         docker pull nvidia/cuda:13.0.2-base-ubuntu24.04
+        echo "=== Testing with GPU access ==="
+        docker run --rm --gpus all nvidia/cuda:13.0.2-base-ubuntu24.04 bash -c "
+          echo 'Container with GPU access:'
+          nvidia-smi || echo 'nvidia-smi not available in container'
+          cat /etc/os-release
+          echo 'CUDA Runtime version:'
+          cat /usr/local/cuda/version.txt 2>/dev/null || echo 'CUDA version file not found'
+        " || echo "GPU access failed - may not be available on this runner"
         
-        if [ "${{ matrix.gpu }}" = "true" ]; then
-          echo "=== Testing with GPU access ==="
-          docker run --rm --gpus all nvidia/cuda:13.0.2-base-ubuntu24.04 bash -c "
-            echo 'Container with GPU access:'
-            nvidia-smi || echo 'nvidia-smi not available in container'
-            cat /etc/os-release
-            echo 'CUDA Runtime version:'
-            cat /usr/local/cuda/version.txt 2>/dev/null || echo 'CUDA version file not found'
-          " || echo "GPU access failed - may not be available on this runner"
-        else
-          echo "=== Testing without GPU access (CPU only) ==="
-          docker run --rm nvidia/cuda:13.0.2-base-ubuntu24.04 bash -c "
-            echo 'CUDA container test successful (CPU only - no GPU access)'
-            cat /etc/os-release
-            which nvcc || echo 'nvcc not in PATH'
-            nvidia-smi 2>/dev/null || echo 'nvidia-smi not available without --gpus flag (expected)'
-          "
-        fi
+    - name: Test CUDA Image CPU Only
+      if: matrix.gpu == false
+      timeout-minutes: 10
+      run: |
+        docker pull nvidia/cuda:13.0.2-base-ubuntu24.04
+        echo "=== Testing without GPU access (CPU only) ==="
+        docker run --rm nvidia/cuda:13.0.2-base-ubuntu24.04 bash -c "
+          echo 'CUDA container test successful (CPU only - no GPU access)'
+          cat /etc/os-release
+          which nvcc || echo 'nvcc not in PATH'
+          nvidia-smi 2>/dev/null || echo 'nvidia-smi not available without --gpus flag (expected)'
+        "
