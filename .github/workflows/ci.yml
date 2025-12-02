@@ -26,6 +26,12 @@ jobs:
             os: linux
             gpu: false
             timeout: 15
+          - name: "CPU Linux ARM64"
+            runner: ubuntu-24.04-arm
+            os: linux
+            gpu: false
+            timeout: 15
+            arch: arm64
           - name: "CPU Windows x86_64"
             runner: windows-latest
             os: windows
@@ -50,6 +56,9 @@ jobs:
         echo "=== Host Hardware Information ==="
         echo "Runner: ${{ matrix.runner }}"
         echo "Architecture: $(uname -m)"
+        if [ "${{ matrix.arch }}" = "arm64" ]; then
+          echo "ARM64 architecture detected"
+        fi
         if [ "${{ matrix.gpu }}" = "true" ]; then
           lspci | grep -i nvidia || echo "No NVIDIA GPU found via lspci"
           nvidia-smi || echo "nvidia-smi not available on host"
