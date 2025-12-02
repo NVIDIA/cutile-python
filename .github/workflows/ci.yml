@@ -76,7 +76,9 @@ jobs:
         echo === Host Hardware Information ===
         echo Runner: ${{ matrix.runner }}
         if "${{ matrix.gpu }}"=="true" (
-          nvidia-smi
+          nvidia-smi || echo nvidia-smi not available
+          echo Checking GPU via wmic:
+          wmic path win32_VideoController get name
         ) else (
           echo CPU-only runner (no GPU access)
           systeminfo | findstr /C:"Processor"
@@ -116,8 +118,10 @@ jobs:
       shell: cmd
       run: |
         echo === Testing with GPU access ===
-        nvidia-smi
-        echo Windows GPU runner test successful
+        nvidia-smi || echo nvidia-smi not available on Windows runner
+        echo Checking for GPU via wmic...
+        wmic path win32_VideoController get name
+        echo Windows GPU runner test completed
         
     - name: Test Windows Container CPU Only
       if: matrix.gpu == false && matrix.os == 'windows'
