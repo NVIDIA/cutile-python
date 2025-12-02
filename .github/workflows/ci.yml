@@ -34,7 +34,6 @@ jobs:
       
     - name: Test Docker
       timeout-minutes: 5
-      shell: ${{ matrix.os == 'windows' && 'pwsh' || 'bash' }}
       run: |
         docker --version
         docker run --rm hello-world
