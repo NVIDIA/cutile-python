@@ -1,0 +1,44 @@
+# SPDX-FileCopyrightText: Copyright (c) <2025> NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+#
+# SPDX-License-Identifier: Apache-2.0
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    container:
+      image: python:3.10-slim
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Install lint dependencies
+        env:
+          PIP_BREAK_SYSTEM_PACKAGES: 1
+        run: pip install --no-cache-dir flake8==7.3.0 reuse==5.1.0
+
+      - name: Run flake8
+        run: flake8
+
+      - name: Run cpplint
+        run: python ci/cpplint.py
+
+      - name: Check license headers (REUSE)
+        run: ci/scripts/check_license.sh
+
+      - name: Check inline samples are up to date
+        run: python test/tools/inline_samples.py --check
