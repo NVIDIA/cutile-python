@@ -72,7 +72,7 @@ class SliceType(Type):
         return "Slice"
 
     def __eq__(self, other: Type):
-        return isinstance(other, NoneType)
+        return isinstance(other, SliceType)
 
     def __hash__(self):
         return hash("SliceType")
