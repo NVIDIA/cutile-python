@@ -50,7 +50,11 @@ def get_function_ir(pyfunc: Callable,
     assert isinstance(func_def, ast.FunctionDef)
 
     func_globals = dict(pyfunc.__builtins__)
-    func_globals.update(pyfunc.__globals__)
+    # Only include user-defined variables from function globals, not builtins or imported modules
+    # This prevents malicious __globals__ from overwriting built-in functions like __import__
+    safe_globals = {k: v for k, v in pyfunc.__globals__.items()
+                    if not (k.startswith('__') and k.endswith('__')) or k == '__name__'}
+    func_globals.update(safe_globals)
     # Add closure variables (from freevars)
     if pyfunc.__closure__:
         for name, cell in zip(pyfunc.__code__.co_freevars, pyfunc.__closure__):
