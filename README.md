@@ -44,7 +44,7 @@ in order to avoid installing cuTile globally:
 
 ```
 python3 -m venv env
-source env/bin/activate
+source venv/bin/activate
 ```
 
 Once the build dependencies are in place, the simplest way to build cuTile is to install it
