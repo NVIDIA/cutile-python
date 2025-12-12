@@ -11,48 +11,25 @@ on:
     branches: [main]
   workflow_dispatch:
 
+env:
+  LINT_IMAGE: ghcr.io/nvidia/cutile-python/lint:2025-12-11-ca8b32e31766
+  DOCS_IMAGE: ghcr.io/nvidia/cutile-python/docs:2025-12-12-97fad4c1627d
+  BUILD_PY310_X86_64_IMAGE: ghcr.io/nvidia/cutile-python/build_py_3.10_x86_64:2025-12-12-16b441247748
+  BUILD_PY311_X86_64_IMAGE: ghcr.io/nvidia/cutile-python/build_py_3.11_x86_64:2025-12-12-201e0093fba8
+  BUILD_PY312_X86_64_IMAGE: ghcr.io/nvidia/cutile-python/build_py_3.12_x86_64:2025-12-12-3ecf71dd9102
+  BUILD_PY313_X86_64_IMAGE: ghcr.io/nvidia/cutile-python/build_py_3.13_x86_64:2025-12-12-f1ed3688b7ef
+
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  load-image-tags:
-    name: Load Image Tags
-    runs-on: ubuntu-latest
-    outputs:
-      lint: ${{ steps.tags.outputs.lint }}
-      build-matrix: ${{ steps.tags.outputs.build-matrix }}
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v6
-
-      - name: Read image tags
-        id: tags
-        run: |
-          echo "lint=$(tail -1 .github/tags/lint.tag)" >> $GITHUB_OUTPUT
-          
-          # Build matrix from tag files
-          matrix='['
-          first=true
-          for version in 3.10 3.11 3.12 3.13; do
-            tag=$(tail -1 .github/tags/build_py_${version}_x86_64.tag)
-            if [ "$first" = true ]; then
-              first=false
-            else
-              matrix+=','
-            fi
-            matrix+="{\"python-version\":\"${version}\",\"image\":\"${tag}\"}"
-          done
-          matrix+=']'
-          echo "build-matrix=${matrix}" >> $GITHUB_OUTPUT
-
   lint:
     name: Lint
-    needs: load-image-tags
     runs-on: ubuntu-latest
     timeout-minutes: 10
     container:
-      image: ${{ needs.load-image-tags.outputs.lint }}
+      image: ${{ env.LINT_IMAGE }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
@@ -71,14 +48,21 @@ jobs:
 
   build:
     name: Build Wheel (Python ${{ matrix.python-version }})
-    needs: load-image-tags
     runs-on: ubuntu-latest
     timeout-minutes: 30
     strategy:
       matrix:
-        include: ${{ fromJson(needs.load-image-tags.outputs.build-matrix) }}
+        include:
+          - python-version: "3.10"
+            image: BUILD_PY310_X86_64_IMAGE
+          - python-version: "3.11"
+            image: BUILD_PY311_X86_64_IMAGE
+          - python-version: "3.12"
+            image: BUILD_PY312_X86_64_IMAGE
+          - python-version: "3.13"
+            image: BUILD_PY313_X86_64_IMAGE
     container:
-      image: ${{ matrix.image }}
+      image: ${{ env[matrix.image] }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
