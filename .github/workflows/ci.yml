@@ -11,25 +11,30 @@ on:
     branches: [main]
   workflow_dispatch:
 
-env:
-  LINT_IMAGE: ghcr.io/nvidia/cutile-python/lint:2025-12-11-ca8b32e31766
-  DOCS_IMAGE: ghcr.io/nvidia/cutile-python/docs:2025-12-12-97fad4c1627d
-  BUILD_PY310_X86_64_IMAGE: ghcr.io/nvidia/cutile-python/build_py_3.10_x86_64:2025-12-12-16b441247748
-  BUILD_PY311_X86_64_IMAGE: ghcr.io/nvidia/cutile-python/build_py_3.11_x86_64:2025-12-12-201e0093fba8
-  BUILD_PY312_X86_64_IMAGE: ghcr.io/nvidia/cutile-python/build_py_3.12_x86_64:2025-12-12-3ecf71dd9102
-  BUILD_PY313_X86_64_IMAGE: ghcr.io/nvidia/cutile-python/build_py_3.13_x86_64:2025-12-12-f1ed3688b7ef
-
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
+  images:
+    name: Define Images
+    runs-on: ubuntu-latest
+    outputs:
+      lint: ghcr.io/nvidia/cutile-python/lint:2025-12-11-ca8b32e31766
+      build_py310: ghcr.io/nvidia/cutile-python/build_py_3.10_x86_64:2025-12-12-16b441247748
+      build_py311: ghcr.io/nvidia/cutile-python/build_py_3.11_x86_64:2025-12-12-201e0093fba8
+      build_py312: ghcr.io/nvidia/cutile-python/build_py_3.12_x86_64:2025-12-12-3ecf71dd9102
+      build_py313: ghcr.io/nvidia/cutile-python/build_py_3.13_x86_64:2025-12-12-f1ed3688b7ef
+    steps:
+      - run: echo "Defining image tags"
+
   lint:
     name: Lint
+    needs: images
     runs-on: ubuntu-latest
     timeout-minutes: 10
     container:
-      image: ${{ env.LINT_IMAGE }}
+      image: ${{ needs.images.outputs.lint }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
@@ -48,21 +53,22 @@ jobs:
 
   build:
     name: Build Wheel (Python ${{ matrix.python-version }})
+    needs: images
     runs-on: ubuntu-latest
     timeout-minutes: 30
     strategy:
       matrix:
         include:
           - python-version: "3.10"
-            image: BUILD_PY310_X86_64_IMAGE
+            image_key: build_py310
           - python-version: "3.11"
-            image: BUILD_PY311_X86_64_IMAGE
+            image_key: build_py311
           - python-version: "3.12"
-            image: BUILD_PY312_X86_64_IMAGE
+            image_key: build_py312
           - python-version: "3.13"
-            image: BUILD_PY313_X86_64_IMAGE
+            image_key: build_py313
     container:
-      image: ${{ env[matrix.image] }}
+      image: ${{ needs.images.outputs[matrix.image_key] }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
