@@ -16,12 +16,43 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  load-image-tags:
+    name: Load Image Tags
+    runs-on: ubuntu-latest
+    outputs:
+      lint: ${{ steps.tags.outputs.lint }}
+      build-matrix: ${{ steps.tags.outputs.build-matrix }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Read image tags
+        id: tags
+        run: |
+          echo "lint=$(tail -1 .github/tags/lint.tag)" >> $GITHUB_OUTPUT
+          
+          # Build matrix from tag files
+          matrix='['
+          first=true
+          for version in 3.10 3.11 3.12 3.13; do
+            tag=$(tail -1 .github/tags/build_py_${version}_x86_64.tag)
+            if [ "$first" = true ]; then
+              first=false
+            else
+              matrix+=','
+            fi
+            matrix+="{\"python-version\":\"${version}\",\"image\":\"${tag}\"}"
+          done
+          matrix+=']'
+          echo "build-matrix=${matrix}" >> $GITHUB_OUTPUT
+
   lint:
     name: Lint
+    needs: load-image-tags
     runs-on: ubuntu-latest
     timeout-minutes: 10
     container:
-      image: ghcr.io/nvidia/cutile-python/lint:2025-12-11-ca8b32e31766
+      image: ${{ needs.load-image-tags.outputs.lint }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
@@ -37,3 +68,28 @@ jobs:
 
       - name: Check inline samples are up to date
         run: python3 test/tools/inline_samples.py --check
+
+  build:
+    name: Build Wheel (Python ${{ matrix.python-version }})
+    needs: load-image-tags
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      matrix:
+        include: ${{ fromJson(needs.load-image-tags.outputs.build-matrix) }}
+    container:
+      image: ${{ matrix.image }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Build wheel
+        run: python setup.py bdist_wheel
+
+      - name: Upload wheel artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: wheel-py${{ matrix.python-version }}-linux-x86_64
+          path: dist/*.whl
+          if-no-files-found: error
+          retention-days: 7
