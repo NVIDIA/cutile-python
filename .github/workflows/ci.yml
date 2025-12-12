@@ -21,7 +21,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     container:
-      image: ghcr.io/nvidia/cutile-python/lint:2025-12-06-4cb7d16e4c20
+      image: ghcr.io/nvidia/cutile-python/lint:2025-12-11-ca8b32e31766
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
@@ -30,10 +30,10 @@ jobs:
         run: flake8
 
       - name: Run cpplint
-        run: python3 ci/cpplint.py
+        run: cpplint.py
 
       - name: Check license headers (REUSE)
-        run: ci/scripts/check_license.sh
+        run: check_license.sh
 
       - name: Check inline samples are up to date
         run: python3 test/tools/inline_samples.py --check
