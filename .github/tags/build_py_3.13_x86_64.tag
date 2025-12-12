@@ -2,5 +2,5 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-ghcr.io/nvidia/cutile-python/build_py_3.13_x86_64:2025-12-12-03ca462740d4
+ghcr.io/nvidia/cutile-python/build_py_3.13_x86_64:2025-12-12-b1138716d35b
 
