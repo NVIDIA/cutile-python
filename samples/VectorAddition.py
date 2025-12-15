@@ -235,13 +235,6 @@ def vec_add(a: torch.Tensor, b: torch.Tensor, use_gather: bool = False) -> torch
         # (TILE_X * TILE_Y) around 1024 (a common block size limit for threads).
         TILE_X = max(1, 1024 // TILE_Y)
 
-        # Further adjustment to ensure TILE_X * TILE_Y is not excessively large
-        # if N (and thus TILE_Y) is small, or to prevent TILE_X from becoming zero.
-        if TILE_X * TILE_Y > 1024 and TILE_X > 1:
-            TILE_X = 1024 // TILE_Y
-            if TILE_X == 0:
-                TILE_X = 1  # Ensure TILE_X is at least 1
-
         # Calculate the 2D grid dimensions for launching the kernel.
         # `math.ceil(M / TILE_X)` blocks along rows, `math.ceil(N / TILE_Y)` blocks along columns.
         grid = (math.ceil(M / TILE_X), math.ceil(N / TILE_Y), 1)
