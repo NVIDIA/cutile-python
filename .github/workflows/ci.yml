@@ -20,11 +20,11 @@ jobs:
     name: Define Images
     runs-on: ubuntu-latest
     outputs:
-      lint: ghcr.io/nvidia/cutile-python/lint:2025-12-11-ca8b32e31766
-      build_py310: ghcr.io/nvidia/cutile-python/build_py_3.10_x86_64:2025-12-12-16b441247748
-      build_py311: ghcr.io/nvidia/cutile-python/build_py_3.11_x86_64:2025-12-12-201e0093fba8
-      build_py312: ghcr.io/nvidia/cutile-python/build_py_3.12_x86_64:2025-12-12-3ecf71dd9102
-      build_py313: ghcr.io/nvidia/cutile-python/build_py_3.13_x86_64:2025-12-12-f1ed3688b7ef
+      lint: ghcr.io/nvidia/cutile-python/lint:2025-12-16-8f8dc037a629
+      build_py310: ghcr.io/nvidia/cutile-python/build_py_3.10_x86_64:2025-12-16-7586f904479b
+      build_py311: ghcr.io/nvidia/cutile-python/build_py_3.11_x86_64:2025-12-16-bd57fbae3794
+      build_py312: ghcr.io/nvidia/cutile-python/build_py_3.12_x86_64:2025-12-16-3eb50f53e2e8
+      build_py313: ghcr.io/nvidia/cutile-python/build_py_3.13_x86_64:2025-12-16-6b45240569d3
     steps:
       - run: echo "Defining image tags"
 
