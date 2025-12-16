@@ -64,7 +64,7 @@ if (ENABLE_ASAN)
 endif()
 
 add_library(_cext_shared SHARED module.cpp)
-target_link_libraries(_cext_shared _cext_static ${Python_LIBRARIES} ${asan_library})
+target_link_libraries(_cext_shared _cext_static ${Python_LIBRARIES} ${asan_library} c)
 target_compile_options(_cext_shared PUBLIC ${cext_compile_flags} ${nostdlib_flags})
 target_include_directories(_cext_shared PRIVATE ${cext_include_dirs})
 target_link_options(_cext_shared PUBLIC ${cext_link_flags} ${nostdlib_flags} -Wl,--no-undefined)
