@@ -21,6 +21,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       lint: ghcr.io/nvidia/cutile-python/lint:2025-12-16-8f8dc037a629
+      docs: ghcr.io/nvidia/cutile-python/docs:2025-12-16-efbff374c2ca
       build_py310: ghcr.io/nvidia/cutile-python/build_py_3.10_x86_64:2025-12-16-7586f904479b
       build_py311: ghcr.io/nvidia/cutile-python/build_py_3.11_x86_64:2025-12-16-bd57fbae3794
       build_py312: ghcr.io/nvidia/cutile-python/build_py_3.12_x86_64:2025-12-16-3eb50f53e2e8
@@ -50,6 +51,27 @@ jobs:
 
       - name: Check inline samples are up to date
         run: python3 test/tools/inline_samples.py --check
+
+  docs:
+    name: Build Docs
+    needs: images
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    container:
+      image: ${{ needs.images.outputs.docs }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Build documentation
+        run: make -C docs html
+
+      - name: Upload docs artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: docs-html
+          path: docs/build/html
+          retention-days: 7
 
   build:
     name: Build Wheel (Python ${{ matrix.python-version }})
