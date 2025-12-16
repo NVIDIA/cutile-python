@@ -21,7 +21,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       lint: ghcr.io/nvidia/cutile-python/lint:2025-12-16-8f8dc037a629
-      docs: ghcr.io/nvidia/cutile-python/docs:2025-12-16-efbff374c2ca
+      docs: ghcr.io/nvidia/cutile-python/docs:2025-12-16-b2659f779742
       build_py310: ghcr.io/nvidia/cutile-python/build_py_3.10_x86_64:2025-12-16-7586f904479b
       build_py311: ghcr.io/nvidia/cutile-python/build_py_3.11_x86_64:2025-12-16-bd57fbae3794
       build_py312: ghcr.io/nvidia/cutile-python/build_py_3.12_x86_64:2025-12-16-3eb50f53e2e8
