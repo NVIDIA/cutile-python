@@ -45,6 +45,8 @@ result_np = cupy.asnumpy(result)
 np.testing.assert_array_almost_equal(result_np, expected)
 ```
 
+More examples can be found at [Samples](samples/) and [TileGym](https://github.com/NVIDIA/TileGym).
+
 System Requirements
 -------------------
 cuTile Python generates kernels based on [Tile IR](https://docs.nvidia.com/cuda/tile-ir/)
