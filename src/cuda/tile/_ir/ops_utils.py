@@ -188,14 +188,13 @@ def memory_order_has_release(memory_order: MemoryOrder):
 def get_dtype(ty: TileTy | datatype.DType | LooselyTypedScalar) -> datatype.DType | PointerTy:
     if isinstance(ty, TileTy):
         return ty.dtype
-    elif isinstance(ty, datatype.DType):
+    if isinstance(ty, datatype.DType):
         return ty
-    elif isinstance(ty, PointerTy):
+    if isinstance(ty, PointerTy):
         return ty
-    elif isinstance(ty, LooselyTypedScalar):
+    if isinstance(ty, LooselyTypedScalar):
         return typeof_pyval(ty.value)
-    else:
-        raise TypeError(f"Cannot get dtype from {ty}")
+    raise TypeError(f"Cannot get dtype from {ty}")
 
 
 def change_dtype(ty: TileTy | datatype.DType | PointerTy,
