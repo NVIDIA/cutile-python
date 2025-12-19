@@ -127,6 +127,10 @@ class ScalarProtocol(Protocol):
     def __ne__(self, other) -> "TileOrScalar":
         ...
 
+    @function
+    def __abs__(self) -> "TileOrScalar":
+        ...
+
 
 Scalar = int | float | ScalarProtocol
 
@@ -368,6 +372,10 @@ class Tile:
 
     @function
     def __ne__(self, other) -> "Tile":
+        ...
+
+    @function
+    def __abs__(self) -> "Tile":
         ...
 
 
@@ -1752,6 +1760,12 @@ def floor(x, /) -> TileOrScalar:
 @_doc_unary_op
 @function
 def ceil(x, /) -> TileOrScalar:
+    pass
+
+
+@_doc_unary_op
+@function
+def abs(x, /) -> TileOrScalar:
     pass
 
 
