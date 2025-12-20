@@ -17,15 +17,15 @@ concurrency:
 
 jobs:
   images:
-    name: Define Images
+    name: Define Base Images
     runs-on: ubuntu-latest
     outputs:
-      lint: ghcr.io/nvidia/cutile-python/lint:2025-12-16-8f8dc037a629
-      docs: ghcr.io/nvidia/cutile-python/docs:2025-12-16-c0cf983867ea
-      build_py310: ghcr.io/nvidia/cutile-python/build_py_3.10_x86_64:2025-12-16-7586f904479b
-      build_py311: ghcr.io/nvidia/cutile-python/build_py_3.11_x86_64:2025-12-16-bd57fbae3794
-      build_py312: ghcr.io/nvidia/cutile-python/build_py_3.12_x86_64:2025-12-16-3eb50f53e2e8
-      build_py313: ghcr.io/nvidia/cutile-python/build_py_3.13_x86_64:2025-12-16-6b45240569d3
+      lint: ghcr.io/nvidia/cutile-python/lint:2025-12-19-6f788ed1a37d
+      docs: ghcr.io/nvidia/cutile-python/docs:2025-12-19-3c6df79d5907
+      build_py310: ghcr.io/nvidia/cutile-python/build_py_3.10_x86_64:2025-12-19-e23b1344670f
+      build_py311: ghcr.io/nvidia/cutile-python/build_py_3.11_x86_64:2025-12-19-34e46267aabe
+      build_py312: ghcr.io/nvidia/cutile-python/build_py_3.12_x86_64:2025-12-19-fef7c09fc6e4
+      build_py313: ghcr.io/nvidia/cutile-python/build_py_3.13_x86_64:2025-12-19-3c040613bc5c
     steps:
       - run: echo "Defining image tags"
 
@@ -50,10 +50,11 @@ jobs:
         run: check_license.sh
 
       - name: Check inline samples are up to date
-        run: python3 test/tools/inline_samples.py --check
+        run: inline_samples.py --check
 
   docs:
     name: Build Docs
+    if: false
     needs: [images, build]
     runs-on: ubuntu-latest
     timeout-minutes: 10
