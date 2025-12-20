@@ -20,7 +20,7 @@ jobs:
     name: Define Base Images
     runs-on: ubuntu-latest
     outputs:
-      lint: ghcr.io/nvidia/cutile-python/lint:2025-12-19-6f788ed1a37d
+      lint: ghcr.io/nvidia/cutile-python/lint:2025-12-19-7a3c9d8ee421
       docs: ghcr.io/nvidia/cutile-python/docs:2025-12-19-3c6df79d5907
       build_py310: ghcr.io/nvidia/cutile-python/build_py_3.10_x86_64:2025-12-19-e23b1344670f
       build_py311: ghcr.io/nvidia/cutile-python/build_py_3.11_x86_64:2025-12-19-34e46267aabe
