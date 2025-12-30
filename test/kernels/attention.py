@@ -7,7 +7,6 @@ import numpy as np
 import math
 
 from cuda.tile import RoundingMode as RMd
-from cuda.tile import kernel, ByTarget
 from cuda.tile._numeric_semantics import PaddingMode
 
 INV_LOG_2 = 1.0 / math.log(2)
@@ -268,13 +267,13 @@ def fmha_bwd_dk_dv_kernel(Q, K, V, Grad, Delta, Lse, DK, DV, qk_scale: float, in
             K, index=(batch_idx, off_kv_h, 0, bid_x), shape=(1, 1, TILE_D, TILE_N),
             order=(0, 1, 3, 2),
             latency=2,
-            allow_tma=allow_tma
+            allow_tma=allow_tma, padding_mode=PaddingMode.ZERO
         ).reshape((TILE_D, TILE_N))
     v = ct.load(
             V, index=(batch_idx, off_kv_h, 0, bid_x), shape=(1, 1, TILE_D, TILE_N),
             order=(0, 1, 3, 2),
             latency=2,
-            allow_tma=allow_tma
+            allow_tma=allow_tma, padding_mode=PaddingMode.ZERO
         ).reshape((TILE_D, TILE_N))
 
     dk = ct.full((TILE_N, TILE_D), 0.0, dtype=np.float32) # [TILE_N, TILE_D] 
@@ -294,7 +293,7 @@ def fmha_bwd_dk_dv_kernel(Q, K, V, Grad, Delta, Lse, DK, DV, qk_scale: float, in
         m_start = 0
     for i in range(m_start, Tr):
         q = ct.load(Q, index=(batch_idx, head_idx, i, 0), shape=(1, 1, TILE_M, TILE_D), 
-                    latency=2, allow_tma=allow_tma).reshape((TILE_M, TILE_D))   # [TILE_M, TILE_D]
+                    latency=2, allow_tma=allow_tma, padding_mode=PaddingMode.ZERO).reshape((TILE_M, TILE_D))   # [TILE_M, TILE_D]
         qk = ct.full((TILE_M, TILE_N), 0., dtype=np.float32)
         qk = ct.mma(q, k, qk)  # [TILE_M, TILE_N]
         if (CAUSAL or not EVEN_K) and i <= mask_end:
@@ -305,20 +304,20 @@ def fmha_bwd_dk_dv_kernel(Q, K, V, Grad, Delta, Lse, DK, DV, qk_scale: float, in
             qk += mask
 
         lse_i =  ct.load(Lse, index=(batch_idx, head_idx, i), shape=(1, 1, TILE_M),
-                    allow_tma=allow_tma).reshape((TILE_M, 1))
+                    allow_tma=allow_tma, padding_mode=PaddingMode.ZERO).reshape((TILE_M, 1))
         qk = qk * qk_scale * INV_LOG_2
         p = ct.exp2(qk - lse_i, flush_to_zero=True) # [TILE_M, TILE_N]
         pt = ct.permute(p, (1, 0)) # [TILE_N, TILE_M]
 
         do = ct.load(Grad, index=(batch_idx, head_idx, i, 0), shape=(1, 1, TILE_M, TILE_D), 
-            latency=4, allow_tma=allow_tma).reshape((TILE_M, TILE_D))  # [TILE_M, TILE_D]
+            latency=4, allow_tma=allow_tma, padding_mode=PaddingMode.ZERO).reshape((TILE_M, TILE_D))  # [TILE_M, TILE_D]
         pt = pt.astype(do.dtype)
         dv = ct.mma(pt, do, dv) # [TILE_N, TILE_D]
 
         dp = ct.full((TILE_M, TILE_N), 0., dtype=np.float32) # [TILE_M, TILE_N]
         dp = ct.mma(do, v, dp)  # [TILE_M, TILE_N]
         delta_i = ct.load(Delta, index=(batch_idx, head_idx, i), shape=(1, 1, TILE_M),
-                    allow_tma=allow_tma).reshape((TILE_M, 1))
+                    allow_tma=allow_tma, padding_mode=PaddingMode.ZERO).reshape((TILE_M, 1))
         dp = dp - delta_i
         ds = p * dp # [TILE_M, TILE_N]
         dst = ct.permute(ds, (1, 0)) # [TILE_N, TILE_M]
@@ -349,5 +348,6 @@ def fmha_bwd_preprocess_kernel(O, Grad, Delta,
                  shape=(1, 1, TILE_M, TILE_D), 
                  latency=2, allow_tma=allow_tma
          ).reshape((TILE_M, TILE_D))
-    delta = ct.sum(o * do, axis=1).reshape((1, 1, TILE_M))
+    delta = ct.mul(o.astype(ct.float32), do.astype(ct.float32), flush_to_zero=True)
+    delta = ct.sum(delta, axis=1).reshape((1, 1, TILE_M))
     ct.store(Delta, index=(batch_idx, head_idx, bid_x), tile=delta)

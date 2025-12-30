@@ -31,16 +31,16 @@ def qkv_id(qkv_shape: tuple[tuple[int, ...], tuple[int, ...]]) -> str:
         # B, H, L, D
        ((6, 24, 67000, 64), (6, 24, 67000, 64)), # tanlan dim 64
        ((6, 24, 67000, 128), (6, 24, 67000, 128)), # tanlan dim 128
-    #    ((6, 32, 1024, 128), (6, 32, 1024, 128)),  # prefill
-    #    ((1, 32, 1024, 64), (1, 32, 1024, 64)),
+       ((6, 32, 1024, 128), (6, 32, 1024, 128)),  # prefill
+       ((1, 32, 1024, 64), (1, 32, 1024, 64)),
     #    ((1, 32, 1024, 64), (1, 8, 1024, 64)),  # prefill + gqa
     #    ((1, 32, 1024, 128), (1, 8, 1024, 128)),  # prefill + gqa
-    #    ((1, 32, 8192, 64), (1, 32, 8192, 64)),
-    #    ((1, 32, 8192, 128), (1, 32, 8192, 128)),
+       ((1, 32, 8192, 64), (1, 32, 8192, 64)),
+       ((1, 32, 8192, 128), (1, 32, 8192, 128)),
     #    ((1, 32, 8192, 128), (1, 8, 8192, 128)),  # prefill + gqa
-    #    ((1, 32, 1, 128), (1, 32, 1024, 128)),  # decode
-    #    ((1, 32, 1, 64), (1, 32, 1024, 64)),  # decode
-    #    ((8, 32, 1, 128), (8, 32, 1024, 128)),  # decode
+       ((1, 32, 1, 128), (1, 32, 1024, 128)),  # decode
+       ((1, 32, 1, 64), (1, 32, 1024, 64)),  # decode
+       ((8, 32, 1, 128), (8, 32, 1024, 128)),  # decode
     #    ((1, 32, 1, 128), (1, 8, 1024, 128)),  # decode + gqa
     #    ((8, 32, 1, 128), (8, 8, 1024, 128)),  # decode + gqa
     ],
@@ -72,9 +72,9 @@ def bench_fmha(qkv_shape, dtype, backend, benchmark):
         dq, dk, dv = backend(q, k, v, o, grad, lse, is_causal, enable_gqa)
         dq_ref, dk_ref, dv_ref = ref_fmha(q, k, v, ref, grad, is_causal, enable_gqa)
         torch.testing.assert_close(o, ref, atol=1e-2, rtol=5e-2)
-        torch.testing.assert_close(dq, dq_ref, atol=6e-2, rtol=5e-2)
-        # torch.testing.assert_close(dk, dk_ref, atol=6e-2, rtol=5e-2)
-        # torch.testing.assert_close(dv, dv_ref, atol=6e-2, rtol=5e-2)
+        torch.testing.assert_close(dq, dq_ref, atol=1e-2, rtol=5e-2)
+        torch.testing.assert_close(dk, dk_ref, atol=1e-2, rtol=5e-2)
+        torch.testing.assert_close(dv, dv_ref, atol=1e-2, rtol=5e-2)
     else:
         backend(q, k, v, o, grad, lse, is_causal, enable_gqa)
         ref_fmha(q, k, v, ref, grad, is_causal, enable_gqa)
