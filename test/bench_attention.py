@@ -33,16 +33,16 @@ def qkv_id(qkv_shape: tuple[tuple[int, ...], tuple[int, ...]]) -> str:
        ((6, 24, 67000, 128), (6, 24, 67000, 128)), # tanlan dim 128
        ((6, 32, 1024, 128), (6, 32, 1024, 128)),  # prefill
        ((1, 32, 1024, 64), (1, 32, 1024, 64)),
-    #    ((1, 32, 1024, 64), (1, 8, 1024, 64)),  # prefill + gqa
-    #    ((1, 32, 1024, 128), (1, 8, 1024, 128)),  # prefill + gqa
+       ((1, 32, 1024, 64), (1, 8, 1024, 64)),  # prefill + gqa
+       ((1, 32, 1024, 128), (1, 8, 1024, 128)),  # prefill + gqa
        ((1, 32, 8192, 64), (1, 32, 8192, 64)),
        ((1, 32, 8192, 128), (1, 32, 8192, 128)),
-    #    ((1, 32, 8192, 128), (1, 8, 8192, 128)),  # prefill + gqa
+       ((1, 32, 8192, 128), (1, 8, 8192, 128)),  # prefill + gqa
        ((1, 32, 1, 128), (1, 32, 1024, 128)),  # decode
        ((1, 32, 1, 64), (1, 32, 1024, 64)),  # decode
        ((8, 32, 1, 128), (8, 32, 1024, 128)),  # decode
-    #    ((1, 32, 1, 128), (1, 8, 1024, 128)),  # decode + gqa
-    #    ((8, 32, 1, 128), (8, 8, 1024, 128)),  # decode + gqa
+       ((1, 32, 1, 128), (1, 8, 1024, 128)),  # decode + gqa
+       ((8, 32, 1, 128), (8, 8, 1024, 128)),  # decode + gqa
     ],
     ids=qkv_id)
 def qkv_shape(request):
@@ -109,10 +109,10 @@ def cutile_fmha(q, k, v, o, grad, lse, is_causal, enable_gqa):
     qk_scale = 1 / sqrt(d)
     TILE_M, TILE_N = (256, 128) if is_causal else (64, 128)
     query_group_size = qh // kh
-    grid = (ceil(q_len / TILE_M), b * qh, 1)
     input_pos = 0 if q_len == k_len else (k_len - 1)
     EVEN_K = (k_len % TILE_N) == 0
-    ct.launch(torch.cuda.current_stream(), grid, fmha_kernel,
+    ct.launch(torch.cuda.current_stream(), (ceil(q_len / TILE_M), b * qh, 1), 
+              fmha_kernel,
               (q, k, v, o, lse,
                qk_scale, input_pos, d, qh, TILE_M, TILE_N,
                query_group_size, is_causal, EVEN_K))
@@ -124,10 +124,10 @@ def cutile_fmha(q, k, v, o, grad, lse, is_causal, enable_gqa):
         ct.launch(torch.cuda.current_stream(), (ceil(q_len / TILE_M), b * qh, 1), 
                   fmha_bwd_preprocess_kernel,
                   (o, grad, delta, qh, TILE_M, d))
-        ct.launch(torch.cuda.current_stream(), (ceil(k_len / TILE_N), b * qh, 1), 
+        ct.launch(torch.cuda.current_stream(), (ceil(k_len / TILE_N), b * kh, 1), 
                   fmha_bwd_dk_dv_kernel,
                   (q, k, v, grad, delta, lse, dk, dv,
-                   qk_scale, input_pos, d, qh, TILE_M, TILE_N,
+                   qk_scale, input_pos, d, kh, TILE_M, TILE_N,
                    query_group_size, is_causal, EVEN_K))
         ct.launch(torch.cuda.current_stream(), (ceil(q_len / TILE_M), b * qh, 1), 
                   fmha_bwd_dq_kernel,
