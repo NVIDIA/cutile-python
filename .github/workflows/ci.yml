@@ -16,12 +16,26 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  images:
+    name: Define Base Images
+    runs-on: ubuntu-latest
+    outputs:
+      lint: ghcr.io/nvidia/cutile-python/lint:2026-01-12-aea51b7409cc
+      docs: ghcr.io/nvidia/cutile-python/docs:2026-01-12-96c265b9029e
+      build_py310: ghcr.io/nvidia/cutile-python/build_py_3.10_x86_64:2026-01-12-a3f084500fb0
+      build_py311: ghcr.io/nvidia/cutile-python/build_py_3.11_x86_64:2026-01-12-d0a88a59d0fd
+      build_py312: ghcr.io/nvidia/cutile-python/build_py_3.12_x86_64:2026-01-12-9cf7e54a5580
+      build_py313: ghcr.io/nvidia/cutile-python/build_py_3.13_x86_64:2026-01-12-7f9db97c8ad8
+    steps:
+      - run: echo "Defining image tags"
+
   lint:
     name: Lint
+    needs: images
     runs-on: ubuntu-latest
     timeout-minutes: 10
     container:
-      image: ghcr.io/nvidia/cutile-python/lint:2025-12-06-4cb7d16e4c20
+      image: ${{ needs.images.outputs.lint }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
@@ -30,10 +44,73 @@ jobs:
         run: flake8
 
       - name: Run cpplint
-        run: python3 ci/cpplint.py
+        run: python scripts/cpplint.py
 
       - name: Check license headers (REUSE)
-        run: ci/scripts/check_license.sh
+        run: scripts/check_license.sh
 
       - name: Check inline samples are up to date
-        run: python3 test/tools/inline_samples.py --check
+        run: python test/tools/inline_samples.py --check
+
+  docs:
+    name: Build Docs
+    needs: [images, build]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    container:
+      image: ${{ needs.images.outputs.docs }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Download wheel
+        uses: actions/download-artifact@v4
+        with:
+          name: wheel-py3.12-linux-x86_64
+          path: dist/
+
+      - name: Install wheel
+        run: pip install dist/*.whl
+
+      - name: Build documentation
+        run: make -C docs html
+
+      - name: Upload docs artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: docs-html
+          path: docs/build/html
+          retention-days: 7
+
+  build:
+    name: Build Wheel (Python ${{ matrix.python-version }})
+    needs: images
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      matrix:
+        include:
+          - python-version: "3.10"
+            image_key: build_py310
+          - python-version: "3.11"
+            image_key: build_py311
+          - python-version: "3.12"
+            image_key: build_py312
+          - python-version: "3.13"
+            image_key: build_py313
+    container:
+      image: ${{ needs.images.outputs[matrix.image_key] }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Build wheel
+        run: python setup.py bdist_wheel
+
+      - name: Upload wheel artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: wheel-py${{ matrix.python-version }}-linux-x86_64
+          path: dist/*.whl
+          if-no-files-found: error
+          retention-days: 7
