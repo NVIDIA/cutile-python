@@ -351,7 +351,10 @@ class ArrayTy(Type):
                                 for s1, s2 in zip(self.strides, other.strides, strict=True)))
 
         elements_disjoint = self.elements_disjoint and other.elements_disjoint
-        base_ptr_div_by = math.gcd(self.base_ptr_div_by, other.base_ptr_div_by)
+        base_ptr_div_by = (
+            None if (self.base_ptr_div_by is None or other.base_ptr_div_by is None)
+            else math.gcd(self.base_ptr_div_by, other.base_ptr_div_by)
+        )
         shape_div_by = tuple(
             None if (d1 is None or d2 is None) else math.gcd(d1, d2)
             for d1, d2 in zip(self.shape_div_by, other.shape_div_by, strict=True)

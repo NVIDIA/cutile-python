@@ -181,6 +181,38 @@ class Array:
             int (constant):
         """
 
+    @function
+    def slice(self, axis, start, stop) -> "Array":
+        """Creates a view of the |array| sliced along a single `axis`.
+
+        The returned array references the same underlying memory as |array|,
+        but with a restricted range from index `start` (inclusive) to `stop` (exclusive)
+        along the specified axis. No data is copied.
+
+        `axis` must be a constant integer. Negative values are supported and count
+        from the last dimension (e.g., ``axis=-1`` refers to the last axis).
+
+        `start` and `stop` must be integers (scalars or 0D tiles).
+        They must satisfy ``0 <= start < N`` and ``start <= stop <= N``, where ``N``
+        is the size of `array` along the sliced axis.
+
+        For example, consider a 2-dimensional array A of shape ``(M, N)``.
+        Slicing along axis 0 from `start` to `stop`:
+
+            >>> sub = A.slice(axis=0, start=start, stop=stop)
+
+        The result `sub` will be an array of shape ``(stop - start, N)``.
+        Using NumPy slice notation for illustration, this is equivalent to::
+
+            sub = A[start:stop, :]  # NumPy notation for reference only
+
+        The slice bounds can be dynamic (runtime values):
+
+            >>> # Process variable-length segments
+            >>> segment = A.slice(axis=1, start=offset, stop=offset + length)
+            >>> tile = ct.load(segment, (0, 0), shape=(TILE_M, TILE_N))
+        """
+
 
 class Tile:
     """A *tile array* (or *tile*) is an immutable multidimensional collection of values that is
@@ -1890,5 +1922,9 @@ def assert_(cond, /, message=None) -> None:
 
 
 # ==== Private stubs ====
+
+
+def _m_array_slice(array, axis, start, stop): ...  # Array.slice(axis, start, stop)
+
 
 def _m_tile_item(tile): ...  # Tile.item()

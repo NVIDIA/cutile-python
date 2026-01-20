@@ -30,6 +30,7 @@ from cuda.tile._ir.load_store_impl import (
 from . import hir
 from .op_impl import (
     impl, require_constant_int, require_constant_int_tuple,
+    require_signed_integer_scalar_or_0d_tile_type,
     require_tile_type, normalize_axis, require_dtype_spec,
     require_tile_or_scalar_type, require_constant_bool, require_optional_constant_enum,
     require_constant_str, require_array_type, require_tuple_type, require_constant_slice,
@@ -46,11 +47,14 @@ from .ops_utils import (
     promote_types, promote_dtypes, check_implicit_cast
 )
 from .scope import Scope, JumpInfo, ControlFlowInfo
-from .typing_support import typeof_pyval, dtype_registry, loose_type_of_pyval, get_constant_value
+from .typing_support import (
+    BYTE_BITWIDTH, typeof_pyval, dtype_registry, loose_type_of_pyval, get_constant_value
+)
 from .type import (
     TupleTy, TileTy, NoneType, BoundMethodTy, SizeTy, ArrayTy,
     ListTy, make_tile_ty, SliceType, DTypeConstructor, RangeIterType, Type,
-    NONE, ModuleTy, TypeTy, LooselyTypedScalar, DTypeSpec, StringTy, InvalidType
+    NONE, ModuleTy, TypeTy, LooselyTypedScalar, DTypeSpec, StringTy, InvalidType,
+    array_size_type,
 )
 from cuda.tile._datatype import (
     DType, is_integral, is_float, is_signed, is_boolean, is_restricted_float,
@@ -1506,6 +1510,7 @@ def getattr_impl(object: Var, name: Var) -> Var:
         case ArrayTy(), "ndim": return loosely_typed_const(ty.ndim)
         case ArrayTy(), "shape": return build_tuple(object.get_aggregate().shape)
         case ArrayTy(), "strides": return build_tuple(object.get_aggregate().strides)
+        case ArrayTy(), "slice": return bind_method(object, ct._m_array_slice)
 
         case TileTy(), "dtype": return loosely_typed_const(ty.dtype)
         case TileTy(), "shape": return loosely_typed_const(ty.shape_value)
@@ -1578,11 +1583,7 @@ def range_(args: Tuple[Var, ...]) -> Var:
     if not 1 <= len(args) <= 3:
         raise TileTypeError(f"Invalid number of arguments: {len(args)}")
     for arg in args:
-        arg_ty = require_scalar_or_0d_tile_type(arg)
-        if isinstance(arg_ty, TileTy):
-            arg_ty = arg_ty.dtype
-        if not datatype.is_integral(arg_ty) or not datatype.is_signed(arg_ty):
-            raise TileTypeError(f"Expected a signed integer, got {arg_ty}")
+        require_signed_integer_scalar_or_0d_tile_type(arg)
 
     if len(args) == 1:
         start = strictly_typed_const(0, datatype.default_int_type)
@@ -1903,6 +1904,120 @@ def num_blocks(axis: Var) -> Var:
     if axis not in (0, 1, 2):
         raise TileTypeError(f"Axis must be 0, 1, or 2, but {axis} was given.")
     return add_operation(TileNumBlocks, datatype.default_int_type, axis=axis)
+
+
+def _infer_sliced_shape(
+    array_ty: ArrayTy,
+    axis: int,
+    const_start: Optional[int],
+    const_stop: Optional[int],
+) -> Tuple[TupleTy, Tuple[Optional[int], ...]]:
+    has_const_bounds = const_start is not None and const_stop is not None
+    new_axis_size = const_stop - const_start if has_const_bounds else None
+
+    # FIXME: Enable static shape in MakeTensorView for new_axis_size if static
+    new_shape = TupleTy(
+        SizeTy(None) if i == axis else dim
+        for i, dim in enumerate(array_ty.shape)
+    )
+
+    # Preserve shape divisibility if new size is compatible
+    old_div_by = array_ty.shape_div_by[axis]
+    new_div_by = (
+        old_div_by
+        if (old_div_by is not None
+            and new_axis_size is not None
+            and new_axis_size % old_div_by == 0)
+        else None
+    )
+
+    new_shape_div_by = tuple(
+        new_div_by if i == axis else d
+        for i, d in enumerate(array_ty.shape_div_by)
+    )
+
+    return new_shape, new_shape_div_by
+
+
+def _infer_sliced_base_ptr_alignment(
+    array_ty: ArrayTy,
+    axis: int,
+    const_start: Optional[int],
+) -> Optional[int]:
+    if array_ty.base_ptr_div_by is None:
+        return None
+
+    # Get stride divisibility in elements or use static stride if present
+    stride_div_by = array_ty.stride_div_by[axis] or array_ty.strides[axis].maybe_value
+    if stride_div_by is None:
+        return None
+
+    assert array_ty.dtype.bitwidth % BYTE_BITWIDTH == 0
+    dtype_bytewidth = array_ty.dtype.bitwidth // BYTE_BITWIDTH
+    stride_div_by_bytes = stride_div_by * dtype_bytewidth
+    offset_div_by = (
+        const_start * stride_div_by_bytes if const_start is not None
+        else stride_div_by_bytes
+    )
+    return math.gcd(offset_div_by, array_ty.base_ptr_div_by)
+
+
+@impl(ct._m_array_slice)
+def array_slice_impl(array: Var, axis: Var, start: Var, stop: Var) -> Var:
+    array_ty = require_array_type(array)
+    axis = normalize_axis(require_constant_int(axis), array_ty.ndim)
+    require_signed_integer_scalar_or_0d_tile_type(start)
+    require_signed_integer_scalar_or_0d_tile_type(stop)
+
+    def maybe_const_int(v: Var):
+        if isinstance(v.get_type(), DType) and v.is_constant():
+            v_int = v.get_constant()
+            assert isinstance(v_int, int)
+            return v_int
+        return None
+
+    const_start = maybe_const_int(start)
+    const_stop = maybe_const_int(stop)
+    if const_start is not None and const_start < 0:
+        raise TileTypeError("Slice start must be non-negative")
+    if const_stop is not None and const_stop < 0:
+        raise TileTypeError("Slice stop must be non-negative")
+    if const_start is not None and const_stop is not None and const_stop < const_start:
+        raise TileTypeError("Slice stop must be greater than or equal to start")
+
+    new_shape_ty, new_shape_div_by = _infer_sliced_shape(array_ty, axis, const_start, const_stop)
+    new_base_ptr_div_by = _infer_sliced_base_ptr_alignment(array_ty, axis, const_start)
+    new_array_ty = ArrayTy(
+        array_ty.dtype,
+        shape=new_shape_ty,
+        strides=array_ty.strides,
+        elements_disjoint=array_ty.elements_disjoint,
+        base_ptr_div_by=new_base_ptr_div_by,
+        stride_div_by=array_ty.stride_div_by,
+        shape_div_by=new_shape_div_by,
+    )
+
+    array_val = array.get_aggregate()
+    assert isinstance(array_val, ArrayValue)
+    static_stride = array_ty.strides[axis].maybe_value
+    if static_stride == 1:
+        offset = start  # skip multiplication for unit stride
+    elif static_stride is not None:
+        offset = binary_arithmetic("mul", start, loosely_typed_const(static_stride))
+    else:
+        offset = binary_arithmetic("mul", start, array_val.strides[axis])
+
+    new_base_ptr = pointer_offset(array_val.base_ptr, astype(offset, datatype.uint64))
+    axis_new_shape = astype(binary_arithmetic("sub", stop, start), array_size_type().dtype)
+    new_shape = tuple(
+        axis_new_shape if i == axis else s for i, s in enumerate(array_val.shape)
+    )
+
+    [ret] = unflatten_aggregates(
+        (new_base_ptr,) + new_shape + array_val.strides,
+        (new_array_ty,), (new_array_ty,)
+    )
+    return ret
 
 
 class TileLoad(TypedOperation):

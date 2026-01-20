@@ -947,3 +947,65 @@ class TestRuntimeAlias(MLIRTestBase):
     @override
     def test_mlir(self, kernel, check_directive):
         super().test_mlir(kernel, check_directive)
+
+
+ArraySliceLoadStoreCheckDirective = """\
+// CHECK: %[[TOKEN0:.*]] = make_token
+// CHECK: %[[VAL1:.*]], %[[TOKEN1:.*]] = load_view_tko {{.*}} token = %[[TOKEN0]]
+// CHECK: %[[TOKEN2:.*]] = join_tokens %[[TOKEN0]], %[[TOKEN1]]
+// CHECK: %[[TOKEN3:.*]] = store_view_tko {{.*}} token = %[[TOKEN2]]
+// CHECK: %[[VAL2:.*]], %[[TOKEN4:.*]] = load_view_tko {{.*}} token = %[[TOKEN3]]
+// CHECK: %[[TOKEN5:.*]] = join_tokens %[[TOKEN3]], %[[TOKEN4]]
+// CHECK: %[[TOKEN6:.*]] = store_view_tko {{.*}} token = %[[TOKEN5]]
+"""
+
+
+ArraySliceForLoopCheckDirective = """\
+// CHECK: %[[TOKEN0:.*]] = make_token
+// CHECK: %[[TOKENPAIR:.*]]:2 = for {{.*}} iter_values(
+// CHECK-SAME: %[[TKNARG0:.*]] = %[[TOKEN0]], %[[TKNARG1:.*]] = %[[TOKEN0]])
+// CHECK:     %[[VAL1:.*]], %[[TOKEN1:.*]] = load_view_tko {{.*}} token = %[[TKNARG1]]
+// CHECK:     %[[TOKEN2:.*]] = join_tokens %[[TKNARG0]], %[[TOKEN1]]
+// CHECK:     %[[TOKEN3:.*]] = store_view_tko {{.*}} token = %[[TOKEN2]]
+// CHECK:     continue %[[TOKEN3]], %[[TOKEN3]]
+// CHECK: %[[TOKEN4:.*]] = store_view_tko {{.*}} token = %[[TOKENPAIR]]#0
+"""
+
+
+class TestArraySliceMLIR(MLIRTestBase):
+
+    def array_slice_load_store(X, TILE: ct.Constant[int]):
+        first_half = X.slice(axis=0, start=0, stop=TILE)
+        second_half = X.slice(axis=0, start=TILE, stop=2*TILE)
+        tx = ct.load(first_half, index=(0,), shape=(TILE,))
+        ct.store(second_half, index=(0,), tile=tx + 1)
+
+        ty = ct.load(second_half, index=(0,), shape=(TILE,))
+        ct.store(first_half, index=(0,), tile=ty)
+
+    def array_slice_for_loop(X, n: int, TILE: ct.Constant[int]):
+        for i in range(n):
+            chunk = X.slice(axis=0, start=i*TILE, stop=(i+1)*TILE)
+            tx = ct.load(chunk, index=(0,), shape=(TILE,))
+            ct.store(chunk, index=(0,), tile=tx + 1)
+
+        first_chunk = X.slice(axis=0, start=0, stop=TILE)
+        ct.store(first_chunk, index=(0,), tile=ct.full((TILE,), 0, dtype=X.dtype))
+
+    @override
+    def compile_kernel(self, kernel):
+        tile_size = 1024
+        X = torch.arange(tile_size * 2, device="cuda", dtype=torch.int32)
+        if kernel.__name__ == "array_slice_load_store":
+            bytecode = get_bytecode(kernel, (X, tile_size))
+        else:
+            bytecode = get_bytecode(kernel, (X, 2, tile_size))
+        return bytecode
+
+    @pytest.mark.parametrize("kernel, check_directive", make_cases(
+        (array_slice_load_store, ArraySliceLoadStoreCheckDirective),
+        (array_slice_for_loop, ArraySliceForLoopCheckDirective),
+    ))
+    @override
+    def test_mlir(self, kernel, check_directive):
+        super().test_mlir(kernel, check_directive)

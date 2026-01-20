@@ -16,7 +16,7 @@ from cuda.tile._exception import TileTypeError
 from cuda.tile._ir.ops_utils import get_dtype
 
 from .ir import Var
-from .typing_support import get_signature
+from .typing_support import datatype, get_signature
 from .type import TupleTy, TileTy, DTypeSpec, EnumTy, StringTy, ArrayTy, SliceType, \
     ListTy, PointerTy, LooselyTypedScalar, RangeIterType
 from .. import _datatype
@@ -264,6 +264,21 @@ def require_scalar_or_0d_tile_type(var: Var) -> TileTy | DType | PointerTy:
     if not (isinstance(ty, DType | PointerTy) or (isinstance(ty, TileTy) and ty.ndim == 0)):
         raise _make_type_error(f"Expected a scalar or a 0D tile, but given value has type {ty}",
                                var)
+    return ty
+
+
+def require_signed_integer_scalar_or_0d_tile_type(var: Var) -> TileTy | DType:
+    ty = require_scalar_or_0d_tile_type(var)
+    if isinstance(ty, TileTy):
+        dtype = ty.dtype
+    elif isinstance(ty, DType):
+        dtype = ty
+    else:
+        dtype = None
+
+    if dtype is None or not datatype.is_integral(dtype) or not datatype.is_signed(dtype):
+        raise _make_type_error(f"Expected a signed integer scalar or a 0D signed integer tile,"
+                               f" but got {ty}", var)
     return ty
 
 
