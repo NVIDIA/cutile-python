@@ -26,7 +26,8 @@ SAMPLES_TO_TEST = [
     "Transpose.py",
     "AttentionFMHA.py",
     "LayerNorm.py",
-    "MoE.py"
+    "MoE.py",
+    "AllGatherMatmul.py",
 ]
 
 # Get the absolute path of the current directory to ensure the script
