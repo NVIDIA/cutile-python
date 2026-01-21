@@ -4,33 +4,24 @@
 
 from collections import OrderedDict, defaultdict
 from dataclasses import dataclass
-from enum import Enum, IntEnum, auto
+from enum import Enum, auto
 from types import MappingProxyType
 from typing import Tuple, Dict, Set, Optional
 
 from cuda.tile._ir.type import TokenTy
 from cuda.tile._memory_model import MemoryOrder
 from cuda.tile._exception import Loc, TileInternalError
-from cuda.tile._ir.ir import Block, IRContext, Var, Operation
+from cuda.tile._ir.ir import Block, IRContext, Var, Operation, MemoryEffect
 from cuda.tile._ir.ops import (
     Break, Continue, EndBranch, IfElse,
-    JoinTokens, LoadMemoryOperation, Loop, MakeToken,
-    MemoryOperation, StoreMemoryOperation, TileAtomicCAS, TileAtomicCASTokenOrdered,
+    JoinTokens, Loop, MakeToken,
+    TileAtomicCAS, TileAtomicCASTokenOrdered,
     TileAtomicRMW, TileAtomicRMWTokenOrdered, LoadPointer, LoadPointerTokenOrdered,
     TileLoad, TileLoadTokenOrdered, StorePointer, StorePointerTokenOrdered,
-    TileStore, TileStoreTokenOrdered,
+    TileStore, TileStoreTokenOrdered, TileAssert, TilePrintf,
 )
 from cuda.tile._ir.ops_utils import memory_order_has_acquire, memory_order_has_release
 from cuda.tile._passes.alias_analysis import ALIAS_UNIVERSE, AliasResult, AliasSet
-
-
-class MemoryEffect(IntEnum):
-    # Int value assigned here is meaningful.
-    # It implies the relative strength of memory effects.
-    # For example, NONE < LOAD < STORE.
-    NONE = 0
-    LOAD = 1
-    STORE = 2
 
 
 class MemoryEffects:
@@ -140,15 +131,9 @@ def _get_block_memory_effects(block: Block,
                               block_memory_effects: Dict[Block, MemoryEffects]):
 
     def get_memory_effects(cur_op):
-        if not isinstance(cur_op, MemoryOperation):
+        effect = cur_op.memory_effect
+        if effect == MemoryEffect.NONE or isinstance(cur_op, TileAssert | TilePrintf):
             return EMPTY_MEMORY_EFFECTS
-
-        if isinstance(cur_op, LoadMemoryOperation):
-            effect = MemoryEffect.LOAD
-        elif isinstance(cur_op, StoreMemoryOperation):
-            effect = MemoryEffect.STORE
-        else:
-            raise TileInternalError(f"Unexpected MemoryOperation type: {type(cur_op)}")
 
         has_acquire_order = False
         if isinstance(cur_op, (TileAtomicCAS, TileAtomicRMW)):
@@ -424,9 +409,7 @@ def _get_input_token(token_key: TokenKey,
     return ret_tok, ret_op
 
 
-def _to_token_ordered_mem_op(op: MemoryOperation,
-                             token: Var,
-                             result_token: Var) -> Operation:
+def _to_token_ordered_mem_op(op, token: Var, result_token: Var) -> Operation:
 
     new_class = _TOKEN_ORDERED_OP_MAP[op.__class__]
     new_kwargs = dict(op.operands)

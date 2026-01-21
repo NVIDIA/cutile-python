@@ -21,6 +21,7 @@ from .type import Type, InvalidType
 from cuda.tile._exception import (
     TileTypeError, Loc, TileInternalError
 )
+from .. import TileSyntaxError
 from .._cext import TileContext
 from .._context import TileContextConfig
 
@@ -317,9 +318,20 @@ def terminator(cls):
     return cls
 
 
-def has_side_effects(cls):
-    cls._has_side_effects = True
-    return cls
+class MemoryEffect(enum.IntEnum):
+    # Int value assigned here is meaningful.
+    # It implies the relative strength of memory effects.
+    # For example, NONE < LOAD < STORE.
+    NONE = 0
+    LOAD = 1
+    STORE = 2
+
+
+def memory_effect(eff: MemoryEffect):
+    def decorate(cls):
+        cls.memory_effect = eff
+        return cls
+    return decorate
 
 
 def has_multiple_results(cls):
@@ -399,7 +411,7 @@ class LoopVarState:
 
 
 class Builder:
-    def __init__(self, ctx: IRContext, loc: Loc):
+    def __init__(self, ctx: IRContext, loc: Loc, reduction_body: bool = False):
         self.ir_ctx = ctx
         self.is_terminated = False
         self._loc = loc
@@ -407,11 +419,16 @@ class Builder:
         self._entered = False
         self._prev_builder = None
         self._var_map: Dict[str, Var] = dict()
+        self.reduction_body = reduction_body
 
     def add_operation(self, op_class,
                       result_ty: Type | None | Tuple[Type | None, ...],
                       attrs_and_operands,
                       result: Var | Sequence[Var] | None = None) -> Var | Tuple[Var, ...]:
+        if self.reduction_body and op_class.memory_effect != MemoryEffect.NONE:
+            raise TileSyntaxError("Operations with memory effects are not supported"
+                                  " inside reduction body")
+
         assert not self.is_terminated
         force_type = False
         if isinstance(result_ty, tuple):
@@ -504,10 +521,11 @@ class Builder:
 
 
 @contextmanager
-def nested_block(loc: Loc):
+def nested_block(loc: Loc, reduction_body: bool = False):
     prev_builder = Builder.get_current()
     block = Block(prev_builder.ir_ctx, loc=loc)
-    with Builder(prev_builder.ir_ctx, loc) as builder:
+    with Builder(prev_builder.ir_ctx, loc,
+                 reduction_body=reduction_body or prev_builder.reduction_body) as builder:
         yield block
     block.extend(builder.ops)
 
@@ -520,7 +538,7 @@ _current_builder = _CurrentBuilder()
 
 
 class Operation:
-    _has_side_effects = False
+    memory_effect = MemoryEffect.NONE
     _multiple_results = False
 
     def __init__(
@@ -587,10 +605,6 @@ class Operation:
     @property
     def is_terminator(self) -> bool:
         return self._is_terminator
-
-    @property
-    def has_side_effects(self) -> bool:
-        return self._has_side_effects
 
     def _add_operand(self, name: str, var: Var | Tuple[Var, ...]):
         if isinstance(var, Var) and var.is_aggregate() and self.op != "assign":

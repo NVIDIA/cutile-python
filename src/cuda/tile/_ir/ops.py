@@ -17,10 +17,10 @@ from cuda.tile._mutex import tile_mutex
 from cuda.tile._exception import TileTypeError, TileSyntaxError
 from cuda.tile._ir.ir import (
     Operation, Var, Loc, Block,
-    has_side_effects, terminator, add_operation, TypedOperation, Builder,
+    terminator, add_operation, TypedOperation, Builder,
     has_multiple_results, nested_block, PhiState, LoopVarState,
     TupleValue, make_aggregate, RangeValue, BoundMethodValue, ArrayValue, ConstantState,
-    ListValue, ClosureValue
+    ListValue, ClosureValue, MemoryEffect, memory_effect
 )
 from cuda.tile._ir.load_store_impl import (
     check_load_store_hints,
@@ -39,7 +39,9 @@ from .op_impl import (
     require_index_or_index_tuple_type, require_constant_shape, require_constant_axis_order,
     require_constant_enum, require_optional_constant_int, require_optional_constant_bool,
     require_optional_constant_str, PrintfValidator, require_tile_or_scalar_maybe_loose_type,
-    require_scalar_or_0d_tile_maybe_loose_type, require_bool, require_optional_range_type)
+    require_scalar_or_0d_tile_maybe_loose_type, require_bool, require_optional_range_type,
+    require_tile_or_tile_tuple_type, require_constant_scalar_tuple, require_constant_scalar,
+    require_callable_type)
 from .ops_utils import (
     BINOP_REGISTRY, UNARYOP_REGISTRY,
     check_rd_and_ftz, PaddingMode,
@@ -312,6 +314,11 @@ async def loop_impl(body: hir.Block, iterable: Var):
         if not is_valid:
             store_undefined(local_idx, body_var.get_type_allow_invalid(), state.result_phi.last_loc)
 
+    # Do this check at the end because this may be an automatically inserted loop
+    # around the helper function's body.
+    if builder.reduction_body:
+        raise TileSyntaxError("Loops inside reduction body are not supported")
+
 
 def _have_nested_jump(calls: Sequence[hir.Call]) -> bool:
     return any(
@@ -393,6 +400,11 @@ async def if_else_impl(cond: Var, then_block: hir.Block, else_block: hir.Block) 
         branch_taken = then_block if cond.get_constant() else else_block
         return await _flatten_branch(branch_taken)
 
+    builder = Builder.get_current()
+    if builder.reduction_body:
+        raise TileSyntaxError("Branching inside reduction body is not supported."
+                              " Consider ct.where() as a workaround.")
+
     # Get the total number of results by adding the number of stored variables.
     # Note: we sort the stored variable indices to make the order deterministic.
     scope = Scope.get_current()
@@ -460,8 +472,6 @@ async def if_else_impl(cond: Var, then_block: hir.Block, else_block: hir.Block) 
     it = iter(valid_results)
     all_results = tuple(next(it) if is_valid else None for is_valid in mask)
     assert next(it, None) is None
-
-    builder = Builder.get_current()
 
     # Get/create variables for the explicit result
     num_explicit_results = num_results - len(stored_locals)
@@ -2022,6 +2032,7 @@ def array_slice_impl(array: Var, axis: Var, start: Var, stop: Var) -> Var:
     return ret
 
 
+@memory_effect(MemoryEffect.LOAD)
 class TileLoad(TypedOperation):
     def __init__(
         self, array: Var, index: tuple[Var, ...], order: Sequence[int],
@@ -2075,6 +2086,7 @@ def tile_load_impl(array: Var, index: Var, shape: Var, order: Var,
     return reshape(result, shape)
 
 
+@memory_effect(MemoryEffect.LOAD)
 class TileLoadTokenOrdered(TypedOperation):
     def __init__(
         self, array: Var, index: Var, order: Sequence[int],
@@ -2097,7 +2109,7 @@ class TileLoadTokenOrdered(TypedOperation):
         return tile_load_generate_bytecode(self, ctx)
 
 
-@has_side_effects
+@memory_effect(MemoryEffect.STORE)
 class TileStore(TypedOperation):
     def __init__(self, array: Var, index: tuple[Var, ...], tile: Var, order: Sequence[int],
                  latency: Optional[int], allow_tma: Optional[bool], loc: Loc):
@@ -2157,7 +2169,7 @@ def tile_store_impl(array: Var, index: Var, tile: Var, order: Var,
     tile_store(array, index_items, tile, order, latency, allow_tma)
 
 
-@has_side_effects
+@memory_effect(MemoryEffect.STORE)
 class TileStoreTokenOrdered(TypedOperation):
     def __init__(self, array: Var, index: Var, tile: Var, order: Sequence[int], token: Var,
                  latency: Optional[int], allow_tma: Optional[bool], result_token: Var, loc: Loc):
@@ -2174,6 +2186,7 @@ class TileStoreTokenOrdered(TypedOperation):
         return tile_store_generate_bytecode(self, ctx)
 
 
+@memory_effect(MemoryEffect.LOAD)
 class LoadPointer(TypedOperation):
     def __init__(
         self,
@@ -2198,6 +2211,7 @@ class LoadPointer(TypedOperation):
         return lowered_res
 
 
+@memory_effect(MemoryEffect.LOAD)
 class LoadPointerTokenOrdered(Operation):
     def __init__(
             self,
@@ -2233,7 +2247,7 @@ def load_pointer(pointer: Var, mask: Optional[Var], padding_value: Optional[Var]
                          pointer=pointer, mask=mask, padding_value=padding_value, latency=latency)
 
 
-@has_side_effects
+@memory_effect(MemoryEffect.STORE)
 class StorePointer(TypedOperation):
     def __init__(
             self,
@@ -2257,7 +2271,7 @@ class StorePointer(TypedOperation):
         return ()
 
 
-@has_side_effects
+@memory_effect(MemoryEffect.STORE)
 class StorePointerTokenOrdered(Operation):
     def __init__(
             self,
@@ -2460,7 +2474,7 @@ def _gather_scatter_pointer_and_mask(array: Var,
         return pointer, mask
 
 
-@has_side_effects
+@memory_effect(MemoryEffect.STORE)
 class TileAtomicCAS(TypedOperation):
     def __init__(self, pointer: Var, expected: Var, desired: Var,
                  mask: Optional[Var], memory_order: MemoryOrder, memory_scope: MemoryScope,
@@ -2478,7 +2492,7 @@ class TileAtomicCAS(TypedOperation):
         return result_value
 
 
-@has_side_effects
+@memory_effect(MemoryEffect.STORE)
 class TileAtomicCASTokenOrdered(TypedOperation):
     def __init__(self, pointer: Var, expected: Var, desired: Var,
                  mask: Optional[Var], memory_order: Var, memory_scope: Var, token: Var,
@@ -2551,7 +2565,7 @@ class AtomicRMWMode(enum.Enum):
     EXCHANGE = bc.AtomicRMWMode.XCHG
 
 
-@has_side_effects
+@memory_effect(MemoryEffect.STORE)
 class TileAtomicRMW(TypedOperation):
     def __init__(self, mode: AtomicRMWMode, pointer: Var, update: Var,
                  mask: Optional[Var], memory_order: MemoryOrder, memory_scope: MemoryScope,
@@ -2570,7 +2584,7 @@ class TileAtomicRMW(TypedOperation):
         return result_value
 
 
-@has_side_effects
+@memory_effect(MemoryEffect.STORE)
 class TileAtomicRMWTokenOrdered(TypedOperation):
     def __init__(self, mode: AtomicRMWMode, pointer: Var, update: Var,
                  mask: Optional[Var], memory_order: MemoryOrder, memory_scope: MemoryScope,
@@ -2907,6 +2921,18 @@ class TileReduce(TypedOperation):
     def body(self):
         return self.nested_blocks[0]
 
+    @property
+    def lhs(self):
+        params = self.body.params
+        assert len(params) == len(self.xs) * 2
+        return params[:len(self.xs)]
+
+    @property
+    def rhs(self):
+        params = self.body.params
+        assert len(params) == len(self.xs) * 2
+        return params[len(self.xs):]
+
     @override
     def _to_string_block_prefixes(self) -> List[str]:
         return ["do"]
@@ -2951,10 +2977,11 @@ class TileReduce(TypedOperation):
         return nested_builder.done()
 
 
-def raw_reduce(xs: tuple[Var, ...], identities: tuple[bool | int | float], axis: int,
-               body: Callable[[tuple[Var, ...], tuple[Var, ...]], tuple[Var, ...]]
-               ) -> tuple[Var, ...]:
+async def raw_reduce(xs: tuple[Var, ...], identities: tuple[bool | int | float], axis: int,
+                     body: Callable) -> tuple[Var, ...]:
     builder = Builder.get_current()
+    if builder.reduction_body:
+        raise TileSyntaxError("Nested reduction is not supported")
 
     block_params = []
     lhs_vars = []
@@ -2981,14 +3008,17 @@ def raw_reduce(xs: tuple[Var, ...], identities: tuple[bool | int | float], axis:
 
     assert len(xs) == len(identities)
 
-    with nested_block(builder.loc) as body_block:
+    with nested_block(builder.loc, reduction_body=True) as body_block:
         body_block.params = tuple(block_params)
-        body_results = body(tuple(lhs_vars), tuple(rhs_vars))
+        body_results = await body(tuple(lhs_vars), tuple(rhs_vars))
         for body_res, x in zip(body_results, xs, strict=True):
             body_res_ty = body_res.get_type()
-            assert isinstance(body_res_ty, TileTy)
-            assert body_res_ty.shape_value == ()
-            assert body_res_ty.dtype == x.get_type().dtype
+            if isinstance(body_res_ty, TileTy):
+                assert body_res_ty.shape_value == ()
+                assert body_res_ty.dtype == x.get_type().dtype
+            else:
+                assert isinstance(body_res_ty, DType)
+                assert body_res_ty == x.get_type().dtype
 
         add_operation(EndBranch, (), outputs=body_results)
 
@@ -2996,10 +3026,9 @@ def raw_reduce(xs: tuple[Var, ...], identities: tuple[bool | int | float], axis:
                          body=body_block)
 
 
-def reduce(xs: tuple[Var, ...], identities: tuple[bool | int | float, ...],
-           axis: int | None | Iterable[int], keepdims: bool,
-           body: Callable[[tuple[Var, ...], tuple[Var, ...]], tuple[Var, ...]]
-           ) -> tuple[Var, ...]:
+async def reduce(xs: tuple[Var, ...], identities: tuple[bool | int | float, ...],
+                 axis: int | None | Iterable[int], keepdims: bool,
+                 body: Callable) -> tuple[Var, ...]:
     if len(xs) == 0:
         raise TileTypeError("Need at least one input value to reduce")
 
@@ -3030,10 +3059,81 @@ def reduce(xs: tuple[Var, ...], identities: tuple[bool | int | float, ...],
 
     xs = tuple(broadcast_to(x, common_input_shape) for x in xs)
     for i, a in enumerate(axis):
-        xs = raw_reduce(xs, identities, a - i, body)
+        xs = await raw_reduce(xs, identities, a - i, body)
 
     result_shape = _get_reduction_shape(common_input_shape, axis, keepdims)
     return tuple(reshape(x, result_shape) for x in xs)
+
+
+@impl(ct.reduce)
+async def reduce_impl(x: Var, axis: Var, func: Var, identity: Var, keepdims: Var) -> Var:
+    x_ty = require_tile_or_tile_tuple_type(x)
+
+    # Decide if we have a tuple and unpack the items of `x`
+    tuple_mode = isinstance(x_ty, TupleTy)
+    if tuple_mode:
+        tup_val = x.get_aggregate()
+        assert isinstance(tup_val, TupleValue)
+        xs = tup_val.items
+    else:
+        xs = (x,)
+
+    # Parse axis & func
+    axis = require_constant_int(axis)
+    require_callable_type(func)
+
+    # Parse the identity
+    if tuple_mode:
+        id_values = require_constant_scalar_tuple(identity)
+        if len(id_values) != len(xs):
+            raise TileTypeError(f"Number of identity values ({len(id_values)}) must match"
+                                f" the number of input tiles ({len(xs)})")
+    else:
+        id_values = (require_constant_scalar(identity),)
+
+    # Parse keepdims
+    keepdims = require_constant_bool(keepdims)
+
+    async def body(lhs, rhs):
+        from .._passes.hir2ir import call
+        res = await call(func, (*lhs, *rhs), {})
+        assert isinstance(res, Var)
+        res_ty = res.get_type()
+        if tuple_mode:
+            if not isinstance(res_ty, TupleTy):
+                raise TileTypeError(f"Reduction function returns a value of type"
+                                    f" {res_ty}, but a tuple was expected", res.loc)
+            if len(res_ty.value_types) != len(xs):
+                raise TileTypeError(f"Reduction function must return a tuple of {len(xs)} values"
+                                    f" to match the number of inputs, but a tuple of length"
+                                    f" {len(res_ty.value_types)} was found.")
+            res_tupval = res.get_aggregate()
+            assert isinstance(res_tupval, TupleValue)
+            results = res_tupval.items
+        else:
+            results = (res,)
+
+        cast_results = []
+        for i, (xi, r) in enumerate(zip(xs, results, strict=True)):
+            r_ty = r.get_type()
+            extra_ctx = f" at position #{i}" if tuple_mode else ""
+            if not isinstance(r_ty, TileTy | DType):
+                raise TileTypeError(f"Reduction function returned"
+                                    f" a value of non-tile type {r_ty}{extra_ctx}")
+            if isinstance(r_ty, TileTy) and r_ty.ndim > 0:
+                raise TileTypeError(f"Reduction function returned"
+                                    f" a tile of non-scalar shape {r_ty.shape_value}{extra_ctx}")
+            error_ctx = f"Reduction function returned a tile of unexpected dtype{extra_ctx}"
+            cast_results.append(_implicit_cast(r, xi.get_type().dtype, error_ctx))
+
+        return tuple(cast_results)
+
+    reduced_tiles = await reduce(xs, id_values, axis, keepdims, body)
+    if tuple_mode:
+        return build_tuple(reduced_tiles)
+    else:
+        [ret] = reduced_tiles
+        return ret
 
 
 def _get_reduction_shape(shape: Tuple[int, ...],
@@ -3049,9 +3149,9 @@ def _get_reduction_shape(shape: Tuple[int, ...],
     return tuple(ret)
 
 
-def reduce_simple(fn: str, x: Var, axis: int | None | tuple[int, ...], keepdims: bool,
-                  rounding_mode: Optional[RoundingMode] = None,
-                  flush_to_zero: bool = False) -> Var:
+async def reduce_simple(fn: str, x: Var, axis: int | None | tuple[int, ...], keepdims: bool,
+                        rounding_mode: Optional[RoundingMode] = None,
+                        flush_to_zero: bool = False) -> Var:
     x_type = require_tile_type(x)
     check_rd_and_ftz(fn, rounding_mode, flush_to_zero, x_type.dtype)
 
@@ -3065,13 +3165,13 @@ def reduce_simple(fn: str, x: Var, axis: int | None | tuple[int, ...], keepdims:
         case "max": id_val = _get_min_max(x_type.dtype)[0]
         case _: assert False
 
-    def body(lhs: tuple[Var], rhs: tuple[Var]) -> tuple[Var]:
+    async def body(lhs: tuple[Var], rhs: tuple[Var]) -> tuple[Var]:
         [lhs], [rhs] = lhs, rhs
         ret = raw_binary_arithmetic(fn, lhs, rhs,
                                     rounding_mode=rounding_mode, flush_to_zero=flush_to_zero)
         return (ret,)
 
-    [ret] = reduce((x,), (id_val,), axis, keepdims, body)
+    [ret] = await reduce((x,), (id_val,), axis, keepdims, body)
     return ret
 
 
@@ -3103,26 +3203,27 @@ def _parse_reduce_axis(axis: Var) -> Optional[tuple[int, ...]]:
 
 @impl(ct.sum, fixed_args=["add"])
 @impl(ct.prod, fixed_args=["mul"])
-def reduce_impl_with_rd_and_ftz(fn: str, x: Var, axis: Var, keepdims: Var, rounding_mode: Var,
-                                flush_to_zero: Var) -> Var:
+async def reduce_impl_with_rd_and_ftz(fn: str, x: Var, axis: Var, keepdims: Var, rounding_mode: Var,
+                                      flush_to_zero: Var) -> Var:
     axis = _parse_reduce_axis(axis)
     keepdims = require_constant_bool(keepdims)
     rounding_mode = require_optional_constant_enum(rounding_mode, RoundingMode)
     flush_to_zero = require_constant_bool(flush_to_zero)
-    return reduce_simple(fn, x, axis, keepdims,
-                         rounding_mode=rounding_mode, flush_to_zero=flush_to_zero)
+    return await reduce_simple(fn, x, axis, keepdims,
+                               rounding_mode=rounding_mode, flush_to_zero=flush_to_zero)
 
 
 @impl(ct.max, fixed_args=["max"])
 @impl(ct.min, fixed_args=["min"])
-def reduce_impl_with_ftz(fn: str, x: Var, axis: Var, keepdims: Var, flush_to_zero: Var) -> Var:
+async def reduce_impl_with_ftz(fn: str, x: Var, axis: Var, keepdims: Var,
+                               flush_to_zero: Var) -> Var:
     axis = _parse_reduce_axis(axis)
     keepdims = require_constant_bool(keepdims)
     flush_to_zero = require_constant_bool(flush_to_zero)
-    return reduce_simple(fn, x, axis, keepdims, flush_to_zero=flush_to_zero)
+    return await reduce_simple(fn, x, axis, keepdims, flush_to_zero=flush_to_zero)
 
 
-def argmax_argmin(fn: str, x: Var, axis: Optional[int], keepdims: bool) -> Var:
+async def argmax_argmin(fn: str, x: Var, axis: Optional[int], keepdims: bool) -> Var:
     require_tile_type(x)
     final_shape = None
     if axis is None:
@@ -3150,7 +3251,7 @@ def argmax_argmin(fn: str, x: Var, axis: Optional[int], keepdims: bool) -> Var:
             cmp = "gt"
         case _: assert False
 
-    def body(lhs: tuple[Var, Var], rhs: tuple[Var, Var]) -> tuple[Var, Var]:
+    async def body(lhs: tuple[Var, Var], rhs: tuple[Var, Var]) -> tuple[Var, Var]:
         lhs_val, lhs_idx = lhs
         rhs_val, rhs_idx = rhs
         val_strict = raw_comparison(cmp, lhs_val, rhs_val)
@@ -3162,7 +3263,7 @@ def argmax_argmin(fn: str, x: Var, axis: Optional[int], keepdims: bool) -> Var:
         idx = raw_where(cond, lhs_idx, rhs_idx)
         return res, idx
 
-    [_, ret] = reduce((x, indices), (id_val, 0), axis, keepdims, body)
+    [_, ret] = await reduce((x, indices), (id_val, 0), axis, keepdims, body)
 
     if final_shape is not None:
         ret = reshape(ret, final_shape)
@@ -3172,10 +3273,10 @@ def argmax_argmin(fn: str, x: Var, axis: Optional[int], keepdims: bool) -> Var:
 
 @impl(ct.argmax, fixed_args=["argmax"])
 @impl(ct.argmin, fixed_args=["argmin"])
-def argmax_argmin_impl(fn: str, x: Var, axis: Var, keepdims: Var) -> Var:
+async def argmax_argmin_impl(fn: str, x: Var, axis: Var, keepdims: Var) -> Var:
     axis = require_optional_constant_int(axis)
     keepdims = require_constant_bool(keepdims)
-    return argmax_argmin(fn, x, axis, keepdims)
+    return await argmax_argmin(fn, x, axis, keepdims)
 
 
 class TileScan(TypedOperation):
@@ -3355,7 +3456,7 @@ def where(cond, x, y) -> Var:
     return raw_where(cond, x, y)
 
 
-@has_side_effects
+@memory_effect(MemoryEffect.STORE)
 class TilePrintf(TypedOperation):
     def __init__(self, format: str, args: Tuple[Var, ...], loc: Loc):
         super().__init__("tile_printf",
@@ -3380,7 +3481,7 @@ def printf_impl(format: Var, args: Tuple[Var, ...]) -> None:
     add_operation(TilePrintf, (), format=parsed_format, args=args)
 
 
-@has_side_effects
+@memory_effect(MemoryEffect.STORE)
 class TileAssert(TypedOperation):
     def __init__(self, cond: Var, message: str, loc: Loc):
         super().__init__("assert",
@@ -3831,10 +3932,3 @@ def make_closure_impl(func_hir: hir.Function, default_values: tuple[Var, ...]):
                            tuple(frozen_capture_types_by_depth))
     closure_val = ClosureValue(default_values, tuple(frozen_captures_by_depth))
     return make_aggregate(closure_val, closure_ty)
-
-
-LoadMemoryOperation = TileLoad | LoadPointer
-
-StoreMemoryOperation = TileStore | StorePointer | TileAtomicCAS | TileAtomicRMW
-
-MemoryOperation = LoadMemoryOperation | StoreMemoryOperation

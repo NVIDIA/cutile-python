@@ -1,6 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) <2025> NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 #
 # SPDX-License-Identifier: Apache-2.0
+import operator
 
 import pytest
 import torch
@@ -9,6 +10,8 @@ from torch.testing import make_tensor
 from typing import Optional, Tuple
 from conftest import float_dtypes, int_dtypes, dtype_id
 from math import ceil
+
+from cuda.tile import TileSyntaxError
 from util import filecheck, assert_equal, get_bytecode
 import cuda.tile as ct
 from cuda.tile._exception import TileTypeError
@@ -389,3 +392,217 @@ def test_reduce_argmaxmin_all_axes(shape, dtype, reduce_op, torch_op, keepdims):
         y = y.squeeze()
     ref_result = torch_op(x, dim=None, keepdim=keepdims).to(torch.int32)
     assert_equal(y, ref_result)
+
+
+@pytest.mark.parametrize("flavor", ["lambda", "def", "operator"])
+def test_custom_reduction_simple(flavor: str):
+    @ct.kernel
+    def kernel_lambda(x, y):
+        xt = ct.load(x, (0, 0), (16, 16))
+        yt = ct.reduce(xt, 0, lambda a, b: a + b, 0)
+        ct.store(y, (0,), yt)
+
+    @ct.kernel
+    def kernel_def(x, y):
+        def f(a, b):
+            return a + b
+
+        xt = ct.load(x, (0, 0), (16, 16))
+        yt = ct.reduce(xt, 0, f, 0)
+        ct.store(y, (0,), yt)
+
+    @ct.kernel
+    def kernel_operator(x, y):
+        xt = ct.load(x, (0, 0), (16, 16))
+        yt = ct.reduce(xt, 0, operator.add, 0)
+        ct.store(y, (0,), yt)
+
+    kernel = locals()[f"kernel_{flavor}"]
+
+    x = torch.arange(256, dtype=torch.int32, device="cuda").reshape(16, 16)
+    ref = torch.sum(x, 0, dtype=torch.int32)
+    y = torch.zeros((16,), dtype=torch.int32, device="cuda")
+    ct.launch(torch.cuda.current_stream(), (1,), kernel, (x, y))
+    assert_equal(y, ref)
+
+
+def test_custom_reduction_keepdims():
+    @ct.kernel
+    def kernel(x, y):
+        xt = ct.load(x, (0, 0), (16, 16))
+        yt = ct.reduce(xt, 0, lambda a, b: a + b, 0, keepdims=True)
+        ct.store(y, (0, 0), yt)
+
+    x = torch.arange(256, dtype=torch.int32, device="cuda").reshape(16, 16)
+    ref = torch.sum(x, 0, dtype=torch.int32, keepdim=True)
+    y = torch.zeros((1, 16), dtype=torch.int32, device="cuda")
+    ct.launch(torch.cuda.current_stream(), (1,), kernel, (x, y))
+    assert_equal(y, ref)
+
+
+def test_custom_reduction_last_axis():
+    @ct.kernel
+    def kernel(x, y):
+        xt = ct.load(x, (0, 0), (16, 16))
+        yt = ct.reduce(xt, -1, lambda a, b: a + b, 0)
+        ct.store(y, (0,), yt)
+
+    x = torch.arange(256, dtype=torch.int32, device="cuda").reshape(16, 16)
+    ref = torch.sum(x, -1, dtype=torch.int32)
+    y = torch.zeros((16,), dtype=torch.int32, device="cuda")
+    ct.launch(torch.cuda.current_stream(), (1,), kernel, (x, y))
+    assert_equal(y, ref)
+
+
+def test_custom_reduction_minimum_with_index():
+    def minimum_with_index(a_val, a_idx, b_val, b_idx):
+        lt = a_val < b_val
+        eq = a_val == b_val
+        mask = lt | (eq & (a_idx < b_idx))
+        return ct.where(mask, a_val, b_val), ct.where(mask, a_idx, b_idx)
+
+    @ct.kernel
+    def kernel(x, y, yi):
+        xt = ct.load(x, (0, 0), (4, 8))
+        idx = ct.arange(8, dtype=ct.int32)
+        yt, yit = ct.reduce((xt, idx), 1, minimum_with_index, (2**31-1, 0))
+        ct.store(y, (0,), yt)
+        ct.store(yi, (0,), yit)
+
+    x = torch.tensor(
+        [
+            [5, 10, 7, 23, 8, 9, -4, 4],
+            [2, 2, 2, 2, 2, 2, 2, 2],
+            [17, 16, 15, 14, 13, 12, 11, 10],
+            [13, 13, 12, 12, 9, 9, 11, 11],
+        ],
+        dtype=torch.int32, device="cuda"
+    )
+    y_ref = torch.tensor([-4, 2, 10, 9], dtype=torch.int32, device="cuda")
+    yi_ref = torch.tensor([6, 0, 7, 4], dtype=torch.int32, device="cuda")
+    y = torch.zeros((4,), dtype=torch.int32, device="cuda")
+    yi = torch.zeros((4,), dtype=torch.int32, device="cuda")
+    ct.launch(torch.cuda.current_stream(), (1,), kernel, (x, y, yi))
+    assert_equal(y, y_ref)
+    assert_equal(yi, yi_ref)
+
+
+def test_custom_reduction_with_capture():
+    @ct.kernel
+    def kernel(x, p, y):
+        modulo = ct.gather(p, ())
+        xt = ct.load(x, (0, 0), (16, 16))
+        yt = ct.reduce(xt, -1, lambda a, b: (a + b) % modulo, 0)
+        ct.store(y, (0,), yt)
+
+    x = torch.arange(256, dtype=torch.int32, device="cuda").reshape(16, 16)
+    p = torch.tensor(5, dtype=torch.int32, device="cuda")
+    ref = torch.sum(x, -1, dtype=torch.int32) % 5
+    y = torch.zeros((16,), dtype=torch.int32, device="cuda")
+    ct.launch(torch.cuda.current_stream(), (1,), kernel, (x, p, y))
+    assert_equal(y, ref)
+
+
+def test_custom_reduction_welford():
+    @ct.kernel
+    def kernel(x, w, y):
+        def combine(mean_a, m2_a, weight_a, mean_b, m2_b, weight_b):
+            delta = mean_b - mean_a
+            new_weight = weight_a + weight_b
+            wb_normalized = ct.where(new_weight == 0, 0, weight_b / new_weight)
+            new_mean = mean_a + delta * wb_normalized
+            new_m2 = m2_a + m2_b + delta * delta * weight_a * wb_normalized
+            return new_mean, new_m2, new_weight
+
+        tx = ct.load(x, (0,), 1024)
+        tw = ct.load(w, (0,), 1024)
+        tm2 = ct.zeros((1024,), dtype=tx.dtype)
+        mean, m2, _ = ct.reduce((tx, tm2, tw), 0, combine, (0, 0, 0))
+        ct.scatter(y, 0, mean)
+        ct.scatter(y, 1, m2)
+
+    x = torch.randn((1024,), dtype=torch.float32, device="cuda") * 3.0 + 1.5
+    w = torch.randint(0, 100, (1024,), device="cuda")
+    w_sum = torch.sum(w).item()
+    ref_mean = torch.sum(x * w / w_sum).item()
+    ref_var = torch.cov(x, fweights=w).item()
+
+    y = torch.zeros((2,), dtype=torch.float32, device="cuda")
+    ct.launch(torch.cuda.current_stream(), (1,), kernel, (x, w.to(torch.float32), y))
+    mean, m2 = y.tolist()
+    var = m2 / w_sum
+    assert abs(mean - ref_mean) < 1e-3
+    assert abs(var - ref_var) < 1e-3
+
+
+def test_custom_reduction_ifelse_not_supported():
+    @ct.kernel
+    def kernel(x, y):
+        def f(a, b):
+            if ct.bid(0) == 0:
+                return a + b
+            else:
+                return (a + b) % 5
+
+        xt = ct.load(x, (0, 0), (16, 16))
+        yt = ct.reduce(xt, -1, f, 0)
+        ct.store(y, (0,), yt)
+
+    x = torch.arange(256, dtype=torch.int32, device="cuda").reshape(16, 16)
+    y = torch.zeros((16,), dtype=torch.int32, device="cuda")
+    with pytest.raises(TileSyntaxError, match="Branching inside reduction body is not supported"):
+        ct.launch(torch.cuda.current_stream(), (1,), kernel, (x, y))
+
+
+def test_custom_reduction_loop_not_supported():
+    @ct.kernel
+    def kernel(x, y):
+        def f(a, b):
+            res = ct.zeros((), dtype=ct.int32)
+            for i in range(ct.bid(0) + 1):
+                res += (a + b) * i
+            return res
+
+        xt = ct.load(x, (0, 0), (16, 16))
+        yt = ct.reduce(xt, -1, f, 0)
+        ct.store(y, (0,), yt)
+
+    x = torch.arange(256, dtype=torch.int32, device="cuda").reshape(16, 16)
+    y = torch.zeros((16,), dtype=torch.int32, device="cuda")
+    with pytest.raises(TileSyntaxError, match="Loops inside reduction body are not supported"):
+        ct.launch(torch.cuda.current_stream(), (1,), kernel, (x, y))
+
+
+def test_custom_reduction_printf_not_supported():
+    @ct.kernel
+    def kernel(x, y):
+        def f(a, b):
+            ct.printf("%d %d", a, b)
+            return a + b
+
+        xt = ct.load(x, (0, 0), (16, 16))
+        yt = ct.reduce(xt, -1, f, 0)
+        ct.store(y, (0,), yt)
+
+    x = torch.arange(256, dtype=torch.int32, device="cuda").reshape(16, 16)
+    y = torch.zeros((16,), dtype=torch.int32, device="cuda")
+    with pytest.raises(TileSyntaxError, match="Operations with memory effects"
+                                              " are not supported inside reduction body"):
+        ct.launch(torch.cuda.current_stream(), (1,), kernel, (x, y))
+
+
+def test_custom_reduction_tile_load_not_supported():
+    @ct.kernel
+    def kernel(x, y):
+        def f(a, b):
+            return ct.load(x, (a, b), (1, 1)).item()
+
+        xt = ct.load(x, (0, 0), (16, 16))
+        yt = ct.reduce(xt, -1, f, 0)
+        ct.store(y, (0,), yt)
+
+    x = torch.arange(256, dtype=torch.int32, device="cuda").reshape(16, 16)
+    y = torch.zeros((16,), dtype=torch.int32, device="cuda")
+    with pytest.raises(TileSyntaxError, match="Operations with memory effects"
+                                              " are not supported inside reduction body"):
+        ct.launch(torch.cuda.current_stream(), (1,), kernel, (x, y))

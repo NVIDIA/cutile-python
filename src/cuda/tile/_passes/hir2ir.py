@@ -81,7 +81,7 @@ async def _dispatch_hir_block_inner(block: hir.Block, builder: ir.Builder):
         for cursor, call in enumerate(block.calls):
             loc = call.loc.with_call_site(scope.call_site)
             with _wrap_exceptions(loc), builder.change_loc(loc):
-                await _dispatch_call(call, builder, scope)
+                await _dispatch_call(call, scope)
             if builder.is_terminated:
                 # The current block has been terminated, e.g. by flattening an if-else
                 # with a constant condition (`if True: break`).
@@ -129,13 +129,20 @@ def _wrap_exceptions(loc: Loc):
             raise TileInternalError(str(e)) from e
 
 
-async def _dispatch_call(call: hir.Call, builder: ir.Builder, scope: Scope):
-    callee_var = _resolve_operand(call.callee, scope)
-    callee, self_arg = _get_callee_and_self(callee_var)
-    args = (*self_arg, *(_resolve_operand(x, scope) for x in call.args))
-    kwargs = {k: _resolve_operand(v, scope) for k, v in call.kwargs}
-    arg_list = _bind_args(callee, args, kwargs)
+async def _dispatch_call(hir_call: hir.Call, scope: Scope):
+    callee_var = _resolve_operand(hir_call.callee, scope)
+    args = tuple(_resolve_operand(x, scope) for x in hir_call.args)
+    kwargs = {k: _resolve_operand(v, scope) for k, v in hir_call.kwargs}
+    retval = await call(callee_var, args, kwargs)
+    if hir_call.result is not None and retval is not None:
+        scope.hir2ir_varmap[hir_call.result.id] = retval
 
+
+async def call(callee_var: Var, args, kwargs) -> Var | None:
+    builder = ir.Builder.get_current()
+    callee, self_arg = _get_callee_and_self(callee_var)
+    args = self_arg + args
+    arg_list = _bind_args(callee, args, kwargs)
     if callee in op_implementations:
         impl = op_implementations[callee]
         result = impl(*arg_list)
@@ -145,16 +152,13 @@ async def _dispatch_call(call: hir.Call, builder: ir.Builder, scope: Scope):
         if builder.is_terminated:
             # The current block has been terminated, e.g. by flattening an if-else
             # with a constant condition (`if True: break`). Ignore the `result` in this case.
-            return
+            return None
 
         # Map the result variable
-        if call.result is None:
-            assert result is None
-        else:
-            if result is None:
-                result = loosely_typed_const(None)
-            assert isinstance(result, Var)
-            scope.hir2ir_varmap[call.result.id] = result
+        if result is None:
+            result = loosely_typed_const(None)
+        assert isinstance(result, Var)
+        return result
     else:
         # Callee is a user-defined function.
         _check_recursive_call(builder.loc)
@@ -184,11 +188,11 @@ async def _dispatch_call(call: hir.Call, builder: ir.Builder, scope: Scope):
             # and make sure we stay within the Python's recursion limit.
             await resume_after(dispatch_hir_block(callee_hir.body, builder))
 
-        assert call.result is not None
         assert callee_hir.body.have_result
-        scope.hir2ir_varmap[call.result.id] = _process_return_value(
+        ret = _process_return_value(
                 new_scope.hir2ir_varmap[callee_hir.body.result.id], new_scope.local, builder)
         new_scope.local.mark_dead()
+        return ret
 
 
 def _get_closure_parent_scopes(closure: Closure, ir_ctx: IRContext) -> tuple[LocalScope, ...]:

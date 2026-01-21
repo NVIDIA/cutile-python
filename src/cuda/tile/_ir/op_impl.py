@@ -15,10 +15,11 @@ from cuda.tile._datatype import (
 from cuda.tile._exception import TileTypeError
 from cuda.tile._ir.ops_utils import get_dtype
 
-from .ir import Var
 from .typing_support import datatype, get_signature
+from .ir import Var, TupleValue
 from .type import TupleTy, TileTy, DTypeSpec, EnumTy, StringTy, ArrayTy, SliceType, \
-    ListTy, PointerTy, LooselyTypedScalar, RangeIterType
+    ListTy, PointerTy, LooselyTypedScalar, RangeIterType, FunctionTy, ClosureTy, BoundMethodTy, \
+    DTypeConstructor
 from .. import _datatype
 
 
@@ -46,18 +47,31 @@ def impl(stub, *, fixed_args: Sequence[Any] = ()):
 
         func_sig = get_signature(func)
         _verify_params_match(stub_sig, func_sig)
+        is_coroutine = inspect.iscoroutinefunction(func)
+        if is_coroutine:
+            @functools.wraps(func)
+            async def wrapper(*args, **kwargs):
+                # Memorize the stub and the args so that we can automatically
+                # provide context for error messages.
+                old = _current_stub.stub_and_args
+                _current_stub.stub_and_args = (stub, stub_sig, func_sig, args, kwargs)
+                try:
+                    return await func(*args, **kwargs)
+                finally:
+                    _current_stub.stub_and_args = old
+        else:
+            @functools.wraps(func)
+            def wrapper(*args, **kwargs):
+                # Memorize the stub and the args so that we can automatically
+                # provide context for error messages.
+                old = _current_stub.stub_and_args
+                _current_stub.stub_and_args = (stub, stub_sig, func_sig, args, kwargs)
+                try:
+                    return func(*args, **kwargs)
+                finally:
+                    _current_stub.stub_and_args = old
 
-        @functools.wraps(func)
-        def wrapper(*args, **kwargs):
-            # Memorize the stub and the args so that we can automatically
-            # provide context for error messages.
-            old = _current_stub.stub_and_args
-            _current_stub.stub_and_args = (stub, stub_sig, func_sig, args, kwargs)
-            try:
-                return func(*args, **kwargs)
-            finally:
-                _current_stub.stub_and_args = old
-        wrapper._is_coroutine = inspect.iscoroutinefunction(func)
+        wrapper._is_coroutine = is_coroutine
         op_implementations[stub] = wrapper
         return orig_func
 
@@ -94,6 +108,36 @@ def require_constant_bool(var: Var) -> bool:
     if not is_boolean(ty):
         raise _make_type_error(f"Expected a boolean constant, but given value has type {ty}", var)
     return var.get_constant()
+
+
+def require_constant_scalar(var: Var) -> bool | int | float:
+    ty = var.get_type()
+    if not isinstance(ty, DType):
+        raise _make_type_error(f"Expected a scalar constant, but given value has type {ty}", var)
+    if not var.is_constant():
+        raise _make_type_error(f"Expected a constant, but given value has non-constant type {ty}",
+                               var)
+    ret = var.get_constant()
+    assert isinstance(ret, bool | int | float)
+    return ret
+
+
+def require_constant_scalar_tuple(var: Var) -> tuple[bool | int | float, ...]:
+    ty = require_tuple_type(var)
+    ret = []
+    tuple_val = var.get_aggregate()
+    assert isinstance(tuple_val, TupleValue)
+    for i, (item_ty, item) in enumerate(zip(ty.value_types, tuple_val.items, strict=True)):
+        if not isinstance(item_ty, DType):
+            raise _make_type_error(f"Expected a tuple of scalar constants,"
+                                   f" but item at position #{i} has type {item_ty}", var)
+        if not item.is_constant():
+            raise _make_type_error(f"Expected a tuple of scalar constants,"
+                                   f" but item at position #{i} has non-constant type {ty}", var)
+        value = item.get_constant()
+        assert isinstance(value, bool | int | float)
+        ret.append(value)
+    return tuple(ret)
 
 
 def require_optional_constant_bool(var: Var) -> Optional[bool]:
@@ -244,6 +288,16 @@ def require_tile_type(var: Var) -> TileTy:
     return ty
 
 
+def require_tile_or_tile_tuple_type(var: Var) -> TileTy | TupleTy:
+    ty = var.get_type()
+    if isinstance(ty, TileTy):
+        return ty
+    if isinstance(ty, TupleTy) and all(isinstance(x, TileTy) for x in ty.value_types):
+        return ty
+    raise _make_type_error(f"Expected a tile or a tuple of tiles, but given value has type {ty}",
+                           var)
+
+
 def require_tile_or_scalar_type(var: Var) -> TileTy | DType | PointerTy:
     ty = var.get_type()
     if not isinstance(ty, TileTy | DType | PointerTy):
@@ -356,6 +410,13 @@ def require_index_or_index_tuple_type(var: Var,
                                        f" {signed}integer scalar, but {what} has type {item_ty}",
                                        var)
 
+    return ty
+
+
+def require_callable_type(var: Var) -> FunctionTy | BoundMethodTy | ClosureTy | DTypeConstructor:
+    ty = var.get_type()
+    if not isinstance(ty, FunctionTy | BoundMethodTy | ClosureTy | DTypeConstructor):
+        raise _make_type_error(f"Expected a callable object, but given value has type {ty}", var)
     return ty
 
 

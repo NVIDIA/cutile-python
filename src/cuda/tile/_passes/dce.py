@@ -5,8 +5,8 @@
 from typing import Sequence, Set, Tuple, Dict, Any, Optional, List
 
 from cuda.tile._exception import Loc
-from cuda.tile._ir.ir import Block, Operation, Var, IRContext
-from cuda.tile._ir.ops import Loop, Continue, Break, EndBranch, IfElse, Return
+from cuda.tile._ir.ir import Block, Operation, Var, IRContext, MemoryEffect
+from cuda.tile._ir.ops import Loop, Continue, Break, EndBranch, IfElse, Return, TileReduce
 
 
 def dead_code_elimination_pass(root_block: Block) -> None:
@@ -24,7 +24,7 @@ def dead_code_elimination_pass(root_block: Block) -> None:
     _find_used_variables(graph, used)
 
     # Finally, walk the IR tree to remove unused operations and variables.
-    _prune_block(root_block, used, op_to_cf_name, loop_mask=(), ifelse_mask=())
+    _prune_block(root_block, used, op_to_cf_name, loop_mask=(), end_branch_mask=())
 
 
 # Each Loop and IfElse is assigned a unique pseudovariable name of the form "$cf.<NUMBER>",
@@ -88,7 +88,7 @@ def _build_dataflow_graph(graph: Dict[str, List[str] | Tuple[str, ...]],
                           block: Block,
                           innermost_loop: Optional[Loop],
                           innermost_loop_name: Optional[str],
-                          innermost_ifelse: Optional[IfElse],
+                          innermost_end_branch_target: Optional[IfElse | TileReduce],
                           innermost_cf_name: Optional[str]):
     for op in block:
         if isinstance(op, Loop):
@@ -162,9 +162,29 @@ def _build_dataflow_graph(graph: Dict[str, List[str] | Tuple[str, ...]],
                                   innermost_loop, innermost_loop_name, op, cf_name)
             _build_dataflow_graph(graph, used, op_to_cf_name, op.else_block,
                                   innermost_loop, innermost_loop_name, op, cf_name)
+        elif isinstance(op, TileReduce):
+            cf_name = _make_control_flow_name(block.ctx)
+            op_to_cf_name[op] = cf_name
+
+            graph[cf_name] = []
+
+            # See rule `CF_NESTED`
+            if innermost_cf_name is not None:
+                graph[cf_name].append(innermost_cf_name)
+
+            for x, res_var, a, b in zip(op.xs, op.result_vars, op.lhs, op.rhs, strict=True):
+                graph[a.name] = [x.name, res_var.name]
+                graph[b.name] = [x.name, res_var.name]
+                # See rule `CF_DEFINED_VARS`
+                graph[res_var.name] = [cf_name, x.name, a.name, b.name]
+
+            _build_dataflow_graph(graph, used, op_to_cf_name, op.body,
+                                  None, None, op, cf_name)
+
         elif isinstance(op, EndBranch):
-            # Yielded values flow into the IfElse's result variables.
-            for res_var, out_var in zip(innermost_ifelse.result_vars, op.outputs, strict=True):
+            # Yielded values flow into the IfElse/TileReduce's result variables.
+            for res_var, out_var in zip(innermost_end_branch_target.result_vars, op.outputs,
+                                        strict=True):
                 graph[res_var.name].append(out_var.name)
         else:
             deps = tuple(v.name for v in op.all_inputs())
@@ -181,7 +201,7 @@ def _build_dataflow_graph(graph: Dict[str, List[str] | Tuple[str, ...]],
 
 
 def _must_keep(op: Operation) -> bool:
-    return op.has_side_effects or isinstance(op, Return)
+    return op.memory_effect == MemoryEffect.STORE or isinstance(op, Return)
 
 
 def _find_used_variables(dataflow_graph: Dict[str, Sequence[str]], used: Set[str]):
@@ -198,7 +218,7 @@ def _prune_block(block: Block,
                  used_vars: Set[str],
                  op_to_cf_name: Dict[Operation, str],
                  loop_mask: Tuple[bool, ...],
-                 ifelse_mask: Tuple[bool, ...]):
+                 end_branch_mask: Tuple[bool, ...]):
     new_ops = []
     for op in block.operations:
         if isinstance(op, Loop):
@@ -231,8 +251,20 @@ def _prune_block(block: Block,
                 new_result_vars = _select_by_mask(op.result_vars, mask)
                 new_ops.append(IfElse(op.cond, op.then_block, op.else_block, new_result_vars,
                                       op.loc))
+        elif isinstance(op, TileReduce):
+            if op_to_cf_name[op] in used_vars:
+                mask = tuple(v.name in used_vars for v in op.result_vars)
+                _prune_block(op.body, used_vars, op_to_cf_name, (), mask)
+                new_xs = _select_by_mask(op.xs, mask)
+                new_identities = _select_by_mask(op.identities, mask)
+                new_lhs = _select_by_mask(op.lhs, mask)
+                new_rhs = _select_by_mask(op.rhs, mask)
+                op.body.params = new_lhs + new_rhs
+                new_result_vars = _select_by_mask(op.result_vars, mask)
+                new_ops.append(TileReduce(xs=new_xs, identities=new_identities, axis=op.axis,
+                                          body=op.body, result_vars=new_result_vars, loc=op.loc))
         elif isinstance(op, EndBranch):
-            output_vars = _select_by_mask(op.outputs, ifelse_mask)
+            output_vars = _select_by_mask(op.outputs, end_branch_mask)
             new_ops.append(EndBranch(op.loc, output_vars))
         elif any(r.name in used_vars for r in op.result_vars) or _must_keep(op):
             new_ops.append(op)

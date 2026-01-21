@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 
-from cuda.tile._ir.ir import Block, Var
+from cuda.tile._ir.ir import Block, Var, MemoryEffect
 from cuda.tile._ir.ops import Loop, IfElse, Continue, Break, EndBranch, Return, TileReduce
 
 from dataclasses import dataclass
@@ -104,7 +104,7 @@ def _hoist(block: Block, stack: list[_StackItem], def_depth: dict[str, int], is_
                     # Propagate CAN_MOVE_WITH_LOOP and IMMOVABLE
                     ret.mobility = min(ret.mobility, branch_res.mobility)
                     depinfo.must_stay = True
-        elif op.has_side_effects or isinstance(op, Return):
+        elif op.memory_effect == MemoryEffect.STORE or isinstance(op, Return):
             ret.mobility = _BlockMobility.IMMOVABLE
             depinfo.must_stay = True
         elif isinstance(op, (Continue, Break)):
