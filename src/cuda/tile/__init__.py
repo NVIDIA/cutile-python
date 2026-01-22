@@ -57,6 +57,7 @@ from cuda.tile._stub import (
     Scalar,
     Tile,
 
+    abs,
     add,
     arange,
     argmax,
@@ -187,6 +188,7 @@ __all__ = [
     "Scalar",
     "Tile",
 
+    "abs",
     "add",
     "arange",
     "argmax",
