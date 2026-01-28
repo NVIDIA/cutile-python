@@ -294,7 +294,11 @@ if __name__ == "__main__":
     print(f"Input A shape: {A_fp32.shape}, dtype: {A_fp32.dtype}")
     print(f"Input B shape: {B_fp32.shape}, dtype: {B_fp32.dtype}")
 
-    atol, rtol = 1e-4, 1e-3
+    if torch.cuda.get_device_capability()[0] <= 8:
+        # Ampere tfloat32 numerics is loose
+        atol, rtol = 5e-3, 5e-3
+    else:
+        atol, rtol = 1e-4, 1e-3
 
     # Perform matrix multiplication using the cuTile wrapper function.
     C_fp32_cutile = cutile_matmul(A_fp32, B_fp32)

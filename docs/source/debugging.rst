@@ -13,6 +13,7 @@ Exception Types
 .. autoclass:: TileSyntaxError()
 .. autoclass:: TileTypeError()
 .. autoclass:: TileValueError()
+.. autoclass:: TileUnsupportedFeatureError()
 .. autoclass:: TileCompilerExecutionError()
 .. autoclass:: TileCompilerTimeoutError()
 

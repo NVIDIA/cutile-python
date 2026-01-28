@@ -46,6 +46,7 @@ from cuda.tile._debug import (
 )
 
 from cuda.tile._passes.alias_analysis import alias_analysis_pass
+from cuda.tile._passes.check_ampere_fp8 import check_ampere_fp8
 from cuda.tile._passes.dce import dead_code_elimination_pass
 from cuda.tile._passes.token_order import token_order_pass
 from cuda.tile._ir2bytecode import generate_bytecode_for_kernel
@@ -195,6 +196,7 @@ def compile_tile(pyfunc,
         print(f'\n{code}', file=sys.stderr)
 
     sm_arch = get_sm_arch()
+    check_ampere_fp8(func_ir.body, sm_arch)
 
     bytecode_generator = functools.partial(generate_bytecode_for_kernel,
                                            func_ir, compiler_options, sm_arch)

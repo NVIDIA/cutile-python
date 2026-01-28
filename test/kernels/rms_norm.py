@@ -26,6 +26,7 @@ def rms_norm_kernel(
             x, index=(row, j), shape=(1, TILE_SIZE),
             allow_tma=False,
             latency=1,
+            padding_mode=ct.PaddingMode.ZERO
         )
         xj = ct.astype(xj, np.float32)
         _rms += xj * xj

@@ -22,6 +22,8 @@ from cuda.tile import _datatype as datatype
 
 from cuda.tile._exception import TileTypeError
 from cuda.tile._compile import compile_tile
+from cuda.tile._cext import get_compute_capability
+
 
 TensorLike = torch.Tensor
 Scalar = Union[int, float]
@@ -217,3 +219,8 @@ def torch_use_tf32_matmul():
     torch.backends.cuda.matmul.fp32_precision = "tf32"
     yield
     torch.backends.cuda.matmul.fp32_precision = origin
+
+
+def is_ampere_or_ada():
+    major, _minor = get_compute_capability()
+    return major == 8

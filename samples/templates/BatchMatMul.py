@@ -104,23 +104,26 @@ if __name__ == "__main__":
 
     # --- Test Case 2: Standard BMM (float8_e4m3fn) ---
     print("\n--- Test 2: Standard BMM (float8_e4m3fn) ---")
-    A_fp8 = torch.randn(
-        BATCH_DIM, M_DIM, K_DIM, dtype=torch.float32, device='cuda'
-    ).to(torch.float8_e4m3fn)
-    B_fp8 = torch.randn(
-        BATCH_DIM, K_DIM, N_DIM, dtype=torch.float32, device='cuda'
-    ).to(torch.float8_e4m3fn)
-    print(f"Input A shape: {A_fp8.shape}, dtype: {A_fp8.dtype}")
-    print(f"Input B shape: {B_fp8.shape}, dtype: {B_fp8.dtype}")
-
-    C_bmm_cutile_fp32 = bmm(A_fp8, B_fp8, torch.float32)
-    print(f"""cuTile Standard BMM Output C
-            shape:{C_bmm_cutile_fp32.shape},
-            dtype: {C_bmm_cutile_fp32.dtype}""")
-    if args.correctness_check:
-        torch.testing.assert_close(C_bmm_cutile_fp32, torch_batch_matmul_fp8(A_fp8, B_fp8))
-        print("Correctness check passed")
+    if torch.cuda.get_device_capability()[0] == 8:
+        print("skip: Ampere does not support float8")
     else:
-        print("Correctness check disabled")
+        A_fp8 = torch.randn(
+            BATCH_DIM, M_DIM, K_DIM, dtype=torch.float32, device='cuda'
+        ).to(torch.float8_e4m3fn)
+        B_fp8 = torch.randn(
+            BATCH_DIM, K_DIM, N_DIM, dtype=torch.float32, device='cuda'
+        ).to(torch.float8_e4m3fn)
+        print(f"Input A shape: {A_fp8.shape}, dtype: {A_fp8.dtype}")
+        print(f"Input B shape: {B_fp8.shape}, dtype: {B_fp8.dtype}")
+
+        C_bmm_cutile_fp32 = bmm(A_fp8, B_fp8, torch.float32)
+        print(f"""cuTile Standard BMM Output C
+                shape:{C_bmm_cutile_fp32.shape},
+                dtype: {C_bmm_cutile_fp32.dtype}""")
+        if args.correctness_check:
+            torch.testing.assert_close(C_bmm_cutile_fp32, torch_batch_matmul_fp8(A_fp8, B_fp8))
+            print("Correctness check passed")
+        else:
+            print("Correctness check disabled")
 
     print("\n--- cuTile Batched Matrix Multiplication (Standard Tiled) examples complete ---")

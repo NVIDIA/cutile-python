@@ -47,6 +47,7 @@ from cuda.tile._exception import (
     TileRecursionError,
     TileSyntaxError,
     TileTypeError,
+    TileUnsupportedFeatureError,
     TileValueError,
 )
 
@@ -181,6 +182,7 @@ __all__ = [
     "TileRecursionError",
     "TileSyntaxError",
     "TileTypeError",
+    "TileUnsupportedFeatureError",
     "TileValueError",
 
     "Array",

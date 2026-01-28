@@ -8,7 +8,7 @@ import torch
 import pytest
 import cuda.tile as ct
 
-from util import estimate_bench_iter, torch_use_tf32_matmul
+from util import estimate_bench_iter, torch_use_tf32_matmul, is_ampere_or_ada
 from kernels.matmul import (
     matmul_kernel, matmul_split_k_kernel, batch_matmul_kernel, persistent_matmul_kernel
 )
@@ -156,6 +156,7 @@ def fp8_dtype(request):
     return request.param
 
 
+@pytest.mark.skipif(is_ampere_or_ada(), reason="float8 not supported on Ampere or Ada")
 @pytest.mark.benchmark(group='batch_matmul')
 def bench_batch_matmul(batch_matmul_shape, fp8_dtype, backend, benchmark):
     _run_batch_matmul_benchmark(batch_matmul_shape, fp8_dtype, backend, benchmark)

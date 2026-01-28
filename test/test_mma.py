@@ -3,13 +3,14 @@
 # SPDX-License-Identifier: Apache-2.0
 
 from dataclasses import dataclass
+from unittest.mock import patch
 import pytest
 import torch
 
 import cuda.tile as ct
-from util import assert_close, assert_equal, torch_to_tf32
+from util import assert_close, assert_equal, torch_to_tf32, is_ampere_or_ada
 from conftest import dtype_id
-from cuda.tile._exception import TileTypeError
+from cuda.tile._exception import TileTypeError, TileUnsupportedFeatureError
 
 
 # ================ ct.mma =================
@@ -111,6 +112,7 @@ def test_mma_regular_float(tile_size, case):
     assert_close(C, ref, atol=atol, rtol=rtol)
 
 
+@pytest.mark.skipif(is_ampere_or_ada(), reason="float8 not supported on Ampere or Ada")
 @pytest.mark.parametrize("tile_size", [(16, 16, 16)])
 @pytest.mark.parametrize("case", fp8_cases, ids=str)
 def test_mma_fp8(tile_size, case):
@@ -140,8 +142,12 @@ def test_mma_tf32(tile_size):
     ref = C + torch_to_tf32(A) @ torch_to_tf32(B)
     ct.launch(torch.cuda.current_stream(), (1,), mma_tf32_kernel,
               (A, B, C, m, n, k))
-    # use float16 for tolerance because tf32 has the same precision
-    atol, rtol = get_tolerance(torch.float16)
+    if is_ampere_or_ada():
+        # ampere has loose tfloat32 numerics
+        atol, rtol = 5e-3, 5e-3
+    else:
+        # use float16 for tolerance because tf32 has the same precision
+        atol, rtol = get_tolerance(torch.float16)
     assert_close(C, ref, atol=atol, rtol=rtol)
 
 
@@ -260,6 +266,7 @@ def test_matmul(tile_size, x_dtype, y_dtype):
         assert_close(C, ref, atol=atol, rtol=rtol)
 
 
+@pytest.mark.skipif(is_ampere_or_ada(), reason="float8 not supported on Ampere or Ada")
 @pytest.mark.parametrize("tile_size", [(16, 16, 16)])
 @pytest.mark.parametrize("dtype", [f8e4m3fn, f8e5m2], ids=dtype_id)
 def test_matmul_fp8(tile_size, dtype):
@@ -385,3 +392,15 @@ def test_matmul_nd(ranks):
               (A, B, C, b, m, n, k))
     atol, rtol = get_tolerance(A.dtype)
     assert_close(C, ref, atol=atol, rtol=rtol)
+
+
+@pytest.mark.parametrize("dtype", [f8e4m3fn, f8e5m2], ids=dtype_id)
+def test_ampere_fp8_error(dtype):
+    A = torch.randn((16, 16), device="cuda").to(dtype)
+    B = torch.randn((16, 16), device="cuda").to(dtype)
+    C = torch.zeros((16, 16), dtype=torch.float16, device="cuda")
+    with patch("cuda.tile._compile.get_sm_arch", return_value="sm_80"):
+        with pytest.raises(TileUnsupportedFeatureError,
+                           match="float8 dtype is not supported on Ampere"):
+            ct.launch(torch.cuda.current_stream(), (1,), mma_kernel,
+                      (A, B, C, 16, 16, 16))

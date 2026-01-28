@@ -10,7 +10,7 @@ import cuda.tile as ct
 import cuda.tile_experimental as ct_experimental
 import itertools
 from math import ceil
-from util import estimate_bench_iter, next_power_of_2
+from util import estimate_bench_iter, next_power_of_2, is_ampere_or_ada
 from kernels.rms_norm import (
     rms_norm_kernel, rms_norm_kernel_gather, rms_norm_kernel_static_persistent
 )
@@ -85,18 +85,18 @@ def cutile_rms_norm(x, weight, eps, static_persistent, gather):
     M, N = x.shape
 
     if static_persistent:
-        NUM_SMS = torch.cuda.get_device_properties(
-            "cuda"
-        ).multi_processor_count
-        TILE_SIZE_M = 4  # Default value, could be made configurable
+        device_prop = torch.cuda.get_device_properties("cuda")
+        NUM_SMS = device_prop.multi_processor_count
         TILE_SIZE_N = next_power_of_2(N)
-
-        # Other tile sizes are more optimal when other dimension is too large/too small
-        if TILE_SIZE_N <= 1024:
-            TILE_SIZE_M = 16
-        elif TILE_SIZE_N >= 16384:
+        if is_ampere_or_ada():
             TILE_SIZE_M = 2
-
+        else:
+            if TILE_SIZE_N <= 1024:
+                TILE_SIZE_M = 16
+            elif TILE_SIZE_N >= 16384:
+                TILE_SIZE_M = 2
+            else:
+                TILE_SIZE_M = 4
         grid_size = min(
             NUM_SMS,
             ceil(M / TILE_SIZE_M) * ceil(N / TILE_SIZE_N),

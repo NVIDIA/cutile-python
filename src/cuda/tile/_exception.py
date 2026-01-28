@@ -145,6 +145,12 @@ class TileValueError(TileError):
     pass
 
 
+class TileUnsupportedFeatureError(TileError):
+    """Exception when a feature is not supported by the underlying compiler or
+      the GPU architecture."""
+    pass
+
+
 class TileInternalError(TileError):
     pass
 
