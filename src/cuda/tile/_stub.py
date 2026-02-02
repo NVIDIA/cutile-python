@@ -625,7 +625,8 @@ def store(array: Array, /,
 
 
 @function
-def gather(array, indices, /, *, padding_value=0, check_bounds=True, latency=None) -> Tile:
+def gather(array, indices, /, *, mask=None, padding_value=0, check_bounds=True,
+           latency=None) -> Tile:
     """
     Loads a tile from the `array` elements specified by `indices`.
 
@@ -651,9 +652,18 @@ def gather(array, indices, /, *, padding_value=0, check_bounds=True, latency=Non
 
         >>> ct.gather(array, ind0)   # equivalent to ct.gather(array, (ind0,))
 
+    A custom boolean `mask` can be provided to control which elements are loaded.
+    The mask must be a scalar or a tile whose shape is broadcastable to the common shape
+    of indices. Where the mask is ``False``, `padding_value` is returned instead of loading
+    from the array.
+
     `gather()` checks that indices are within the bounds of the array. For indices
     that are out of bounds, `padding_value` will be returned (zero by default).
     It must be a scalar or a tile whose shape is broadcastable to the common shape of indices.
+
+    If both `mask` and `check_bounds=True` are provided, the effective mask is the logical
+    AND of both the custom mask and the bounds-checking mask. This means an element is only
+    loaded if both the custom mask is ``True`` AND the index is within bounds.
 
     To disable bounds checking, set `check_bounds` to ``False``.
     In this mode, the caller is responsible for ensuring that all indices are within the bounds
@@ -665,7 +675,7 @@ def gather(array, indices, /, *, padding_value=0, check_bounds=True, latency=Non
 
 
 @function
-def scatter(array, indices, value, /, *, check_bounds=True, latency=None):
+def scatter(array, indices, value, /, *, mask=None, check_bounds=True, latency=None):
     """
     Stores a tile `value` into the `array` elements specified by `indices`.
 
@@ -692,11 +702,20 @@ def scatter(array, indices, value, /, *, check_bounds=True, latency=None):
 
         >>> ct.scatter(array, ind0, value)   # equivalent to ct.scatter(array, (ind0,), value)
 
+    A custom boolean `mask` can be provided to control which elements are stored.
+    The mask must be a scalar or a tile whose shape is broadcastable to the common shape
+    of indices. Where the mask is ``False``, no store occurs.
+
     `scatter()` checks that indices are within the bounds of the array. For indices
-    that are out of bounds, nothing is stored. To disable bounds checking,
-    set `check_bounds` to ``False``. In this mode, the caller is responsible for ensuring that
-    all indices are within the bounds of the array, and any out-of-bounds access
-    will result in undefined behavior.
+    that are out of bounds, nothing is stored.
+
+    If both `mask` and `check_bounds=True` are provided, the effective mask is the logical
+    AND of both the custom mask and the bounds-checking mask. This means an element is only
+    stored if both the custom mask is ``True`` AND the index is within bounds.
+
+    To disable bounds checking, set `check_bounds` to ``False``. In this mode, the caller
+    is responsible for ensuring that all indices are within the bounds of the array, and
+    any out-of-bounds access will result in undefined behavior.
     """
 
 
