@@ -162,7 +162,7 @@ def slice_float_index(A):
 ], ids=["unsigned_index", "float_index"])
 def test_invalid_index_type(kernel, args):
     A = torch.zeros((10,), dtype=torch.float32, device="cuda")
-    match = "Expected a signed integer scalar or a 0D signed integer tile"
+    match = "Expected a signed integer scalar"
     with pytest.raises(TileTypeError, match=match):
         ct.launch(torch.cuda.current_stream(), (1,), kernel, args(A))
 

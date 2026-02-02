@@ -153,3 +153,14 @@ def test_reshape_more_than_one_negative_one():
     with pytest.raises(TileTypeError, match="Only one dimension can be -1"):
         ct.launch(torch.cuda.current_stream(), grid, reshape_more_than_one_dim_negative_one,
                   (x, y, r_tile, c_tile))
+
+
+def test_reshape_scalar():
+    @ct.kernel
+    def kernel(x):
+        tx = ct.reshape(4, (1, 1, 1))
+        ct.store(x, (0, 0, 0), tx)
+
+    x = torch.zeros((1, 1, 1), device="cuda")
+    ct.launch(torch.cuda.current_stream(), (1,), kernel, (x,))
+    assert x.item() == 4

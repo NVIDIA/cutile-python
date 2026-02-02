@@ -55,6 +55,14 @@ class Type:
 class LooselyTypedScalar(Type):
     value: Any
 
+    @property
+    def shape(self):
+        return ()
+
+    @property
+    def shape_value(self):
+        return ()
+
 
 # ============== None Type ===============
 
@@ -242,12 +250,20 @@ class SizeTy(Type):
         return 'Size(?)' if self._value is None else f'Size({self._value})'
 
 
+# ============== Pointer Type ===============
+
+
+@dataclass(frozen=True)
+class PointerTy(Type):
+    pointee_type: "DType"
+
+
 # ============== Tile Type ===============
 
 
 class TileTy(Type):
     def __init__(self,
-                 dtype,
+                 dtype: "DType | PointerTy",
                  shape: TupleTy):
         self.dtype = dtype
         self.shape = shape
@@ -277,6 +293,9 @@ class TileTy(Type):
 
     def __hash__(self):
         return hash(("TileTy", self.dtype, self.shape))
+
+    def __repr__(self):
+        return f"TileTy(dtype={self.dtype}, shape={self.shape_value})"
 
     def __str__(self):
         shape_str = "(" + ','.join(str(x) for x in self._unwrapped_shape) + ")"
@@ -421,14 +440,6 @@ class ListTy(Type):
         return ListValue(base, length)
 
 
-# ============== Pointer Type ===============
-
-
-@dataclass(frozen=True)
-class PointerTy(Type):
-    pointee_type: Type
-
-
 # ============== Range Iter Type ===============
 
 
@@ -441,7 +452,8 @@ class RangeIterType(Type):
         return True
 
     def aggregate_item_types(self) -> tuple["Type", ...]:
-        return self.dtype, self.dtype, self.dtype
+        ty = make_tile_ty(self.dtype, ())
+        return ty, ty, ty
 
     def make_aggregate_value(self, items: tuple["Var", ...]) -> "AggregateValue":
         from .ir import RangeValue

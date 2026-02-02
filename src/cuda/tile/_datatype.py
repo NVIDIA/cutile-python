@@ -21,7 +21,7 @@ __all__ = ["bool_", "uint8", "uint16", "uint32", "uint64",
            "NumericDTypeCategories"]
 
 
-class DType(Type):
+class DType:
     """A *data type* (or *dtype*) describes the type of the objects of an |array|, |tile|, or
     operation.
 
@@ -56,6 +56,10 @@ class DType(Type):
     @function(host=True, tile=False)
     def __name__(self) -> str:
         return self._name
+
+    @function(host=True, tile=False)
+    def __repr__(self):
+        return f"<DType '{self._name}'>"
 
     @function(host=True, tile=False)
     def __str__(self):

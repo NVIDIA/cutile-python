@@ -13,7 +13,8 @@ from cuda.tile._cext import ArraySpecialization
 from .ir import ClosureValue
 
 from .type import Type, SizeTy, TupleTy, DTypeConstructor, DTypeSpec, ListTy, NONE, StringTy, \
-    ELLIPSIS, SLICE, ModuleTy, FunctionTy, ArrayTy, EnumTy, TypeTy, LooselyTypedScalar, ClosureTy
+    ELLIPSIS, SLICE, ModuleTy, FunctionTy, ArrayTy, EnumTy, TypeTy, LooselyTypedScalar, ClosureTy, \
+    make_tile_ty
 
 # Store mapping from 3rd party dtype objects
 # e.g. np.float32 -> float32, torch.bfloat16 -> bfloat16
@@ -144,27 +145,28 @@ def typeof_pyval(val, kernel_arg: bool = False) -> Type:
     if val is None:
         return NONE
     if (t := _safe_get(dtype_registry, type(val))):
-        return t.dtype
+        return make_tile_ty(t.dtype, ())
     if isinstance(val, bool):
-        return datatype.bool_
+        return make_tile_ty(datatype.bool_, ())
     if isinstance(val, int):
         if kernel_arg:
             # Non-constant integer kernel arguments are currently always treated as int32.
             # Specializing the kernel dynamically based on the magnitude of an integer value
             # could be confusing and surprising. Instead, we should consider adding
             # an annotation-based mechanism for specifying parameter types.
-            return datatype.default_int_type
+            dtype = datatype.default_int_type
         elif -2**31 <= val < 2**31:
-            return datatype.int32
+            dtype = datatype.int32
         elif -2**63 <= val < 2**63:
-            return datatype.int64
+            dtype = datatype.int64
         elif 0 <= val < 2**64:
-            return datatype.uint64
+            dtype = datatype.uint64
         else:
             # FIXME: delay the error and allow arbitrary-precision intermediate constant values
             raise TileValueError(f"Constant {val} is out of range of any supported integer type")
+        return make_tile_ty(dtype, ())
     if isinstance(val, float):
-        return datatype.default_float_type
+        return make_tile_ty(datatype.default_float_type, ())
     if isinstance(val, str):
         return StringTy(val)
     if isinstance(val, tuple):

@@ -22,15 +22,50 @@ An array-based model was chosen because:
 
 Within |tile code|, only the types described in this section are supported.
 
+
 Global Arrays
 -------------
 
-.. autoclass:: Array
-   :no-members:
-   :no-index:
+A *global array* (or *array*) is a container of elements of a specific |dtype|
+arranged in a logical multidimensional space.
 
-   .. seealso::
-      :ref:`Complete cuda.tile.Array class documentation <data-array-cuda-tile-array>`
+Array's *shape* is a tuple of integer values, each denoting the length of
+the corresponding dimension.
+The length of the shape tuple equals the arrays's number of dimensions.
+The product of shape values equals the total logical number of elements in the array.
+
+Arrays are stored in global memory using a *strided memory layout*: in addition to a shape,
+an array also has an equally sized tuple of *strides*. Strides determine the mapping of logical
+array indices to physical memory locations. For example, for a 3-dimensional `float32` array
+with strides `(s1, s2, s3)`, the memory address of the element at the logical index
+`(i1, i2, i3)` will be:
+
+.. code-block::
+
+    base_addr + 4 * (s1 * i1 + s2 * i2 + s3 * i3),
+
+where ``base_addr`` is the base address of the array and `4` is the byte size of a single `float32`
+element.
+
+New arrays can only be allocated by the host, and passed to the tile kernel as arguments.
+|Tile code| can only create new views of existing arrays, for example using
+:meth:`Array.slice`. Like in Python, assigning an array object to another variable does not copy
+the underlying data, but creates another reference to the array object.
+
+Any object that implements the |DLPack| interface or the |CUDA Array Interface|
+can be passed to the kernel as an argument. Example: |CuPy| arrays and |PyTorch| tensors.
+
+If two or more array arguments are passed to the kernel, their memory storage must not overlap.
+Otherwise, behavior is undefined.
+
+Array's shape can be queried using the :py:attr:`Array.shape` attribute, which
+returns a tuple of `int32` scalars. These scalars are non-constant, runtime values.
+Using `int32` makes the tile code more performant at the cost of limiting the maximum
+representable shape at 2,147,483,647 elements. This limitation will be lifted in the future.
+
+
+.. seealso::
+  :ref:`cuda.tile.Array class documentation <data-array-cuda-tile-array>`
 
 .. toctree::
    :maxdepth: 2
@@ -38,21 +73,60 @@ Global Arrays
 
    data/array
 
-Tiles
------
 
-.. autoclass:: Tile
-   :no-members:
-   :no-index:
+.. _data-tiles-and-scalars:
 
-   .. seealso::
-      :ref:`Complete cuda.tile.Tile class documentation <data-tile-cuda-tile-tile>`
+Tiles and Scalars
+-----------------
+A *tile* is an immutable multidimensional collection of elements of a specific |dtype|.
+
+Tile's *shape* is a tuple of integer values, each denoting the length of the corresponding dimension.
+The length of the shape tuple equals the tile's number of dimensions.
+The product of shape values equals the total number of elements in the tile.
+
+The shape of a tile must be known at compile time. Each dimension of a tile must be a power of 2.
+
+Tile's dtype and shape can be queried with the ``dtype`` and ``shape`` attributes, respectively.
+For example, if ``x`` is a `float32` tile, the expression ``x.dtype`` will return
+a compile-time constant equal to :py:data:`cuda.tile.float32`.
+
+A zero-dimensional tile is called a *scalar*. Such tile has exactly one element. The shape
+of a scalar is the empty tuple `()`. Numeric literals like `7` or `3.14` are treated as
+constant scalars, i.e. zero-dimensional tiles.
+
+Since scalars are tiles, they slightly differ in behavior from Python's ``int``/``float`` objects.
+For example, they have ``dtype`` and ``shape`` attributes:
+
+.. code-block:: python
+
+    a = 0
+    # The following line will evaluate to cuda.tile.int32 in cuTile,
+    # but would raise an AttributeError in Python:
+    a.dtype
+
+Tiles can only be used in |tile code|, not host code.
+The contents of a tile do not necessarily have a physical representation in memory.
+Non-scalar tiles can be created by loading from |global arrays| using functions such as
+:py:func:`cuda.tile.load` and :py:func:`cuda.tile.gather` or with |factory| functions
+such as :py:func:`cuda.tile.zeros`.
+
+Tiles can also be stored into global arrays using functions such as :py:func:`cuda.tile.store`
+or :py:func:`cuda.tile.scatter`.
+
+Only scalars (i.e. 0-dimensional tiles) can be used as |kernel| parameters.
+
+Scalar constants are |loosely typed| by default, for example, a literal ``2`` or
+a constant attribute like ``Tile.ndim``, ``Tile.shape``, or ``Array.ndim``.
+
+.. seealso::
+  :ref:`cuda.tile.Tile class documentation <data-tile-cuda-tile-tile>`
 
 .. toctree::
    :maxdepth: 2
    :hidden:
 
    data/tile
+
 
 .. _data-element-tile-space:
 
@@ -144,23 +218,6 @@ to a common dtype using the following process:
 .. rst-class:: compact-table
 
 .. include:: generated/includes/dtype_promotion_table.rst
-
-
-.. _data-scalars:
-
-Scalars
--------
-
-A *scalar* is a single immutable value of a specific |data type|. A *scalar* and *0D-tile*
-can be used interchangably in a tile |kernel|. They can also be |kernel| parameters.
-
-Typing of a *scalar* has the following rules:
-
-- Constant scalars are |loosely typed| by default, for example, a literal ``2`` or
-  a constant property like ``Tile.ndim``, ``Tile.shape``, or ``Array.ndim``.
-- ``Array.shape`` and ``Array.stride`` are not constant by default and has default int type `int32`.
-  Using default `int32` makes kernel more performant at the cost of limiting max representable shape.
-  This limitation will be lifted in the near future.
 
 Tuples
 ------

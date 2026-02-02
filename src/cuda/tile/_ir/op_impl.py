@@ -7,7 +7,7 @@ import inspect
 import threading
 import re
 from enum import EnumMeta
-from typing import Optional, NamedTuple, Tuple, Sequence, Any, Union
+from typing import Optional, NamedTuple, Tuple, Sequence, Any, Union, Callable
 
 from cuda.tile._datatype import (
         is_integral, is_float, is_restricted_float,
@@ -18,9 +18,8 @@ from cuda.tile._ir.ops_utils import get_dtype
 from .typing_support import datatype, get_signature
 from .ir import Var, TupleValue
 from .type import TupleTy, TileTy, DTypeSpec, EnumTy, StringTy, ArrayTy, SliceType, \
-    ListTy, PointerTy, LooselyTypedScalar, RangeIterType, FunctionTy, ClosureTy, BoundMethodTy, \
-    DTypeConstructor
-from .. import _datatype
+    ListTy, LooselyTypedScalar, RangeIterType, FunctionTy, ClosureTy, BoundMethodTy, \
+    DTypeConstructor, Type
 
 
 def _verify_params_match(stub_sig: inspect.Signature, func_sig: inspect.Signature):
@@ -85,11 +84,15 @@ class _CurrentStub(threading.local):
 _current_stub = _CurrentStub()
 
 
+def _is_0d_tile(ty: Type, dtype_predicate: Callable[[DType], bool] = lambda _: True) -> bool:
+    return isinstance(ty, TileTy) and ty.ndim == 0 and dtype_predicate(ty.dtype)
+
+
 def require_constant_int(var: Var) -> int:
     if not var.is_constant():
         raise _make_type_error("Expected an integer constant, but given value is not constant", var)
     ty = var.get_type()
-    if not is_integral(ty):
+    if not _is_0d_tile(ty, is_integral):
         raise _make_type_error(f"Expected an integer constant, but given value has type {ty}",
                                var)
     return var.get_constant()
@@ -105,14 +108,14 @@ def require_constant_bool(var: Var) -> bool:
     if not var.is_constant():
         raise _make_type_error("Expected a boolean constant, but given value is not constant", var)
     ty = var.get_type()
-    if not is_boolean(ty):
+    if not _is_0d_tile(ty, is_boolean):
         raise _make_type_error(f"Expected a boolean constant, but given value has type {ty}", var)
     return var.get_constant()
 
 
 def require_constant_scalar(var: Var) -> bool | int | float:
     ty = var.get_type()
-    if not isinstance(ty, DType):
+    if not _is_0d_tile(ty):
         raise _make_type_error(f"Expected a scalar constant, but given value has type {ty}", var)
     if not var.is_constant():
         raise _make_type_error(f"Expected a constant, but given value has non-constant type {ty}",
@@ -128,7 +131,7 @@ def require_constant_scalar_tuple(var: Var) -> tuple[bool | int | float, ...]:
     tuple_val = var.get_aggregate()
     assert isinstance(tuple_val, TupleValue)
     for i, (item_ty, item) in enumerate(zip(ty.value_types, tuple_val.items, strict=True)):
-        if not isinstance(item_ty, DType):
+        if not _is_0d_tile(item_ty):
             raise _make_type_error(f"Expected a tuple of scalar constants,"
                                    f" but item at position #{i} has type {item_ty}", var)
         if not item.is_constant():
@@ -217,14 +220,14 @@ def require_constant_int_tuple(var: Var, allow_single_int: bool = False) -> Tupl
                                " but given value is not constant", var)
 
     ty = var.get_type()
-    if allow_single_int and isinstance(ty, DType):
+    if allow_single_int and _is_0d_tile(ty):
         return require_constant_int(var),
 
     if not isinstance(ty, TupleTy):
         raise _make_type_error(f"Expected a tuple, but given value has type {ty}", var)
 
     for i, item_ty in enumerate(ty.value_types):
-        if not is_integral(item_ty):
+        if not _is_0d_tile(item_ty, is_integral):
             raise _make_type_error(f"Expected a tuple of integers,"
                                    f" but element #{i} has type {item_ty}", var)
 
@@ -298,58 +301,41 @@ def require_tile_or_tile_tuple_type(var: Var) -> TileTy | TupleTy:
                            var)
 
 
-def require_tile_or_scalar_type(var: Var) -> TileTy | DType | PointerTy:
-    ty = var.get_type()
-    if not isinstance(ty, TileTy | DType | PointerTy):
-        raise _make_type_error(f"Expected a tile or a scalar, but given value has type {ty}", var)
-    return ty
-
-
-def require_tile_or_scalar_maybe_loose_type(var: Var) \
-        -> TileTy | DType | PointerTy | LooselyTypedScalar:
+def require_tile_maybe_loose_type(var: Var) \
+        -> TileTy | LooselyTypedScalar:
     ty = var.get_loose_type()
     if isinstance(ty, LooselyTypedScalar):
         return ty
-    return require_tile_or_scalar_type(var)
+    return require_tile_type(var)
 
 
-def require_scalar_or_0d_tile_type(var: Var) -> TileTy | DType | PointerTy:
+def require_0d_tile_type(var: Var) -> TileTy:
     ty = var.get_type()
-    if not (isinstance(ty, DType | PointerTy) or (isinstance(ty, TileTy) and ty.ndim == 0)):
+    if not isinstance(ty, TileTy) or ty.ndim != 0:
         raise _make_type_error(f"Expected a scalar or a 0D tile, but given value has type {ty}",
                                var)
     return ty
 
 
-def require_signed_integer_scalar_or_0d_tile_type(var: Var) -> TileTy | DType:
-    ty = require_scalar_or_0d_tile_type(var)
-    if isinstance(ty, TileTy):
-        dtype = ty.dtype
-    elif isinstance(ty, DType):
-        dtype = ty
-    else:
-        dtype = None
-
-    if dtype is None or not datatype.is_integral(dtype) or not datatype.is_signed(dtype):
-        raise _make_type_error(f"Expected a signed integer scalar or a 0D signed integer tile,"
-                               f" but got {ty}", var)
+def require_signed_integer_0d_tile_type(var: Var) -> TileTy:
+    ty = require_0d_tile_type(var)
+    if not datatype.is_integral(ty.dtype) or not datatype.is_signed(ty.dtype):
+        raise _make_type_error(f"Expected a signed integer scalar, but got {ty}", var)
     return ty
 
 
-def require_bool(var: Var) -> TileTy | DType:
+def require_bool(var: Var) -> TileTy:
     ty = var.get_type()
-    if not (ty == _datatype.bool_
-            or (isinstance(ty, TileTy) and ty.ndim == 0 and ty.dtype == _datatype.bool_)):
+    if not _is_0d_tile(ty, is_boolean):
         raise _make_type_error(f"Expected a bool, but given value has type {ty}", var)
     return ty
 
 
-def require_scalar_or_0d_tile_maybe_loose_type(var: Var) \
-        -> TileTy | DType | PointerTy | LooselyTypedScalar:
+def require_0d_tile_maybe_loose_type(var: Var) -> TileTy | LooselyTypedScalar:
     ty = var.get_loose_type()
     if isinstance(ty, LooselyTypedScalar):
         return ty
-    return require_scalar_or_0d_tile_type(var)
+    return require_0d_tile_type(var)
 
 
 def require_array_type(var: Var) -> ArrayTy:
@@ -376,7 +362,7 @@ def require_tuple_type(var: Var) -> TupleTy:
 def require_index_or_index_tuple_type(var: Var,
                                       allow_nd_tiles: bool = False,
                                       allow_unsigned: bool = False) \
-        -> TupleTy | TileTy | DType:
+        -> TupleTy | TileTy:
     ty = var.get_type()
     if isinstance(ty, TupleTy):
         item_types = ty.value_types
@@ -384,14 +370,10 @@ def require_index_or_index_tuple_type(var: Var,
         item_types = ty,
 
     for i, item_ty in enumerate(item_types):
-        if isinstance(item_ty, TileTy) and (allow_nd_tiles or item_ty.ndim == 0):
-            dtype = item_ty.dtype
-        elif isinstance(item_ty, DType):
-            dtype = item_ty
-        else:
-            dtype = None
-
-        if dtype is None or not is_integral(dtype) or not (allow_unsigned or is_signed(dtype)):
+        if not (isinstance(item_ty, TileTy)
+                and (allow_nd_tiles or item_ty.ndim == 0)
+                and is_integral(item_ty.dtype)
+                and (allow_unsigned or is_signed(item_ty.dtype))):
             what = f"item #{i}" if isinstance(ty, TupleTy) else "given value"
             signed = "" if allow_unsigned else "signed "
             if allow_nd_tiles:
@@ -402,7 +384,6 @@ def require_index_or_index_tuple_type(var: Var,
                 raise _make_type_error(f"Expected a tuple of {signed}integers or a single"
                                        f" {signed}integer scalar, but {what} has type {item_ty}",
                                        var)
-
     return ty
 
 

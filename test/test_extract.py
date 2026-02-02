@@ -1,6 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) <2025> NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 #
 # SPDX-License-Identifier: Apache-2.0
+import re
 
 import pytest
 import torch
@@ -79,5 +80,5 @@ def test_extract_1d_non_scalar_item(shape, dtype, tile):
     x = make_tensor(shape, dtype=dtype, device='cuda')
     y = torch.zeros_like(x)
     grid = (ceil(shape[0] / tile), 1, 1)
-    with pytest.raises(TileTypeError, match="Expected a tile of size 1 to get scalar item"):
+    with pytest.raises(TileTypeError, match=re.escape("Cannot reshape (2,) to ()")):
         ct.launch(torch.cuda.current_stream(), grid, extract_1d_non_scalar_item, (x, y, tile))

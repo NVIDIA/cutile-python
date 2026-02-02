@@ -7,7 +7,7 @@ from typing import FrozenSet, Dict
 
 from cuda.tile._ir.ir import Var, Block
 from cuda.tile._ir.ops import Assign, GetArrayListItem, \
-    Loop, IfElse, Continue, Break, EndBranch, PointerOffset, ScalarToTile, \
+    Loop, IfElse, Continue, Break, EndBranch, PointerOffset, \
     TileBroadcast, TileReshape, MakeTensorView, MakeListView, AssumeDivBy, TileReduce
 
 
@@ -112,7 +112,7 @@ def _analyze_aliases_in_block(block: Block,
             _propagate(alias_tracker, op.base_ptr, op.result_var)
         elif isinstance(op, PointerOffset):
             _propagate(alias_tracker, op.pointer, op.result_var)
-        elif isinstance(op, ScalarToTile | TileBroadcast | TileReshape):
+        elif isinstance(op, TileBroadcast | TileReshape):
             # Needed for tiles of pointers produced by gather/scatter
             _propagate(alias_tracker, op.x, op.result_var)
         elif isinstance(op, Loop):

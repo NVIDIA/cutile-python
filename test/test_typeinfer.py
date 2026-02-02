@@ -39,7 +39,7 @@ def test_invalid_shape_dtype():
         ct.load(x, (0, 0), shape=(2, 2.0))
 
     msg = re.escape('Invalid argument "shape" of load(): Expected a tuple of integers,'
-                    ' but element #1 has type float32')
+                    ' but element #1 has type Tile[float32,()]')
 
     with pytest.raises(TileTypeError, match=msg):
         compile(kernel, (nd_tensor(2),))

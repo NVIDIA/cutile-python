@@ -63,10 +63,10 @@
 .. |arrays| replace:: :ref:`arrays <data-array-cuda-tile-array>`
 .. |Arrays| replace:: :ref:`Arrays <data-array-cuda-tile-array>`
 
-.. |tile| replace:: :ref:`tile <data-tile-cuda-tile-tile>`
-.. |Tile| replace:: :ref:`Tile <data-tile-cuda-tile-tile>`
-.. |tiles| replace:: :ref:`tiles <data-tile-cuda-tile-tile>`
-.. |Tiles| replace:: :ref:`Tiles <data-tile-cuda-tile-tile>`
+.. |tile| replace:: :ref:`tile <data-tiles-and-scalars>`
+.. |Tile| replace:: :ref:`Tile <data-tiles-and-scalars>`
+.. |tiles| replace:: :ref:`tiles <data-tiles-and-scalars>`
+.. |Tiles| replace:: :ref:`Tiles <data-tiles-and-scalars>`
 
 .. |data type| replace:: :ref:`data type <data-data-types>`
 .. |Data type| replace:: :ref:`Data type <data-data-types>`
@@ -102,10 +102,10 @@
 .. |tile spaces| replace:: :ref:`tile spaces <data-element-tile-space>`
 .. |Tile spaces| replace:: :ref:`Tile spaces <data-element-tile-space>`
 
-.. |scalar| replace:: :ref:`scalar <data-scalars>`
-.. |Scalar| replace:: :ref:`Scalar <data-scalars>`
-.. |scalars| replace:: :ref:`scalars <data-scalars>`
-.. |Scalars| replace:: :ref:`Scalars <data-scalars>`
+.. |scalar| replace:: :ref:`scalar <data-tiles-and-scalars>`
+.. |Scalar| replace:: :ref:`Scalar <data-tiles-and-scalars>`
+.. |scalars| replace:: :ref:`scalars <data-tiles-and-scalars>`
+.. |Scalars| replace:: :ref:`Scalars <data-tiles-and-scalars>`
 
 .. |Rounding Modes| replace:: :ref:`Rounding Modes <data-rounding-modes>`
 .. |Padding Modes| replace:: :ref:`Padding Modes <data-padding-modes>`

@@ -179,6 +179,7 @@ class Var:
             raise TileInternalError(f"Type of variable {self.name} not found")
 
     def set_type(self, ty: Type, force: bool = False):
+        assert isinstance(ty, Type)
         if not force:
             assert self.name not in self.ctx.typemap
         self.ctx.typemap[self.name] = ty
@@ -207,6 +208,7 @@ class Var:
         return self.get_type_allow_invalid() if ty is None else ty
 
     def set_loose_type(self, ty: Type, force: bool = False):
+        assert isinstance(ty, Type)
         if not force:
             assert self.name not in self.ctx._loose_typemap
         self.ctx._loose_typemap[self.name] = ty

@@ -31,15 +31,15 @@ from . import hir
 from .hir import ResolvedName
 from .op_impl import (
     impl, require_constant_int, require_constant_int_tuple,
-    require_signed_integer_scalar_or_0d_tile_type,
+    require_signed_integer_0d_tile_type,
     require_tile_type, normalize_axis, require_dtype_spec,
-    require_tile_or_scalar_type, require_constant_bool, require_optional_constant_enum,
+    require_constant_bool, require_optional_constant_enum,
     require_constant_str, require_array_type, require_tuple_type, require_constant_slice,
-    require_list_type, require_scalar_or_0d_tile_type,
+    require_list_type, require_0d_tile_type,
     require_index_or_index_tuple_type, require_constant_shape, require_constant_axis_order,
     require_constant_enum, require_optional_constant_int, require_optional_constant_bool,
-    require_optional_constant_str, PrintfValidator, require_tile_or_scalar_maybe_loose_type,
-    require_scalar_or_0d_tile_maybe_loose_type, require_bool, require_optional_range_type,
+    require_optional_constant_str, PrintfValidator, require_tile_maybe_loose_type,
+    require_0d_tile_maybe_loose_type, require_bool, require_optional_range_type,
     require_tile_or_tile_tuple_type, require_constant_scalar_tuple, require_constant_scalar,
     require_callable_type)
 from .ops_utils import (
@@ -65,7 +65,7 @@ from cuda.tile._datatype import (
 from cuda.tile._ir2bytecode import (
     lower_scan, BytecodeContext, typeid,
     generate_bytecode_for_block, convert_dtype, get_list_item_repr_size_in_words,
-    get_list_partition_view_tile_size, tensor_view_typeid, tensor_view_typeid_for_list
+    get_list_partition_view_tile_size, tensor_view_typeid, tensor_view_typeid_for_list, dtype_typeid
 )
 import cuda.tile._bytecode as bc
 from .._debug import CUDA_TILE_TESTING_DISABLE_DIV
@@ -197,7 +197,7 @@ async def loop_impl(body: hir.Block, iterable: Var):
             state.result_phi.propagate(initial_var)
         # Create an induction variable
         induction_var = builder.ir_ctx.make_temp(builder.loc)
-        induction_var.set_type(range_ty.dtype)
+        induction_var.set_type(make_tile_ty(range_ty.dtype, ()))
         scope.hir2ir_varmap[body.params[0].id] = induction_var
         body_params.append(induction_var)
 
@@ -664,8 +664,8 @@ def loosely_typed_const(value: Any,
 
 def strictly_typed_const(value: Any, ty: Type) -> Var:
     ret = add_operation(TypedConst, ty, value=value)
-    if not isinstance(ty, TileTy):
-        # We currently don't have a way to represent a tile constant
+    if not isinstance(ty, TileTy) or ty.ndim == 0:
+        # We currently don't have a way to represent an N-dimensional tile constant
         ret.set_constant(value)
     return ret
 
@@ -755,8 +755,8 @@ def _binop_propagate_constant(fn: str, x: Any, y: Any, type: Optional[Type]) -> 
 @impl(ct.less, fixed_args=["lt"])
 @impl(ct.less_equal, fixed_args=["le"])
 def comparison(fn: str, x: Var, y: Var) -> Var:
-    x_ty = require_tile_or_scalar_maybe_loose_type(x)
-    y_ty = require_tile_or_scalar_maybe_loose_type(y)
+    x_ty = require_tile_maybe_loose_type(x)
+    y_ty = require_tile_maybe_loose_type(y)
 
     if isinstance(x_ty, LooselyTypedScalar) and isinstance(y_ty, LooselyTypedScalar):
         return _binop_propagate_constant(fn, x_ty.value, y_ty.value, None)
@@ -809,10 +809,8 @@ def comparison_operator_impl(fn: str, x: Var, y: Var) -> Var:
             return comparison(fn, x, y)
 
 
-def _promote_and_broadcast_to(x: Var, ty: TileTy | DType) -> Var:
-    is_tile = isinstance(ty, TileTy)
-    shape = ty.shape_value if is_tile else ()
-    return broadcast_to(astype(x, get_dtype(ty)), shape, keep_scalar=not is_tile)
+def _promote_and_broadcast_to(x: Var, ty: TileTy) -> Var:
+    return broadcast_to(astype(x, ty.dtype), ty.shape_value)
 
 
 # Does not do broadcasting or type promotion, hence the name "Raw"
@@ -852,8 +850,8 @@ def raw_binary_bitwise(fn: str, x: Var, y: Var) -> Var:
 @impl(operator.or_, fixed_args=["or_"])
 @impl(operator.xor, fixed_args=["xor"])
 def binary_bitwise(fn: str, x: Var, y: Var) -> Var:
-    x_ty = require_tile_or_scalar_maybe_loose_type(x)
-    y_ty = require_tile_or_scalar_maybe_loose_type(y)
+    x_ty = require_tile_maybe_loose_type(x)
+    y_ty = require_tile_maybe_loose_type(y)
 
     if isinstance(x_ty, LooselyTypedScalar) and isinstance(y_ty, LooselyTypedScalar):
         return _binop_propagate_constant(fn, x_ty.value, y_ty.value, None)
@@ -923,8 +921,8 @@ def raw_bitwise_shift(fn: str, x: Var, y: Var) -> Var:
 @impl(operator.lshift, fixed_args=["lshift"])
 @impl(operator.rshift, fixed_args=["rshift"])
 def bitwise_shift(fn: str, x: Var, y: Var) -> Var:
-    x_ty = require_tile_or_scalar_maybe_loose_type(x)
-    y_ty = require_tile_or_scalar_maybe_loose_type(y)
+    x_ty = require_tile_maybe_loose_type(x)
+    y_ty = require_tile_maybe_loose_type(y)
 
     if isinstance(x_ty, LooselyTypedScalar) and isinstance(y_ty, LooselyTypedScalar):
         return _binop_propagate_constant(fn, x_ty.value, y_ty.value, None)
@@ -1045,8 +1043,8 @@ def raw_binary_arithmetic(fn: str, x: Var, y: Var, rounding_mode: Optional[Round
 
 def binary_arithmetic(fn: str, x: Var, y: Var, rounding_mode: Optional[RoundingMode] = None,
                       flush_to_zero: bool = False) -> Var:
-    x_ty = require_tile_or_scalar_maybe_loose_type(x)
-    y_ty = require_tile_or_scalar_maybe_loose_type(y)
+    x_ty = require_tile_maybe_loose_type(x)
+    y_ty = require_tile_maybe_loose_type(y)
 
     if get_dtype(x_ty) == get_dtype(y_ty) == datatype.bool_:
         raise TileTypeError(f'Binary arithmetic op `{fn}` does not support bool, '
@@ -1103,8 +1101,8 @@ def binary_arithmetic_impl_with_rd_and_ftz(fn: str, x: Var, y: Var,
 @impl(operator.mod)
 @impl(ct.mod)
 def mod(x: Var, y: Var) -> Var:
-    x_ty = require_tile_or_scalar_maybe_loose_type(x)
-    y_ty = require_tile_or_scalar_maybe_loose_type(y)
+    x_ty = require_tile_maybe_loose_type(x)
+    y_ty = require_tile_maybe_loose_type(y)
     if get_dtype(x_ty) == get_dtype(y_ty) == datatype.bool_:
         raise TileTypeError('Modulo operation does not support bool')
 
@@ -1236,9 +1234,10 @@ class GetArrayListItem(TypedOperation):
         item_tile_size = get_list_partition_view_tile_size(item_size)
         pv_tile_type_id = ctx.type_table.tile(ctx.type_table.I64, (1, item_tile_size))
         index = ctx.get_value(self.index)
-        index_i32 = ctx.cast(index, ctx.typeof(self.index), datatype.int32)
+        index_i32 = ctx.cast(index, ctx.typeof(self.index), make_tile_ty(datatype.int32, ()))
 
-        zero_i32 = ctx.constant(0, datatype.int32)
+        i32_ty = make_tile_ty(datatype.int32, ())
+        zero_i32 = ctx.constant(0, i32_ty)
 
         loaded_tile, _token = bc.encode_LoadViewTkoOp(
             ctx.builder,
@@ -1268,7 +1267,7 @@ class GetArrayListItem(TypedOperation):
                 ctx.builder,
                 i64_scalar_ty,
                 bc.encode_ExtractOp(ctx.builder, i64_1x1_ty, loaded_tile,
-                                    (zero_i32, ctx.constant(i, datatype.int32)),),
+                                    (zero_i32, ctx.constant(i, i32_ty)),),
             )
             for i in range(item_size)
         )
@@ -1285,7 +1284,7 @@ class GetArrayListItem(TypedOperation):
 
 def list_item(x: Var, index: Var) -> Var:
     list_ty = require_list_type(x)
-    index_ty = require_scalar_or_0d_tile_type(index)
+    index_ty = require_0d_tile_type(index)
     index_dtype = get_dtype(index_ty)
     if not (isinstance(index_dtype, DType) and is_integral(index_dtype)):
         raise TypeError(f"Index must be an integer scalar or 0D Tile, got {index_ty}")
@@ -1418,7 +1417,7 @@ def _unary_propagate_constant(fn: str, arg: Any) -> Any:
 
 def unary(fn: str, behavior: _UnaryBehavior, x: Var,
           rounding_mode: Optional[RoundingMode] = None, flush_to_zero: bool = False) -> Var:
-    x_type = require_tile_or_scalar_maybe_loose_type(x)
+    x_type = require_tile_maybe_loose_type(x)
     if isinstance(x_type, LooselyTypedScalar):
         res = _unary_propagate_constant(fn, x_type.value)
         return loosely_typed_const(res)
@@ -1458,7 +1457,7 @@ _UNARY_ANYTHING = _UnaryBehavior(_unary_preserve, _unary_preserve, _unary_preser
 
 @impl(operator.not_)
 def logical_not_impl(x: Var) -> Var:
-    ty = require_scalar_or_0d_tile_maybe_loose_type(x)
+    ty = require_0d_tile_maybe_loose_type(x)
 
     if isinstance(ty, LooselyTypedScalar):
         return loosely_typed_const(not ty.value)
@@ -1473,7 +1472,7 @@ def logical_not_impl(x: Var) -> Var:
 
 @impl(operator.pos)
 def pos_impl(x: Var):
-    ty = require_tile_or_scalar_maybe_loose_type(x)
+    ty = require_tile_maybe_loose_type(x)
 
     if isinstance(ty, LooselyTypedScalar):
         return loosely_typed_const(+ty.value)
@@ -1602,15 +1601,15 @@ def range_(args: Tuple[Var, ...]) -> Var:
     if not 1 <= len(args) <= 3:
         raise TileTypeError(f"Invalid number of arguments: {len(args)}")
     for arg in args:
-        require_signed_integer_scalar_or_0d_tile_type(arg)
+        require_signed_integer_0d_tile_type(arg)
 
     if len(args) == 1:
-        start = strictly_typed_const(0, datatype.default_int_type)
+        start = strictly_typed_const(0, make_tile_ty(datatype.default_int_type, ()))
         stop = args[0]
-        step = strictly_typed_const(1, datatype.default_int_type)
+        step = strictly_typed_const(1, make_tile_ty(datatype.default_int_type, ()))
     elif len(args) == 2:
         start, stop = args[0], args[1]
-        step = strictly_typed_const(1, datatype.default_int_type)
+        step = strictly_typed_const(1, make_tile_ty(datatype.default_int_type, ()))
     else:
         start, stop, step = args[0], args[1], args[2]
         # FIXME(Issue 314): Support negative step.
@@ -1640,12 +1639,9 @@ def dtype_constructor_impl(new_dtype: DType, x: Var) -> Var:
             const_value = new_dtype._py_type(x.get_constant())
         except (ValueError, TypeError):
             raise TileTypeError(f"Invalid argument type for {new_dtype}")
-        return strictly_typed_const(const_value, ty=new_dtype)
+        return strictly_typed_const(const_value, ty=make_tile_ty(new_dtype, ()))
 
-    x_ty = require_scalar_or_0d_tile_type(x)
-    if isinstance(x_ty, TileTy):
-        x = tile_item(x)
-
+    require_0d_tile_type(x)
     return astype(x, new_dtype)
 
 
@@ -1683,7 +1679,7 @@ class TileBid(TypedOperation):
 def bid(axis: int) -> Var:
     if axis not in (0, 1, 2):
         raise TileTypeError(f"Axis must be 0, 1, or 2, but {axis} was given.")
-    return add_operation(TileBid, datatype.default_int_type, axis=axis)
+    return add_operation(TileBid, make_tile_ty(datatype.default_int_type, ()), axis=axis)
 
 
 @impl(ct.bid)
@@ -1922,7 +1918,7 @@ def num_blocks(axis: Var) -> Var:
     axis = require_constant_int(axis)
     if axis not in (0, 1, 2):
         raise TileTypeError(f"Axis must be 0, 1, or 2, but {axis} was given.")
-    return add_operation(TileNumBlocks, datatype.default_int_type, axis=axis)
+    return add_operation(TileNumBlocks, make_tile_ty(datatype.default_int_type, ()), axis=axis)
 
 
 def _infer_sliced_shape(
@@ -1985,11 +1981,11 @@ def _infer_sliced_base_ptr_alignment(
 def array_slice_impl(array: Var, axis: Var, start: Var, stop: Var) -> Var:
     array_ty = require_array_type(array)
     axis = normalize_axis(require_constant_int(axis), array_ty.ndim)
-    require_signed_integer_scalar_or_0d_tile_type(start)
-    require_signed_integer_scalar_or_0d_tile_type(stop)
+    require_signed_integer_0d_tile_type(start)
+    require_signed_integer_0d_tile_type(stop)
 
     def maybe_const_int(v: Var):
-        if isinstance(v.get_type(), DType) and v.is_constant():
+        if v.is_constant():
             v_int = v.get_constant()
             assert isinstance(v_int, int)
             return v_int
@@ -2137,16 +2133,16 @@ class TileStore(TypedOperation):
 def tile_store(array: Var, index: tuple[Var, ...], tile: Var, order: Sequence[int],
                latency: Optional[int], allow_tma: Optional[bool]):
     array_ty = array.get_type()
-    ty = require_tile_or_scalar_type(tile)
+    ty = require_tile_type(tile)
     tile = astype(tile, array_ty.dtype)
-    if isinstance(ty, DType) or ty.ndim == 0:
+    if ty.ndim == 0:
         tile = reshape(tile, (1,) * array_ty.ndim)
     add_operation(TileStore, (), array=array, index=index, tile=tile, order=order,
                   latency=latency, allow_tma=allow_tma)
 
 
 def _implicit_cast(src: Var, target_dtype: DType, error_context: str) -> Var:
-    ty = require_tile_or_scalar_maybe_loose_type(src)
+    ty = require_tile_maybe_loose_type(src)
     try:
         check_implicit_cast(ty, target_dtype)
     except TileTypeError as e:
@@ -2248,8 +2244,8 @@ class LoadPointerTokenOrdered(Operation):
 def load_pointer(pointer: Var, mask: Optional[Var], padding_value: Optional[Var],
                  latency: Optional[int]) -> Var:
     pointer_ty = pointer.get_type()
-    shape = pointer_ty.shape_value if isinstance(pointer_ty, TileTy) else ()
-    result_ty = make_tile_ty(get_dtype(pointer_ty).pointee_type, shape)
+    shape = pointer_ty.shape_value
+    result_ty = make_tile_ty(pointer_ty.dtype.pointee_type, shape)
     return add_operation(LoadPointer, result_ty,
                          pointer=pointer, mask=mask, padding_value=padding_value, latency=latency)
 
@@ -2327,15 +2323,15 @@ class PointerOffset(TypedOperation):
 
 def pointer_offset(pointer: Var, offset: Var) -> Var:
     pointer_ty = pointer.get_type()
-    pointer_shape = pointer_ty.shape_value if isinstance(pointer_ty, TileTy) else ()
+    pointer_shape = pointer_ty.shape_value
 
     offset_ty = offset.get_type()
-    offset_shape = offset_ty.shape_value if isinstance(offset_ty, TileTy) else ()
+    offset_shape = offset_ty.shape_value
 
     common_shape = broadcast_shapes2(pointer_shape, offset_shape)
     pointer = broadcast_to(pointer, common_shape)
     offset = broadcast_to(offset, common_shape)
-    result_ty = make_tile_ty(get_dtype(pointer_ty), common_shape)
+    result_ty = make_tile_ty(pointer_ty.dtype, common_shape)
     return add_operation(PointerOffset, result_ty, pointer=pointer, offset=offset)
 
 
@@ -2344,11 +2340,11 @@ def gather_impl(array: Var, indices: Var, mask: Var, padding_value: Var,
                 check_bounds: Var, latency: Var) -> Var:
     pointer, final_mask = _gather_scatter_pointer_and_mask(array, indices, check_bounds, mask)
     pointer_ty = pointer.get_type()
-    pointer_shape = pointer_ty.shape_value if isinstance(pointer_ty, TileTy) else ()
+    pointer_shape = pointer_ty.shape_value
 
     # Handle the padding value
-    padding_ty = require_tile_or_scalar_type(padding_value)
-    padding_shape = padding_ty.shape_value if isinstance(padding_ty, TileTy) else ()
+    padding_ty = require_tile_type(padding_value)
+    padding_shape = padding_ty.shape_value
     if not is_shape_broadcastable_to(padding_shape, pointer_shape):
         raise TileTypeError(f"Padding shape {padding_shape} is not broadcastable to the"
                             f" index shape {pointer_ty}")
@@ -2368,7 +2364,7 @@ def scatter_impl(array: Var, indices: Var, value: Var, mask: Var,
                  check_bounds: Var, latency: Var):
     pointer, final_mask = _gather_scatter_pointer_and_mask(array, indices, check_bounds, mask)
     pointer_ty = pointer.get_type()
-    pointer_shape = pointer_ty.shape_value if isinstance(pointer_ty, TileTy) else ()
+    pointer_shape = pointer_ty.shape_value
 
     # Handle the `value`
     array_dtype = array.get_type().dtype
@@ -2383,8 +2379,8 @@ def scatter_impl(array: Var, indices: Var, value: Var, mask: Var,
 
 def _get_scatter_value(value: Var, pointer_shape: Tuple[int, ...], array_dtype: DType,
                        value_name: str, cast_dtype: bool = True) -> Var:
-    value_ty = require_tile_or_scalar_type(value)
-    value_shape = value_ty.shape_value if isinstance(value_ty, TileTy) else ()
+    value_ty = require_tile_type(value)
+    value_shape = value_ty.shape_value
 
     if not is_shape_broadcastable_to(value_shape, pointer_shape):
         raise TileTypeError(f"{value_name} shape {value_shape} is not broadcastable"
@@ -2415,8 +2411,8 @@ def _process_custom_mask(mask: Optional[Var], bounds_mask: Optional[Var],
         return bounds_mask
 
     # Validate the mask type
-    mask_ty = require_tile_or_scalar_type(mask)
-    mask_dtype = get_dtype(mask_ty)
+    mask_ty = require_tile_type(mask)
+    mask_dtype = mask_ty.dtype
 
     if not is_boolean(mask_dtype):
         raise TileTypeError(f"Custom mask must have boolean dtype, but got {mask_dtype}")
@@ -2467,8 +2463,7 @@ def _gather_scatter_pointer_and_mask(
             raise TileTypeError(f"Index {for_dim}has non-integer data type {ind_dtype}")
 
     # Calculate the common index shape
-    index_shapes = [indty.shape_value if isinstance(indty, TileTy) else ()
-                    for indty in index_types]
+    index_shapes = tuple(indty.shape_value for indty in index_types)
     common_shape = ()
     for shape in index_shapes:
         try:
@@ -2592,7 +2587,7 @@ def atomic_cas_impl(array: Var, indices: Var, expected: Var, desired: Var, check
 
     pointer, mask = _gather_scatter_pointer_and_mask(array, indices, check_bounds)
     pointer_ty = pointer.get_type()
-    pointer_shape = pointer_ty.shape_value if isinstance(pointer_ty, TileTy) else ()
+    pointer_shape = pointer_ty.shape_value
 
     # Handle the `expected` and `desired` values
     expected = _get_scatter_value(expected, pointer_shape, array_dtype, "Expected value")
@@ -2721,12 +2716,12 @@ def atomic_rmw_impl(int_mode: Optional[AtomicRMWMode],
 
     pointer, mask = _gather_scatter_pointer_and_mask(array, indices, check_bounds)
     pointer_ty = pointer.get_type()
-    pointer_shape = pointer_ty.shape_value if isinstance(pointer_ty, TileTy) else ()
+    pointer_shape = pointer_ty.shape_value
 
     update = _get_scatter_value(update, pointer_shape, array_dtype, "Update",
                                 cast_dtype=not bitwise)
     if bitwise:
-        update_dtype = get_dtype(update.get_type())
+        update_dtype = update.get_type().dtype
         if update_dtype != array_dtype:
             raise TileTypeError("Bitwise atomic read-modify-write operations require"
                                 f" that the update dtype ({update_dtype}) exactly matches"
@@ -2800,7 +2795,7 @@ class NumTiles(TypedOperation):
 
 
 def num_tiles(array: Var, axis: int, shape: Sequence[int], order: Sequence[int]) -> Var:
-    return add_operation(NumTiles, datatype.default_int_type, array=array,
+    return add_operation(NumTiles, make_tile_ty(datatype.default_int_type, ()), array=array,
                          axis=axis, shape=shape, order=order)
 
 
@@ -2831,7 +2826,7 @@ def full(shape: Sequence[int], fill_value: Var, dtype: DType) -> Var:
 
 @impl(ct.full)
 def full_impl(shape: Var, fill_value: Var, dtype: Var) -> Var:
-    require_scalar_or_0d_tile_type(fill_value)
+    require_0d_tile_type(fill_value)
     shape = require_constant_shape(shape, allow_single_int=True)
     dtype = require_dtype_spec(dtype)
     return full(shape, fill_value, dtype)
@@ -3002,7 +2997,7 @@ class TileReduce(TypedOperation):
         param_type_ids = []
         for id_val, x in zip(self.identities, self.xs, strict=True):
             x_dtype = get_dtype(x.get_type())
-            x_dtype_id = typeid(ctx.type_table, x_dtype, wrap_scalars=False)
+            x_dtype_id = dtype_typeid(ctx.type_table, x_dtype)
             if datatype.is_float(x_dtype):
                 x_dtype_bc = x_dtype._bytecode_type
                 attr = bc.Float(float(id_val), x_dtype_bc, ctx.type_table)
@@ -3069,12 +3064,8 @@ async def raw_reduce(xs: tuple[Var, ...], identities: tuple[bool | int | float],
         body_results = await body(tuple(lhs_vars), tuple(rhs_vars))
         for body_res, x in zip(body_results, xs, strict=True):
             body_res_ty = body_res.get_type()
-            if isinstance(body_res_ty, TileTy):
-                assert body_res_ty.shape_value == ()
-                assert body_res_ty.dtype == x.get_type().dtype
-            else:
-                assert isinstance(body_res_ty, DType)
-                assert body_res_ty == x.get_type().dtype
+            assert body_res_ty.shape_value == ()
+            assert body_res_ty.dtype == x.get_type().dtype
 
         add_operation(EndBranch, (), outputs=body_results)
 
@@ -3173,10 +3164,10 @@ async def reduce_impl(x: Var, axis: Var, func: Var, identity: Var, keepdims: Var
         for i, (xi, r) in enumerate(zip(xs, results, strict=True)):
             r_ty = r.get_type()
             extra_ctx = f" at position #{i}" if tuple_mode else ""
-            if not isinstance(r_ty, TileTy | DType):
+            if not isinstance(r_ty, TileTy):
                 raise TileTypeError(f"Reduction function returned"
                                     f" a value of non-tile type {r_ty}{extra_ctx}")
-            if isinstance(r_ty, TileTy) and r_ty.ndim > 0:
+            if r_ty.ndim > 0:
                 raise TileTypeError(f"Reduction function returned"
                                     f" a tile of non-scalar shape {r_ty.shape_value}{extra_ctx}")
             error_ctx = f"Reduction function returned a tile of unexpected dtype{extra_ctx}"
@@ -3497,9 +3488,9 @@ def raw_where(cond: Var, x: Var, y: Var) -> Var:
 
 @impl(ct.where)
 def where(cond, x, y) -> Var:
-    cond_ty = require_tile_or_scalar_maybe_loose_type(cond)
-    x_ty = require_tile_or_scalar_maybe_loose_type(x)
-    y_ty = require_tile_or_scalar_maybe_loose_type(y)
+    cond_ty = require_tile_maybe_loose_type(cond)
+    x_ty = require_tile_maybe_loose_type(x)
+    y_ty = require_tile_maybe_loose_type(y)
 
     xy_ty = promote_types(x_ty, y_ty)
     dtype = get_dtype(xy_ty)
@@ -3534,7 +3525,7 @@ class TilePrintf(TypedOperation):
 @impl(ct.printf)
 def printf_impl(format: Var, args: Tuple[Var, ...]) -> None:
     format_str = require_constant_str(format)
-    arg_types = tuple(require_tile_or_scalar_type(x) for x in args)
+    arg_types = tuple(require_tile_type(x) for x in args)
     parsed_format = PrintfValidator.parse_format(format_str, arg_types)
     add_operation(TilePrintf, (), format=parsed_format, args=args)
 
@@ -3555,31 +3546,12 @@ class TileAssert(TypedOperation):
 
 @impl(ct.assert_)
 def assert_impl(cond: Var, message: Var) -> None:
-    ty = require_tile_or_scalar_type(cond)
+    ty = require_tile_type(cond)
     if get_dtype(ty) != datatype.bool_:
         raise TileTypeError(f"Type of condition must be bool, got {ty}")
     msg_str = require_optional_constant_str(message)
     msg_str = "" if msg_str is None else msg_str
     add_operation(TileAssert, (), cond=cond, message=msg_str)
-
-
-# Covert a scalar to 0d tile
-class ScalarToTile(TypedOperation):
-    def __init__(self, x: Var, result_var: Var, loc: Loc):
-        super().__init__("scalar_to_tile", operands={"x": x}, result_vars=[result_var], loc=loc)
-
-    @override
-    def generate_bytecode(self, ctx: BytecodeContext) -> bc.Value:
-        return ctx.get_value(self.x)
-
-
-def scalar_to_tile(x: Var) -> Var:
-    ty = require_scalar_or_0d_tile_type(x)
-    if isinstance(ty, TileTy):
-        return x
-    else:
-        res_ty = make_tile_ty(ty, ())
-        return add_operation(ScalarToTile, res_ty, x=x)
 
 
 class TileBroadcast(TypedOperation):
@@ -3593,12 +3565,9 @@ class TileBroadcast(TypedOperation):
         return bc.encode_BroadcastOp(ctx.builder, res_typeid, x_value)
 
 
-def broadcast_to(x: Var, shape: Sequence[int], *, keep_scalar: bool = False):
-    x_ty = require_tile_or_scalar_type(x)
-    if isinstance(x_ty, TileTy):
-        old_shape = x_ty.shape_value
-    else:
-        old_shape = ()
+def broadcast_to(x: Var, shape: Sequence[int]):
+    x_ty = require_tile_type(x)
+    old_shape = x_ty.shape_value
 
     if not is_shape_broadcastable_to(old_shape, shape):
         raise TileTypeError(f"Shape {old_shape} is not broadcastable to {tuple(shape)}")
@@ -3609,10 +3578,7 @@ def broadcast_to(x: Var, shape: Sequence[int], *, keep_scalar: bool = False):
         x = reshape(x, old_shape)
 
     if old_shape == shape:
-        if len(shape) == 0 and not keep_scalar:
-            return scalar_to_tile(x)
-        else:
-            return x
+        return x
     else:
         result_ty = make_tile_ty(get_dtype(x_ty), shape)
         return add_operation(TileBroadcast, result_ty, x=x)
@@ -3638,16 +3604,15 @@ class TileAsType(TypedOperation):
 
 
 def astype(x: Var, dtype: DType) -> Var:
-    x_ty = require_tile_or_scalar_type(x)
-    from_dtype = get_dtype(x_ty)
-    if from_dtype == dtype:
+    x_ty = require_tile_type(x)
+    if x_ty.dtype == dtype:
         return x
 
     if x.is_constant():
         val = dtype._py_type(x.get_constant())
-        return strictly_typed_const(val, dtype)
+        return strictly_typed_const(val, make_tile_ty(dtype, ()))
 
-    result_ty = dtype if isinstance(x_ty, DType) else make_tile_ty(dtype, x_ty.shape_value)
+    result_ty = make_tile_ty(dtype, x_ty.shape_value)
     return add_operation(TileAsType, result_ty, x=x)
 
 
@@ -3742,8 +3707,8 @@ class TileReshape(TypedOperation):
 
 
 def reshape(x: Var, new_shape: Tuple[int, ...]) -> Var:
-    x_ty = require_tile_or_scalar_type(x)
-    x_shape = x_ty.shape_value if isinstance(x_ty, TileTy) else ()
+    x_ty = require_tile_type(x)
+    x_shape = x_ty.shape_value
     numel = math.prod(x_shape)
 
     negative_one_index = None
@@ -3897,31 +3862,9 @@ def extract_impl(x: Var, index: Var, shape: Var) -> Var:
     return reshape(result, orig_shape)
 
 
-class TileItem(TypedOperation):
-    def __init__(self, x: Var, result_var: Var, loc: Loc):
-        super().__init__(
-            "tile_item", operands={"x": x},
-            result_vars=[result_var], loc=loc
-        )
-
-    @override
-    def generate_bytecode(self, ctx: BytecodeContext):
-        x_value = ctx.get_value(self.x)
-        x_type_id = ctx.typeid_of(self.x)
-        res_type_id = ctx.typeid_of(self.result_var)
-        if res_type_id == x_type_id:
-            return x_value
-        else:
-            return bc.encode_ReshapeOp(ctx.builder, res_type_id, x_value)
-
-
 @impl(ct._m_tile_item)
 def tile_item(tile: Var) -> Var:
-    x_ty = require_tile_type(tile)
-    if x_ty.numel != 1:
-        raise TileTypeError(f"Expected a tile of size 1 to get scalar item, "
-                            f"got a tile of size {x_ty.numel}")
-    return add_operation(TileItem, x_ty.dtype, x=tile)
+    return reshape(tile, ())
 
 
 def store_var(local_idx: int, value: Var, loc: Loc | None = None):

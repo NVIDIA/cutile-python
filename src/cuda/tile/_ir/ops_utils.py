@@ -7,6 +7,7 @@ import math
 from dataclasses import dataclass
 from typing import Optional, Tuple, Dict, Any, Sequence
 from enum import Enum
+
 from cuda.tile import _datatype as datatype
 
 from cuda.tile._numeric_semantics import RoundingMode, PaddingMode
@@ -186,28 +187,17 @@ def memory_order_has_release(memory_order: MemoryOrder):
     return memory_order in (MemoryOrder.RELEASE, MemoryOrder.ACQ_REL)
 
 
-def get_dtype(ty: TileTy | datatype.DType | PointerTy | LooselyTypedScalar) \
-        -> datatype.DType | PointerTy:
-    if isinstance(ty, TileTy):
-        return ty.dtype
-    elif isinstance(ty, datatype.DType):
-        return ty
-    elif isinstance(ty, PointerTy):
-        return ty
-    elif isinstance(ty, LooselyTypedScalar):
-        return typeof_pyval(ty.value)
-    else:
-        raise TypeError(f"Cannot get dtype from {ty}")
+def get_dtype(ty: TileTy | LooselyTypedScalar) -> datatype.DType | PointerTy:
+    if isinstance(ty, LooselyTypedScalar):
+        ty = typeof_pyval(ty.value)
+    assert isinstance(ty, TileTy)
+    return ty.dtype
 
 
-def change_dtype(ty: TileTy | datatype.DType | PointerTy,
-                 new_dtype: datatype.DType | PointerTy) \
-        -> TileTy | datatype.DType | PointerTy:
-    if isinstance(ty, TileTy):
-        return TileTy(new_dtype, ty.shape)
-    else:
-        assert isinstance(ty, datatype.DType | PointerTy)
-        return new_dtype
+def change_dtype(ty: TileTy, new_dtype: datatype.DType | PointerTy) \
+        -> TileTy:
+    assert isinstance(ty, TileTy)
+    return TileTy(new_dtype, ty.shape)
 
 
 def check_shapes_eq(a: TileTy, b: TileTy,
@@ -235,8 +225,9 @@ padding_mode_to_bytecode = {
 def _promote_dtype_and_loosely_typed_constant(dtype: DType,
                                               loose_const: Any,
                                               force_float: bool) -> DType:
-    loose_dtype = typeof_pyval(loose_const)
-    assert isinstance(loose_dtype, DType)
+    loose_ty = typeof_pyval(loose_const)
+    assert isinstance(loose_ty, TileTy) and loose_ty.ndim == 0
+    loose_dtype = loose_ty.dtype
 
     cat = NumericDTypeCategories.get_category(dtype)
     if cat == NumericDTypeCategory.RestrictedFloat:
@@ -265,11 +256,11 @@ def promote_dtypes(t1: DType | LooselyTypedScalar,
                    force_float: bool = False) -> DType:
     match t1, t2:
         case LooselyTypedScalar(val1), LooselyTypedScalar(val2):
-            dtype1 = typeof_pyval(val1)
-            assert isinstance(dtype1, DType)
-            dtype2 = typeof_pyval(val2)
-            assert isinstance(dtype2, DType)
-            return _DTypePromotionImpl.promote_dtypes(dtype1, dtype2, force_float)
+            type1 = typeof_pyval(val1)
+            assert isinstance(type1, TileTy)
+            type2 = typeof_pyval(val2)
+            assert isinstance(type2, TileTy)
+            return _DTypePromotionImpl.promote_dtypes(type1.dtype, type2.dtype, force_float)
         case LooselyTypedScalar(val), dtype:
             return _promote_dtype_and_loosely_typed_constant(dtype, val, force_float)
         case dtype, LooselyTypedScalar(val):
@@ -278,23 +269,14 @@ def promote_dtypes(t1: DType | LooselyTypedScalar,
             return _DTypePromotionImpl.promote_dtypes(dtype1, dtype2, force_float)
 
 
-def promote_types(t1: TileTy | DType | LooselyTypedScalar,
-                  t2: TileTy | DType | LooselyTypedScalar,
-                  force_float: bool = False) -> TileTy | DType:
-    dtype_1 = t1 if isinstance(t1, LooselyTypedScalar) else get_dtype(t1)
-    dtype_2 = t2 if isinstance(t2, LooselyTypedScalar) else get_dtype(t2)
+def promote_types(t1: TileTy | LooselyTypedScalar,
+                  t2: TileTy | LooselyTypedScalar,
+                  force_float: bool = False) -> TileTy:
+    dtype_1 = t1 if isinstance(t1, LooselyTypedScalar) else t1.dtype
+    dtype_2 = t2 if isinstance(t2, LooselyTypedScalar) else t2.dtype
     dtype = promote_dtypes(dtype_1, dtype_2, force_float)
-
-    is_tile_1 = isinstance(t1, TileTy)
-    is_tile_2 = isinstance(t2, TileTy)
-
-    if is_tile_1 or is_tile_2:
-        shape_1 = t1.shape_value if is_tile_1 else ()
-        shape_2 = t2.shape_value if is_tile_2 else ()
-        shape = broadcast_shapes2(shape_1, shape_2)
-        return make_tile_ty(dtype, shape)
-    else:
-        return dtype
+    shape = broadcast_shapes2(t1.shape_value, t2.shape_value)
+    return make_tile_ty(dtype, shape)
 
 
 def _is_implicit_cast_ok(src_dtype: DType, target_dtype: DType) -> bool:
@@ -305,10 +287,10 @@ def _is_implicit_cast_ok(src_dtype: DType, target_dtype: DType) -> bool:
     return common_dtype == target_dtype
 
 
-def check_implicit_cast(src_ty: TileTy | DType | LooselyTypedScalar, target_dtype: DType):
-    src_dtype = get_dtype(src_ty)
+def check_implicit_cast(src_ty: TileTy | LooselyTypedScalar, target_dtype: DType):
     if isinstance(src_ty, LooselyTypedScalar):
-        src_cat = NumericDTypeCategories.get_category(src_dtype)
+        cocnrete_ty = typeof_pyval(src_ty.value)
+        src_cat = NumericDTypeCategories.get_category(cocnrete_ty.dtype)
         dst_cat = NumericDTypeCategories.get_category(target_dtype)
         if dst_cat == NumericDTypeCategory.Boolean:
             if src_cat not in (NumericDTypeCategory.Boolean, NumericDTypeCategory.Integral) \
@@ -321,8 +303,9 @@ def check_implicit_cast(src_ty: TileTy | DType | LooselyTypedScalar, target_dtyp
             if not (min <= src_ty.value <= max):
                 raise TileValueError(f"{src_ty.value} is out of range of {target_dtype}")
     else:
-        if not _is_implicit_cast_ok(src_dtype, target_dtype):
-            raise TileTypeError(f"cannot implicitly cast {src_dtype} to {target_dtype}")
+        assert isinstance(src_ty, TileTy)
+        if not _is_implicit_cast_ok(src_ty.dtype, target_dtype):
+            raise TileTypeError(f"cannot implicitly cast {src_ty.dtype} to {target_dtype}")
 
 
 class BroadcastError(Exception):
