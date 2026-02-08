@@ -34,8 +34,9 @@ def test():
     tile_size = 2**4
     grid = (ct.cdiv(vector_size, tile_size), 1, 1)
 
-    a = cp.random.uniform(-1, 1, vector_size)
-    b = cp.random.uniform(-1, 1, vector_size)
+    rng = cp.random.default_rng()
+    a = rng.random(vector_size)
+    b = rng.random(vector_size)
     c = cp.zeros_like(a)
 
     # Launch kernel

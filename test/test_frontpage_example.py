@@ -30,8 +30,9 @@ def vector_add(a: cupy.ndarray, b: cupy.ndarray, result: cupy.ndarray):
 import numpy as np
 
 def test_vector_add():
-    a = cupy.random.uniform(-5, 5, 128)
-    b = cupy.random.uniform(-5, 5, 128)
+    rng = cupy.random.default_rng()
+    a = rng.random(128)
+    b = rng.random(128)
     result = cupy.zeros_like(a)
 
     vector_add(a, b, result)
@@ -42,4 +43,3 @@ def test_vector_add():
 
     expected = a_np + b_np
     np.testing.assert_array_almost_equal(result_np, expected)
-

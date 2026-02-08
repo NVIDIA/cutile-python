@@ -1,6 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) <2025> NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 #
 # SPDX-License-Identifier: Apache-2.0
+import importlib.metadata
 import inspect
 import math
 import re
@@ -321,6 +322,7 @@ class _CompilerBinary:
     path: str
     bin_path: str
     ld_path: str
+    pass_cuda_home_var: bool
 
     def run(self,
             args: list[str],
@@ -335,6 +337,9 @@ class _CompilerBinary:
             env = os.environ.copy()
             env['LD_LIBRARY_PATH'] = self.ld_path
             env['PATH'] = self.bin_path
+            if not self.pass_cuda_home_var:
+                for key in {"CUDA_HOME", "CUDA_PATH"}:
+                    env.pop(key, None)
             subprocess.run(command + flags, env=env, check=True, capture_output=True,
                            timeout=timeout_sec)
         except subprocess.CalledProcessError as e:
@@ -345,6 +350,54 @@ class _CompilerBinary:
                        "Using a smaller tile size may reduce compilation time.")
             raise TileCompilerTimeoutError(message, ' '.join(flags),
                                            _try_get_compiler_version(self.path))
+
+
+_PIP_TILEIRAS_PACKAGES = (
+    "nvidia-cuda-tileiras",
+    "nvidia-cuda-nvcc",
+    "nvidia-nvvm",
+)
+
+
+def _get_major_minor(version_str: str) -> tuple[int, int]:
+    parts = version_str.split(".")
+    return int(parts[0]), int(parts[1])
+
+
+def _find_pip_tileiras() -> Optional[str]:
+    versions: dict[str, str] = {}
+    for pkg in _PIP_TILEIRAS_PACKAGES:
+        try:
+            versions[pkg] = importlib.metadata.version(pkg)
+        except importlib.metadata.PackageNotFoundError:
+            return None
+
+    majors_minors = {pkg: _get_major_minor(v) for pkg, v in versions.items()}
+    unique = set(majors_minors.values())
+    if len(unique) != 1:
+        details = ", ".join(f"{pkg} {versions[pkg]}" for pkg in _PIP_TILEIRAS_PACKAGES)
+        warnings.warn(
+            f"Installed NVIDIA pip packages have mismatched versions ({details}). "
+            "Falling back to system tileiras.",
+            stacklevel=3,
+        )
+        return None
+
+    try:
+        import nvidia.cu13 as cu13_pkg
+        cu13_root = cu13_pkg.__path__[0]
+    except (ImportError, AttributeError, IndexError):
+        logger.debug("Fail to get nvidia.cu13 package path.", exc_info=True)
+        return None
+
+    pip_bin_dir = os.path.join(cu13_root, "bin")
+    res = shutil.which("tileiras", path=pip_bin_dir)
+    if res is None:
+        logger.debug("Fail to find tileiras under nvidia.cu13 path.")
+        return None
+
+    logger.debug(f"Found tileiras from pip package: {res}")
+    return res
 
 
 @cache
@@ -360,12 +413,18 @@ def _find_compiler_bin() -> _CompilerBinary:
         if (res := shutil.which("tileiras", path=deps_bin_dir)):
             bin_path = deps_bin_dir + ":" + bin_path
             ld_path = deps_lib_dir + ":" + ld_path
-            return _CompilerBinary(res, bin_path, ld_path)
+            return _CompilerBinary(res, bin_path, ld_path, pass_cuda_home_var=False)
+
+    # search from nvidia-cuda-tileiras pip package
+    logger.debug("Searching tileiras from nvidia pip package")
+    res = _find_pip_tileiras()
+    if res is not None:
+        return _CompilerBinary(res, bin_path, ld_path, pass_cuda_home_var=False)
 
     # search under PATH
     logger.debug(f"Searching tileiras: {bin_path}")
     if (res := shutil.which("tileiras")):
-        return _CompilerBinary(res, bin_path, ld_path)
+        return _CompilerBinary(res, bin_path, ld_path, pass_cuda_home_var=True)
 
     # search under CUDA_HOME
     if (cuda_home := _get_cuda_home()):
@@ -373,17 +432,20 @@ def _find_compiler_bin() -> _CompilerBinary:
         logger.debug(f"Searching tileiras: {cuda_bin_path}")
         if (res := shutil.which("tileiras", path=cuda_bin_path)):
             bin_path = bin_path + ":" + cuda_bin_path
-            return _CompilerBinary(res, bin_path, ld_path)
+            return _CompilerBinary(res, bin_path, ld_path, pass_cuda_home_var=True)
 
     # Try default CUDA Toolkit installation paths as a fallback
     res = _find_compiler_in_default_cuda_toolkit_paths()
     if res is not None:
         tileiras_path, bin_path = res
-        return _CompilerBinary(tileiras_path, bin_path, ld_path)
+        return _CompilerBinary(tileiras_path, bin_path, ld_path, pass_cuda_home_var=False)
 
     cuda_home_var = "CUDA_PATH" if is_windows() else "CUDA_HOME"
-    raise FileNotFoundError(f"'tileiras' compiler not found, "
-                            f"make sure it is available in $PATH or ${cuda_home_var}/bin")
+    raise FileNotFoundError("'tileiras' compiler not found, "
+                            "make sure it is available as a python package via "
+                            "`pip install cuda-tile[tileiras]` or "
+                            f"available in $PATH or ${cuda_home_var}/bin via system CTK (13.1+)"
+                            " installation.")
 
 
 @cache

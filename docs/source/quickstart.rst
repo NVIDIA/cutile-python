@@ -14,19 +14,34 @@ This page will guide you through getting setup and running with cuTile Python, i
 Prerequisites
 -------------------------------------------------------------------------------
 
-cuTile Python requires the following:   
+cuTile Python requires the following:
 
     - Linux x86_64, Linux aarch64 or Windows x86_64
-    - A GPU with compute capability 10.x or 12.x
+    - A GPU with compute capability 10.x, 11.x or 12.x
     - NVIDIA Driver r580 or later
-    - CUDA Toolkit 13.1 or later
     - Python version 3.10, 3.11, 3.12 or 3.13
 
 
 Installing cuTile Python
 -------------------------------------------------------------------------------
 
-With the :ref:`prerequisites <quickstart-prereqs>` met, installing cuTile Python is a simple pip install:
+cuTile Python depends on CUDA TileIR compiler ``tileiras``, which futher depends on ``ptxas`` and ``libnvvm``
+from the CUDA Toolkit.
+
+If your system does not have system-wide CUDA Toolkit (13.1+), you can install cuTile Python along with ``[tileiras]``,
+which installs ``nvidia-cuda-tileiras``, ``nvidia-cuda-nvcc`` and
+``nvidia-nvvm`` into your Python virtual environment.
+
+.. code-block::  bash
+
+    pip install cuda-tile[tileiras]
+
+Note: the package versions for ``nvidia-cuda-tileiras``, ``nvidia-cuda-nvcc`` and
+``nvidia-nvvm`` must match up to the same major.minor version.
+
+
+Alternatively if you already have system-wide CUDA Toolkit (13.1+) installed, you can install cuTile Python as a
+standalone package. cuTile automatically searches for ``tileiras`` from the location of CUDA Toolkit.
 
 .. code-block::  bash
 

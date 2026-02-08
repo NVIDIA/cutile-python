@@ -37,6 +37,13 @@ dependencies = [
   "typing-extensions",
 ]
 
+[project.optional-dependencies]
+tileiras = [
+  "nvidia-cuda-tileiras>=13.2,<13.3",
+  "nvidia-cuda-nvcc>=13.2,<13.3",
+  "nvidia-nvvm>=13.2,<13.3",
+]
+
 [project.urls]
 Homepage = "https://github.com/nvidia/cutile-python"
 Repository = "https://github.com/nvidia/cutile-python"

@@ -31,8 +31,9 @@ def vector_add_kernel(a, b, result):
     ct.store(result, index=(block_id,), tile=result_tile)
 
 # Generate input arrays
-a = cupy.random.uniform(-5, 5, 128)
-b = cupy.random.uniform(-5, 5, 128)
+rng = cupy.random.default_rng()
+a = rng.random(128)
+b = rng.random(128)
 expected = cupy.asnumpy(a) + cupy.asnumpy(b)
 
 # Allocate an output array and launch the kernel
