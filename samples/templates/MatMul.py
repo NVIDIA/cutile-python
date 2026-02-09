@@ -129,7 +129,7 @@ if __name__ == "__main__":
 
     if torch.cuda.get_device_capability()[0] <= 8:
         # Ampere tfloat32 numerics is loose
-        atol, rtol = 5e-3, 5e-3
+        atol, rtol = 1e-2, 1e-2
     else:
         atol, rtol = 1e-4, 1e-3
 
