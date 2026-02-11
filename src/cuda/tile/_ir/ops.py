@@ -6,7 +6,9 @@ import math
 import operator
 from contextlib import contextmanager
 from dataclasses import dataclass
-from typing import Sequence, Tuple, Optional, Union, Any, List, Callable, Iterator, Iterable
+from typing import (
+    Literal, Sequence, Tuple, Optional, Union, Any, List, Callable, Iterator, Iterable,
+)
 
 from typing_extensions import override
 
@@ -64,7 +66,7 @@ from cuda.tile._datatype import (
     DType, is_integral, is_float, is_signed, is_boolean, is_restricted_float,
 )
 from cuda.tile._ir2bytecode import (
-    lower_scan, BytecodeContext, typeid,
+    BytecodeContext, typeid,
     generate_bytecode_for_block, convert_dtype, get_list_item_repr_size_in_words,
     get_list_partition_view_tile_size, tensor_view_typeid, tensor_view_typeid_for_list, dtype_typeid
 )
@@ -320,6 +322,8 @@ async def loop_impl(body: hir.Block, iterable: Var):
     # around the helper function's body.
     if builder.reduction_body:
         raise TileSyntaxError("Loops inside reduction body are not supported")
+    if builder.scan_body:
+        raise TileSyntaxError("Loops inside scan body are not supported")
 
 
 def _have_nested_jump(calls: Sequence[hir.Call]) -> bool:
@@ -405,6 +409,9 @@ async def if_else_impl(cond: Var, then_block: hir.Block, else_block: hir.Block) 
     builder = Builder.get_current()
     if builder.reduction_body:
         raise TileSyntaxError("Branching inside reduction body is not supported."
+                              " Consider ct.where() as a workaround.")
+    if builder.scan_body:
+        raise TileSyntaxError("Branching inside scan body is not supported."
                               " Consider ct.where() as a workaround.")
 
     # Get the total number of results by adding the number of stored variables.
@@ -3061,11 +3068,17 @@ class TileReduce(TypedOperation):
         return nested_builder.done()
 
 
-async def raw_reduce(xs: tuple[Var, ...], identities: tuple[bool | int | float], axis: int,
-                     body: Callable) -> tuple[Var, ...]:
+async def _get_reduce_scan_body_block(
+    xs: tuple[Var, ...],
+    body: Callable,
+    *,
+    op_name: Literal["reduction", "scan"],
+) -> tuple[Block, tuple[TileTy, ...]]:
+    """Build body block for reduce/scan. Caller passes result_shape; returns
+    (body_block, result_types)."""
     builder = Builder.get_current()
-    if builder.reduction_body:
-        raise TileSyntaxError("Nested reduction is not supported")
+    if builder.reduction_body or builder.scan_body:
+        raise TileSyntaxError("Nested scan/reduction is not supported")
 
     block_params = []
     lhs_vars = []
@@ -3086,13 +3099,10 @@ async def raw_reduce(xs: tuple[Var, ...], identities: tuple[bool | int | float],
         lhs_vars.append(block_params[-2])
         rhs_vars.append(block_params[-1])
 
-    assert 0 <= axis < len(input_shape)
-    result_shape = input_shape[:axis] + input_shape[axis+1:]
-    result_types = tuple(make_tile_ty(x.get_type().dtype, result_shape) for x in xs)
-
-    assert len(xs) == len(identities)
-
-    with nested_block(builder.loc, reduction_body=True) as body_block:
+    with nested_block(
+            builder.loc,
+            reduction_body=(op_name == "reduction"),
+            scan_body=(op_name == "scan")) as body_block:
         body_block.params = tuple(block_params)
         body_results = await body(tuple(lhs_vars), tuple(rhs_vars))
         for body_res, x in zip(body_results, xs, strict=True):
@@ -3101,6 +3111,21 @@ async def raw_reduce(xs: tuple[Var, ...], identities: tuple[bool | int | float],
             assert body_res_ty.dtype == x.get_type().dtype
 
         add_operation(EndBranch, (), outputs=body_results)
+
+    return body_block
+
+
+async def raw_reduce(xs: tuple[Var, ...], identities: tuple[bool | int | float], axis: int,
+                     body: Callable) -> tuple[Var, ...]:
+    input_shape = require_tile_type(xs[0]).shape_value
+
+    assert 0 <= axis < len(input_shape)
+    result_shape = input_shape[:axis] + input_shape[axis + 1:]
+    result_types = tuple(make_tile_ty(x.get_type().dtype, result_shape) for x in xs)
+
+    assert len(xs) == len(identities)
+
+    body_block = await _get_reduce_scan_body_block(xs, body, op_name="reduction")
 
     return add_operation(TileReduce, result_types, xs=xs, identities=identities, axis=axis,
                          body=body_block)
@@ -3145,6 +3170,51 @@ async def reduce(xs: tuple[Var, ...], identities: tuple[bool | int | float, ...]
     return tuple(reshape(x, result_shape) for x in xs)
 
 
+def _make_reduce_scan_body(
+    func: Var,
+    tuple_mode: bool,
+    xs: tuple[Var, ...],
+    op_name: Literal["Reduction", "Scan"],
+) -> Callable:
+    """Build the shared body(lhs, rhs) used by reduce_impl and scan_impl."""
+
+    async def body(lhs, rhs):
+        from .._passes.hir2ir import call
+        res = await call(func, (*lhs, *rhs), {})
+        assert isinstance(res, Var)
+        res_ty = res.get_type()
+        if tuple_mode:
+            if not isinstance(res_ty, TupleTy):
+                raise TileTypeError(f"{op_name} function returns a value of type"
+                                    f" {res_ty}, but a tuple was expected", res.loc)
+            if len(res_ty.value_types) != len(xs):
+                raise TileTypeError(f"{op_name} function must return a tuple of {len(xs)} values"
+                                    f" to match the number of inputs, but a tuple of length"
+                                    f" {len(res_ty.value_types)} was found.")
+            res_tupval = res.get_aggregate()
+            assert isinstance(res_tupval, TupleValue)
+            results = res_tupval.items
+        else:
+            results = (res,)
+
+        cast_results = []
+        for i, (xi, r) in enumerate(zip(xs, results, strict=True)):
+            r_ty = r.get_type()
+            extra_ctx = f" at position #{i}" if tuple_mode else ""
+            if not isinstance(r_ty, TileTy):
+                raise TileTypeError(f"{op_name} function returned"
+                                    f" a value of non-tile type {r_ty}{extra_ctx}")
+            if r_ty.ndim > 0:
+                raise TileTypeError(f"{op_name} function returned"
+                                    f" a tile of non-scalar shape {r_ty.shape_value}{extra_ctx}")
+            error_ctx = f"{op_name} function returned a tile of unexpected dtype{extra_ctx}"
+            cast_results.append(_implicit_cast(r, xi.get_type().dtype, error_ctx))
+
+        return tuple(cast_results)
+
+    return body
+
+
 @impl(ct.reduce)
 async def reduce_impl(x: Var, axis: Var, func: Var, identity: Var, keepdims: Var) -> Var:
     x_ty = require_tile_or_tile_tuple_type(x)
@@ -3174,40 +3244,7 @@ async def reduce_impl(x: Var, axis: Var, func: Var, identity: Var, keepdims: Var
     # Parse keepdims
     keepdims = require_constant_bool(keepdims)
 
-    async def body(lhs, rhs):
-        from .._passes.hir2ir import call
-        res = await call(func, (*lhs, *rhs), {})
-        assert isinstance(res, Var)
-        res_ty = res.get_type()
-        if tuple_mode:
-            if not isinstance(res_ty, TupleTy):
-                raise TileTypeError(f"Reduction function returns a value of type"
-                                    f" {res_ty}, but a tuple was expected", res.loc)
-            if len(res_ty.value_types) != len(xs):
-                raise TileTypeError(f"Reduction function must return a tuple of {len(xs)} values"
-                                    f" to match the number of inputs, but a tuple of length"
-                                    f" {len(res_ty.value_types)} was found.")
-            res_tupval = res.get_aggregate()
-            assert isinstance(res_tupval, TupleValue)
-            results = res_tupval.items
-        else:
-            results = (res,)
-
-        cast_results = []
-        for i, (xi, r) in enumerate(zip(xs, results, strict=True)):
-            r_ty = r.get_type()
-            extra_ctx = f" at position #{i}" if tuple_mode else ""
-            if not isinstance(r_ty, TileTy):
-                raise TileTypeError(f"Reduction function returned"
-                                    f" a value of non-tile type {r_ty}{extra_ctx}")
-            if r_ty.ndim > 0:
-                raise TileTypeError(f"Reduction function returned"
-                                    f" a tile of non-scalar shape {r_ty.shape_value}{extra_ctx}")
-            error_ctx = f"Reduction function returned a tile of unexpected dtype{extra_ctx}"
-            cast_results.append(_implicit_cast(r, xi.get_type().dtype, error_ctx))
-
-        return tuple(cast_results)
-
+    body = _make_reduce_scan_body(func, tuple_mode, xs, "Reduction")
     reduced_tiles = await reduce(xs, id_values, axis, keepdims, body)
     if tuple_mode:
         return build_tuple(reduced_tiles)
@@ -3360,53 +3397,184 @@ async def argmax_argmin_impl(fn: str, x: Var, axis: Var, keepdims: Var) -> Var:
 
 
 class TileScan(TypedOperation):
-    def __init__(self, fn: str, x: Var, axis: int, reverse: bool,
-                 rounding_mode: Optional[RoundingMode], flush_to_zero: bool,
-                 result_var: Var, loc: Loc):
+    def __init__(self, xs: tuple[Var, ...], identities: tuple[bool | int | float, ...],
+                 axis: int, reverse: bool, body: Block, result_vars: tuple[Var, ...], loc: Loc):
         super().__init__(
             "tile_scan",
-            operands={"x": x},
-            attributes={
-                "fn": fn, "axis": axis, "reverse": reverse,
-                "rounding_mode": rounding_mode, "flush_to_zero": flush_to_zero,
-            },
-            result_vars=[result_var],
+            operands={"xs": xs},
+            attributes={"identities": identities, "axis": axis, "reverse": reverse},
+            nested_blocks=[body],
+            result_vars=result_vars,
             loc=loc,
         )
 
+    @property
+    def body(self):
+        return self.nested_blocks[0]
+
+    @property
+    def lhs(self):
+        params = self.body.params
+        assert len(params) == len(self.xs) * 2
+        return params[:len(self.xs)]
+
+    @property
+    def rhs(self):
+        params = self.body.params
+        assert len(params) == len(self.xs) * 2
+        return params[len(self.xs):]
+
     @override
-    def generate_bytecode(self, ctx: BytecodeContext):
-        x_type = ctx.typeof(self.x)
-        x_value = ctx.get_value(self.x)
-        res_type = ctx.typeof(self.result_var)
-        return lower_scan(ctx, x_value, x_type, self.axis, self.reverse,
-                          res_type, self.fn, self.rounding_mode, self.flush_to_zero)
+    def _to_string_block_prefixes(self) -> List[str]:
+        return ["do"]
+
+    @override
+    def generate_bytecode(self, ctx: BytecodeContext) -> tuple[bc.Value, ...]:
+        xs = tuple(ctx.get_value(x) for x in self.xs)
+        res_typeids = tuple(ctx.typeid_of(v) for v in self.result_vars)
+
+        identities = []
+        param_type_ids = []
+        for id_val, x in zip(self.identities, self.xs, strict=True):
+            x_dtype = get_dtype(x.get_type())
+            x_dtype_id = dtype_typeid(ctx.type_table, x_dtype)
+            if datatype.is_float(x_dtype):
+                x_dtype_bc = x_dtype._bytecode_type
+                attr = bc.Float(float(id_val), x_dtype_bc, ctx.type_table)
+            elif datatype.is_boolean(x_dtype):
+                attr = bc.Bool(bool(id_val))
+            else:
+                assert datatype.is_integral(x_dtype)
+                attr = bc.Integer(x_dtype_id, x_dtype.bitwidth, int(id_val))
+            identities.append(attr)
+
+            x_tile_typeid = ctx.type_table.tile(x_dtype_id, ())
+            param_type_ids.append(x_tile_typeid)
+            param_type_ids.append(x_tile_typeid)
+
+        nested_builder = bc.encode_ScanOp(
+            ctx.builder,
+            result_types=res_typeids,
+            operands=xs,
+            dim=self.axis,
+            reverse=self.reverse,
+            identities=identities,
+        )
+
+        with nested_builder.new_block(param_type_ids) as block_args:
+            for var, value in zip(self.body.params, block_args, strict=True):
+                ctx.set_value(var, value)
+            generate_bytecode_for_block(ctx, self.body)
+
+        return nested_builder.done()
 
 
-def scan(fn: str, x: Var, axis: int, reverse: bool, rounding_mode: Optional[RoundingMode] = None,
-         flush_to_zero: bool = False) -> Var:
+async def raw_scan(xs: tuple[Var, ...], identities: tuple[bool | int | float, ...], axis: int,
+                   reverse: bool, body: Callable) -> tuple[Var, ...]:
+    input_shape = require_tile_type(xs[0]).shape_value
+    assert 0 <= axis < len(input_shape)
+    result_types = tuple(make_tile_ty(x.get_type().dtype, input_shape) for x in xs)
+    assert len(xs) == len(identities)
+    body_block = await _get_reduce_scan_body_block(xs, body, op_name="scan")
+    return add_operation(TileScan, result_types, xs=xs, identities=identities, axis=axis,
+                         reverse=reverse, body=body_block)
+
+
+async def scan_simple(fn: str, x: Var, axis: int, reverse: bool,
+                      rounding_mode: Optional[RoundingMode] = None,
+                      flush_to_zero: bool = False) -> Var:
     x_type = require_tile_type(x)
     check_rd_and_ftz(fn, rounding_mode, flush_to_zero, x_type.dtype)
-    x_shape = x_type.shape
+
+    if datatype.is_boolean(x_type.dtype):
+        x = astype(x, datatype.default_int_type)
+        x_type = require_tile_type(x)
+
+    match fn:
+        case "add":
+            id_val = 0
+        case "mul":
+            id_val = 1
+        case _:
+            assert False
+
+    x_shape = x_type.shape_value
     axis = normalize_axis(axis, len(x_shape))
-    x_dtype = datatype.default_int_type if datatype.is_boolean(x_type.dtype) else x_type.dtype
-    x = _promote_and_broadcast_to(x, TileTy(x_dtype, x_shape))
-    return add_operation(
-        TileScan, TileTy(x_dtype, x_shape),
-        fn=fn, x=x, axis=axis, reverse=reverse,
-        rounding_mode=rounding_mode, flush_to_zero=flush_to_zero
-    )
+    x_dtype = x_type.dtype
+    x = _promote_and_broadcast_to(x, make_tile_ty(x_dtype, x_shape))
+
+    async def body(lhs: tuple[Var], rhs: tuple[Var]) -> tuple[Var]:
+        [lhs], [rhs] = lhs, rhs
+        ret = raw_binary_arithmetic(fn, lhs, rhs,
+                                    rounding_mode=rounding_mode, flush_to_zero=flush_to_zero)
+        return (ret,)
+
+    [ret] = await raw_scan((x,), (id_val,), axis, reverse, body)
+    return ret
+
+
+@impl(ct.scan)
+async def scan_impl(x: Var, axis: Var, func: Var, identity: Var, reverse: Var) -> Var:
+    x_ty = require_tile_or_tile_tuple_type(x)
+
+    tuple_mode = isinstance(x_ty, TupleTy)
+    if tuple_mode:
+        tup_val = x.get_aggregate()
+        assert isinstance(tup_val, TupleValue)
+        xs = tup_val.items
+    else:
+        xs = (x,)
+
+    axis = require_constant_int(axis)
+    require_callable_type(func)
+    reverse = require_constant_bool(reverse)
+
+    body = _make_reduce_scan_body(func, tuple_mode, xs, "Scan")
+
+    if len(xs) == 0:
+        raise TileTypeError("Need at least one input value to scan")
+
+    common_input_shape = ()
+
+    x_types = tuple(require_tile_type(x) for x in xs)
+    for x_ty in x_types:
+        try:
+            common_input_shape = broadcast_shapes2(common_input_shape, x_ty.shape_value)
+        except BroadcastError:
+            all_shapes = ", ".join(str(ty.shape_value) for ty in x_types)
+            raise TileTypeError(f"Input shapes {all_shapes}"
+                                f" are not broadcastable to a common shape")
+    xs = tuple(broadcast_to(x, common_input_shape) for x in xs)
+
+    # Normalize axis (e.g. -1 -> last axis) before raw_scan
+    axis = normalize_axis(axis, len(common_input_shape))
+
+    if tuple_mode:
+        id_values = require_constant_scalar_tuple(identity)
+        if len(id_values) != len(xs):
+            raise TileTypeError(f"Number of identity values ({len(id_values)}) must match"
+                                f" the number of input tiles ({len(xs)})")
+    else:
+        id_values = (require_constant_scalar(identity),)
+
+    scaned_tiles = await raw_scan(xs, id_values, axis, reverse, body)
+    if tuple_mode:
+        return build_tuple(scaned_tiles)
+    else:
+        [ret] = scaned_tiles
+        return ret
 
 
 @impl(ct.cumsum, fixed_args=["add"])
 @impl(ct.cumprod, fixed_args=["mul"])
-def scan_impl_with_rd_and_ftz(fn: str, x: Var, axis: Var, reverse: Var,
-                              rounding_mode: Var, flush_to_zero: Var) -> Var:
+async def scan_impl_with_rd_and_ftz(fn: str, x: Var, axis: Var, reverse: Var,
+                                    rounding_mode: Var, flush_to_zero: Var) -> Var:
     axis = require_constant_int(axis)
     reverse = require_constant_bool(reverse)
     rounding_mode = require_optional_constant_enum(rounding_mode, RoundingMode)
     flush_to_zero = require_constant_bool(flush_to_zero)
-    return scan(fn, x, axis, reverse, rounding_mode=rounding_mode, flush_to_zero=flush_to_zero)
+    return await scan_simple(fn, x, axis, reverse,
+                             rounding_mode=rounding_mode, flush_to_zero=flush_to_zero)
 
 
 def expand_dims(x: Var, axis: int) -> Var:

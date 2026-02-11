@@ -1411,6 +1411,32 @@ def cumprod(x, /, axis=0, *, reverse=False, rounding_mode: Optional[RoundingMode
     pass
 
 
+@function
+def scan(x, /, axis, func, identity, *, reverse=False):
+    """
+    Apply custom scan (inclusive prefix) function along axis.
+
+    Args:
+        x: input tile or a tuple of tiles to be scanned. If a tuple is provided, shapes
+            of the tiles in the tuple must be broadcastable to a common shape.
+        axis (int): an integer constant that specifies the axis to scan along.
+        func: function for combining two values. If `x` is a single tile, then the function
+            must take two 0d tile arguments and return the combined 0d tile. For example,
+            `lambda a, b: a + b` or `operator.add` can be used to implement cumsum.
+            If `x` is a tuple of N tiles, then the function takes 2N tiles and returns a tuple
+            of N combined tiles. The first N arguments correspond to one of the groups of values
+            being combined, while the rest correspond to the other.
+        identity: a constant scalar or a tuple of constant scalars that specifies the identity
+            element of the `func`.
+        reverse (bool): if True, the scan is performed in the reverse direction along the axis.
+            Default: False.
+
+    Returns:
+        Scanned tile, or tuple of scanned tiles, depending on the type of `x`.
+    """
+    pass
+
+
 # ======== Math binary ==============
 def _doc_binary_op(builtin_op):
     def decorator(f):

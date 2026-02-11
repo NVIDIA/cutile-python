@@ -414,7 +414,8 @@ class LoopVarState:
 
 
 class Builder:
-    def __init__(self, ctx: IRContext, loc: Loc, reduction_body: bool = False):
+    def __init__(self, ctx: IRContext, loc: Loc, reduction_body: bool = False,
+                 scan_body: bool = False):
         self.ir_ctx = ctx
         self.is_terminated = False
         self._loc = loc
@@ -423,14 +424,18 @@ class Builder:
         self._prev_builder = None
         self._var_map: Dict[str, Var] = dict()
         self.reduction_body = reduction_body
+        self.scan_body = scan_body
 
     def add_operation(self, op_class,
                       result_ty: Type | None | Tuple[Type | None, ...],
                       attrs_and_operands,
                       result: Var | Sequence[Var] | None = None) -> Var | Tuple[Var, ...]:
-        if self.reduction_body and op_class.memory_effect != MemoryEffect.NONE:
-            raise TileSyntaxError("Operations with memory effects are not supported"
-                                  " inside reduction body")
+        if (self.reduction_body or self.scan_body) and op_class.memory_effect != MemoryEffect.NONE:
+            if self.reduction_body:
+                msg = "Operations with memory effects are not supported inside reduction body"
+            else:
+                msg = "Operations with memory effects are not supported inside scan body"
+            raise TileSyntaxError(msg)
 
         assert not self.is_terminated
         force_type = False
@@ -524,11 +529,12 @@ class Builder:
 
 
 @contextmanager
-def nested_block(loc: Loc, reduction_body: bool = False):
+def nested_block(loc: Loc, reduction_body: bool = False, scan_body: bool = False):
     prev_builder = Builder.get_current()
     block = Block(prev_builder.ir_ctx, loc=loc)
     with Builder(prev_builder.ir_ctx, loc,
-                 reduction_body=reduction_body or prev_builder.reduction_body) as builder:
+                 reduction_body=reduction_body or prev_builder.reduction_body,
+                 scan_body=scan_body or prev_builder.scan_body) as builder:
         yield block
     block.extend(builder.ops)
 

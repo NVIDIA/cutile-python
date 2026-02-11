@@ -8,7 +8,7 @@ from typing import FrozenSet, Dict
 from cuda.tile._ir.ir import Var, Block
 from cuda.tile._ir.ops import Assign, GetArrayListItem, \
     Loop, IfElse, Continue, Break, EndBranch, PointerOffset, \
-    TileBroadcast, TileReshape, MakeTensorView, MakeListView, AssumeDivBy, TileReduce
+    TileBroadcast, TileReshape, MakeTensorView, MakeListView, AssumeDivBy, TileReduce, TileScan
 
 
 class AliasUniverseClass:
@@ -94,7 +94,7 @@ def _propagate(alias_tracker: _AliasTracker,
 def _analyze_aliases_in_block(block: Block,
                               alias_tracker: _AliasTracker,
                               innermost_loop: Loop | None,
-                              innermost_branch: IfElse | TileReduce | None):
+                              innermost_branch: IfElse | TileReduce | TileScan | None):
     for op in block.operations:
         if isinstance(op, Assign):
             _propagate(alias_tracker, op.value, op.result_var)
@@ -155,7 +155,7 @@ def _analyze_aliases_in_block(block: Block,
             for output, result in zip(op.outputs, innermost_branch.result_vars, strict=True):
                 _propagate(alias_tracker, output, result)
 
-        elif isinstance(op, TileReduce):
+        elif isinstance(op, TileReduce | TileScan):
             for v in op.body.params:
                 alias_tracker[v.name] = ALIAS_UNIVERSE
             _analyze_aliases_in_block(op.body, alias_tracker, None, op)

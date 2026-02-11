@@ -78,6 +78,7 @@ Scan
 
    cumsum
    cumprod
+   scan
 
 
 Matmul

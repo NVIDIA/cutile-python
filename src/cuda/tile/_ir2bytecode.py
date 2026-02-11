@@ -9,14 +9,14 @@ from typing import Dict, Tuple, Sequence, Any, Optional
 
 from cuda.tile import _datatype as datatype
 from cuda.tile._datatype import get_signedness
-from cuda.tile import DType, RoundingMode, PaddingMode
+from cuda.tile import DType, PaddingMode
 import cuda.tile._bytecode as bc
 from cuda.tile._compiler_options import CompilerOptions
 from cuda.tile._exception import TileInternalError, TileError, FunctionDesc
 from cuda.tile._ir.ir import Block, Loc, Var, IRContext, Function
 from cuda.tile._ir.ops_utils import (
     padding_mode_to_bytecode, rounding_mode_to_bytecode,
-    get_default_rounding_mode, get_dtype,
+    get_default_rounding_mode,
 )
 from cuda.tile._ir.type import Type, TileTy, PointerTy, TokenTy, TupleTy, ArrayTy, SizeTy
 
@@ -209,59 +209,6 @@ def encode_comparison(builder: bc.CodeBuilder, fn: str, lhs: bc.Value, rhs: bc.V
                                 lhs=lhs, rhs=rhs)
     else:
         raise TileInternalError(f'Unexpected dtype: {dtype}')
-
-
-def lower_scan(ctx: "BytecodeContext", x: bc.Value, input_ty: Type,
-               normalized_axis: int, reverse: bool,
-               output_ty: Type, scan_fn: str, rounding_mode: Optional[RoundingMode],
-               flush_to_zero: bool) -> bc.Value:
-    use_float = True if datatype.is_float(output_ty.dtype) else False
-    if scan_fn == "mul":
-        id_val = 1.0
-    elif scan_fn == "add":
-        id_val = -0.0
-    else:
-        raise NotImplementedError(f"Unsupported scan function: {scan_fn}")
-    element_dtype = get_dtype(input_ty)
-    tt = ctx.type_table
-    element_type_id = dtype_typeid(tt, element_dtype)
-    if use_float:
-        identity_attr = bc.Float(id_val, element_dtype._bytecode_type, tt)
-    else:
-        identity_attr = bc.Integer(element_type_id, element_dtype.bitwidth, int(id_val))
-
-    scan_output_typeid = typeid(tt, output_ty)
-    nested_builder = bc.encode_ScanOp(ctx.builder,
-                                      result_types=[scan_output_typeid],
-                                      operands=[x],
-                                      dim=normalized_axis,
-                                      reverse=reverse,
-                                      identities=[identity_attr])
-
-    element_tile_typeid = tt.tile(element_type_id, ())
-    with nested_builder.new_block((element_tile_typeid, element_tile_typeid)) as (a, b):
-        rm = rounding_mode if rounding_mode is not None else get_default_rounding_mode()
-        rounding_mode_bc = rounding_mode_to_bytecode[rm]
-        match scan_fn, use_float:
-            case "add", True:
-                res = bc.encode_AddFOp(ctx.builder, element_tile_typeid, a, b,
-                                       rounding_mode=rounding_mode_bc,
-                                       flush_to_zero=flush_to_zero)
-            case "add", False:
-                res = bc.encode_AddIOp(ctx.builder, element_tile_typeid, a, b,
-                                       overflow=bc.IntegerOverflow.NONE)
-            case "mul", True:
-                res = bc.encode_MulFOp(ctx.builder, element_tile_typeid, a, b,
-                                       rounding_mode=rounding_mode_bc,
-                                       flush_to_zero=flush_to_zero)
-            case "mul", False:
-                res = bc.encode_MulIOp(ctx.builder, element_tile_typeid, a, b,
-                                       overflow=bc.IntegerOverflow.NONE)
-            case _:
-                raise NotImplementedError(f"Unsupported scan function {scan_fn}")
-        bc.encode_YieldOp(ctx.builder, [res])
-    scan_res, = nested_builder.done()
-    return scan_res
 
 
 class DebugAttrMap:

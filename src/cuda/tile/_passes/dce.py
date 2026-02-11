@@ -6,7 +6,7 @@ from typing import Sequence, Set, Tuple, Dict, Any, Optional, List
 
 from cuda.tile._exception import Loc
 from cuda.tile._ir.ir import Block, Operation, Var, IRContext, MemoryEffect
-from cuda.tile._ir.ops import Loop, Continue, Break, EndBranch, IfElse, Return, TileReduce
+from cuda.tile._ir.ops import Loop, Continue, Break, EndBranch, IfElse, Return, TileReduce, TileScan
 
 
 def dead_code_elimination_pass(root_block: Block) -> None:
@@ -88,7 +88,7 @@ def _build_dataflow_graph(graph: Dict[str, List[str] | Tuple[str, ...]],
                           block: Block,
                           innermost_loop: Optional[Loop],
                           innermost_loop_name: Optional[str],
-                          innermost_end_branch_target: Optional[IfElse | TileReduce],
+                          innermost_end_branch_target: Optional[IfElse | TileReduce | TileScan],
                           innermost_cf_name: Optional[str]):
     for op in block:
         if isinstance(op, Loop):
@@ -162,7 +162,7 @@ def _build_dataflow_graph(graph: Dict[str, List[str] | Tuple[str, ...]],
                                   innermost_loop, innermost_loop_name, op, cf_name)
             _build_dataflow_graph(graph, used, op_to_cf_name, op.else_block,
                                   innermost_loop, innermost_loop_name, op, cf_name)
-        elif isinstance(op, TileReduce):
+        elif isinstance(op, TileReduce | TileScan):
             cf_name = _make_control_flow_name(block.ctx)
             op_to_cf_name[op] = cf_name
 
@@ -263,6 +263,19 @@ def _prune_block(block: Block,
                 new_result_vars = _select_by_mask(op.result_vars, mask)
                 new_ops.append(TileReduce(xs=new_xs, identities=new_identities, axis=op.axis,
                                           body=op.body, result_vars=new_result_vars, loc=op.loc))
+        elif isinstance(op, TileScan):
+            if op_to_cf_name[op] in used_vars:
+                mask = tuple(v.name in used_vars for v in op.result_vars)
+                _prune_block(op.body, used_vars, op_to_cf_name, (), mask)
+                new_xs = _select_by_mask(op.xs, mask)
+                new_identities = _select_by_mask(op.identities, mask)
+                new_lhs = _select_by_mask(op.lhs, mask)
+                new_rhs = _select_by_mask(op.rhs, mask)
+                op.body.params = new_lhs + new_rhs
+                new_result_vars = _select_by_mask(op.result_vars, mask)
+                new_ops.append(TileScan(xs=new_xs, identities=new_identities, axis=op.axis,
+                                        reverse=op.reverse, body=op.body,
+                                        result_vars=new_result_vars, loc=op.loc))
         elif isinstance(op, EndBranch):
             output_vars = _select_by_mask(op.outputs, end_branch_mask)
             new_ops.append(EndBranch(op.loc, output_vars))
