@@ -210,7 +210,7 @@ def compile_tile(pyfunc,
         _log_mlir(bytecode_buf)
 
     if CUDA_TILE_DUMP_BYTECODE is not None:
-        if not os.path.exists(CUDA_TILE_DUMP_BYTECODE):
+        if not os.path.isdir(CUDA_TILE_DUMP_BYTECODE):
             os.makedirs(CUDA_TILE_DUMP_BYTECODE)
         base_filename = os.path.basename(func_ir.loc.filename.split(".")[0])
         path = os.path.join(CUDA_TILE_DUMP_BYTECODE,
@@ -224,7 +224,7 @@ def compile_tile(pyfunc,
         try:
             from cuda.tile_internal._internal_cext import bytecode_to_mlir_text
             mlir_text = bytecode_to_mlir_text(bytecode_buf)
-            if not os.path.exists(CUDA_TILE_DUMP_TILEIR):
+            if not os.path.isdir(CUDA_TILE_DUMP_TILEIR):
                 os.makedirs(CUDA_TILE_DUMP_TILEIR)
             base_filename = os.path.basename(func_ir.loc.filename.split(".")[0])
             path = os.path.join(

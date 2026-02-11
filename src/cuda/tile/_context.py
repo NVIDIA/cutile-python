@@ -62,6 +62,8 @@ def get_temp_dir_from_env() -> str:
     if dir == "":
         dir = tempfile.mkdtemp()
         atexit.register(_clean_tmp_dir, dir)
+    if not os.path.isdir(dir):
+        os.makedirs(dir)
     return dir
 
 
