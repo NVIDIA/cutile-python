@@ -197,4 +197,5 @@ Metaprogramming Support
    :toctree: generated
    :nosignatures:
 
+   static_assert
    static_eval

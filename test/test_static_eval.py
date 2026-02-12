@@ -168,8 +168,7 @@ def test_nested_static_eval():
 
     y = torch.zeros((), dtype=torch.int32, device="cuda")
     with pytest.raises(ct.TileStaticEvalError,
-                       match=re.escape("static_eval() cannot be used"
-                                       " inside another static_eval() expression")):
+                       match=re.escape("static_eval() cannot be used inside static_eval().")):
         ct.launch(torch.cuda.current_stream(), (1,), kernel, (y,))
 
 

@@ -6,6 +6,7 @@ import threading
 from contextlib import contextmanager
 
 from ._exception import TileStaticEvalError
+from ._ir.hir import StaticEvalKind
 
 
 class DispatchMode:
@@ -32,13 +33,18 @@ class NormalMode(DispatchMode):
 
 
 class StaticEvalMode(DispatchMode):
+    def __init__(self, kind: StaticEvalKind):
+        self._kind = kind
+
     def call_tile_function_from_host(self, func, args, kwargs):
-        from cuda.tile import static_eval
-        if func is static_eval:
-            raise TileStaticEvalError("static_eval() cannot be used inside"
-                                      " another static_eval() expression.")
+        from cuda.tile import static_eval, static_assert
+        if func in (static_eval, static_assert):
+            what = f"{func.__name__}() cannot be used"
         else:
-            raise TileStaticEvalError("Tile functions cannot be called inside static_eval().")
+            what = "Tile functions cannot be called"
+
+        where = self._kind._value_
+        raise TileStaticEvalError(f"{what} inside {where}.")
 
 
 class _CurrentModeTL(threading.local):

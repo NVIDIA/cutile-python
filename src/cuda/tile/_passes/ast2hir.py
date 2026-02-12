@@ -17,7 +17,7 @@ from cuda.tile._ir.hir import make_value, ResolvedName, UNKNOWN_NAME
 from cuda.tile._ir import hir
 from cuda.tile._ir.type import ClosureDefaultPlaceholder
 from cuda.tile._passes.ast_util import ast_get_all_local_names
-from cuda.tile._stub import static_eval
+from cuda.tile._stub import static_eval, static_assert
 
 
 @lru_cache
@@ -249,10 +249,31 @@ _expr_handlers: Dict[Type[ast.AST], Callable] = {}
 
 @_register(_expr_handlers, ast.Call)
 def _call_expr(call: ast.Call, ctx: _Context) -> hir.Value:
-    if _is_static_eval_func(call.func, ctx):
-        if len(call.args) != 1 or len(call.keywords) != 0:
-            raise ctx.syntax_error("static_eval() expects a single expression")
-        return _call_static_eval(call.args[0], ctx)
+    kwd_func = _parse_keyword_like_func(call.func,
+                                        (static_eval, static_assert),
+                                        ("static_eval", "static_assert"),
+                                        ctx)
+    if kwd_func is not None:
+        if kwd_func == "static_eval":
+            if len(call.args) != 1 or len(call.keywords) != 0:
+                raise ctx.syntax_error("static_eval() expects a single expression")
+            return _call_static_eval(call.args[0], hir.StaticEvalKind.STATIC_EVAL, ctx)
+        elif kwd_func == "static_assert":
+            if len(call.args) not in (1, 2) or len(call.keywords) != 0:
+                raise ctx.syntax_error("static_assert(cond, msg=None, /)"
+                                       " expects one or two positional arguments")
+            with ctx.new_block() as message_block:
+                if len(call.args) > 1:
+                    message = _call_static_eval(call.args[1],
+                                                hir.StaticEvalKind.STATIC_ASSERT_MESSAGE, ctx)
+                else:
+                    message = ""
+                ctx.set_block_jump_with_result(hir.Jump.END_BRANCH, message)
+            condition = _call_static_eval(call.args[0],
+                                          hir.StaticEvalKind.STATIC_ASSERT_CONDITION, ctx)
+            return ctx.call(hir.do_static_assert, (condition, message_block))
+        else:
+            assert False
     else:
         callee = _expr(call.func, ctx)
         args = tuple(_expr(a, ctx) for a in call.args)
@@ -260,7 +281,7 @@ def _call_expr(call: ast.Call, ctx: _Context) -> hir.Value:
         return ctx.call(callee, args, kwargs)
 
 
-def _call_static_eval(expr: ast.expr, ctx: _Context) -> hir.Value:
+def _call_static_eval(expr: ast.expr, kind: hir.StaticEvalKind, ctx: _Context) -> hir.Value:
     # Wrap the `expr` as `lambda: expr`
     inner_lambda_ast = _wrap_in_lambda(expr, ())
 
@@ -291,7 +312,8 @@ def _call_static_eval(expr: ast.expr, ctx: _Context) -> hir.Value:
     final_lambda = _eval_ast_expr(final_lambda_ast, ctx)
 
     loaded_locals = tuple(ctx.load(local_name) for local_name in used_locals)
-    return ctx.call(hir.do_static_eval, (hir.StaticEvalExpression(final_lambda), *loaded_locals))
+    return ctx.call(hir.do_static_eval,
+                    (hir.StaticEvalExpression(final_lambda, kind), *loaded_locals))
 
 
 def _wrap_in_call(lamb: ast.Lambda) -> ast.Call:
@@ -319,14 +341,19 @@ def _eval_ast_expr(expr: ast.expr, ctx: _Context):
     return eval(code, dict(ctx.frozen_globals), {})
 
 
-def _is_static_eval_func(func: ast.expr, ctx: _Context) -> bool:
-    if isinstance(func, ast.Name):
-        return (func.id not in ctx.local_names
-                and ctx.frozen_globals.get(func.id) is static_eval)
-    elif isinstance(func, ast.Attribute):
-        return func.attr == "static_eval" and _is_cuda_tile_module(func.value, ctx)
-    else:
-        return False
+def _parse_keyword_like_func(expr: ast.expr,
+                             kwd_funcs: tuple[Callable, ...],
+                             kwd_func_names: tuple[str, ...],
+                             ctx: _Context) -> str | None:
+    if isinstance(expr, ast.Name):
+        if (expr.id not in ctx.local_names
+                and ctx.frozen_globals.get(expr.id) in kwd_funcs):
+            idx = kwd_funcs.index(ctx.frozen_globals.get(expr.id))
+            return kwd_func_names[idx]
+    elif isinstance(expr, ast.Attribute):
+        if expr.attr in kwd_func_names and _is_cuda_tile_module(expr.value, ctx):
+            return expr.attr
+    return None
 
 
 def _is_cuda_tile_module(value: ast.expr, ctx: _Context) -> bool:

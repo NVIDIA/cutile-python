@@ -160,6 +160,16 @@ class TileStaticEvalError(TileError):
     evaluation constraints."""
 
 
+class TileStaticAssertionError(TileError):
+    """Thrown at compile time when the condition of static_assert() evaluates to False."""
+
+    def __init__(self, message: str, loc: Loc = Loc.unknown()):
+        full_message = "Static assertion failed"
+        if len(message) > 0:
+            full_message += ": " + message
+        super().__init__(full_message, loc)
+
+
 class ConstantNotFoundError(Exception):
     pass
 

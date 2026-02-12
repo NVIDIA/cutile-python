@@ -231,9 +231,11 @@ def loose_type_of_pyval(value: Any) -> Type:
         return typeof_pyval(value)
 
 
+_SUPPORTED_CONST_TYPES = (int, float, bool, str, ModuleType, FunctionType, type, Enum)
+
+
 def get_constant_value(val: Any) -> Any:
-    if val is None or isinstance(val, (int, float, bool, ModuleType, FunctionType, type, Enum))\
-            or is_supported_builtin_func(val):
+    if val is None or isinstance(val, _SUPPORTED_CONST_TYPES) or is_supported_builtin_func(val):
         return val
     if is_dtype(val):
         return to_dtype(val)

@@ -16,7 +16,7 @@ import cuda.tile._stub as ct
 from cuda.tile import _datatype as datatype, TileValueError, TileStaticEvalError
 from cuda.tile import RoundingMode, MemoryOrder, MemoryScope
 from cuda.tile._mutex import tile_mutex
-from cuda.tile._exception import TileTypeError, TileSyntaxError, TileError
+from cuda.tile._exception import TileTypeError, TileSyntaxError, TileError, TileStaticAssertionError
 from cuda.tile._ir.ir import (
     Operation, Var, Loc, Block,
     terminator, add_operation, TypedOperation, Builder,
@@ -4162,22 +4162,60 @@ def static_eval_impl(expr: Var):
                           " e.g. cuda.tile.static_eval() or ct.static_eval().")
 
 
+@impl(ct.static_assert)
+def static_assert_impl(condition: Var, message: Var):
+    raise TileSyntaxError("static_assert() must be used directly by name,"
+                          " e.g. cuda.tile.static_assert() or ct.static_assert().")
+
+
 @impl(hir.do_static_eval)
-def do_static_eval_impl(expr: hir.StaticEvalExpression, local_var_values: tuple[Var, ...]) -> Var:
+def do_static_eval_impl(expr: hir.StaticEvalExpression,
+                        local_var_values: tuple[Var, ...]) -> Var:
     local_proxies = tuple(var2sym(x) for x in local_var_values)
-    with StaticEvalMode().as_current():
+    with StaticEvalMode(expr.kind).as_current():
         try:
             result = expr.compiled_expr(*local_proxies)
         except TileError:
             raise
         except Exception as e:
-            msg = f"Exception was raised inside static_eval() ({type(e).__name__}"
+            where = expr.kind._value_
+            msg = f"Exception was raised inside {where} ({type(e).__name__}"
             e_str = str(e)
             if len(e_str) > 0:
                 msg += ": " + e_str
             msg += ")"
             raise TileStaticEvalError(msg) from e
-    return sym2var(result)
+
+    if expr.kind == hir.StaticEvalKind.STATIC_ASSERT_MESSAGE:
+        if result is None:
+            result = ""
+        return loosely_typed_const(str(result))
+    else:
+        return sym2var(result)
+
+
+@impl(hir.do_static_assert)
+async def do_static_assert_impl(condition: Var, message_block: hir.Block) -> None:
+    if not condition.is_constant():
+        raise TileTypeError("static_assert() condition must be a compile-time constant")
+
+    ty = condition.get_type()
+    if not (isinstance(ty, TileTy) and is_boolean(ty.dtype)):
+        raise TileTypeError(f"static_assert() condition must be a boolean, not {ty}")
+
+    if condition.get_constant():
+        return None
+
+    from .._passes.hir2ir import dispatch_hir_block
+    info = ControlFlowInfo((), flatten=True)
+    with Scope.get_current().change_if_else_info(info):
+        await dispatch_hir_block(message_block)
+    [jump] = info.jumps
+    assert jump.jump_op is None
+    [message] = jump.outputs
+    message = message.get_constant()
+    assert isinstance(message, str)
+    raise TileStaticAssertionError(message)
 
 
 def var2sym(var: Var) -> Any:

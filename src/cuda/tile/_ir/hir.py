@@ -223,9 +223,17 @@ class _OperandFormatter:
 # Special function stubs used in HIR
 # ==================================
 
+
+class StaticEvalKind(enum.Enum):
+    STATIC_EVAL = "static_eval()"
+    STATIC_ASSERT_CONDITION = "static_assert() condition"
+    STATIC_ASSERT_MESSAGE = "static_assert() message"
+
+
 @dataclass
 class StaticEvalExpression:
     compiled_expr: Callable
+    kind: StaticEvalKind
 
 
 def if_else(cond, then_block, else_block, /): ...
@@ -237,3 +245,4 @@ def store_var(name, value, /): ...  # Store into a named variable
 def load_var(name, /): ...  # Load from a named variable
 def make_closure(func_hir: Function, /, *default_values): ...
 def do_static_eval(expr: StaticEvalExpression, *local_var_values): ...
+def do_static_assert(condition, message_block, /): ...

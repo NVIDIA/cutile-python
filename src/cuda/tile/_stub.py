@@ -2042,6 +2042,47 @@ def static_eval(expr, /):
     """
 
 
+@function
+def static_assert(condition, message=None, /):
+    """Asserts that a condition is true at compile time.
+
+    First, `condition` is evaluated using the same rules as :py:func:`static_eval`:
+    it can reference global and local variables, and use the full
+    Python syntax, but must not perform any run-time operations.
+
+    The `condition` must evaluate to a compile-time constant boolean.
+    If it evaluates to ``True``, compilation continues normally,
+    and the `message` expression is not evaluated.
+
+    If `condition` evaluates to ``False``, then the `message` expression is evaluated using
+    the :py:func:`static_eval` semantics. If the result of the evaluation is None,
+    it is replaced with an empty string. Otherwise, it is converted to a string using
+    the builtin ``str()`` function. Then, a :py:class:`TileStaticAssertionError` is raised
+    with the evaluated message string.
+
+    Because `message` is evaluated using the :py:func:`static_eval` semantics,
+    it can include useful debug information about local variables, for example:
+
+        >>> x = ct.ones((4,), dtype=ct.int32)
+        >>> y = ct.ones((4,), dtype=ct.float32)
+        >>> ct.static_assert(x.dtype == y.dtype,
+        >>>                  f"Expected {x} and {y} to have same dtype.")
+        Static assertion failed: Expected <tile[int32, (4,)]> and <tile[float32, (4,)]>
+         to have same dtype.
+
+    Since the message is automatically converted to a string, one can use any object
+    in its place, for example:
+
+        >>> ct.static_assert(x.dtype == ct.float32, x)
+        Static assertion failed: <tile[int32, (4,)]>
+
+    Despite being declared as a function, `static_assert()` is treated like a keyword:
+    it skips the translation of the surrounded expressions according to the Tile semantics.
+    Moreover, the expressions are allowed to use the full Python syntax, unlike the rest
+    of the Tile code, which is limited to a stricter subset of the language.
+    """
+
+
 # ==== Private stubs ====
 
 
