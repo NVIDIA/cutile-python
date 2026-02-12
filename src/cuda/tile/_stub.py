@@ -1341,7 +1341,7 @@ def reduce(x, /, axis, func, identity, *, keepdims=False):
             being combined, while the rest correspond to the other.
         identity: a constant scalar or a tuple of constant scalars that specifies the identity
             element of the `func`.
-        keepdims (bool): True to remove the reduced axis, False to keep the axis of size 1.
+        keepdims (bool): True to keep the axis of size 1, False to remove the reduced axis.
             Default: False.
 
     Returns:

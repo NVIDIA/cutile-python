@@ -20,7 +20,7 @@ def run_coroutine(awaitable: Awaitable):
             while stack:
                 top = stack[-1]
                 try:
-                    continuation = top.send(ret) if exc_info is None else top.throw(*exc_info)
+                    continuation = top.send(ret) if exc_info is None else top.throw(exc_info[1])
                 except StopIteration as s:
                     ret = s.value
                     exc_info = None

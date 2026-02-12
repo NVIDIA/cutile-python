@@ -4,6 +4,7 @@
 
 from cuda.tile._coroutine_util import resume_after, run_coroutine
 import pytest
+import traceback
 
 
 async def series(n):
@@ -60,3 +61,19 @@ async def two_calls():
 def test_return_values():
     res = run_coroutine(two_calls())
     assert res == (1 + 2 + 3, 1 + 2 + 3 + 4)
+
+
+async def raise_in_leaf():
+    raise ValueError("leaf")
+
+
+async def call_leaf():
+    await resume_after(raise_in_leaf())
+
+
+def test_traceback_preserved():
+    try:
+        run_coroutine(call_leaf())
+    except ValueError as e:
+        frame_names = [f.name for f in traceback.extract_tb(e.__traceback__)]
+        assert "raise_in_leaf" in frame_names
