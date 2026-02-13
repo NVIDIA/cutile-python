@@ -17,7 +17,7 @@ from cuda.tile._ir.hir import make_value, ResolvedName, UNKNOWN_NAME
 from cuda.tile._ir import hir
 from cuda.tile._ir.type import ClosureDefaultPlaceholder
 from cuda.tile._passes.ast_util import ast_get_all_local_names
-from cuda.tile._stub import static_eval, static_assert
+from cuda.tile._stub import static_eval, static_assert, static_iter
 
 
 @lru_cache
@@ -145,6 +145,7 @@ def _get_function_hir_inner(func_def: ast.FunctionDef | ast.Lambda, signature: i
 
 class LoopKind(Enum):
     FOR = auto()
+    STATIC_FOR = auto()
     WHILE = auto()
 
 
@@ -247,12 +248,13 @@ def _register(mapping, klazz):
 _expr_handlers: Dict[Type[ast.AST], Callable] = {}
 
 
+_KEYWORD_LIKE_FUNCS = (static_eval, static_assert, static_iter)
+_KEYWORD_LIKE_FUNC_NAMES = ("static_eval", "static_assert", "static_iter")
+
+
 @_register(_expr_handlers, ast.Call)
 def _call_expr(call: ast.Call, ctx: _Context) -> hir.Value:
-    kwd_func = _parse_keyword_like_func(call.func,
-                                        (static_eval, static_assert),
-                                        ("static_eval", "static_assert"),
-                                        ctx)
+    kwd_func = _parse_keyword_like_func(call.func, ctx)
     if kwd_func is not None:
         if kwd_func == "static_eval":
             if len(call.args) != 1 or len(call.keywords) != 0:
@@ -272,8 +274,11 @@ def _call_expr(call: ast.Call, ctx: _Context) -> hir.Value:
             condition = _call_static_eval(call.args[0],
                                           hir.StaticEvalKind.STATIC_ASSERT_CONDITION, ctx)
             return ctx.call(hir.do_static_assert, (condition, message_block))
+        elif kwd_func == "static_iter":
+            raise TileSyntaxError("static_iter() is only allowed as iterable in a `for` loop,"
+                                  " i.e. `for i in ct.static_iter(...)`")
         else:
-            assert False
+            raise TileSyntaxError(f"{kwd_func} is not expected here")
     else:
         callee = _expr(call.func, ctx)
         args = tuple(_expr(a, ctx) for a in call.args)
@@ -342,17 +347,14 @@ def _eval_ast_expr(expr: ast.expr, ctx: _Context):
     return eval(code, dict(ctx.frozen_globals), {})
 
 
-def _parse_keyword_like_func(expr: ast.expr,
-                             kwd_funcs: tuple[Callable, ...],
-                             kwd_func_names: tuple[str, ...],
-                             ctx: _Context) -> str | None:
+def _parse_keyword_like_func(expr: ast.expr, ctx: _Context) -> str | None:
     if isinstance(expr, ast.Name):
         if (expr.id not in ctx.local_names
-                and ctx.frozen_globals.get(expr.id) in kwd_funcs):
-            idx = kwd_funcs.index(ctx.frozen_globals.get(expr.id))
-            return kwd_func_names[idx]
+                and ctx.frozen_globals.get(expr.id) in _KEYWORD_LIKE_FUNCS):
+            idx = _KEYWORD_LIKE_FUNCS.index(ctx.frozen_globals.get(expr.id))
+            return _KEYWORD_LIKE_FUNC_NAMES[idx]
     elif isinstance(expr, ast.Attribute):
-        if expr.attr in kwd_func_names and _is_cuda_tile_module(expr.value, ctx):
+        if expr.attr in _KEYWORD_LIKE_FUNC_NAMES and _is_cuda_tile_module(expr.value, ctx):
             return expr.attr
     return None
 
@@ -583,21 +585,40 @@ def _for_stmt(stmt: ast.For, ctx: _Context):
     if len(stmt.orelse) > 0:
         raise ctx.syntax_error("'for-else' is not supported", loc=stmt.orelse[0])
 
-    iterable = _expr(stmt.iter, ctx)
-    if not isinstance(stmt.target, ast.Name):
-        raise ctx.unsupported_syntax(stmt.target)
+    static_iter_expr = _get_static_iter_expr(stmt.iter, ctx)
+    if static_iter_expr is None:
+        kind = LoopKind.FOR
+        op = hir.loop
+        iterable = _expr(stmt.iter, ctx)
+    else:
+        kind = LoopKind.STATIC_FOR
+        op = hir.static_foreach
+        with ctx.change_loc(static_iter_expr):
+            iterable = _call_static_eval(static_iter_expr,
+                                         hir.StaticEvalKind.STATIC_ITER_ITERABLE, ctx)
 
-    ctx.parent_loops.append(LoopKind.FOR)
+    ctx.parent_loops.append(kind)
     induction_var = ctx.make_value()
     with ctx.new_block(params=(induction_var,)) as body_block:
-        with ctx.change_loc(stmt.target):
-            ctx.store(stmt.target.id, induction_var)
+        _do_assign(induction_var, stmt.target, ctx)
         _stmt_list(stmt.body, ctx)
-        if body_block.jump is None:
+        if body_block.jump is None and static_iter_expr is None:
             ctx.set_block_jump(hir.Jump.CONTINUE)
     ctx.parent_loops.pop()
 
-    ctx.call_void(hir.loop, (body_block, iterable))
+    ctx.call_void(op, (body_block, iterable))
+
+
+def _get_static_iter_expr(expr: ast.expr, ctx: _Context) -> ast.expr | None:
+    if not isinstance(expr, ast.Call):
+        return None
+    if _parse_keyword_like_func(expr.func, ctx) != "static_iter":
+        return None
+
+    if len(expr.args) != 1 or len(expr.keywords) != 0:
+        raise ctx.syntax_error("static_iter() expects a single expression")
+
+    return expr.args[0]
 
 
 def _bool_expr(expr: ast.AST, ctx: _Context) -> hir.Value:
@@ -724,19 +745,21 @@ def _if_stmt(stmt: ast.If, ctx: _Context) -> None:
 
 @_register(_stmt_handlers, ast.Continue)
 def _continue_stmt(stmt: ast.Continue, ctx: _Context) -> None:
+    if ctx.parent_loops and ctx.parent_loops[-1] is LoopKind.STATIC_FOR:
+        raise ctx.syntax_error("Continue in a for loop with static_iter() is not supported")
     ctx.set_block_jump(hir.Jump.CONTINUE)
 
 
 @_register(_stmt_handlers, ast.Break)
 def _break_stmt(stmt: ast.Break, ctx: _Context) -> None:
-    if ctx.parent_loops and ctx.parent_loops[-1] is LoopKind.FOR:
+    if ctx.parent_loops and ctx.parent_loops[-1] in (LoopKind.FOR, LoopKind.STATIC_FOR):
         raise ctx.syntax_error("Break in a for loop is not supported")
     ctx.set_block_jump(hir.Jump.BREAK)
 
 
 @_register(_stmt_handlers, ast.Return)
 def _return_stmt(stmt: ast.Return, ctx: _Context) -> None:
-    if ctx.parent_loops and ctx.parent_loops[-1] is LoopKind.FOR:
+    if ctx.parent_loops and ctx.parent_loops[-1] in (LoopKind.FOR, LoopKind.STATIC_FOR):
         raise ctx.syntax_error("Returning from a for loop is not supported")
 
     return_val = None if stmt.value is None else _expr(stmt.value, ctx)

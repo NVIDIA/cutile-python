@@ -13,10 +13,11 @@ from typing import (
 from typing_extensions import override
 
 import cuda.tile._stub as ct
-from cuda.tile import _datatype as datatype, TileValueError, TileStaticEvalError
+from cuda.tile import _datatype as datatype
 from cuda.tile import RoundingMode, MemoryOrder, MemoryScope
 from cuda.tile._mutex import tile_mutex
-from cuda.tile._exception import TileTypeError, TileSyntaxError, TileError, TileStaticAssertionError
+from cuda.tile._exception import TileTypeError, TileSyntaxError, TileError, \
+    TileStaticAssertionError, TileStaticEvalError, TileValueError
 from cuda.tile._ir.ir import (
     Operation, Var, Loc, Block,
     add_operation, Builder,
@@ -1008,7 +1009,6 @@ def binary_arithmetic(fn: str, x: Var, y: Var, rounding_mode: Optional[RoundingM
 @impl(ct.floordiv, fixed_args=["floordiv"])
 @impl(ct.cdiv, fixed_args=["cdiv"])
 @impl(ct.pow, fixed_args=["pow"])
-@impl(operator.add, fixed_args=["add"])
 @impl(operator.sub, fixed_args=["sub"])
 @impl(operator.mul, fixed_args=["mul"])
 @impl(operator.floordiv, fixed_args=["floordiv"])
@@ -1018,6 +1018,15 @@ def binary_arithmetic(fn: str, x: Var, y: Var, rounding_mode: Optional[RoundingM
 @impl(max, fixed_args=["max"])
 def binary_arithmetic_impl(fn: str, x: Var, y: Var) -> Var:
     return binary_arithmetic(fn, x, y)
+
+
+@impl(operator.add)
+def add_impl(x: Var, y: Var) -> Var:
+    if isinstance(x.get_type(), TupleTy) and isinstance(y.get_type(), TupleTy):
+        x_items = x.get_aggregate().items
+        y_items = y.get_aggregate().items
+        return build_tuple(x_items + y_items)
+    return binary_arithmetic("add", x, y)
 
 
 @impl(ct.minimum, fixed_args=["min"])
@@ -3901,6 +3910,12 @@ def static_assert_impl(condition: Var, message: Var):
                           " e.g. cuda.tile.static_assert() or ct.static_assert().")
 
 
+@impl(ct.static_iter)
+def static_iter_impl(iterable: Var):
+    raise TileSyntaxError("static_iter() must be used directly by name,"
+                          " e.g. cuda.tile.static_iter() or ct.static_iter().")
+
+
 @impl(hir.do_static_eval)
 def do_static_eval_impl(expr: hir.StaticEvalExpression,
                         local_var_values: tuple[Var, ...]) -> Var:
@@ -3923,8 +3938,50 @@ def do_static_eval_impl(expr: hir.StaticEvalExpression,
         if result is None:
             result = ""
         return loosely_typed_const(str(result))
+    elif expr.kind == hir.StaticEvalKind.STATIC_ITER_ITERABLE:
+        items = _drain_static_iter_iterable(result)
+        return build_tuple(tuple(items))
     else:
         return sym2var(result)
+
+
+_STATIC_ITER_MAX_ITERATIONS = 1000
+
+
+def _drain_static_iter_iterable(iterable) -> list[Var]:
+    try:
+        it = iter(iterable)
+    except Exception as e:
+        msg = str(e)
+        if len(msg) > 0:
+            msg = ": " + msg
+        raise TileTypeError(f"Invalid static_iter() iterable{msg}")
+
+    items = []
+    for i in range(_STATIC_ITER_MAX_ITERATIONS + 1):
+        try:
+            x = next(it)
+        except StopIteration:
+            break
+        except Exception as e:
+            msg = str(e)
+            if len(msg) > 0:
+                msg = ": " + msg
+            raise TileTypeError(f"Error was raised while obtaining item #{i}"
+                                f" from the static_iter() iterable{msg}")
+
+        try:
+            var = sym2var(x)
+        except TileTypeError as e:
+            raise TileStaticEvalError(
+                f"Invalid item #{i} of static_iter() iterable: {str(e)}")
+
+        items.append(var)
+    else:
+        raise TileStaticEvalError(f"Maximum number of iterations"
+                                  f" ({_STATIC_ITER_MAX_ITERATIONS}) has been reached"
+                                  f" while unpacking the static_iter() iterable")
+    return items
 
 
 @impl(hir.do_static_assert)
@@ -3949,6 +4006,19 @@ async def do_static_assert_impl(condition: Var, message_block: hir.Block) -> Non
     message = message.get_constant()
     assert isinstance(message, str)
     raise TileStaticAssertionError(message)
+
+
+@impl(hir.static_foreach)
+async def static_foreach_impl(body: hir.Block, items: Var):
+    scope = Scope.get_current()
+
+    tuple_val = items.get_aggregate()
+    assert isinstance(tuple_val, TupleValue)
+
+    for item in tuple_val.items:
+        scope.hir2ir_varmap[body.params[0].id] = item
+        from .._passes.hir2ir import dispatch_hir_block
+        await dispatch_hir_block(body)
 
 
 def var2sym(var: Var) -> Any:

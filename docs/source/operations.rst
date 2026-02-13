@@ -199,3 +199,4 @@ Metaprogramming Support
 
    static_assert
    static_eval
+   static_iter

@@ -37,11 +37,14 @@ class StaticEvalMode(DispatchMode):
         self._kind = kind
 
     def call_tile_function_from_host(self, func, args, kwargs):
-        from cuda.tile import static_eval, static_assert
-        if func in (static_eval, static_assert):
+        from cuda.tile import static_eval, static_assert, static_iter
+        if func in (static_eval, static_assert, static_iter):
             what = f"{func.__name__}() cannot be used"
         else:
-            what = "Tile functions cannot be called"
+            func_name = getattr(func, "__name__", "")
+            if len(func_name) > 0:
+                func_name = func_name + ": "
+            what = f"{func_name}Tile functions cannot be called"
 
         where = self._kind._value_
         raise TileStaticEvalError(f"{what} inside {where}.")

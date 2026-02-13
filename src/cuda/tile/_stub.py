@@ -2083,6 +2083,32 @@ def static_assert(condition, message=None, /):
     """
 
 
+@function
+def static_iter(iterable):
+    """Iterates at compile time.
+
+    Can only be used as the iterable of a `for` loop::
+
+        for ... in ct.static_iter(...):
+            ...
+
+    The surrounded expression is evaluated using the same rules as :py:func:`static_eval`:
+    it can reference global and local variables, and use the full Python syntax,
+    but must not perform any run-time operations.
+
+    The expression must return a Python iterable, whose length must not exceed some
+    pre-defined number of iterations (currently, 1000). Before any further processing is done,
+    the contents of the iterable are saved to a temporary list, and each item is checked
+    to be valid, as if it were a result of a :py:func:`static_eval` expression
+    (i.e., it must be a supported compile-time constant value or a proxy object
+    for a dynamic value such as a tile).
+
+    Finally, for each item of the iterable, the loop body is inlined, with the induction variable(s)
+    bound to the item. The `break`, `continue`, and `return` statements are not allowed
+    inside a `static_iter` loop.
+    """
+
+
 # ==== Private stubs ====
 
 

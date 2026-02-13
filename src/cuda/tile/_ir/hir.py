@@ -228,6 +228,7 @@ class StaticEvalKind(enum.Enum):
     STATIC_EVAL = "static_eval()"
     STATIC_ASSERT_CONDITION = "static_assert() condition"
     STATIC_ASSERT_MESSAGE = "static_assert() message"
+    STATIC_ITER_ITERABLE = "static_iter() iterable"
 
 
 @dataclass
@@ -238,6 +239,7 @@ class StaticEvalExpression:
 
 def if_else(cond, then_block, else_block, /): ...
 def loop(body, iterable, /): ...  # infinite if `iterable` is None
+def static_foreach(body, items, /): ...
 def build_tuple(*items): ...  # Makes a tuple (i.e. returns `items`)
 def unpack(iterable, expected_len, /): ...
 def identity(x): ...   # Identity function (i.e. returns `x`)
