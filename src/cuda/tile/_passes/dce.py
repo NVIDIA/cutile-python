@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) <2025> NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 #
 # SPDX-License-Identifier: Apache-2.0
-
+import dataclasses
 from typing import Sequence, Set, Tuple, Dict, Any, Optional, List
 
 from cuda.tile._exception import Loc
@@ -233,24 +233,24 @@ def _prune_block(block: Block,
                                   if op.is_for_loop else new_body_vars)
                 new_result_vars = _select_by_mask(op.result_vars, mask)
                 _prune_block(op.body, used_vars, op_to_cf_name, mask, ())
-                new_ops.append(Loop(op.start, op.stop, op.step, new_initial_values, new_result_vars,
-                                    op.body, op.loc))
+                new_ops.append(dataclasses.replace(op,
+                                                   initial_values=new_initial_values,
+                                                   result_vars=new_result_vars))
         elif isinstance(op, Continue):
             _mark_unused_vars_as_undefined(op.values, loop_mask, used_vars)
             next_vars = _select_by_mask(op.values, loop_mask)
-            new_ops.append(Continue(op.loc, next_vars))
+            new_ops.append(Continue(result_vars=(), loc=op.loc, values=next_vars))
         elif isinstance(op, Break):
             _mark_unused_vars_as_undefined(op.values, loop_mask, used_vars)
             output_vars = _select_by_mask(op.values, loop_mask)
-            new_ops.append(Break(op.loc, output_vars))
+            new_ops.append(Break(result_vars=(), loc=op.loc, values=output_vars))
         elif isinstance(op, IfElse):
             if op_to_cf_name[op] in used_vars:
                 mask = tuple(v.name in used_vars for v in op.result_vars)
                 _prune_block(op.then_block, used_vars, op_to_cf_name, loop_mask, mask)
                 _prune_block(op.else_block, used_vars, op_to_cf_name, loop_mask, mask)
                 new_result_vars = _select_by_mask(op.result_vars, mask)
-                new_ops.append(IfElse(op.cond, op.then_block, op.else_block, new_result_vars,
-                                      op.loc))
+                new_ops.append(dataclasses.replace(op, result_vars=new_result_vars))
         elif isinstance(op, TileReduce):
             if op_to_cf_name[op] in used_vars:
                 mask = tuple(v.name in used_vars for v in op.result_vars)
@@ -278,7 +278,7 @@ def _prune_block(block: Block,
                                         result_vars=new_result_vars, loc=op.loc))
         elif isinstance(op, EndBranch):
             output_vars = _select_by_mask(op.outputs, end_branch_mask)
-            new_ops.append(EndBranch(op.loc, output_vars))
+            new_ops.append(dataclasses.replace(op, outputs=output_vars))
         elif any(r.name in used_vars for r in op.result_vars) or _must_keep(op):
             new_ops.append(op)
     block.operations = new_ops

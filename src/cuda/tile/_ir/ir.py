@@ -4,14 +4,13 @@
 
 from __future__ import annotations
 
+import dataclasses
 import enum
 import itertools
 import threading
-from collections import OrderedDict
 from collections import defaultdict
 from collections.abc import Mapping
 from contextlib import contextmanager
-from copy import copy
 from dataclasses import dataclass
 from types import MappingProxyType
 from typing import (
@@ -316,11 +315,6 @@ class ClosureValue(AggregateValue):
         )
 
 
-def terminator(cls):
-    cls._is_terminator = True
-    return cls
-
-
 class MemoryEffect(enum.IntEnum):
     # Int value assigned here is meaningful.
     # It implies the relative strength of memory effects.
@@ -328,18 +322,6 @@ class MemoryEffect(enum.IntEnum):
     NONE = 0
     LOAD = 1
     STORE = 2
-
-
-def memory_effect(eff: MemoryEffect):
-    def decorate(cls):
-        cls.memory_effect = eff
-        return cls
-    return decorate
-
-
-def has_multiple_results(cls):
-    cls._multiple_results = True
-    return cls
 
 
 class Mapper:
@@ -450,8 +432,8 @@ class Builder:
             for var, ty in zip(result, result_ty, strict=True):
                 if ty is not None:
                     var.set_type(ty, force=force_type)
-            if len(result) > 0 or op_class._multiple_results:
-                attrs_and_operands["result_vars"] = result
+
+            result_vars = result
         else:
             if result is None:
                 result = self.ir_ctx.make_temp(self._loc)
@@ -460,9 +442,10 @@ class Builder:
                 force_type = True
             if result_ty is not None:
                 result.set_type(result_ty, force=force_type)
-            attrs_and_operands["result_var"] = result
 
-        new_op = op_class(**attrs_and_operands, loc=self._loc)
+            result_vars = (result,)
+
+        new_op = op_class(**attrs_and_operands, loc=self._loc, result_vars=result_vars)
         self._ops.append(new_op)
         if new_op.is_terminator:
             self.is_terminated = True
@@ -529,7 +512,7 @@ class Builder:
 
 
 @contextmanager
-def nested_block(loc: Loc, reduction_body: bool = False, scan_body: bool = False):
+def enter_nested_block(loc: Loc, reduction_body: bool = False, scan_body: bool = False):
     prev_builder = Builder.get_current()
     block = Block(prev_builder.ir_ctx, loc=loc)
     with Builder(prev_builder.ir_ctx, loc,
@@ -546,66 +529,132 @@ class _CurrentBuilder(threading.local):
 _current_builder = _CurrentBuilder()
 
 
+class _FieldKind(enum.IntEnum):
+    OPERAND = 0
+    ATTRIBUTE = 1
+    NESTED_BLOCK = 2
+
+
+_FIELD_METADATA_KEY = "operation_field_kind"
+
+
+def attribute(*, default=dataclasses.MISSING) -> dataclasses.Field:
+    return dataclasses.field(default=default, metadata={_FIELD_METADATA_KEY: _FieldKind.ATTRIBUTE},
+                             kw_only=True)
+
+
+def operand(*, default=dataclasses.MISSING) -> dataclasses.Field:
+    return dataclasses.field(default=default, metadata={_FIELD_METADATA_KEY: _FieldKind.OPERAND},
+                             kw_only=True)
+
+
+def nested_block() -> dataclasses.Field:
+    return dataclasses.field(metadata={_FIELD_METADATA_KEY: _FieldKind.NESTED_BLOCK},
+                             kw_only=True)
+
+
+def _get_result_vars_tuple_for_single_result_op(self):
+    return (self.result_var,)
+
+
+@dataclass(eq=False)
 class Operation:
-    memory_effect = MemoryEffect.NONE
-    _multiple_results = False
+    result_vars: tuple[Var, ...]
+    loc: Loc
 
-    def __init__(
-        self,
-        op: str,
-        operands: dict[str, Optional[Var | Tuple[Var, ...]]],
-        result_vars: Sequence[Var],
-        attributes: Optional[Dict[str, Any]] = None,
-        nested_blocks: Optional[Sequence[Block]] = None,
-        loc: Loc = Loc.unknown(),
-    ):
-        self.op = op
-        self.result_vars = result_vars or []
-        self.attributes = attributes or {}
-        self.nested_blocks = nested_blocks or []
-        self.loc = loc
+    def __init_subclass__(cls,
+                          opcode: str,
+                          terminator: bool = False,
+                          memory_effect: MemoryEffect = MemoryEffect.NONE):
+        cls._opcode = opcode
+        cls._is_terminator = terminator
+        cls.memory_effect = memory_effect
 
-        self._operands = OrderedDict()
-        for k, v in operands.items():
-            self._add_operand(k, v)
-        self._is_terminator = getattr(self.__class__, "_is_terminator", False)
-        self._parent_block = None
+        operand_names = []
+        attribute_names = []
+        nested_block_names = []
+        for field_name in cls.__annotations__.keys():
+            f = getattr(cls, field_name, None)
+            kind = f.metadata.get(_FIELD_METADATA_KEY) if isinstance(f, dataclasses.Field) else None
+            if kind == _FieldKind.OPERAND:
+                operand_names.append(field_name)
+            elif kind == _FieldKind.ATTRIBUTE:
+                attribute_names.append(field_name)
+            elif kind == _FieldKind.NESTED_BLOCK:
+                nested_block_names.append(field_name)
+            else:
+                raise TypeError(f"Field {field_name} of {cls} must be annotated with either"
+                                f" operand(), attribute() or nested_block()")
+
+        cls._operand_names = tuple(operand_names)
+        cls._attribute_names = tuple(attribute_names)
+        cls._nested_block_names = tuple(nested_block_names)
+
+    def __post_init__(self):
+        for var in self.all_inputs():
+            assert isinstance(var, Var | tuple) or var is None
+            if isinstance(var, tuple):
+                assert all(isinstance(x, Var) for x in var)
+
+            if isinstance(var, Var) and var.is_aggregate() and self.op != "assign":
+                # Don't allow aggregate values as operands, except for arrays and lists.
+                # All other aggregates should only exist in the HIR level.
+                # Also make an exception for the Assign op, until we find a better way to handle it.
+                agg_val = var.get_aggregate()
+                assert isinstance(agg_val, ArrayValue | ListValue)
+
+        for nb in self.nested_blocks:
+            assert isinstance(nb, Block)
 
     def clone(self, mapper: Mapper) -> Operation:
         result_vars = mapper.clone_vars(self.result_vars)
         return self._clone_impl(mapper, result_vars)
 
     def _clone_impl(self, mapper: Mapper, result_vars: Sequence[Var]) -> Operation:
-        new_nested_blocks = []
-        for old_block in self.nested_blocks:
+        new_fields = {}
+
+        for name in self._attribute_names:
+            new_fields[name] = getattr(self, name)
+
+        for name in self._operand_names:
+            var = getattr(self, name)
+            if isinstance(var, Var):
+                new_var = mapper.get_var(var)
+            elif var is None:
+                new_var = None
+            else:
+                new_var = tuple(mapper.get_var(v) for v in var)
+            new_fields[name] = new_var
+
+        for name in self._nested_block_names:
+            old_block = getattr(self, name)
             new_block = Block(old_block.ctx, old_block.loc)
             new_block.params = mapper.clone_vars(old_block.params)
             for old_op in old_block:
                 new_block.append(old_op.clone(mapper))
-            new_nested_blocks.append(new_block)
+            new_fields[name] = new_block
 
-        ret = copy(self)
-        ret._operands = OrderedDict()
-        for name, var in self._operands.items():
-            if isinstance(var, Var):
-                ret._operands[name] = mapper.get_var(var)
-            elif var is None:
-                ret._operands[name] = None
-            else:
-                ret._operands[name] = tuple(mapper.get_var(v) for v in var)
+        return type(self)(result_vars=tuple(result_vars), loc=self.loc, **new_fields)
 
-        ret.attributes = dict(ret.attributes)
-        ret.result_vars = result_vars
-        ret.parent_block = None
-        ret.nested_blocks = new_nested_blocks
-        return ret
+    @property
+    def op(self) -> str:
+        return self._opcode
 
     @property
     def operands(self) -> Mapping[str, Var | Tuple[Var, ...]]:
-        return MappingProxyType(self._operands)
+        return MappingProxyType({name: getattr(self, name) for name in self._operand_names})
+
+    @property
+    def attributes(self):
+        return MappingProxyType({name: getattr(self, name) for name in self._attribute_names})
+
+    @property
+    def nested_blocks(self):
+        return tuple(getattr(self, name) for name in self._nested_block_names)
 
     def all_inputs(self) -> Iterator[Var]:
-        for x in self._operands.values():
+        for name in self._operand_names:
+            x = getattr(self, name)
             if isinstance(x, tuple):
                 yield from iter(x)
             elif x is not None:
@@ -614,28 +663,6 @@ class Operation:
     @property
     def is_terminator(self) -> bool:
         return self._is_terminator
-
-    def _add_operand(self, name: str, var: Var | Tuple[Var, ...]):
-        if isinstance(var, Var) and var.is_aggregate() and self.op != "assign":
-            # Don't allow aggregate values as operands, except for arrays and lists.
-            # All other aggregates should only exist in the HIR level.
-            # Also make an exception for the Assign op, until we find a better way to handle it.
-            agg_val = var.get_aggregate()
-            assert isinstance(agg_val, ArrayValue | ListValue)
-        self._operands[name] = var
-
-    def update_operand(self, name: str, var: Var | Tuple[Var, ...]):
-        self._add_operand(name, var)
-
-    def __getattr__(self, name: str) -> Any:
-        if name == "__setstate__":
-            raise AttributeError(name)
-
-        if name in self.operands:
-            return self.operands[name]
-        if name in self.attributes:
-            return self.attributes[name]
-        raise AttributeError(f"{self.__class__.__name__} has no operand or attribute {name}")
 
     @property
     def result_var(self) -> Var:
@@ -738,11 +765,6 @@ def format_var(var: Var) -> str:
         ret += f": {const_prefix}{ty}"
 
     return ret
-
-
-# TODO: no longer needed, remove by inheriting from Operation instead
-class TypedOperation(Operation):
-    pass
 
 
 class Block:

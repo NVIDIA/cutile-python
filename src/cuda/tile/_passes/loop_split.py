@@ -95,21 +95,25 @@ def _split_loop(loop: Loop, cond: _Condition, if_ops_to_flatten: Set[IfElse], ne
     loc = loop.loc
     if _NEED_TO_ADJUST_RANGE[cond.cmp]:
         one_var = new_block.make_temp_var(loc)
-        new_block.append(TypedConst(1, one_var, loc))
+        new_block.append(TypedConst(value=1, result_vars=(one_var,), loc=loc))
         one_var.set_type(range_dtype)
         plus_one_var = new_block.make_temp_var(loc)
-        new_block.append(RawBinaryArithmeticOperation("add", split_value, one_var, None, False,
-                                                      plus_one_var, loc))
+        new_block.append(RawBinaryArithmeticOperation(fn="add", lhs=split_value, rhs=one_var,
+                                                      rounding_mode=None, flush_to_zero=False,
+                                                      result_vars=(plus_one_var,),
+                                                      loc=loc))
         plus_one_var.set_type(range_dtype)
         split_value = plus_one_var
 
     first_loop_stop = new_block.make_temp_var(loc)
-    new_block.append(RawBinaryArithmeticOperation("min", loop.stop, split_value, None, False,
-                                                  first_loop_stop, loc))
+    new_block.append(RawBinaryArithmeticOperation(fn="min", lhs=loop.stop, rhs=split_value,
+                                                  rounding_mode=None, flush_to_zero=False,
+                                                  result_vars=(first_loop_stop,), loc=loc))
 
     second_loop_start = new_block.make_temp_var(loc)
-    new_block.append(RawBinaryArithmeticOperation("max", loop.start, split_value, None, False,
-                                                  second_loop_start, loc))
+    new_block.append(RawBinaryArithmeticOperation(fn="max", lhs=loop.start, rhs=split_value,
+                                                  rounding_mode=None, flush_to_zero=False,
+                                                  result_vars=(second_loop_start,), loc=loc))
 
     for var in first_loop_stop, second_loop_start:
         var.set_type(range_dtype)
@@ -157,7 +161,8 @@ def _clone_loop(loop: Loop, new_start: Var, new_stop: Var, new_step: Var,
         else:
             new_body.append(body_op.clone(mapper))
 
-    return Loop(new_start, new_stop, new_step, initial_vars, result_vars, new_body, loop.loc)
+    return Loop(start=new_start, stop=new_stop, step=new_step, initial_values=initial_vars,
+                result_vars=result_vars, body=new_body, loc=loop.loc)
 
 
 def split_loops(block: Block):

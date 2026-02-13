@@ -115,11 +115,13 @@ def fuse_mul_addsub(op: RawBinaryArithmeticOperation, ctx: MatchContext):
     if op.fn == "sub":
         negated_acc = ctx.make_temp_var(op.loc)
         ctx.set_type(negated_acc, ctx.typeof(acc))
-        new_ops.append(Unary("neg", acc, None, False, negated_acc, op.loc))
+        new_ops.append(Unary(fn="neg", operand=acc, rounding_mode=None, flush_to_zero=False,
+                             result_vars=(negated_acc,), loc=op.loc))
         acc = negated_acc
 
-    new_ops.append(FusedMulAddOperation(mul_op.lhs, mul_op.rhs, acc, rm, ftz,
-                                        op.result_var, op.loc))
+    new_ops.append(FusedMulAddOperation(lhs=mul_op.lhs, rhs=mul_op.rhs, acc=acc,
+                                        rounding_mode=rm, flush_to_zero=ftz,
+                                        result_vars=(op.result_var,), loc=op.loc))
     ctx.add_rewrite((mul_op, op), new_ops)
 
 

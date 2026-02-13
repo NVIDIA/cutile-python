@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) <2025> NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 #
 # SPDX-License-Identifier: Apache-2.0
-
+import dataclasses
 from collections import OrderedDict, defaultdict
 from dataclasses import dataclass
 from enum import Enum, auto
@@ -119,7 +119,7 @@ def token_order_pass(root_block: Block, alias_result: AliasResult):
     token_map = defaultdict(lambda: root_tok)
     _to_token_order_in_block(root_block, context, token_map)
     # Ensures Operation.parent_block is correctly set
-    root_block[:0] = (MakeToken(root_tok, root_block.loc),)
+    root_block[:0] = (MakeToken(result_vars=(root_tok,), loc=root_block.loc),)
 
 
 def _get_input_var(op: Operation):
@@ -180,8 +180,8 @@ def _to_token_order_in_block(block: Block,
 
             # Eagerly join with last_op_token
             new_last_op_tok = _make_token_var(block.ctx, op.loc)
-            join_op = JoinTokens((token_map[last_op_key], result_tok), new_last_op_tok,
-                                 op.loc)
+            join_op = JoinTokens(tokens=(token_map[last_op_key], result_tok),
+                                 result_vars=(new_last_op_tok,), loc=op.loc)
             operations.append(join_op)
 
             token_map[last_op_key] = new_last_op_tok
@@ -281,8 +281,8 @@ def _to_token_order_in_block(block: Block,
                                                                            token_map))
 
             op.body.params = tuple(new_body_params)
-            new_loop_op = Loop(op.start, op.stop, op.step, tuple(new_initial_values),
-                               tuple(new_result_vars), op.body, op.loc)
+            new_loop_op = dataclasses.replace(op, initial_values=tuple(new_initial_values),
+                                              result_vars=tuple(new_result_vars))
             operations.append(new_loop_op)
 
             token_map = result_token_map
@@ -290,13 +290,13 @@ def _to_token_order_in_block(block: Block,
         elif isinstance(op, Continue):
             tokens = _get_cf_exit_tokens(innermost_loop_info.loop_mem_effects, token_map)
 
-            new_continue_op = Continue(op.loc, tuple(op.values) + tokens)
+            new_continue_op = dataclasses.replace(op, values=tuple(op.values) + tokens)
             operations.append(new_continue_op)
 
         elif isinstance(op, Break):
             tokens = _get_cf_exit_tokens(innermost_loop_info.loop_mem_effects, token_map)
 
-            new_break_op = Break(op.loc, tuple(op.values) + tokens)
+            new_break_op = dataclasses.replace(op, values=tuple(op.values) + tokens)
             operations.append(new_break_op)
 
         elif isinstance(op, IfElse):
@@ -336,7 +336,7 @@ def _to_token_order_in_block(block: Block,
                                          innermost_loop_info=innermost_loop_info,
                                          ifelse_info=IfElseInfo(merged_mem_effects))
 
-            new_ifelse_op = IfElse(op.cond, op.then_block, op.else_block, new_result_vars, op.loc)
+            new_ifelse_op = dataclasses.replace(op, result_vars=tuple(new_result_vars))
             operations.append(new_ifelse_op)
 
             token_map = result_token_map
@@ -344,7 +344,7 @@ def _to_token_order_in_block(block: Block,
         elif isinstance(op, EndBranch):
             tokens = _get_cf_exit_tokens(ifelse_info.ifelse_mem_effects, token_map)
 
-            new_end_branch_op = EndBranch(op.loc, tuple(op.outputs) + tokens)
+            new_end_branch_op = dataclasses.replace(op, outputs=tuple(op.outputs) + tokens)
             operations.append(new_end_branch_op)
 
         else:
@@ -405,7 +405,7 @@ def _get_input_token(token_key: TokenKey,
         return tokens_to_join[0], None
 
     ret_tok = _make_token_var(op.parent_block.ctx, op.loc)
-    ret_op = JoinTokens(tuple(tokens_to_join), ret_tok, op.loc)
+    ret_op = JoinTokens(tokens=tuple(tokens_to_join), result_vars=(ret_tok,), loc=op.loc)
     return ret_tok, ret_op
 
 
@@ -417,9 +417,11 @@ def _to_token_ordered_mem_op(op, token: Var, result_token: Var) -> Operation:
 
     if new_class in (TileLoadTokenOrdered, LoadPointerTokenOrdered,
                      TileAtomicCASTokenOrdered, TileAtomicRMWTokenOrdered):
-        new_kwargs["result_var"] = op.result_var
+        new_kwargs["result_vars"] = (op.result_var, result_token)
+    else:
+        new_kwargs["result_vars"] = (result_token,)
 
-    return new_class(token=token, result_token=result_token, loc=op.loc, **new_kwargs)
+    return new_class(token=token, loc=op.loc, **new_kwargs)
 
 
 def _get_cf_exit_tokens(cf_mem_effects: MemoryEffects,
@@ -539,8 +541,8 @@ def _try_loop_parallel_store(
             before_loop_last_op_tok is not token_map[ACQUIRE_TOKEN_KEY]):
         input_tok = _make_token_var(store_op.parent_block.ctx, store_op.loc)
         maybe_input_tok_join_op = JoinTokens(
-            (before_loop_last_op_tok, token_map[ACQUIRE_TOKEN_KEY]),
-            input_tok, store_op.loc)
+            tokens=(before_loop_last_op_tok, token_map[ACQUIRE_TOKEN_KEY]),
+            result_vars=(input_tok,), loc=store_op.loc)
     else:
         input_tok = before_loop_last_op_tok
         maybe_input_tok_join_op = None
@@ -551,8 +553,8 @@ def _try_loop_parallel_store(
     # Eagerly join with loop_last_op_tok
     loop_last_op_tok = token_map[last_op_key]
     new_last_op_tok = _make_token_var(store_op.parent_block.ctx, store_op.loc)
-    join_op = JoinTokens((loop_last_op_tok, result_tok), new_last_op_tok,
-                         store_op.loc)
+    join_op = JoinTokens(tokens=(loop_last_op_tok, result_tok),
+                         result_vars=(new_last_op_tok,), loc=store_op.loc)
 
     token_map[last_op_key] = new_last_op_tok
     token_map[last_store_key] = new_last_op_tok
