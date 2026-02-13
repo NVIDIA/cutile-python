@@ -74,10 +74,11 @@ def bench_fmha(qkv_shape, dtype, backend, benchmark):
         rounds=rounds, warmup_rounds=warmup_rounds, iterations=iterations,
     )
 
-    B, H, L, D = q.shape
-    # first gemm mma(q, k): 2 * B * H * L * L * D
-    # second gemm mma(p, v): 2 * B * H * L * L * D
-    flop_count = 4 * B * H * L * L * D
+    B, H, L, Dqk = q.shape
+    _, _, _, Dv = v.shape
+    # first gemm mma(q, k): 2 * B * H * L * L * Dqk
+    # second gemm mma(p, v): 2 * B * H * L * L * Dv
+    flop_count = 2 * B * H * L * L * (Dqk + Dv)
 
     if is_causal:
         flop_count /= 2
@@ -88,9 +89,10 @@ def bench_fmha(qkv_shape, dtype, backend, benchmark):
 
 
 def cutile_fmha(q, k, v, o, is_causal, enable_gqa):
-    b, qh, q_len, d = q.shape
+    b, qh, q_len, dqk = q.shape
     _, kh, k_len, _ = k.shape
-    qk_scale = 1 / sqrt(d)
+    _, _, _, dv = v.shape
+    qk_scale = 1 / sqrt(dqk)
     TILE_M, TILE_N = (256, 128) if is_causal else (64, 128)
     query_group_size = qh // kh
     grid = (ceil(q_len / TILE_M), b * qh, 1)
@@ -100,7 +102,7 @@ def cutile_fmha(q, k, v, o, is_causal, enable_gqa):
               (q, k, v, o,
                qk_scale,
                input_pos,
-               d, qh,
+               dqk, dv, qh,
                TILE_M, TILE_N,
                query_group_size, is_causal, EVEN_K))
 
