@@ -23,7 +23,7 @@ from cuda.tile._ir.ir import (
     add_operation, Builder,
     enter_nested_block, nested_block, PhiState, LoopVarState,
     TupleValue, make_aggregate, RangeValue, BoundMethodValue, ArrayValue, ConstantState,
-    ListValue, ClosureValue, MemoryEffect, attribute, operand,
+    ListValue, ClosureValue, MemoryEffect, attribute, operand, BlockRestriction
 )
 from cuda.tile._ir.load_store_impl import (
     check_load_store_hints,
@@ -306,10 +306,8 @@ async def loop_impl(body: hir.Block, iterable: Var):
 
     # Do this check at the end because this may be an automatically inserted loop
     # around the helper function's body.
-    if builder.reduction_body:
-        raise TileSyntaxError("Loops inside reduction body are not supported")
-    if builder.scan_body:
-        raise TileSyntaxError("Loops inside scan body are not supported")
+    if builder.block_restriction is not None:
+        builder.block_restriction.validate_operation(Loop)
 
 
 def _have_nested_jump(calls: Sequence[hir.Call]) -> bool:
@@ -349,6 +347,26 @@ class IfElse(Operation, opcode="ifelse"):
         return f"if(cond={self.cond})"
 
 
+@dataclass
+class ReduceScanRestriction(BlockRestriction):
+    """Restriction for reduction/scan body blocks: no memory effects, loops, or branching."""
+
+    kind: Literal["reduction", "scan"]
+
+    def validate_operation(self, op_class: type) -> None:
+        if getattr(op_class, "memory_effect", MemoryEffect.NONE) != MemoryEffect.NONE:
+            raise TileSyntaxError(
+                f"Operations with memory effects are not supported inside {self.kind} body"
+            )
+        if op_class is Loop:
+            raise TileSyntaxError(f"Loops inside {self.kind} body are not supported")
+        if op_class is IfElse:
+            raise TileSyntaxError(
+                f"Branching inside {self.kind} body is not supported. "
+                f"Consider ct.where() as a workaround."
+            )
+
+
 async def _flatten_branch(branch: hir.Block) -> Var | None:
     from .._passes.hir2ir import dispatch_hir_block
     info = ControlFlowInfo((), flatten=True)
@@ -373,12 +391,8 @@ async def if_else_impl(cond: Var, then_block: hir.Block, else_block: hir.Block) 
         return await _flatten_branch(branch_taken)
 
     builder = Builder.get_current()
-    if builder.reduction_body:
-        raise TileSyntaxError("Branching inside reduction body is not supported."
-                              " Consider ct.where() as a workaround.")
-    if builder.scan_body:
-        raise TileSyntaxError("Branching inside scan body is not supported."
-                              " Consider ct.where() as a workaround.")
+    if builder.block_restriction is not None:
+        builder.block_restriction.validate_operation(IfElse)
 
     # Get the total number of results by adding the number of stored variables.
     # Note: we sort the stored variable indices to make the order deterministic.
@@ -2889,7 +2903,7 @@ async def _get_reduce_scan_body_block(
     """Build body block for reduce/scan. Caller passes result_shape; returns
     (body_block, result_types)."""
     builder = Builder.get_current()
-    if builder.reduction_body or builder.scan_body:
+    if isinstance(builder.block_restriction, ReduceScanRestriction):
         raise TileSyntaxError("Nested scan/reduction is not supported")
 
     block_params = []
@@ -2913,8 +2927,7 @@ async def _get_reduce_scan_body_block(
 
     with enter_nested_block(
             builder.loc,
-            reduction_body=(op_name == "reduction"),
-            scan_body=(op_name == "scan")) as body_block:
+            block_restriction=ReduceScanRestriction(op_name)) as body_block:
         body_block.params = tuple(block_params)
         body_results = await body(tuple(lhs_vars), tuple(rhs_vars))
         for body_res, x in zip(body_results, xs, strict=True):

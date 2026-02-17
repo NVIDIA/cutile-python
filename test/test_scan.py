@@ -297,7 +297,8 @@ def test_custom_scan_ifelse_not_supported():
     def kernel(x, y):
         def f(a, b):
             if ct.bid(0) == 0:
-                return a + b
+                # In case of type mismatch, compiler will complain about nested branching
+                return a + b.type()
             else:
                 return (a + b) % 5
 
