@@ -3,7 +3,7 @@
 
 Release Notes
 =============
-1.1.0 (2025-01-30)
+1.1.0 (2026-01-30)
 ------------------
 ### Features
 - Add support for nested functions and lambdas.
