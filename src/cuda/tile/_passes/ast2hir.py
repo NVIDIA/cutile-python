@@ -297,8 +297,9 @@ def _call_static_eval(expr: ast.expr, kind: hir.StaticEvalKind, ctx: _Context) -
     inner_lambda = outer_lambda(*tuple(None for _ in local_names))
 
     # Make sure the function doesn't store any locals, e.g. using the walrus operator
-    if len(inner_lambda.__code__.co_varnames) > 0:
-        name = inner_lambda.__code__.co_varnames[0]
+    stored_locals = ast_get_all_local_names(inner_lambda_ast).local_names
+    if len(stored_locals) > 0:
+        name = min(stored_locals)
         raise TileSyntaxError(f"static_eval() expression attempted"
                               f" to modify a local variable '{name}'")
 

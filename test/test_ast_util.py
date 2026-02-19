@@ -53,12 +53,14 @@ def func(p1, *p2, **p3):
     print(a, b, c, sneaky_1, sneaky_2, sneaky_3, sneaky_4, local_i)
 
 
-
 def test_get_all_local_names():
     parsed_ast = ast.parse(inspect.getsource(func))
     func_ast = parsed_ast.body[0]
     local_names, global_names, nonlocal_names = ast_get_all_local_names(func_ast)
-    expected = sorted(func.__code__.co_varnames + func.__code__.co_cellvars)
+    expected = ['a', 'b', 'c', 'cd', 'e', 'getcwd', 'local_i', 'match_alias', 'nested_async_def',
+                'nested_func', 'nonexistent', 'p1', 'p2', 'p3',
+                'pat1', 'pat2', 'pat3', 'pat4', 'pat5', 'pat6',
+                'sneaky_1', 'sneaky_2', 'sneaky_3', 'sneaky_4', 'walrus']
     assert sorted(local_names) == expected
     assert global_names == {"g"}
     assert nonlocal_names == set()

@@ -25,6 +25,20 @@ def test_tuple_sum():
     assert y.tolist() == [6, 6]
 
 
+def test_list_comprehension():
+    @ct.kernel
+    def kernel(y):
+        tup = (1, 2, 3)
+        s1 = ct.static_eval(sum([i*i for i in tup]))
+        s2 = cuda.tile.static_eval(sum([i*i for i in tup]))
+        ct.scatter(y, 0, s1)
+        ct.scatter(y, 1, s2)
+
+    y = torch.zeros((2,), dtype=torch.int32, device="cuda")
+    ct.launch(torch.cuda.current_stream(), (1,), kernel, (y,))
+    assert y.tolist() == [1*1 + 2*2 + 3*3, 1*1 + 2*2 + 3*3]
+
+
 def test_mixed_tuple():
     @ct.kernel
     def kernel(y):
