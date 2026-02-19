@@ -3,7 +3,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-ignore_files=("src/cuda/tile/VERSION" "changelog.d")
+ignore_files=("src/cuda/tile/VERSION" "changelog.d" "uv.lock")
 outputs=$(reuse lint --lines | grep -v ${ignore_files[@]/#/-e })
 if [ -n "$outputs" ]; then
   echo -e "License check failed\n${outputs}"
