@@ -232,6 +232,64 @@ class Array:
         """
         return _m_array_tiled_view(self, tile_shape, padding_mode=padding_mode)
 
+    def get_raw_memory(self) -> "RawArrayMemory":
+        """Returns an object that allows loading and storing by element offset.
+
+        The returned object holds the array's base pointer. Use
+        :py:meth:`RawArrayMemory.load_offset`
+        and :py:meth:`RawArrayMemory.store_offset` with an offset in **elements** (no shape/stride
+        index calculation). Useful when you already have memory offsets.
+
+        Returns:
+            RawArrayMemory:
+        """
+        return _m_array_get_raw_memory(self)
+
+
+class RawArrayMemory:
+    """Type stub for RawArrayMemory objects returned by :py:meth:`Array.get_raw_memory`."""
+
+    @property
+    @function
+    def dtype(self) -> "DType":
+        """The data type of the elements in the |RawArrayMemory|.
+
+        Returns:
+            DType (constant):
+        """
+
+    def load_offset(self, offset: "TileOrScalar", /, *,
+                    mask: Optional["Tile"] = None,
+                    padding_value: "TileOrScalar" = 0,
+                    latency: Optional[int] = None) -> "Tile":
+        """Loads from memory at base_ptr + offset (offset in elements).
+
+        Args:
+            offset: Element offset(s); scalar or tile of integer type.
+            mask: Optional boolean mask; where False, padding_value is used instead of load.
+            padding_value: Value used when mask is False; default 0.
+            latency: Optional latency hint (1--10).
+
+        Returns:
+            Tile: Loaded tile; shape matches broadcast(offset).
+        """
+        return _m_raw_array_memory_load_offset(
+            self, offset, mask=mask, padding_value=padding_value, latency=latency)
+
+    def store_offset(self, offset: "TileOrScalar", value: "TileOrScalar", /, *,
+                     mask: Optional["Tile"] = None,
+                     latency: Optional[int] = None) -> None:
+        """Stores to memory at base_ptr + offset (offset in elements).
+
+        Args:
+            offset: Element offset(s); scalar or tile of integer type.
+            value: Value(s) to store; broadcast to offset shape.
+            mask: Optional boolean mask; where False, no store occurs.
+            latency: Optional latency hint (1--10).
+        """
+        return _m_raw_array_memory_store_offset(
+            self, offset, value, mask=mask, latency=latency)
+
 
 class Tile:
     """Type stub for a |tile|."""
@@ -2430,3 +2488,22 @@ def _m_tiled_view_load(tiled_view, index, *, latency, allow_tma): ...
 @function
 def _m_tiled_view_store(tiled_view, index, tile, *, latency, allow_tma): ...
 # TiledView.store(index, tile, latency=latency, allow_tma=allow_tma)
+
+
+@function
+def _m_array_get_raw_memory(array: Array) -> RawArrayMemory: ...  # Array.get_raw_memory()
+
+
+@function
+def _m_raw_array_memory_load_offset(
+        raw_array_memory: RawArrayMemory, offset: TileOrScalar, /, *,
+        mask: Optional[Tile] = None,
+        padding_value: TileOrScalar = 0,
+        latency: Optional[int] = None) -> Tile: ...  # RawArrayMemory.load_offset()
+
+
+@function
+def _m_raw_array_memory_store_offset(
+        raw_array_memory: RawArrayMemory, offset: TileOrScalar, value: TileOrScalar, /, *,
+        mask: Optional[Tile] = None,
+        latency: Optional[int] = None) -> None: ...  # RawArrayMemory.store_offset()

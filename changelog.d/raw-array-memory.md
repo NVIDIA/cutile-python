@@ -1,0 +1,1 @@
+- Added `Array.get_raw_memory()` returning a `RawArrayMemory` object that supports `load_offset(offset)` and `store_offset(offset, value)` for direct memory access by element offset (no shape/stride index calculation).

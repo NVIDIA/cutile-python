@@ -465,6 +465,31 @@ class TiledViewTy(Type):
                 f"padding_mode={self.padding_mode}]")
 
 
+# ============== Raw Array Memory Type ===============
+
+
+@dataclass(frozen=True)
+class RawArrayMemoryTy(Type):
+    """Type for a RawArrayMemory object that allows load/store by element offset (no index math)."""
+    dtype: "DType"
+
+    def is_aggregate(self) -> bool:
+        return True
+
+    def aggregate_item_types(self) -> tuple["Type", ...]:
+        base_ptr_ty = PointerTy(self.dtype)
+        base_ptr_tile_ty = TileTy(base_ptr_ty, TupleTy(()))
+        return (base_ptr_tile_ty,)
+
+    def make_aggregate_value(self, items: tuple["Var", ...]) -> "AggregateValue":
+        from .ir import RawArrayMemoryValue
+        assert len(items) == 1
+        return RawArrayMemoryValue(items[0])
+
+    def __str__(self):
+        return f"RawArrayMemory[{self.dtype}]"
+
+
 # ============== List Type ===============
 
 

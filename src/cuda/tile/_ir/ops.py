@@ -25,7 +25,7 @@ from cuda.tile._ir.ir import (
     enter_nested_block, nested_block, PhiState, LoopVarState,
     TupleValue, make_aggregate, RangeValue, BoundMethodValue, ArrayValue, ConstantState,
     ListValue, TiledViewValue, ClosureValue, MemoryEffect, attribute, operand,
-    BlockRestriction, FormattedStringValue,
+    BlockRestriction, FormattedStringValue, RawArrayMemoryValue
 )
 from .type import PointerTy
 from . import hir
@@ -42,7 +42,7 @@ from .op_impl import (
     require_optional_constant_str, PrintfValidator, require_tile_maybe_loose_type,
     require_0d_tile_maybe_loose_type, require_bool, require_optional_range_type,
     require_tile_or_tile_tuple_type, require_constant_scalar_tuple, require_constant_scalar,
-    require_callable_type)
+    require_callable_type, require_raw_array_memory_type)
 from .ops_utils import (
     BINOP_REGISTRY, UNARYOP_REGISTRY,
     check_rd_and_ftz, PaddingMode, get_default_order,
@@ -60,7 +60,7 @@ from .type import (
     ListTy, make_tile_ty, SliceType, DTypeConstructor, RangeIterType, Type,
     NONE, ModuleTy, TypeTy, LooselyTypedScalar, DTypeSpec, StringTy, InvalidType,
     array_size_type, ClosureTy, LiveCapturedScope, TokenTy, TiledViewTy, FormattedStringTy,
-    StringFormat, FormattedPiece,
+    StringFormat, FormattedPiece, RawArrayMemoryTy
 )
 from cuda.tile._datatype import (
     DType, is_integral, is_float, is_signed, is_boolean,
@@ -1593,6 +1593,7 @@ def getattr_impl(object: Var, name: Var) -> Var:
         case ArrayTy(), "strides": return build_tuple(object.get_aggregate().strides)
         case ArrayTy(), "slice": return bind_method(object, ct._m_array_slice)
         case ArrayTy(), "tiled_view": return bind_method(object, ct._m_array_tiled_view)
+        case ArrayTy(), "get_raw_memory": return bind_method(object, ct._m_array_get_raw_memory)
 
         case TileTy(), "dtype": return loosely_typed_const(ty.dtype)
         case TileTy(), "shape": return loosely_typed_const(ty.shape)
@@ -1613,6 +1614,12 @@ def getattr_impl(object: Var, name: Var) -> Var:
 
         case TiledViewTy(), "load": return bind_method(object, ct._m_tiled_view_load)
         case TiledViewTy(), "store": return bind_method(object, ct._m_tiled_view_store)
+
+        case RawArrayMemoryTy(), "dtype": return loosely_typed_const(ty.dtype)
+        case RawArrayMemoryTy(), "load_offset": return bind_method(
+            object, ct._m_raw_array_memory_load_offset)
+        case RawArrayMemoryTy(), "store_offset": return bind_method(
+            object, ct._m_raw_array_memory_store_offset)
 
         case ModuleTy(), _:
             try:
@@ -2154,6 +2161,83 @@ def _tile_load_impl_inner(array: Var, index_items: tuple[Var, ...], shape: Seque
     return reshape(result, shape)
 
 
+@impl(ct._m_array_get_raw_memory)
+def get_raw_memory_impl(array: Var) -> Var:
+    array_ty = require_array_type(array)
+    array_val = array.get_aggregate()
+    assert isinstance(array_val, ArrayValue)
+    base_ptr = array_val.base_ptr
+    raw_mem_ty = RawArrayMemoryTy(array_ty.dtype)
+    [ret] = unflatten_aggregates((base_ptr,), (raw_mem_ty,), (raw_mem_ty,))
+    return ret
+
+
+@impl(ct._m_raw_array_memory_load_offset)
+def raw_array_memory_load_offset_impl(raw_array_memory: Var, offset: Var, mask: Var,
+                                      padding_value: Var, latency: Var) -> Var:
+    raw_mem_ty = require_raw_array_memory_type(raw_array_memory)
+    raw_mem_val = raw_array_memory.get_aggregate()
+    assert isinstance(raw_mem_val, RawArrayMemoryValue)
+    base_ptr = raw_mem_val.base_ptr
+
+    offset = astype(offset, datatype.uint64)
+    pointer = pointer_offset(base_ptr, offset)
+    pointer_ty = pointer.get_type()
+    pointer_shape = pointer_ty.shape
+    array_dtype = raw_mem_ty.dtype
+
+    final_mask = _process_custom_mask(mask, None, pointer_shape)
+
+    if padding_value.is_constant() and padding_value.get_constant() is None:
+        padding_var: Optional[Var] = None
+    else:
+        padding_ty = require_tile_type(padding_value)
+        padding_shape = padding_ty.shape
+        if not is_shape_broadcastable_to(padding_shape, pointer_shape):
+            raise TileTypeError(f"Padding shape {padding_shape} is not broadcastable to the"
+                                f" offset shape {pointer_shape}")
+        padding_var = _implicit_cast(padding_value, array_dtype, "Invalid padding value")
+        padding_var = broadcast_to(padding_var, pointer_shape)
+
+    latency_val = require_optional_constant_int(latency)
+    _check_load_store_hints(latency_val)
+    result, _token = load_pointer(pointer, final_mask, padding_var, latency_val)
+    return result
+
+
+@impl(ct._m_raw_array_memory_store_offset)
+def raw_array_memory_store_offset_impl(raw_array_memory: Var, offset: Var, value: Var,
+                                       mask: Var, latency: Var) -> None:
+    raw_mem_ty = require_raw_array_memory_type(raw_array_memory)
+    raw_mem_val = raw_array_memory.get_aggregate()
+    assert isinstance(raw_mem_val, RawArrayMemoryValue)
+    base_ptr = raw_mem_val.base_ptr
+
+    offset = astype(offset, datatype.uint64)
+    pointer = pointer_offset(base_ptr, offset)
+    pointer_ty = pointer.get_type()
+    pointer_shape = pointer_ty.shape
+    array_dtype = raw_mem_ty.dtype
+
+    final_mask = _process_custom_mask(mask, None, pointer_shape)
+    value = _get_scatter_value(value, pointer_shape, array_dtype, "Value",
+                               array_name="RawArrayMemory")
+
+    latency_val = require_optional_constant_int(latency)
+    _check_load_store_hints(latency_val)
+    [_token] = store_pointer(pointer, value, final_mask, latency_val)
+
+
+def tile_load(array: Var, index: tuple[Var, ...], shape: Sequence[int], order: Sequence[int],
+              padding_mode: PaddingMode, latency: Optional[int],
+              allow_tma: Optional[bool]) -> tuple[Var, Var]:
+    res_ty = make_tile_ty(array.get_type().dtype, shape)
+    return add_operation(TileLoad, (res_ty, TokenTy()),
+                         array=array, index=index, order=tuple(order),
+                         padding_mode=padding_mode, latency=latency,
+                         allow_tma=allow_tma)
+
+
 @impl(ct.load)
 def tile_load_impl(array: Var, index: Var, shape: Var, order: Var,
                    padding_mode: Var, latency: Var, allow_tma: Var) -> Var:
@@ -2369,7 +2453,8 @@ def scatter_impl(array: Var, indices: Var, value: Var, mask: Var,
 
 
 def _get_scatter_value(value: Var, pointer_shape: Tuple[int, ...], array_dtype: DType,
-                       value_name: str, cast_dtype: bool = True) -> Var:
+                       value_name: str, cast_dtype: bool = True,
+                       array_name: str = "array") -> Var:
     value_ty = require_tile_type(value)
     value_shape = value_ty.shape
 
@@ -2379,7 +2464,7 @@ def _get_scatter_value(value: Var, pointer_shape: Tuple[int, ...], array_dtype: 
 
     if cast_dtype:
         value = _implicit_cast(value, array_dtype,
-                               "Stored value is incompatible with array's dtype")
+                               f"Stored value is incompatible with {array_name}'s dtype")
     return broadcast_to(value, pointer_shape)
 
 

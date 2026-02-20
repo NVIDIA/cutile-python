@@ -20,7 +20,7 @@ from .typing_support import datatype, get_signature
 from .ir import Var, TupleValue, Builder
 from .type import TiledViewTy, TupleTy, TileTy, DTypeSpec, EnumTy, StringTy, ArrayTy, SliceType, \
     ListTy, LooselyTypedScalar, RangeIterType, FunctionTy, ClosureTy, BoundMethodTy, \
-    DTypeConstructor, Type
+    DTypeConstructor, Type, RawArrayMemoryTy
 
 
 def _verify_params_match(stub_sig: inspect.Signature, func_sig: inspect.Signature):
@@ -362,6 +362,13 @@ def require_tiled_view_type(var: Var) -> TiledViewTy:
     ty = var.get_type()
     if not isinstance(ty, TiledViewTy):
         raise TileTypeError(f"Expected a tiled view, but given value has type {ty}")
+    return ty
+
+
+def require_raw_array_memory_type(var: Var) -> RawArrayMemoryTy:
+    ty = var.get_type()
+    if not isinstance(ty, RawArrayMemoryTy):
+        raise _make_type_error(f"Expected a RawArrayMemory, but given value has type {ty}", var)
     return ty
 
 
