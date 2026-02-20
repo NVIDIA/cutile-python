@@ -5,6 +5,7 @@ import inspect
 import math
 import re
 import warnings
+import contextlib
 from dataclasses import dataclass
 import datetime
 import functools
@@ -27,6 +28,7 @@ from cuda.tile._compiler_options import CompilerOptions
 from cuda.tile._const_utils import get_constant_annotations
 from cuda.tile._context import TileContextConfig
 from cuda.tile._exception import (
+    Loc,
     TileCompilerError,
     TileCompilerExecutionError,
     TileCompilerTimeoutError, TileValueError, TileTypeError
@@ -180,6 +182,22 @@ def _compiler_crash_dump(func_ir: ir.Function,
             z.writestr(filename, content)
 
 
+@contextlib.contextmanager
+def unique_path_from_loc(base_dir: str, loc: Loc, suffix: str, mode: str = "wb"):
+    prefix = []
+    if loc.function is not None:
+        if loc.function.name is not None:
+            prefix.append(loc.function.name)
+        else:
+            prefix.append("lambda")
+        prefix.append(Path(loc.function.filename).stem)
+        prefix.append(f"ln{loc.function.line}")
+    prefix = ".".join(prefix) + "."
+    with tempfile.NamedTemporaryFile(suffix=suffix, prefix=prefix, dir=base_dir,
+                                     delete=False, mode=mode) as f:
+        yield f
+
+
 @global_compiler_lock
 def compile_tile(pyfunc,
                  args,
@@ -212,11 +230,8 @@ def compile_tile(pyfunc,
     if CUDA_TILE_DUMP_BYTECODE is not None:
         if not os.path.isdir(CUDA_TILE_DUMP_BYTECODE):
             os.makedirs(CUDA_TILE_DUMP_BYTECODE)
-        base_filename = os.path.basename(func_ir.loc.filename.split(".")[0])
-        path = os.path.join(CUDA_TILE_DUMP_BYTECODE,
-                            f"{base_filename}.ln{func_ir.loc.line}.cutile")
-        print(f"Dumping TILEIR bytecode to file: {path}", file=sys.stderr)
-        with open(path, "wb") as f:
+        with unique_path_from_loc(CUDA_TILE_DUMP_BYTECODE, func_ir.loc, '.tileirbc') as f:
+            print(f"Dumping TILEIR bytecode to file: {f.name}", file=sys.stderr)
             f.write(bytecode_buf)
 
     # Write MLIR module to file
@@ -226,13 +241,9 @@ def compile_tile(pyfunc,
             mlir_text = bytecode_to_mlir_text(bytecode_buf)
             if not os.path.isdir(CUDA_TILE_DUMP_TILEIR):
                 os.makedirs(CUDA_TILE_DUMP_TILEIR)
-            base_filename = os.path.basename(func_ir.loc.filename.split(".")[0])
-            path = os.path.join(
-                CUDA_TILE_DUMP_TILEIR, f"{base_filename}.ln{func_ir.loc.line}.cuda_tile.mlir"
-            )
-            print(f"Dumping TILEIR MLIR module to file:{path}", file=sys.stderr)
-            with open(path, "w") as f:
-                print(mlir_text, file=f)
+            with unique_path_from_loc(CUDA_TILE_DUMP_TILEIR, func_ir.loc, '.tileir', mode="w") as f:
+                print(f"Dumping TILEIR MLIR module to file: {f.name}", file=sys.stderr)
+                f.write(mlir_text)
         except ImportError:
             print("Can't print MLIR because the internal extension is missing. "
                   "This is currently not a public feature.", file=sys.stderr)
