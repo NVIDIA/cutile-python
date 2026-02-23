@@ -65,8 +65,6 @@ include = [
 [tool.setuptools.package-data]
 "cuda.tile" = ["VERSION"]
 
-[tool.pytest_env]
-CUDA_TILE_COMPILER_TIMEOUT_SEC = "60"
 
 [tool.uv]
 managed = true

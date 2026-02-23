@@ -7,7 +7,6 @@ from conftest import dtype_id, shape_id
 import pytest
 import torch
 import cuda.tile as ct
-import cuda.tile_experimental as ct_experimental
 import itertools
 from math import ceil
 from util import estimate_bench_iter, next_power_of_2, is_ampere_or_ada
@@ -16,6 +15,8 @@ from kernels.rms_norm import (
 )
 from functools import partial
 from types import SimpleNamespace
+
+ct_experimental = pytest.importorskip("cuda.tile_experimental")
 
 
 @pytest.fixture(params=[

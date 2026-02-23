@@ -165,8 +165,8 @@ def _find_filecheck_bin() -> Optional[str]:
 
 
 def filecheck(bytecode_buf: bytearray, check_directive: str) -> None:
-    from cuda.tile_internal._internal_cext import bytecode_to_mlir_text
-    mlir_text = bytecode_to_mlir_text(bytecode_buf)
+    mod = pytest.importorskip("cuda.tile_internal._internal_cext")
+    mlir_text = mod.bytecode_to_mlir_text(bytecode_buf)
 
     filecheck_bin = _find_filecheck_bin()
     with (

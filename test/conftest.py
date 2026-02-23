@@ -15,6 +15,28 @@ from cuda.tile._bytecode.version import BytecodeVersion
 from cuda.tile._compile import _get_max_supported_bytecode_version
 
 
+def pytest_addoption(parser):
+    parser.addoption(
+        "--error-on-import-skip",
+        action="store_true",
+        default=False,
+        help="Treat import-related skips as errors",
+    )
+
+
+def pytest_configure(config):
+    if config.getoption("error_on_import_skip", default=False):
+        _original = pytest.importorskip
+
+        def strict_importorskip(modname, *args, **kwargs):
+            try:
+                return _original(modname, *args, **kwargs)
+            except pytest.skip.Exception as e:
+                pytest.fail(f"Required import skipped: {e}")
+
+        pytest.importorskip = strict_importorskip
+
+
 @cache
 def get_tileiras_version():
     return _get_max_supported_bytecode_version(tempfile.gettempdir())

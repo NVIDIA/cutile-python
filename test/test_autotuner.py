@@ -9,10 +9,13 @@ import math
 from functools import partial
 from util import assert_equal
 
-import cuda.tile_experimental._autotuner as autotuner_mod
-from cuda.tile_experimental import autotune_launch, clear_autotune_cache
 from cuda.tile._cext import default_tile_context
 from cuda.tile._exception import TileCompilerTimeoutError, TileCompilerExecutionError
+
+ct_experimental = pytest.importorskip("cuda.tile_experimental")
+autotuner_mod = ct_experimental._autotuner
+autotune_launch = ct_experimental.autotune_launch
+clear_autotune_cache = ct_experimental.clear_autotune_cache
 
 
 @ct.kernel
