@@ -9,7 +9,6 @@ pytest-cov==6.2.1
 pytest-env==1.2.0
 flake8==7.3.0
 pytest-cov==6.2.1
-reuse==5.1.0
 
 numba-cuda[cu13]==0.20.0
 cupy-cuda13x==13.6.0

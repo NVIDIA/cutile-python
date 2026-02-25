@@ -47,7 +47,7 @@ jobs:
         run: python scripts/cpplint.py
 
       - name: Check license headers (REUSE)
-        run: scripts/check_license.sh
+        run: python scripts/check_license.py
 
       - name: Check inline samples are up to date
         run: python test/tools/inline_samples.py --check
