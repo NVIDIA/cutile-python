@@ -21,7 +21,8 @@ ConstBool = ct.Constant[bool]
 def fmha_kernel(Q, K, V, Out,
                 qk_scale: float,
                 input_pos: int,
-                TILE_D: ConstInt,  # TILE_D = hidden_size
+                Dqk: ConstInt,  # Head dimension of Q and K
+                Dv: ConstInt,  # Head dimension of V
                 H: ConstInt,
                 TILE_M: ConstInt,
                 TILE_N: ConstInt,
@@ -54,12 +55,12 @@ def fmha_kernel(Q, K, V, Out,
     # Initialize online softmax accumulators in float32 for stability
     m_i = ct.full((TILE_M, 1), -np.inf, dtype=np.float32)
     l_i = ct.full((TILE_M, 1), 0.0, dtype=np.float32)
-    acc = ct.full((TILE_M, TILE_D), 0.0, dtype=np.float32)
+    acc = ct.full((TILE_M, Dv), 0.0, dtype=np.float32)
 
     # Load query tile for this batch, head, and M-chunk
     q = ct.load(
-        Q, index=(batch_idx, head_idx, bid_x, 0), shape=(1, 1, TILE_M, TILE_D)
-    ).reshape((TILE_M, TILE_D))  # [TILE_M, TILE_D]
+        Q, index=(batch_idx, head_idx, bid_x, 0), shape=(1, 1, TILE_M, Dqk)
+    ).reshape((TILE_M, Dqk))  # [TILE_M, Dqk]
 
     # loop over k, v and update accumulator
     m_end = input_pos + (bid_x + 1) * TILE_M
@@ -78,11 +79,11 @@ def fmha_kernel(Q, K, V, Out,
     for j in range(0, Tc):
         # --- Compute QK product ---
         k = ct.load(
-            K, index=(batch_idx, off_kv_h, 0, j), shape=(1, 1, TILE_D, TILE_N),
+            K, index=(batch_idx, off_kv_h, 0, j), shape=(1, 1, Dqk, TILE_N),
             order=(0, 1, 3, 2),
             latency=2,
         )
-        k = k.reshape((TILE_D, TILE_N))  # [TILE_D, TILE_N]
+        k = k.reshape((Dqk, TILE_N))  # [Dqk, TILE_N]
         qk = ct.full((TILE_M, TILE_N), 0., dtype=np.float32)
         qk = ct.mma(q, k, qk)  # [TILE_M, TILE_N]
 
@@ -115,14 +116,14 @@ def fmha_kernel(Q, K, V, Out,
 
         # --- Compute PV product ---
         v = ct.load(
-            V, index=(batch_idx, off_kv_h, j, 0), shape=(1, 1, TILE_N, TILE_D),
+            V, index=(batch_idx, off_kv_h, j, 0), shape=(1, 1, TILE_N, Dv),
             latency=4,
-        ).reshape((TILE_N, TILE_D))  # [TILE_N, TILE_D]
+        ).reshape((TILE_N, Dv))  # [TILE_N, Dv]
         p = p.astype(Q.dtype)
         acc = ct.mma(p, v, acc)  # [TILE_M, TILE_N]
         m_i = m_ij  # [TILE_M, 1]
 
     # --- Final Normalization and Store ---
     acc = ct.truediv(acc, l_i, flush_to_zero=True, rounding_mode=RMd.APPROX)
-    acc = acc.reshape((1, 1, TILE_M, TILE_D)).astype(Out.dtype)
+    acc = acc.reshape((1, 1, TILE_M, Dv)).astype(Out.dtype)
     ct.store(Out, index=(batch_idx, head_idx, bid_x, 0), tile=acc)

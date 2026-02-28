@@ -15,21 +15,21 @@ from kernels.attention import fmha_kernel
 @pytest.mark.parametrize("k_heads", [8])
 @pytest.mark.parametrize("q_len", [1, 15, 32])
 @pytest.mark.parametrize("k_len", [32, 63])
-@pytest.mark.parametrize("hidden_size", [32])
+@pytest.mark.parametrize("head_dim", [32])
 @pytest.mark.parametrize("tile_size", [(8, 16)])
 @pytest.mark.parametrize("is_causal", [True, False])
 @pytest.mark.parametrize("use_input_pos", [True, False])
 def test_flash_attention(batch_size, q_heads, k_heads,
                          q_len, k_len,
-                         hidden_size, tile_size, is_causal,
+                         head_dim, tile_size, is_causal,
                          use_input_pos,
                          float_dtype):
     query_group_size = q_heads // k_heads
     TILE_M, TILE_N = tile_size
-    qk_scale = 1 / math.sqrt(hidden_size)
-    q = torch.randn((batch_size, q_heads, q_len, hidden_size), dtype=float_dtype, device='cuda')
-    k = torch.randn((batch_size, k_heads, k_len, hidden_size), dtype=float_dtype, device='cuda')
-    v = torch.randn((batch_size, k_heads, k_len, hidden_size), dtype=float_dtype, device='cuda')
+    qk_scale = 1 / math.sqrt(head_dim)
+    q = torch.randn((batch_size, q_heads, q_len, head_dim), dtype=float_dtype, device='cuda')
+    k = torch.randn((batch_size, k_heads, k_len, head_dim), dtype=float_dtype, device='cuda')
+    v = torch.randn((batch_size, k_heads, k_len, head_dim), dtype=float_dtype, device='cuda')
     o = torch.zeros_like(q)
     grid = (math.ceil(q_len / TILE_M), batch_size * q_heads, 1)
     if use_input_pos:
@@ -43,7 +43,7 @@ def test_flash_attention(batch_size, q_heads, k_heads,
               (q, k, v, o,
                qk_scale,
                input_pos,
-               hidden_size, q_heads,
+               head_dim, head_dim, q_heads,
                TILE_M, TILE_N,
                query_group_size, is_causal, EVEN_K))
     if is_causal:
