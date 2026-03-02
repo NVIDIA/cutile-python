@@ -340,7 +340,7 @@ class _DTypePromotionImpl:
      # b1, u8, u16, u32, u64, i8,  i16, i32, i64, f16, f32, f64, bf,  tf, f8e4m3fn, f8e5m2
      [b1,  u8,  u16, u32, u64, i8,  i16, i32, i64, f16, f32, f64, bf,  na,  na,       na],    # b1
      [u8,  u8,  u16, u32, u64, na,  na,  na,  na,  f16, f32, f64, bf,  na,  na,       na],    # u8
-     [u16, u16, u16, u32, u32, na,  na,  na,  na,  f16, f32, f64, bf,  na,  na,       na],    # u16
+     [u16, u16, u16, u32, u64, na,  na,  na,  na,  f16, f32, f64, bf,  na,  na,       na],    # u16
      [u32, u32, u32, u32, u64, na,  na,  na,  na,  f16, f32, f64, bf,  na,  na,       na],    # u32
      [u64, u64, u64, u64, u64, na,  na,  na,  na,  f16, f32, f64, bf,  na,  na,       na],    # u64
      [i8,  na,  na,  na,  na,  i8,  i16, i32, i64, f16, f32, f64, bf,  na,  na,       na],    # i8

@@ -10,6 +10,7 @@ skip_patterns = [
     ".svg",
     "uv.lock",
     "LICENSES/",
+    "changelog.d/",
 ]
 
 max_lines_to_check = 10
