@@ -20,12 +20,12 @@ jobs:
     name: Define Base Images
     runs-on: ubuntu-latest
     outputs:
-      lint: ghcr.io/nvidia/cutile-python/lint:2026-01-12-aea51b7409cc
-      docs: ghcr.io/nvidia/cutile-python/docs:2026-01-12-96c265b9029e
-      build_py310: ghcr.io/nvidia/cutile-python/build_py_3.10_x86_64:2026-01-12-a3f084500fb0
-      build_py311: ghcr.io/nvidia/cutile-python/build_py_3.11_x86_64:2026-01-12-d0a88a59d0fd
-      build_py312: ghcr.io/nvidia/cutile-python/build_py_3.12_x86_64:2026-01-12-9cf7e54a5580
-      build_py313: ghcr.io/nvidia/cutile-python/build_py_3.13_x86_64:2026-01-12-7f9db97c8ad8
+      lint: ghcr.io/nvidia/cutile-python/lint:2026-03-02-d33a8a50c68d
+      docs: ghcr.io/nvidia/cutile-python/docs:2026-03-02-2ab6fb9d9368
+      build_py310: ghcr.io/nvidia/cutile-python/build_py_3.10_x86_64:2026-03-02-c7f3f36001fd
+      build_py311: ghcr.io/nvidia/cutile-python/build_py_3.11_x86_64:2026-03-02-92c972404358
+      build_py312: ghcr.io/nvidia/cutile-python/build_py_3.12_x86_64:2026-03-02-299d123ad082
+      build_py313: ghcr.io/nvidia/cutile-python/build_py_3.13_x86_64:2026-03-02-8eea98e968b5
     steps:
       - run: echo "Defining image tags"
 
@@ -46,7 +46,7 @@ jobs:
       - name: Run cpplint
         run: python scripts/cpplint.py
 
-      - name: Check license headers (REUSE)
+      - name: Check license headers
         run: python scripts/check_license.py
 
       - name: Check inline samples are up to date
