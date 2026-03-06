@@ -8,7 +8,9 @@ import pytest
 import torch
 
 import cuda.tile as ct
-from util import assert_close, assert_equal, torch_to_tf32, is_ampere_or_ada
+from util import (
+    assert_close, assert_equal, require_hopper_or_newer, torch_to_tf32, is_ampere_or_ada
+)
 from conftest import dtype_id
 from cuda.tile._exception import TileTypeError, TileUnsupportedFeatureError
 
@@ -70,6 +72,7 @@ f32 = torch.float32
 f64 = torch.float64
 f8e4m3fn = torch.float8_e4m3fn
 f8e5m2 = torch.float8_e5m2
+f8e8m0fnu = torch.float8_e8m0fnu
 u8 = torch.uint8
 u16 = torch.uint16
 u32 = torch.uint32
@@ -112,7 +115,7 @@ def test_mma_regular_float(tile_size, case):
     assert_close(C, ref, atol=atol, rtol=rtol)
 
 
-@pytest.mark.skipif(is_ampere_or_ada(), reason="float8 not supported on Ampere or Ada")
+@require_hopper_or_newer()
 @pytest.mark.parametrize("tile_size", [(16, 16, 16)])
 @pytest.mark.parametrize("case", fp8_cases, ids=str)
 def test_mma_fp8(tile_size, case):
@@ -266,7 +269,7 @@ def test_matmul(tile_size, x_dtype, y_dtype):
         assert_close(C, ref, atol=atol, rtol=rtol)
 
 
-@pytest.mark.skipif(is_ampere_or_ada(), reason="float8 not supported on Ampere or Ada")
+@require_hopper_or_newer()
 @pytest.mark.parametrize("tile_size", [(16, 16, 16)])
 @pytest.mark.parametrize("dtype", [f8e4m3fn, f8e5m2], ids=dtype_id)
 def test_matmul_fp8(tile_size, dtype):
@@ -401,6 +404,6 @@ def test_ampere_fp8_error(dtype):
     C = torch.zeros((16, 16), dtype=torch.float16, device="cuda")
     with patch("cuda.tile._compile.get_sm_arch", return_value="sm_80"):
         with pytest.raises(TileUnsupportedFeatureError,
-                           match="float8 dtype is not supported on Ampere"):
+                           match="is not supported on sm_80"):
             ct.launch(torch.cuda.current_stream(), (1,), mma_kernel,
                       (A, B, C, 16, 16, 16))

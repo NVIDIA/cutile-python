@@ -11,7 +11,9 @@ from .. import TileTypeError
 from .._coroutine_util import resume_after, run_coroutine
 from .._exception import Loc, TileSyntaxError, TileInternalError, TileError, TileRecursionError
 from .._ir import hir, ir
-from .._ir.ir import Var, IRContext, BoundMethodValue, ClosureValue, KernelArgument
+from .._ir.ir import (
+    Var, IRContext, BoundMethodValue, ClosureValue, KernelArgument
+)
 from .._ir.op_impl import op_implementations
 from .._ir.ops import loosely_typed_const, end_branch, return_, continue_, \
     break_, flatten_block_parameters, store_var

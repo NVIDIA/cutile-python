@@ -2,6 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+from cuda.tile._bytecode.version import BytecodeVersion
 import pytest
 import torch
 import cuda.tile as ct
@@ -11,7 +12,13 @@ from cuda.tile._compiler_options import CompilerOptions
 from cuda.tile._exception import TileTypeError, TileValueError
 from cuda.tile._compile import compile_tile
 
-from util import raises_if, is_ampere_or_ada
+from util import is_hopper_or_newer, is_blackwell_or_newer, raises_if
+from conftest import get_tileiras_version
+
+# TODO: remove when feature is out of development only
+from cuda.tile._datatype import float8_e8m0fnu, float4_e2m1fn
+ct.float8_e8m0fnu = float8_e8m0fnu
+ct.float4_e2m1fn = float4_e2m1fn
 
 
 def nd_tensor(nd: int, dtype=None):
@@ -206,8 +213,6 @@ def test_arith_on_bool():
 
 
 def test_printf_format():
-    SKIP_FP8 = is_ampere_or_ada()
-
     def print_kernel():
         # signed
         ct.printf("%d", -1)
@@ -227,9 +232,6 @@ def test_printf_format():
         ct.printf("%f", ct.float16(3.14))
         ct.printf("%f", ct.float32(3.14))
         ct.printf("%f", ct.float64(3.14))
-        if not SKIP_FP8:
-            ct.printf("%f", ct.float8_e5m2(3.14))
-            ct.printf("%f", ct.float8_e4m3fn(3.14))
         ct.printf("%f", ct.tfloat32(3.14))
         # others
         ct.printf("escape %% %d", 123)
@@ -243,6 +245,27 @@ def test_printf_format():
         ct.printf("hex %#x", 255)
 
     compile(print_kernel, ())
+
+    def print_f8e4m3fn_f8e5m2fn():
+        ct.printf("%f", ct.float8_e5m2(3.14))
+        ct.printf("%f", ct.float8_e4m3fn(3.14))
+
+    if is_hopper_or_newer():
+        compile(print_f8e4m3fn_f8e5m2fn, ())
+
+    def print_fe8m0fnu():
+        ct.printf("%f", ct.float8_e8m0fnu(2.0))
+
+    # Technically fe8m0fnu is introduced in 13.2, but tileiras fails when constructing
+    # an fe8m0fnu constant value
+    if is_blackwell_or_newer() and get_tileiras_version() >= BytecodeVersion.V_13_3:
+        compile(print_fe8m0fnu, ())
+
+    def print_f4e2m1fn():
+        ct.printf("%f", ct.full((2,), -1.5, ct.float4_e2m1fn))
+
+    if is_blackwell_or_newer() and get_tileiras_version() >= BytecodeVersion.V_13_3:
+        compile(print_f4e2m1fn, ())
 
     # Format specifier doesn't match input tile dtype
     def mix_int_float():
@@ -393,6 +416,15 @@ def test_typeof_constant_too_big():
     x = torch.zeros((), dtype=torch.uint64, device="cuda")
     with pytest.raises(TileValueError, match="is out of range of any supported integer type"):
         ct.launch(torch.cuda.current_stream(), (1,), kernel, (x,))
+
+
+def test_sub_byte_dtype_not_usable_as_constructor():
+    def kernel():
+        ct.float4_e2m1fn(2.0)
+
+    match = re.escape("Cannot call an object of type DTypeSpec(dtype=<DType 'float4_e2m1fn'>)")
+    with pytest.raises(TileTypeError, match=match):
+        compile(kernel, ())
 
 
 def test_allow_type_hints_on_assignment():

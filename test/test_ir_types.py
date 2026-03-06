@@ -11,7 +11,9 @@ from cuda.tile._ir.type import (
 )
 from cuda.tile._datatype import (
     DType,
-    float16, float32, float64, bool_,
+    float16, float32,
+    float4_e2m1fn, float64, bool_,
+    float8_e8m0fnu,
     int64, int32, int16, int8,
     uint64, uint32, uint16, uint8, bfloat16,
     tfloat32, float8_e4m3fn, float8_e5m2,
@@ -39,6 +41,8 @@ def test_builtin_types():
     assert str(tfloat32) == 'tfloat32'
     assert str(float8_e4m3fn) == 'float8_e4m3fn'
     assert str(float8_e5m2) == 'float8_e5m2'
+    assert str(float8_e8m0fnu) == "float8_e8m0fnu"
+    assert str(float4_e2m1fn) == "float4_e2m1fn"
     assert is_integral(int32)
     assert is_signed(int32)
     assert is_signed(float32)
@@ -50,6 +54,8 @@ def test_builtin_types():
     assert is_restricted_float(tfloat32)
     assert is_restricted_float(float8_e4m3fn)
     assert is_restricted_float(float8_e5m2)
+    assert is_restricted_float(float8_e8m0fnu)
+    assert is_restricted_float(float4_e2m1fn)
 
     # type equality
     assert float16 == DType('float16', 16, float, None)
@@ -113,6 +119,8 @@ def test_promote_dtypes():
     assert promote_dtypes(bool_, bfloat16) == bfloat16
     assert_no_promote(bool_, tfloat32)
     assert_no_promote(bool_, float8_e5m2)
+    assert_no_promote(bool_, float8_e8m0fnu)
+    assert_no_promote(bool_, float4_e2m1fn)
 
     # Int
     assert promote_dtypes(int8, int16) == int16
@@ -120,6 +128,8 @@ def test_promote_dtypes():
     assert promote_dtypes(int64, bfloat16) == bfloat16
     assert_no_promote(int32, tfloat32)
     assert_no_promote(int32, float8_e5m2)
+    assert_no_promote(int32, float8_e8m0fnu)
+    assert_no_promote(int32, float4_e2m1fn)
 
     # Uint
     assert promote_dtypes(uint8, uint16) == uint16
@@ -129,6 +139,8 @@ def test_promote_dtypes():
     assert_no_promote(uint32, int64)
     assert_no_promote(uint32, tfloat32)
     assert_no_promote(uint32, float8_e5m2)
+    assert_no_promote(uint32, float8_e8m0fnu)
+    assert_no_promote(uint32, float4_e2m1fn)
 
     # float
     assert promote_dtypes(float16, float32) == float32
@@ -136,6 +148,8 @@ def test_promote_dtypes():
     assert_no_promote(float16, bfloat16)
     assert_no_promote(float16, tfloat32)
     assert_no_promote(float16, float8_e5m2)
+    assert_no_promote(float16, float8_e8m0fnu)
+    assert_no_promote(float16, float4_e2m1fn)
 
     # Loosely typed scalars
     assert promote_dtypes(int16, LooselyTypedScalar(5)) == int16
@@ -199,6 +213,12 @@ def test_check_implicit_cast():
     disallow(bool_, float8_e5m2)
     disallow(float8_e5m2, bool_)
 
+    disallow(bool_, float8_e8m0fnu)
+    disallow(float8_e8m0fnu, bool_)
+
+    disallow(bool_, float4_e2m1fn)
+    disallow(float4_e2m1fn, bool_)
+
     # int -> float
     allow(uint32, float16)
     disallow(float16, uint32)
@@ -212,11 +232,23 @@ def test_check_implicit_cast():
     disallow(uint32, float8_e5m2)
     disallow(float8_e5m2, uint32)
 
+    disallow(uint32, float8_e8m0fnu)
+    disallow(float8_e8m0fnu, uint32)
+
+    disallow(uint32, float4_e2m1fn)
+    disallow(float4_e2m1fn, uint32)
+
     disallow(int32, tfloat32)
     disallow(tfloat32, int32)
 
     disallow(int32, float8_e5m2)
     disallow(float8_e5m2, int32)
+
+    disallow(int32, float8_e8m0fnu)
+    disallow(float8_e8m0fnu, int32)
+
+    disallow(int32, float4_e2m1fn)
+    disallow(float4_e2m1fn, int32)
 
     # signed <> unsigned not allowed
     disallow(int32, uint32)
@@ -228,6 +260,21 @@ def test_check_implicit_cast():
 
     disallow(float8_e5m2, tfloat32)
     disallow(tfloat32, float8_e5m2)
+
+    disallow(float8_e8m0fnu, tfloat32)
+    disallow(tfloat32, float8_e8m0fnu)
+
+    disallow(float4_e2m1fn, tfloat32)
+    disallow(tfloat32, float4_e2m1fn)
+
+    disallow(float8_e8m0fnu, float8_e5m2)
+    disallow(float8_e5m2, float8_e8m0fnu)
+
+    disallow(float4_e2m1fn, float8_e5m2)
+    disallow(float8_e5m2, float4_e2m1fn)
+
+    disallow(float4_e2m1fn, float8_e8m0fnu)
+    disallow(float8_e8m0fnu, float4_e2m1fn)
 
     # Loosely typed scalars
     allow(LooselyTypedScalar(10), int8)
@@ -289,6 +336,7 @@ def test_torch_dtype_support():
     assert to_dtype(torch.bfloat16) == bfloat16
     assert to_dtype(torch.float8_e4m3fn) == float8_e4m3fn
     assert to_dtype(torch.float8_e5m2) == float8_e5m2
+    assert to_dtype(torch.float8_e8m0fnu) == float8_e8m0fnu
 
 
 def _array_base_equal(arryty: ArrayTy, dtype, shape, strides):

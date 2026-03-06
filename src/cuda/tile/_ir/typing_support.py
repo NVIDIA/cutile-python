@@ -249,7 +249,9 @@ def get_constant_value(val: Any) -> Any:
 # =====CuTile native support ===========
 # register cuTile native dtype types
 for dtype in datatype.dtype_to_enum:
-    register_dtypes({dtype: dtype}, usable_as_constructor=True)
+    # only allow byte aligned dtypes as constructors
+    usable_as_constructor = (dtype.bitwidth % 8 == 0)
+    register_dtypes({dtype: dtype}, usable_as_constructor)
 
 
 # ========= Numpy support ===========
@@ -322,7 +324,8 @@ if HAS_TORCH:
         torch.bool: datatype.bool_,
         torch.bfloat16: datatype.bfloat16,
         torch.float8_e4m3fn: datatype.float8_e4m3fn,
-        torch.float8_e5m2: datatype.float8_e5m2
+        torch.float8_e5m2: datatype.float8_e5m2,
+        torch.float8_e8m0fnu: datatype.float8_e8m0fnu,
     })
 
     @register_type_handler(torch.Tensor, allow_subtypes=True)

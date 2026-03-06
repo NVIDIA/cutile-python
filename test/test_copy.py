@@ -2,16 +2,29 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+from cuda.tile._bytecode.version import BytecodeVersion
 import pytest
 import torch
 
 from math import ceil
 import cuda.tile as ct
-from util import assert_equal
-from conftest import float_dtypes, bool_dtypes, int_dtypes, dtype_id
+from util import assert_equal, make_test_tensor, require_hopper_or_newer, require_blackwell_or_newer
+from conftest import (
+    float_dtypes, bool_dtypes, int_dtypes, dtype_id, requires_tileiras, uint_dtypes
+)
 from torch.testing import make_tensor
 from cuda.tile import PaddingMode
 from typing import Optional
+
+float8_dtypes = [
+    pytest.param(torch.float8_e5m2, marks=require_hopper_or_newer()),
+    pytest.param(torch.float8_e4m3fn, marks=require_hopper_or_newer()),
+    pytest.param(torch.float8_e8m0fnu, marks=(require_blackwell_or_newer(),
+                                              requires_tileiras(BytecodeVersion.V_13_2))),
+]
+
+test_dtypes = (float_dtypes + bool_dtypes + int_dtypes + uint_dtypes +
+               [torch.float64] + float8_dtypes)
 
 
 def assert_tensors_contiguity(tensors, predicate):
@@ -29,9 +42,9 @@ def array_copy_1d(x, y, TILE: ct.Constant[int]):
 @pytest.mark.parametrize("shape", [(128,), (225,)])
 @pytest.mark.parametrize("tile", [64, 128])
 @pytest.mark.parametrize("stride_step", [1, 2])
-@pytest.mark.parametrize("dtype", float_dtypes + bool_dtypes + int_dtypes, ids=dtype_id)
+@pytest.mark.parametrize("dtype", test_dtypes, ids=dtype_id)
 def test_array_copy_1d(shape, stride_step, dtype, tile):
-    x = make_tensor(shape, dtype=dtype, device='cuda')
+    x = make_test_tensor(shape, dtype=dtype, device='cuda')
     y = torch.zeros_like(x, device='cuda')
     xx = x[::stride_step]
     assert xx.stride() == (stride_step,)
@@ -57,9 +70,9 @@ def array_copy_2d(x, y, TILE_X: ct.Constant[int], TILE_Y: ct.Constant[int]):
 @pytest.mark.parametrize("tile", [(64, 64), (128, 128)])
 @pytest.mark.parametrize("permute", [(0, 1), (1, 0)])
 @pytest.mark.parametrize("stride_step", [1, 2])
-@pytest.mark.parametrize("dtype", float_dtypes + bool_dtypes + int_dtypes, ids=dtype_id)
+@pytest.mark.parametrize("dtype", test_dtypes, ids=dtype_id)
 def test_array_copy_2d(shape, stride_step, permute, dtype, tile):
-    x = make_tensor(shape, dtype=dtype, device='cuda')
+    x = make_test_tensor(shape, dtype=dtype, device='cuda')
     y = torch.zeros_like(x)
     xx = x[::stride_step, ::stride_step].permute(permute)
     yy = y[::stride_step, ::stride_step].permute(permute)
@@ -87,9 +100,9 @@ def array_copy_3d(x, y,
 @pytest.mark.parametrize("tile", [(2, 64, 64), (1, 128, 128)])
 @pytest.mark.parametrize("permute", [(0, 1, 2), (2, 1, 0), (2, 0, 1)])
 @pytest.mark.parametrize("stride_step", [1, 2])
-@pytest.mark.parametrize("dtype", float_dtypes + bool_dtypes + int_dtypes, ids=dtype_id)
+@pytest.mark.parametrize("dtype", test_dtypes, ids=dtype_id)
 def test_array_copy_3d(shape, stride_step, permute, dtype, tile):
-    x = make_tensor(shape, dtype=dtype, device='cuda')
+    x = make_test_tensor(shape, dtype=dtype, device='cuda')
     y = torch.zeros_like(x, device='cuda')
     xx = x[:, :, ::stride_step].permute(permute)
     yy = y[:, :, ::stride_step].permute(permute)

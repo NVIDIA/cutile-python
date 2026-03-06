@@ -4,22 +4,29 @@
 
 import pytest
 import torch
-from torch.testing import make_tensor
 
 import cuda.tile as ct
 from cuda.tile._bytecode.version import BytecodeVersion
-from util import assert_equal
+from util import assert_equal, make_test_tensor, require_hopper_or_newer, require_blackwell_or_newer
 from cuda.tile._exception import TileTypeError
 from conftest import float_dtypes, int_dtypes, requires_tileiras, uint_dtypes, dtype_id
 
 # TODO: remove when feature is out of development only
+from cuda.tile._datatype import float4_e2m1fn
 from cuda.tile._stub import pack_to_bytes, unpack_from_bytes
 ct.pack_to_bytes = pack_to_bytes
 ct.unpack_from_bytes = unpack_from_bytes
 
 pytestmark = requires_tileiras(BytecodeVersion.V_13_3)
 
-test_dtypes = float_dtypes + int_dtypes + uint_dtypes + [torch.float64]
+float8_dtypes = [
+    pytest.param(torch.float8_e5m2, marks=require_hopper_or_newer()),
+    pytest.param(torch.float8_e4m3fn, marks=require_hopper_or_newer()),
+    pytest.param(torch.float8_e8m0fnu, marks=require_blackwell_or_newer()),
+]
+
+test_dtypes = (float_dtypes + int_dtypes + uint_dtypes +
+               [torch.float64] + float8_dtypes)
 
 
 @ct.kernel
@@ -39,7 +46,7 @@ def test_pack_to_bytes(dtype):
         ct.store(y, index=(0,), tile=ty)
 
     tile = 128
-    x = make_tensor((tile,), dtype=dtype, device='cuda')
+    x = make_test_tensor((tile,), dtype=dtype, device='cuda')
     nbytes = tile * x.element_size()
     y = torch.zeros(nbytes, dtype=torch.uint8, device='cuda')
     ct.launch(torch.cuda.current_stream(), (1,), kernel, (x, y, tile))
@@ -55,7 +62,7 @@ def test_unpack_from_bytes(dtype):
         ty = ct.unpack_from_bytes(tx, y.dtype)
         ct.store(y, index=(0,), tile=ty)
 
-    ref = make_tensor((32,), dtype=dtype, device='cuda')
+    ref = make_test_tensor((32,), dtype=dtype, device='cuda')
     x = ref.view(torch.uint8)
     y = torch.zeros_like(ref)
     tile = x.shape[0]
@@ -66,7 +73,7 @@ def test_unpack_from_bytes(dtype):
 @pytest.mark.parametrize("dtype", test_dtypes, ids=dtype_id)
 def test_pack_unpack_roundtrip(dtype):
     tile = 128
-    x = make_tensor((tile,), dtype=dtype, device='cuda')
+    x = make_test_tensor((tile,), dtype=dtype, device='cuda')
     y = torch.zeros_like(x)
     ct.launch(torch.cuda.current_stream(), (1,), pack_unpack_1d, (x, y, tile))
     assert_equal(y, x)
@@ -82,7 +89,7 @@ def test_pack_unpack_roundtrip_0d(dtype):
         ty = ty.reshape(())
         ct.scatter(y, (), ty)
 
-    x = make_tensor((), dtype=dtype, device='cuda')
+    x = make_test_tensor((), dtype=dtype, device='cuda')
     y = torch.zeros_like(x)
     ct.launch(torch.cuda.current_stream(), (1,), kernel, (x, y))
     assert_equal(y, x)
@@ -102,7 +109,7 @@ def test_pack_unpack_roundtrip_2d(dtype):
 
     shape = (64, 128)
     tiles = (32, 64)
-    x = make_tensor(shape, dtype=dtype, device='cuda')
+    x = make_test_tensor(shape, dtype=dtype, device='cuda')
     y = torch.zeros_like(x)
     grid = (ct.cdiv(shape[0], tiles[0]), ct.cdiv(shape[1], tiles[1]))
     ct.launch(torch.cuda.current_stream(), grid,
@@ -114,11 +121,29 @@ def test_pack_unpack_roundtrip_2d(dtype):
 @pytest.mark.parametrize("dtype_y", test_dtypes, ids=dtype_id)
 def test_cross_type_pack_unpack(dtype_x, dtype_y):
     tile = 128
-    x = make_tensor((tile,), dtype=dtype_x, device='cuda')
+    x = make_test_tensor((tile,), dtype=dtype_x, device='cuda')
     ref = x.view(torch.uint8).view(dtype_y)
     y = torch.zeros_like(ref)
     ct.launch(torch.cuda.current_stream(), (1,), pack_unpack_1d, (x, y, tile))
     assert_equal(y, ref)
+
+
+@pytest.mark.parametrize("dtype", test_dtypes + [
+    pytest.param(float4_e2m1fn, marks=require_blackwell_or_newer()),
+])
+def test_unpack_pack_roundtrip(dtype):
+    @ct.kernel
+    def kernel(x, y, TILE: ct.Constant[int]):
+        tx = ct.load(x, index=(0,), shape=(TILE,))
+        unpacked = ct.unpack_from_bytes(tx, dtype)
+        packed = ct.pack_to_bytes(unpacked)
+        ct.store(y, index=(0,), tile=packed)
+
+    tile = 128
+    x = torch.randint(0, 256, (tile,), dtype=torch.uint8, device='cuda')
+    y = torch.zeros(tile, dtype=torch.uint8, device='cuda')
+    ct.launch(torch.cuda.current_stream(), (1,), kernel, (x, y, tile))
+    assert_equal(y, x)
 
 
 def test_unpack_from_bytes_not_divisible():

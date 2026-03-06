@@ -44,7 +44,8 @@ class SimpleType(enum.Enum):
     F8E4M3FN = b"\x0a"
     F8E5M2 = b"\x0b"
     Token = b"\x11"
-    Unknown = b"\x12"
+    F8E8M0FNU = b"\x12"  # since 13.2
+    F4E2M1FN = b"\x13"  # since 13.3
 
 
 class _CompositeType(enum.Enum):

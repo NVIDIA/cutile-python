@@ -16,7 +16,8 @@ from types import MappingProxyType
 from typing import (
     List, Optional, Dict, Tuple, Any, TYPE_CHECKING, Sequence, Iterator
 )
-from .type import Type, InvalidType
+
+from cuda.tile._ir.type import Type, InvalidType
 from cuda.tile._exception import (
     TileTypeError, Loc, TileInternalError
 )

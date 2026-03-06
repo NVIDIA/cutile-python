@@ -17,6 +17,7 @@ __all__ = ["bool_", "uint8", "uint16", "uint32", "uint64",
            "int8", "int16", "int32", "int64",
            "float16", "float32", "float64",
            "bfloat16", "tfloat32", "float8_e4m3fn", "float8_e5m2",
+           "float8_e8m0fnu", "float4_e2m1fn",
            "DType", "NumericDType", "ArithmeticDType",
            "NumericDTypeCategories"]
 
@@ -139,16 +140,24 @@ bfloat16.__doc__ = """A 16-bit floating-point |arithmetic dtype| with 1 sign bit
 and 7 mantissa bits."""
 
 tfloat32 = NumericDType("tfloat32", 32, float, bc.SimpleType.TF32)
-tfloat32.__doc__ = """A 32-bit tensor floating-point |arithmetic dtype| with 1 sign \
+tfloat32.__doc__ = """A 32-bit tensor floating-point |numeric dtype| with 1 sign \
 bit, 8 exponent bits, and 10 mantissa bits (19-bit representation stored in 32-bit container)."""
 
 float8_e4m3fn = NumericDType("float8_e4m3fn", 8, float, bc.SimpleType.F8E4M3FN)
-float8_e4m3fn.__doc__ = """A 8-bit floating-point |arithmetic dtype| with 1 sign bit, \
+float8_e4m3fn.__doc__ = """An 8-bit floating-point |numeric dtype| with 1 sign bit, \
 4 exponent bits, and 3 mantissa bits."""
 
 float8_e5m2 = NumericDType("float8_e5m2", 8, float, bc.SimpleType.F8E5M2)
-float8_e5m2.__doc__ = """A 8-bit floating-point |arithmetic dtype| with 1 sign bit, \
+float8_e5m2.__doc__ = """An 8-bit floating-point |numeric dtype| with 1 sign bit, \
 5 exponent bits, and 2 mantissa bits."""
+
+float8_e8m0fnu = NumericDType("float8_e8m0fnu", 8, float, bc.SimpleType.F8E8M0FNU)
+float8_e8m0fnu.__doc__ = """An 8-bit floating-point |numeric dtype| with no sign bit, \
+8 exponent bits, and 0 mantissa bits."""
+
+float4_e2m1fn = NumericDType("float4_e2m1fn", 4, float, bc.SimpleType.F4E2M1FN)
+float4_e2m1fn.__doc__ = """A 4-bit floating-point |numeric dtype| with 1 sign bit, \
+2 exponent bits, and 1 mantissa bit."""
 
 
 class DTypeEnum(IntEnum):
@@ -168,6 +177,8 @@ class DTypeEnum(IntEnum):
     TF32 = 13
     F8E4M3FN = 14
     F8E5M2 = 15
+    F8E8M0FNU = 16
+    F4E2M1FN = 17
 
 
 dtype_to_enum = {
@@ -187,6 +198,8 @@ dtype_to_enum = {
     tfloat32: DTypeEnum.TF32,
     float8_e4m3fn: DTypeEnum.F8E4M3FN,
     float8_e5m2: DTypeEnum.F8E5M2,
+    float8_e8m0fnu: DTypeEnum.F8E8M0FNU,
+    float4_e2m1fn: DTypeEnum.F4E2M1FN,
 }
 _enum_to_dtype = dict((i, t) for t, i in dtype_to_enum.items())
 
@@ -209,7 +222,7 @@ class NumericDTypeCategories:
     Boolean = [bool_]
     Integral = [uint8, uint16, uint32, uint64, int8, int16, int32, int64]
     Float = [float16, float32, float64, bfloat16]
-    RestrictedFloat = [tfloat32, float8_e4m3fn, float8_e5m2]
+    RestrictedFloat = [tfloat32, float8_e4m3fn, float8_e5m2, float8_e8m0fnu, float4_e2m1fn]
 
     @classmethod
     def get_category(cls, t: DType) -> NumericDTypeCategory:
@@ -323,6 +336,8 @@ class _DTypePromotionImpl:
     tf = DTypeEnum.TF32
     f8e4m3fn = DTypeEnum.F8E4M3FN
     f8e5m2 = DTypeEnum.F8E5M2
+    f8e8m0fnu = DTypeEnum.F8E8M0FNU
+    f4e2m1fn = DTypeEnum.F4E2M1FN
     na = None
 
     # Entries for restricted arithmetic dtypes will never be reached, but we need to keep them
@@ -337,23 +352,25 @@ class _DTypePromotionImpl:
     # Restricted floats requires explicit type cast
     # Float16 and BFloat 16 requires explicit type cast
     _common_dtype_table = [
-     # b1, u8, u16, u32, u64, i8,  i16, i32, i64, f16, f32, f64, bf,  tf, f8e4m3fn, f8e5m2
-     [b1,  u8,  u16, u32, u64, i8,  i16, i32, i64, f16, f32, f64, bf,  na,  na,       na],    # b1
-     [u8,  u8,  u16, u32, u64, na,  na,  na,  na,  f16, f32, f64, bf,  na,  na,       na],    # u8
-     [u16, u16, u16, u32, u64, na,  na,  na,  na,  f16, f32, f64, bf,  na,  na,       na],    # u16
-     [u32, u32, u32, u32, u64, na,  na,  na,  na,  f16, f32, f64, bf,  na,  na,       na],    # u32
-     [u64, u64, u64, u64, u64, na,  na,  na,  na,  f16, f32, f64, bf,  na,  na,       na],    # u64
-     [i8,  na,  na,  na,  na,  i8,  i16, i32, i64, f16, f32, f64, bf,  na,  na,       na],    # i8
-     [i16, na,  na,  na,  na,  i16, i16, i32, i64, f16, f32, f64, bf,  na,  na,       na],    # i16
-     [i32, na,  na,  na,  na,  i32, i32, i32, i64, f16, f32, f64, bf,  na,  na,       na],    # i32
-     [i64, na,  na,  na,  na,  i64, i64, i64, i64, f16, f32, f64, bf,  na,  na,       na],    # i64
-     [f16, f16, f16, f16, f16, f16, f16, f16, f16, f16, f32, f64, na,  na,  na,       na],    # f16
-     [f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f64, f32, na,  na,       na],    # f32
-     [f64, f64, f64, f64, f64, f64, f64, f64, f64, f64, f64, f64, f64, na,  na,       na],    # f64
-     [bf,  bf,  bf,  bf,  bf,  bf,  bf,  bf,  bf,  na,  f32, f64, bf,  na,  na,       na],    # bf
-     [na,  na,  na,  na,  na,  na,  na,  na,  na,  na,  na,  na,  na,  tf,  na,       na],    # tf
-     [na,  na,  na,  na,  na,  na,  na,  na,  na,  na,  na,  na,  na,  na,  f8e4m3fn, na],    # f8e4m3fn # noqa
-     [na,  na,  na,  na,  na,  na,  na,  na,  na,  na,  na,  na,  na,  na,  na,   f8e5m2],    # f8e5m2  # noqa
+     # b1, u8, u16, u32, u64, i8,  i16, i32, i64, f16, f32, f64, bf,  tf, f8e4m3fn, f8e5m2, f8e8m0fnu, f4e2m1fn    # noqa
+     [b1,  u8,  u16, u32, u64, i8,  i16, i32, i64, f16, f32, f64, bf,  na,  na,       na,        na,        na],        # b1  # noqa
+     [u8,  u8,  u16, u32, u64, na,  na,  na,  na,  f16, f32, f64, bf,  na,  na,       na,        na,        na],        # u8  # noqa
+     [u16, u16, u16, u32, u64, na,  na,  na,  na,  f16, f32, f64, bf,  na,  na,       na,        na,        na],        # u16  # noqa
+     [u32, u32, u32, u32, u64, na,  na,  na,  na,  f16, f32, f64, bf,  na,  na,       na,        na,        na],        # u32  # noqa
+     [u64, u64, u64, u64, u64, na,  na,  na,  na,  f16, f32, f64, bf,  na,  na,       na,        na,        na],        # u64  # noqa
+     [i8,  na,  na,  na,  na,  i8,  i16, i32, i64, f16, f32, f64, bf,  na,  na,       na,        na,        na],        # i8  # noqa
+     [i16, na,  na,  na,  na,  i16, i16, i32, i64, f16, f32, f64, bf,  na,  na,       na,        na,        na],        # i16  # noqa
+     [i32, na,  na,  na,  na,  i32, i32, i32, i64, f16, f32, f64, bf,  na,  na,       na,        na,        na],        # i32  # noqa
+     [i64, na,  na,  na,  na,  i64, i64, i64, i64, f16, f32, f64, bf,  na,  na,       na,        na,        na],        # i64  # noqa
+     [f16, f16, f16, f16, f16, f16, f16, f16, f16, f16, f32, f64, na,  na,  na,       na,        na,        na],        # f16  # noqa
+     [f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f64, f32, na,  na,       na,        na,        na],        # f32  # noqa
+     [f64, f64, f64, f64, f64, f64, f64, f64, f64, f64, f64, f64, f64, na,  na,       na,        na,        na],        # f64  # noqa
+     [bf,  bf,  bf,  bf,  bf,  bf,  bf,  bf,  bf,  na,  f32, f64, bf,  na,  na,       na,        na,        na],        # bf  # noqa
+     [na,  na,  na,  na,  na,  na,  na,  na,  na,  na,  na,  na,  na,  tf,  na,       na,        na,        na],        # tf  # noqa
+     [na,  na,  na,  na,  na,  na,  na,  na,  na,  na,  na,  na,  na,  na,  f8e4m3fn, na,        na,        na],        # f8e4m3fn  # noqa
+     [na,  na,  na,  na,  na,  na,  na,  na,  na,  na,  na,  na,  na,  na,  na,       f8e5m2,    na,        na],        # f8e5m2  # noqa
+     [na,  na,  na,  na,  na,  na,  na,  na,  na,  na,  na,  na,  na,  na,  na,       na,        f8e8m0fnu, na],        # f8e8m0fnu  # noqa
+     [na,  na,  na,  na,  na,  na,  na,  na,  na,  na,  na,  na,  na,  na,  na,       na,        na,        f4e2m1fn],  # f4e2m1fn  # noqa
     ]
 
     @classmethod
@@ -423,14 +440,22 @@ def _resolve_mma_supported_dtype(x_dtype: DType,
 
 def _generate_rst_dtype_promotion_table() -> str:
     """Generate an RST table representation of the dtype promotion rules."""
-    return _generate_rst_table(_DTypePromotionImpl._common_dtype_table)
+    import cuda.tile
+    # Skip dtypes not exposed in cuda.tile yet. Promomotion table is append only.
+    n = sum(1 for dtype in _enum_to_dtype.values() if hasattr(cuda.tile, dtype.name))
+    table = _DTypePromotionImpl._common_dtype_table
+    return _generate_rst_table([row[:n] for row in table[:n]])
 
 
 def _generate_rst_numeric_dtypes() -> str:
     """Generate RST documentation for numeric datatypes."""
+    import cuda.tile
     content = []
 
     for dtype in numeric_dtypes:
+        # Skip dtypes not exposed in cuda.tile yet
+        if not hasattr(cuda.tile, dtype.name):
+            continue
         content.append(f".. autodata:: cuda.tile.{dtype.name}")
         content.append("   :annotation:")
         content.append("")  # Empty line between types

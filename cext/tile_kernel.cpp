@@ -46,8 +46,10 @@ static PyObject* g_default_tile_context;
     X(float16, 16, 1, kDLFloat) \
     X(float32, 32, 1, kDLFloat) \
     X(float64, 64, 1, kDLFloat) \
+    X(bfloat16, 16, 1, kDLBfloat) \
     X(float8_e4m3fn, 8, 1, kDLFloat8_e4m3fn) \
-    X(float8_e5m2, 8, 1, kDLFloat8_e5m2)
+    X(float8_e5m2, 8, 1, kDLFloat8_e5m2) \
+    X(float8_e8m0fnu, 8, 1, kDLFloat8_e8m0fnu)
 
 
 #define DECLARE_TORCH_DTYPE_GLOBAL(name, bitwidth, lanes, typecode) \

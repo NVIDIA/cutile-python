@@ -12,6 +12,8 @@ import torch
 import numpy as np
 from typing import Union, Optional
 from math import ceil
+
+from torch.testing import make_tensor
 import cuda.tile as ct
 import tempfile
 
@@ -221,6 +223,35 @@ def torch_use_tf32_matmul():
     torch.backends.cuda.matmul.fp32_precision = origin
 
 
-def is_ampere_or_ada():
+def get_compute_capability_major():
     major, _minor = get_compute_capability()
-    return major == 8
+    return major
+
+
+def is_ampere_or_ada():
+    return get_compute_capability_major() == 8
+
+
+def is_hopper_or_newer():
+    return get_compute_capability_major() >= 9
+
+
+def require_hopper_or_newer():
+    return pytest.mark.skipif(not is_hopper_or_newer(),
+                              reason="feature requires Hopper or newer")
+
+
+def is_blackwell_or_newer():
+    return get_compute_capability_major() >= 10
+
+
+def require_blackwell_or_newer():
+    return pytest.mark.skipif(not is_blackwell_or_newer(),
+                              reason="feature requires Blackwell or newer")
+
+
+def make_test_tensor(shape, dtype, device):
+    if dtype == torch.float8_e8m0fnu:
+        return make_tensor(shape, dtype=torch.uint8, device=device).view(dtype)
+    else:
+        return make_tensor(shape, dtype=dtype, device=device)
