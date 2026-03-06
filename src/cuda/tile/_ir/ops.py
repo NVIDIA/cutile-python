@@ -3527,10 +3527,13 @@ class TilePrintf(Operation, opcode="tile_printf", memory_effect=MemoryEffect.STO
     @override
     def generate_bytecode(self, ctx: BytecodeContext):
         arg_vars = [ctx.get_value(arg) for arg in self.args]
-        with tile_mutex("print_mutex", ctx):
-            result_typeid = (ctx.type_table.Token
-                             if ctx.builder.version >= bc.BytecodeVersion.V_13_2 else None)
+        if ctx.builder.version >= bc.BytecodeVersion.V_13_2:
+            result_typeid = ctx.type_table.Token
             bc.encode_PrintTkoOp(ctx.builder, result_typeid, arg_vars, None, self.format)
+        else:
+            with tile_mutex("print_mutex", ctx):
+                result_typeid = None
+                bc.encode_PrintTkoOp(ctx.builder, result_typeid, arg_vars, None, self.format)
         return []
 
 
