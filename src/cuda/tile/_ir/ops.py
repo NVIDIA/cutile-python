@@ -7,7 +7,7 @@ import operator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import (
-    Literal, Sequence, Tuple, Optional, Union, Any, List, Callable, Iterator, Iterable,
+    Literal, Sequence, Tuple, Optional, Any, List, Callable, Iterator, Iterable,
 )
 
 from typing_extensions import override
@@ -24,11 +24,6 @@ from cuda.tile._ir.ir import (
     enter_nested_block, nested_block, PhiState, LoopVarState,
     TupleValue, make_aggregate, RangeValue, BoundMethodValue, ArrayValue, ConstantState,
     ListValue, ClosureValue, MemoryEffect, attribute, operand, BlockRestriction
-)
-from cuda.tile._ir.load_store_impl import (
-    check_load_store_hints,
-    tile_load_generate_bytecode, tile_store_generate_bytecode,
-    load_pointer_lowering, store_pointer_lowering,
 )
 from . import hir
 from .hir import ResolvedName
@@ -61,7 +56,7 @@ from .type import (
     TupleTy, TileTy, NoneType, BoundMethodTy, SizeTy, ArrayTy,
     ListTy, make_tile_ty, SliceType, DTypeConstructor, RangeIterType, Type,
     NONE, ModuleTy, TypeTy, LooselyTypedScalar, DTypeSpec, StringTy, InvalidType,
-    array_size_type, ClosureTy, LiveCapturedScope
+    array_size_type, ClosureTy, LiveCapturedScope, TokenTy,
 )
 from cuda.tile._datatype import (
     DType, is_integral, is_float, is_signed, is_boolean, is_restricted_float,
@@ -2008,6 +2003,15 @@ def array_slice_impl(array: Var, axis: Var, start: Var, stop: Var) -> Var:
     return ret
 
 
+def _check_load_store_hints(latency_value: int | None, allow_tma_value: bool | None = None) -> None:
+    if latency_value is not None:
+        if not (1 <= latency_value <= 10):
+            raise TileValueError(f"Latency must be between 1 and 10, got {latency_value}")
+    if allow_tma_value is not None:
+        if not isinstance(allow_tma_value, bool):
+            raise TileTypeError(f"Allow TMA must be a boolean, got {allow_tma_value}")
+
+
 @dataclass(eq=False)
 class TileLoad(Operation, opcode="tile_load", memory_effect=MemoryEffect.LOAD):
     order: tuple[int, ...] = attribute()
@@ -2016,19 +2020,35 @@ class TileLoad(Operation, opcode="tile_load", memory_effect=MemoryEffect.LOAD):
     allow_tma: Optional[bool] = attribute()
     array: Var = operand()
     index: tuple[Var, ...] = operand()
+    token: Optional[Var] = operand(default=None)
 
     @override
-    def generate_bytecode(self, ctx: BytecodeContext) -> bc.Value:
-        res, _ = tile_load_generate_bytecode(self, ctx)
-        return res
+    def generate_bytecode(self, ctx: BytecodeContext) -> tuple[bc.Value, bc.Value]:
+        tile_type: TileTy = self.result_vars[0].get_type()
+        shape = tile_type.shape_value
+        partition = ctx.make_partition_view(self.array, self.order, shape, self.padding_mode)
+        res, res_token = bc.encode_LoadViewTkoOp(
+            ctx.builder,
+            tile_type=typeid(ctx.type_table, tile_type),
+            result_token_type=ctx.type_table.Token,
+            view=partition,
+            index=ctx.index_tuple(self.index),
+            token=None if self.token is None else ctx.get_value(self.token),
+            memory_ordering_semantics=bc.MemoryOrderingSemantics.WEAK,
+            memory_scope=None,
+            optimization_hints=ctx.load_store_hints(self.latency, self.allow_tma),
+        )
+        return res, res_token
 
 
 def tile_load(array: Var, index: tuple[Var, ...], shape: Sequence[int], order: Sequence[int],
-              padding_mode: PaddingMode, latency: Optional[int], allow_tma: Optional[bool]) -> Var:
+              padding_mode: PaddingMode, latency: Optional[int],
+              allow_tma: Optional[bool]) -> tuple[Var, Var]:
     res_ty = make_tile_ty(array.get_type().dtype, shape)
-    return add_operation(TileLoad, res_ty,
+    return add_operation(TileLoad, (res_ty, TokenTy()),
                          array=array, index=index, order=tuple(order),
-                         padding_mode=padding_mode, latency=latency, allow_tma=allow_tma)
+                         padding_mode=padding_mode, latency=latency,
+                         allow_tma=allow_tma)
 
 
 @impl(ct.load)
@@ -2049,26 +2069,10 @@ def tile_load_impl(array: Var, index: Var, shape: Var, order: Var,
     padding_mode = require_constant_enum(padding_mode, PaddingMode)
     latency = require_optional_constant_int(latency)
     allow_tma = require_optional_constant_bool(allow_tma)
-    check_load_store_hints(latency, allow_tma)
-    result = tile_load(array, index_items, broadcasted_shape, order, padding_mode, latency,
-                       allow_tma)
+    _check_load_store_hints(latency, allow_tma)
+    result, _token = tile_load(array, index_items, broadcasted_shape, order, padding_mode, latency,
+                               allow_tma)
     return reshape(result, shape)
-
-
-@dataclass(eq=False)
-class TileLoadTokenOrdered(Operation, opcode="tile_load_token_ordered",
-                           memory_effect=MemoryEffect.LOAD):
-    order: tuple[int, ...] = attribute()
-    padding_mode: PaddingMode = attribute()
-    latency: Optional[int] = attribute()
-    allow_tma: Optional[bool] = attribute()
-    array: Var = operand()
-    index: Var = operand()
-    token: Var = operand()
-
-    @override
-    def generate_bytecode(self, ctx: BytecodeContext) -> tuple[bc.Value, bc.Value]:
-        return tile_load_generate_bytecode(self, ctx)
 
 
 @dataclass(eq=False)
@@ -2079,22 +2083,36 @@ class TileStore(Operation, opcode="tile_store", memory_effect=MemoryEffect.STORE
     array: Var = operand()
     index: tuple[Var, ...] = operand()
     tile: Var = operand()
+    token: Optional[Var] = operand(default=None)
 
     @override
-    def generate_bytecode(self, ctx: BytecodeContext) -> tuple[()]:
-        tile_store_generate_bytecode(self, ctx)
-        return ()
+    def generate_bytecode(self, ctx: BytecodeContext) -> bc.Value:
+        tile_ty = self.tile.get_type()
+        tile_shape = tuple(x.value for x in tile_ty.shape)
+        partition = ctx.make_partition_view(self.array, self.order, tile_shape,
+                                            padding_mode=PaddingMode.UNDETERMINED)
+        return bc.encode_StoreViewTkoOp(
+            ctx.builder,
+            result_token_type=ctx.type_table.Token,
+            tile=ctx.get_value(self.tile),
+            view=partition,
+            index=ctx.index_tuple(self.index),
+            token=None if self.token is None else ctx.get_value(self.token),
+            memory_ordering_semantics=bc.MemoryOrderingSemantics.WEAK,
+            memory_scope=None,
+            optimization_hints=ctx.load_store_hints(self.latency, self.allow_tma),
+        )
 
 
 def tile_store(array: Var, index: tuple[Var, ...], tile: Var, order: Sequence[int],
-               latency: Optional[int], allow_tma: Optional[bool]):
+               latency: Optional[int], allow_tma: Optional[bool]) -> Var:
     array_ty = array.get_type()
     ty = require_tile_type(tile)
     tile = astype(tile, array_ty.dtype)
     if ty.ndim == 0:
         tile = reshape(tile, (1,) * array_ty.ndim)
-    add_operation(TileStore, (), array=array, index=index, tile=tile, order=tuple(order),
-                  latency=latency, allow_tma=allow_tma)
+    return add_operation(TileStore, (TokenTy(),), array=array, index=index, tile=tile,
+                         order=tuple(order), latency=latency, allow_tma=allow_tma)
 
 
 def _implicit_cast(src: Var, target_dtype: DType, error_context: str) -> Var:
@@ -2123,25 +2141,9 @@ def tile_store_impl(array: Var, index: Var, tile: Var, order: Var,
     order = require_constant_axis_order(order, array_ty.ndim)
     latency = require_optional_constant_int(latency)
     allow_tma = require_optional_constant_bool(allow_tma)
-    check_load_store_hints(latency, allow_tma)
+    _check_load_store_hints(latency, allow_tma)
 
-    tile_store(array, index_items, tile, order, latency, allow_tma)
-
-
-@dataclass(eq=False)
-class TileStoreTokenOrdered(Operation, opcode="tile_store_token_ordered",
-                            memory_effect=MemoryEffect.STORE):
-    order: tuple[int, ...] = attribute()
-    latency: Optional[int] = attribute()
-    allow_tma: Optional[bool] = attribute()
-    array: Var = operand()
-    index: Var = operand()
-    tile: Var = operand()
-    token: Var = operand()
-
-    @override
-    def generate_bytecode(self, ctx: BytecodeContext) -> bc.Value:
-        return tile_store_generate_bytecode(self, ctx)
+    [_token] = tile_store(array, index_items, tile, order, latency, allow_tma)
 
 
 @dataclass(eq=False)
@@ -2150,34 +2152,32 @@ class LoadPointer(Operation, opcode="load_pointer", memory_effect=MemoryEffect.L
     pointer: Var = operand()
     mask: Optional[Var] = operand(default=None)
     padding_value: Optional[Var] = operand(default=None)
-
-    @override
-    def generate_bytecode(self, ctx: BytecodeContext) -> bc.Value:
-        lowered_res, _ = load_pointer_lowering(self, ctx)
-        return lowered_res
-
-
-@dataclass(eq=False)
-class LoadPointerTokenOrdered(Operation, opcode="load_pointer_tko",
-                              memory_effect=MemoryEffect.LOAD):
-    latency: Optional[int] = attribute()
-    pointer: Var = operand()
-    mask: Optional[Var] = operand()
-    padding_value: Optional[Var] = operand()
-    token: Var = operand()
+    token: Optional[Var] = operand(default=None)
 
     @override
     def generate_bytecode(self, ctx: BytecodeContext) -> tuple[bc.Value, bc.Value]:
-        return load_pointer_lowering(self, ctx)
+        return bc.encode_LoadPtrTkoOp(
+            ctx.builder,
+            result_type=ctx.typeid_of(self.result_vars[0]),
+            result_token_type=ctx.type_table.Token,
+            source=ctx.get_value(self.pointer),
+            mask=None if self.mask is None else ctx.get_value(self.mask),
+            paddingValue=ctx.get_value(self.padding_value),
+            token=None if self.token is None else ctx.get_value(self.token),
+            memory_ordering_semantics=bc.MemoryOrderingSemantics.WEAK,
+            memory_scope=None,
+            optimization_hints=ctx.load_store_hints(self.latency, None),
+        )
 
 
 def load_pointer(pointer: Var, mask: Optional[Var], padding_value: Optional[Var],
-                 latency: Optional[int]) -> Var:
+                 latency: Optional[int]) -> tuple[Var, Var]:
     pointer_ty = pointer.get_type()
     shape = pointer_ty.shape_value
     result_ty = make_tile_ty(pointer_ty.dtype.pointee_type, shape)
-    return add_operation(LoadPointer, result_ty,
-                         pointer=pointer, mask=mask, padding_value=padding_value, latency=latency)
+    return add_operation(LoadPointer, (result_ty, TokenTy()),
+                         pointer=pointer, mask=mask, padding_value=padding_value,
+                         latency=latency)
 
 
 @dataclass(eq=False)
@@ -2186,30 +2186,26 @@ class StorePointer(Operation, opcode="store_pointer", memory_effect=MemoryEffect
     pointer: Var = operand()
     value: Var = operand()
     mask: Optional[Var] = operand(default=None)
-
-    @override
-    def generate_bytecode(self, ctx: BytecodeContext):
-        store_pointer_lowering(self, ctx)
-        return ()
-
-
-@dataclass(eq=False)
-class StorePointerTokenOrdered(Operation, opcode="store_pointer_tko",
-                               memory_effect=MemoryEffect.STORE):
-    latency: Optional[int] = attribute()
-    pointer: Var = operand()
-    value: Var = operand()
-    mask: Optional[Var] = operand()
-    token: Var = operand()
+    token: Optional[Var] = operand(default=None)
 
     @override
     def generate_bytecode(self, ctx: BytecodeContext) -> bc.Value:
-        return store_pointer_lowering(self, ctx)
+        return bc.encode_StorePtrTkoOp(
+            ctx.builder,
+            result_token_type=ctx.type_table.Token,
+            destination=ctx.get_value(self.pointer),
+            value=ctx.get_value(self.value),
+            mask=None if self.mask is None else ctx.get_value(self.mask),
+            token=None if self.token is None else ctx.get_value(self.token),
+            memory_ordering_semantics=bc.MemoryOrderingSemantics.WEAK,
+            memory_scope=None,
+            optimization_hints=ctx.load_store_hints(self.latency, None),
+        )
 
 
-def store_pointer(pointer: Var, value: Var, mask: Optional[Var], latency: Optional[int]):
-    add_operation(StorePointer, (),
-                  pointer=pointer, value=value, mask=mask, latency=latency)
+def store_pointer(pointer: Var, value: Var, mask: Optional[Var], latency: Optional[int]) -> Var:
+    return add_operation(StorePointer, (TokenTy(),),
+                         pointer=pointer, value=value, mask=mask, latency=latency)
 
 
 @dataclass(eq=False)
@@ -2259,8 +2255,9 @@ def gather_impl(array: Var, indices: Var, mask: Var, padding_value: Var,
 
     # Handle the latency hint
     latency = require_optional_constant_int(latency)
-    check_load_store_hints(latency)
-    return load_pointer(pointer, final_mask, padding_value, latency)
+    _check_load_store_hints(latency)
+    result, _token = load_pointer(pointer, final_mask, padding_value, latency)
+    return result
 
 
 @impl(ct.scatter)
@@ -2276,9 +2273,9 @@ def scatter_impl(array: Var, indices: Var, value: Var, mask: Var,
 
     # Handle the latency hint
     latency = require_optional_constant_int(latency)
-    check_load_store_hints(latency)
+    _check_load_store_hints(latency)
 
-    store_pointer(pointer, value, final_mask, latency)
+    [_token] = store_pointer(pointer, value, final_mask, latency)
 
 
 def _get_scatter_value(value: Var, pointer_shape: Tuple[int, ...], array_dtype: DType,
@@ -2438,42 +2435,21 @@ class TileAtomicCAS(Operation, opcode="tile_atomic_cas",
     expected: Var = operand()
     desired: Var = operand()
     mask: Optional[Var] = operand(default=None)
+    token: Optional[Var] = operand(default=None)
 
-    def generate_bytecode(self, ctx: BytecodeContext):
-        result_value, _ = _atomic_cas_generate_bytecode(self, ctx)
-        return result_value
-
-
-@dataclass(eq=False)
-class TileAtomicCASTokenOrdered(Operation, opcode="tile_atomic_cas_token_ordered",
-                                memory_effect=MemoryEffect.STORE):
-    memory_order: MemoryOrder = attribute()
-    memory_scope: MemoryScope = attribute()
-    pointer: Var = operand()
-    expected: Var = operand()
-    desired: Var = operand()
-    mask: Optional[Var] = operand()
-    token: Var = operand()
-
-    @override
-    def generate_bytecode(self, ctx: BytecodeContext):
-        return _atomic_cas_generate_bytecode(self, ctx)
-
-
-def _atomic_cas_generate_bytecode(op: Union[TileAtomicCAS, TileAtomicCASTokenOrdered],
-                                  ctx: BytecodeContext) -> tuple[bc.Value, bc.Value]:
-    return bc.encode_AtomicCASTkoOp(
-        ctx.builder,
-        result_type=ctx.typeid_of(op.result_vars[0]),
-        result_token_type=ctx.type_table.Token,
-        pointers=ctx.get_value(op.pointer),
-        cmp=ctx.get_value(op.expected),
-        val=ctx.get_value(op.desired),
-        mask=None if op.mask is None else ctx.get_value(op.mask),
-        token=ctx.get_value(op.token) if isinstance(op, TileAtomicCASTokenOrdered) else None,
-        memory_ordering_semantics=memory_order_to_bytecode[op.memory_order],
-        memory_scope=memory_scope_to_bytecode[op.memory_scope],
-    )
+    def generate_bytecode(self, ctx: BytecodeContext) -> tuple[bc.Value, bc.Value]:
+        return bc.encode_AtomicCASTkoOp(
+            ctx.builder,
+            result_type=ctx.typeid_of(self.result_vars[0]),
+            result_token_type=ctx.type_table.Token,
+            pointers=ctx.get_value(self.pointer),
+            cmp=ctx.get_value(self.expected),
+            val=ctx.get_value(self.desired),
+            mask=None if self.mask is None else ctx.get_value(self.mask),
+            token=None if self.token is None else ctx.get_value(self.token),
+            memory_ordering_semantics=memory_order_to_bytecode[self.memory_order],
+            memory_scope=memory_scope_to_bytecode[self.memory_scope],
+        )
 
 
 @impl(ct.atomic_cas)
@@ -2496,9 +2472,11 @@ def atomic_cas_impl(array: Var, indices: Var, expected: Var, desired: Var, check
     memory_scope = require_constant_enum(memory_scope, MemoryScope)
 
     result_ty = make_tile_ty(array_dtype, pointer_shape)
-    return add_operation(TileAtomicCAS, result_ty,
-                         pointer=pointer, expected=expected, desired=desired, mask=mask,
-                         memory_order=memory_order, memory_scope=memory_scope)
+    result, _token = add_operation(TileAtomicCAS, (result_ty, TokenTy()),
+                                   pointer=pointer, expected=expected, desired=desired,
+                                   mask=mask, memory_order=memory_order,
+                                   memory_scope=memory_scope)
+    return result
 
 
 class AtomicRMWMode(enum.Enum):
@@ -2522,43 +2500,22 @@ class TileAtomicRMW(Operation, opcode="tile_atomic_rmw", memory_effect=MemoryEff
     pointer: Var = operand()
     update: Var = operand()
     mask: Optional[Var] = operand(default=None)
+    token: Optional[Var] = operand(default=None)
 
     @override
-    def generate_bytecode(self, ctx: BytecodeContext):
-        result_value, _ = _atomic_rmw_generate_bytecode(self, ctx)
-        return result_value
-
-
-@dataclass(eq=False)
-class TileAtomicRMWTokenOrdered(Operation, opcode="tile_atomic_rmw_token_ordered",
-                                memory_effect=MemoryEffect.STORE):
-    mode: AtomicRMWMode = attribute()
-    memory_order: MemoryOrder = attribute()
-    memory_scope: MemoryScope = attribute()
-    pointer: Var = operand()
-    update: Var = operand()
-    mask: Optional[Var] = operand()
-    token: Var = operand()
-
-    @override
-    def generate_bytecode(self, ctx: BytecodeContext):
-        return _atomic_rmw_generate_bytecode(self, ctx)
-
-
-def _atomic_rmw_generate_bytecode(op: Union[TileAtomicRMW, TileAtomicRMWTokenOrdered],
-                                  ctx: BytecodeContext) -> Tuple[bc.Value, bc.Value]:
-    return bc.encode_AtomicRMWTkoOp(
-        ctx.builder,
-        result_type=ctx.typeid_of(op.result_vars[0]),
-        result_token_type=ctx.type_table.Token,
-        pointers=ctx.get_value(op.pointer),
-        arg=ctx.get_value(op.update),
-        mask=None if op.mask is None else ctx.get_value(op.mask),
-        token=ctx.get_value(op.token) if isinstance(op, TileAtomicRMWTokenOrdered) else None,
-        memory_ordering_semantics=memory_order_to_bytecode[op.memory_order],
-        memory_scope=memory_scope_to_bytecode[op.memory_scope],
-        mode=op.mode._value_
-    )
+    def generate_bytecode(self, ctx: BytecodeContext) -> tuple[bc.Value, bc.Value]:
+        return bc.encode_AtomicRMWTkoOp(
+            ctx.builder,
+            result_type=ctx.typeid_of(self.result_vars[0]),
+            result_token_type=ctx.type_table.Token,
+            pointers=ctx.get_value(self.pointer),
+            arg=ctx.get_value(self.update),
+            mask=None if self.mask is None else ctx.get_value(self.mask),
+            token=None if self.token is None else ctx.get_value(self.token),
+            memory_ordering_semantics=memory_order_to_bytecode[self.memory_order],
+            memory_scope=memory_scope_to_bytecode[self.memory_scope],
+            mode=self.mode._value_
+        )
 
 
 int_32_64_dtypes = (datatype.int32, datatype.int64, datatype.uint32, datatype.uint64)
@@ -2623,8 +2580,11 @@ def atomic_rmw_impl(int_mode: Optional[AtomicRMWMode],
     memory_scope = require_constant_enum(memory_scope, MemoryScope)
 
     result_ty = make_tile_ty(array_dtype, pointer_shape)
-    return add_operation(TileAtomicRMW, result_ty, mode=mode, pointer=pointer, update=update,
-                         mask=mask, memory_order=memory_order, memory_scope=memory_scope)
+    result, _token = add_operation(TileAtomicRMW, (result_ty, TokenTy()),
+                                   mode=mode, pointer=pointer, update=update,
+                                   mask=mask, memory_order=memory_order,
+                                   memory_scope=memory_scope)
+    return result
 
 
 @dataclass(eq=False)

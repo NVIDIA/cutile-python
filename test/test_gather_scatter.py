@@ -13,7 +13,7 @@ import cuda.tile as ct
 from cuda.tile import TileValueError
 from cuda.tile._compiler_options import CompilerOptions
 from cuda.tile._exception import TileTypeError
-from cuda.tile._ir.ops import LoadPointerTokenOrdered, StorePointerTokenOrdered
+from cuda.tile._ir.ops import LoadPointer, StorePointer
 from cuda.tile._ir.ops_utils import _is_implicit_cast_ok
 from cuda.tile._ir.typing_support import to_dtype
 from cuda.tile._compile import compile_tile
@@ -204,11 +204,11 @@ def test_ir_checked_vs_unchecked(kernel, expected_mask):
     y = torch.zeros_like(x)
     root_block = compile_tile(kernel._pyfunc, (x, y), CompilerOptions()).final_ir
 
-    load_ops = [op for op in root_block.traverse() if isinstance(op, LoadPointerTokenOrdered)]
+    load_ops = [op for op in root_block.traverse() if isinstance(op, LoadPointer)]
     assert len(load_ops) == 1
     assert (load_ops[0].mask is not None) == expected_mask
 
-    store_ops = [op for op in root_block.traverse() if isinstance(op, StorePointerTokenOrdered)]
+    store_ops = [op for op in root_block.traverse() if isinstance(op, StorePointer)]
     assert len(store_ops) == 1
     assert (store_ops[0].mask is not None) == expected_mask
 

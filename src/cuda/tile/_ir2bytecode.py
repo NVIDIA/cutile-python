@@ -8,6 +8,7 @@ from contextlib import contextmanager
 from typing import Dict, Tuple, Sequence, Any, Optional
 
 from cuda.tile import _datatype as datatype
+from cuda.tile._bytecode.attribute import make_load_store_hints
 from cuda.tile._datatype import get_signedness
 from cuda.tile import DType, PaddingMode
 import cuda.tile._bytecode as bc
@@ -365,6 +366,26 @@ class BytecodeContext:
             return bc.encode_IntToPtrOp(self.builder, typeid(self.type_table, ty), const)
 
         return self.constant(0, ty)
+
+    def index_tuple(self, index: tuple[Var, ...]) -> Tuple[bc.Value, ...]:
+        i32_tile_ty = self.type_table.tile(self.type_table.I32, ())
+        item_types = tuple(x.get_type() for x in index)
+        index_values = tuple(self.get_value(x) for x in index)
+        return tuple(
+            bc.encode_TruncIOp(self.builder, i32_tile_ty, v, bc.IntegerOverflow.NONE)
+            if (t.dtype if isinstance(t, TileTy) else t).bitwidth > 32 else v
+            for v, t in zip(index_values, item_types, strict=True)
+        )
+
+    def load_store_hints(self,
+                         latency: Optional[int],
+                         allow_tma: Optional[bool]) -> Optional[bc.OptimizationHints]:
+        if latency is None and allow_tma is None:
+            return None
+        if allow_tma is None:
+            allow_tma = True
+        load_store_hints = bc.LoadStoreHints(latency=latency, allow_tma=allow_tma)
+        return make_load_store_hints({self.sm_arch: load_store_hints})
 
     def make_partition_view(self,
                             array: Var,

@@ -15,10 +15,9 @@ from cuda.tile._ir.ir import Block, IRContext, Var, Operation, MemoryEffect
 from cuda.tile._ir.ops import (
     Break, Continue, EndBranch, IfElse,
     JoinTokens, Loop, MakeToken,
-    TileAtomicCAS, TileAtomicCASTokenOrdered,
-    TileAtomicRMW, TileAtomicRMWTokenOrdered, LoadPointer, LoadPointerTokenOrdered,
-    TileLoad, TileLoadTokenOrdered, StorePointer, StorePointerTokenOrdered,
-    TileStore, TileStoreTokenOrdered, TileAssert, TilePrintf,
+    TileAtomicCAS, TileAtomicRMW, LoadPointer,
+    TileLoad, StorePointer,
+    TileStore, TileAssert, TilePrintf,
 )
 from cuda.tile._ir.ops_utils import memory_order_has_acquire, memory_order_has_release
 from cuda.tile._passes.alias_analysis import ALIAS_UNIVERSE, AliasResult, AliasSet
@@ -100,16 +99,6 @@ class TokenOrderContext:
     block_memory_effects: Dict[Block, MemoryEffects]
 
 
-_TOKEN_ORDERED_OP_MAP = {
-    TileLoad: TileLoadTokenOrdered,
-    TileStore: TileStoreTokenOrdered,
-    LoadPointer: LoadPointerTokenOrdered,
-    StorePointer: StorePointerTokenOrdered,
-    TileAtomicCAS: TileAtomicCASTokenOrdered,
-    TileAtomicRMW: TileAtomicRMWTokenOrdered,
-}
-
-
 def token_order_pass(root_block: Block, alias_result: AliasResult):
     block_memory_effects = {}
     _get_block_memory_effects(root_block, alias_result, block_memory_effects)
@@ -174,9 +163,8 @@ def _to_token_order_in_block(block: Block,
                 operations.append(maybe_input_tok_join_op)
 
             # Convert
-            result_tok = _make_token_var(block.ctx, op.loc)
-            tko_load_op = _to_token_ordered_mem_op(op, input_tok, result_tok)
-            operations.append(tko_load_op)
+            _, result_tok = op.result_vars
+            operations.append(dataclasses.replace(op, token=input_tok))
 
             # Eagerly join with last_op_token
             new_last_op_tok = _make_token_var(block.ctx, op.loc)
@@ -205,10 +193,8 @@ def _to_token_order_in_block(block: Block,
             if maybe_input_tok_join_op:
                 operations.append(maybe_input_tok_join_op)
 
-            # Convert
-            result_tok = _make_token_var(block.ctx, op.loc)
-            tko_store_op = _to_token_ordered_mem_op(op, input_tok, result_tok)
-            operations.append(tko_store_op)
+            [result_tok] = op.result_vars
+            operations.append(dataclasses.replace(op, token=input_tok))
 
             token_map[last_op_key] = result_tok
             token_map[last_store_key] = result_tok
@@ -223,9 +209,8 @@ def _to_token_order_in_block(block: Block,
             if maybe_input_tok_join_op:
                 operations.append(maybe_input_tok_join_op)
 
-            result_tok = _make_token_var(block.ctx, op.loc)
-            tko_atomic_op = _to_token_ordered_mem_op(op, input_tok, result_tok)
-            operations.append(tko_atomic_op)
+            _, result_tok = op.result_vars
+            operations.append(dataclasses.replace(op, token=input_tok))
 
             token_map[last_op_key] = result_tok
             token_map[last_store_key] = result_tok
@@ -409,21 +394,6 @@ def _get_input_token(token_key: TokenKey,
     return ret_tok, ret_op
 
 
-def _to_token_ordered_mem_op(op, token: Var, result_token: Var) -> Operation:
-
-    new_class = _TOKEN_ORDERED_OP_MAP[op.__class__]
-    new_kwargs = dict(op.operands)
-    new_kwargs.update(op.attributes)
-
-    if new_class in (TileLoadTokenOrdered, LoadPointerTokenOrdered,
-                     TileAtomicCASTokenOrdered, TileAtomicRMWTokenOrdered):
-        new_kwargs["result_vars"] = (op.result_var, result_token)
-    else:
-        new_kwargs["result_vars"] = (result_token,)
-
-    return new_class(token=token, loc=op.loc, **new_kwargs)
-
-
 def _get_cf_exit_tokens(cf_mem_effects: MemoryEffects,
                         token_map: Dict[TokenKey, Var]) -> Tuple[Var, ...]:
     tokens = []
@@ -547,8 +517,8 @@ def _try_loop_parallel_store(
         input_tok = before_loop_last_op_tok
         maybe_input_tok_join_op = None
 
-    result_tok = _make_token_var(store_op.parent_block.ctx, store_op.loc)
-    tko_store_op = _to_token_ordered_mem_op(store_op, input_tok, result_tok)
+    [result_tok] = store_op.result_vars
+    tko_store_op = dataclasses.replace(store_op, token=input_tok)
 
     # Eagerly join with loop_last_op_tok
     loop_last_op_tok = token_map[last_op_key]
