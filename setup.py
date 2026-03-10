@@ -2,11 +2,8 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 from distutils import file_util
-import shutil
-
 from setuptools import setup
 from setuptools.command.build_ext import build_ext
-from setuptools.command.bdist_wheel import bdist_wheel
 from setuptools.extension import Extension
 import os
 import sys
@@ -76,51 +73,6 @@ class BuildExtWithCmake(build_ext):
                                 dry_run=self.dry_run)
 
 
-class BdistWheelWithDeps(bdist_wheel):
-    user_options = bdist_wheel.user_options + [
-        ('include-tileir', None, 'Include tileir dependency in the package'),
-        ('tileir-deps=', None, 'Path to extra tileir dependency to package'),
-    ]
-
-    def initialize_options(self):
-        super().initialize_options()
-        self.include_tileir = False
-        self.tileir_deps = None
-
-    def finalize_options(self):
-        super().finalize_options()
-
-    def _copy_tileir_deps(self, src, dst):
-        bin_dir = os.path.join(dst, 'bin')
-        lib_dir = os.path.join(dst, 'lib')
-        file_util.copy_file(os.path.join(src, 'tileiras'), bin_dir,
-                            dry_run=self.dry_run)
-        file_util.copy_file(os.path.join(src, 'ptxas'), bin_dir,
-                            dry_run=self.dry_run)
-        file_util.copy_file(os.path.join(src, 'libnvvm.so'), lib_dir,
-                            dry_run=self.dry_run)
-
-    def run(self):
-        build_py = self.get_finalized_command('build_py')
-        build_lib = build_py.build_lib
-        dst_dir = os.path.join(build_lib, 'cuda', 'tile', '_deps')
-        dst_bin_dir = os.path.join(dst_dir, 'bin')
-        dst_lib_dir = os.path.join(dst_dir, 'lib')
-        if self.include_tileir:
-            os.makedirs(dst_bin_dir, exist_ok=True)
-            os.makedirs(dst_lib_dir, exist_ok=True)
-            if self.tileir_deps:
-                src_dir = os.path.abspath(self.tileir_deps)
-                self._copy_tileir_deps(src_dir, dst_dir)
-            else:
-                compiler_src = shutil.which('tileiras')
-                if compiler_src is None:
-                    raise FileNotFoundError("Cannot find `tileiras`. Make sure it is in PATH.")
-                file_util.copy_file(compiler_src, dst_bin_dir, update=True, dry_run=self.dry_run)
-
-        super().run()
-
-
 def _get_csrc_dir(ext_name: str):
     prefix = "cuda.tile._"
     assert ext_name.startswith(prefix)
@@ -141,6 +93,5 @@ setup(
     ],
     cmdclass=dict(
         build_ext=BuildExtWithCmake,
-        bdist_wheel=BdistWheelWithDeps
     )
 )

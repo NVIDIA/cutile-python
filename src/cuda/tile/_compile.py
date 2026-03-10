@@ -319,12 +319,6 @@ def _get_cuda_home() -> Optional[str]:
     return os.environ.get("CUDA_HOME")
 
 
-def _local_deps_dir():
-    import cuda.tile
-    package_dir = os.path.dirname(os.path.abspath(cuda.tile.__file__))
-    return os.path.join(package_dir, '_deps')
-
-
 @dataclass
 class _CompilerBinary:
     path: str
@@ -410,18 +404,8 @@ def _find_pip_tileiras() -> Optional[str]:
 
 @cache
 def _find_compiler_bin() -> _CompilerBinary:
-    # search under cuda/tile/_deps
     bin_path = os.environ.get('PATH', '')
     ld_path = os.environ.get('LD_LIBRARY_PATH', "") if not is_windows() else ""
-
-    deps_bin_dir = os.path.join(_local_deps_dir(), 'bin')
-    deps_lib_dir = os.path.join(_local_deps_dir(), 'lib')
-    if os.path.exists(deps_bin_dir):
-        logger.debug(f"Searching tileiras: {deps_bin_dir}")
-        if (res := shutil.which("tileiras", path=deps_bin_dir)):
-            bin_path = deps_bin_dir + ":" + bin_path
-            ld_path = deps_lib_dir + ":" + ld_path
-            return _CompilerBinary(res, bin_path, ld_path, pass_cuda_home_var=False)
 
     # search from nvidia-cuda-tileiras pip package
     logger.debug("Searching tileiras from nvidia pip package")

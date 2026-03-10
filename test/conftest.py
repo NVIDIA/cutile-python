@@ -12,7 +12,8 @@ import tempfile
 from functools import cache
 
 from cuda.tile._bytecode.version import BytecodeVersion
-from cuda.tile._compile import _get_max_supported_bytecode_version
+from cuda.tile._compile import _get_max_supported_bytecode_version, _SUPPORTED_VERSIONS
+from cuda.tile._cext import dev_features_enabled
 
 
 def pytest_addoption(parser):
@@ -45,11 +46,19 @@ def get_tileiras_version():
 
 def requires_tileiras(version: BytecodeVersion):
     """Skip test if tileiras version is lower than required."""
+
+    def vstr(v):
+        return f"{v.major()}.{v.minor()}"
+
+    if version not in _SUPPORTED_VERSIONS and not dev_features_enabled():
+        return pytest.mark.skip(
+            reason=f"Requires dev features enabled for version {vstr(version)}"
+        )
+
     current = get_tileiras_version()
     return pytest.mark.skipif(
         current < version,
-        reason=f"Requires tileiras {version.major()}.{version.minor()}, "
-               f"found {current.major()}.{current.minor()}"
+        reason=f"Requires tileiras {vstr(version)}, found {vstr(current)}"
     )
 
 
