@@ -2866,9 +2866,9 @@ def mma_scaled_impl(x: Var, x_scale: Var, y: Var, y_scale: Var, acc: Var) -> Var
         raise TileTypeError(f'Expect acc shape to be {output_shape}, got {acc_ty.shape}')
 
     # Broadcast scale batch dims to match the broadcasted x/y batch dims
-    batch = x_shape.value_types[:-2]
-    x_scale_shape = TupleTy(batch + x_scale_ty.shape.value_types[-2:])
-    y_scale_shape = TupleTy(batch + y_scale_ty.shape.value_types[-2:])
+    batch = x_shape[:-2]
+    x_scale_shape = TupleTy(batch + x_scale_ty.shape[-2:])
+    y_scale_shape = TupleTy(batch + y_scale_ty.shape[-2:])
 
     x = _promote_and_broadcast_to(x, TileTy(x_ty.dtype, x_shape))
     y = _promote_and_broadcast_to(y, TileTy(y_ty.dtype, y_shape))
