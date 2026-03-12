@@ -437,3 +437,16 @@ def test_allow_type_hints_on_assignment():
     x = torch.ones((), dtype=torch.float32, device="cuda")
     ct.launch(torch.cuda.current_stream(), (1,), kernel, (x,))
     assert x.item() == 4.0
+
+
+def test_mixed_const_nonconst_params():
+    @ct.kernel
+    def kernel(x, a: ct.Constant, b, c: ct.Constant, d, y):
+        ct.scatter(x, (), a * 10 + b)
+        ct.scatter(y, (), c * 100 + d)
+
+    x = torch.zeros((), dtype=torch.int32, device="cuda")
+    y = torch.zeros((), dtype=torch.float32, device="cuda")
+    ct.launch(torch.cuda.current_stream(), (1,), kernel, (x, 3, 4, 7.5, 8.5, y))
+    assert x.item() == 34
+    assert y.item() == 758.5

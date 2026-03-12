@@ -33,20 +33,20 @@ def hir2ir(func_hir: hir.Function, args: Sequence[KernelArgument], ir_ctx: IRCon
 async def _hir2ir_coroutine(func_hir: hir.Function, args: Sequence[KernelArgument],
                             ir_ctx: IRContext):
     scope = _create_scope(func_hir, ir_ctx, call_site=None, parent_scopes=())
-    aggregate_params = [
-        scope.local.redefine(local_idx, param_loc)
-        for local_idx, param_loc
-        in zip(func_hir.param_local_indices, func_hir.param_locs, strict=True)
-    ]
 
     with ir.Builder(ir_ctx, func_hir.body.loc) as ir_builder, scope.make_current():
         try:
-            for local_idx, var, arg in zip(func_hir.param_local_indices, aggregate_params, args,
-                                           strict=True):
-                var.set_type(arg.type)
+            aggregate_params = []
+            for local_idx, param_loc, arg in zip(func_hir.param_local_indices,
+                                                 func_hir.param_locs, args, strict=True):
                 if arg.is_const:
                     var = loosely_typed_const(arg.const_value)
                     store_var(local_idx, var, var.loc)
+                else:
+                    var = scope.local.redefine(local_idx, param_loc)
+                    var.set_type(arg.type)
+                    aggregate_params.append(var)
+
             flat_params = flatten_block_parameters(aggregate_params)
 
             await _dispatch_hir_block_inner(func_hir.body, ir_builder)

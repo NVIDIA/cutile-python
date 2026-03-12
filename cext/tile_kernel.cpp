@@ -751,9 +751,6 @@ static Status extract_array(const DriverApi* driver, PyObject* pyobj, LaunchHelp
 
 static inline Status extract_py_long(PyObject* pyobj, bool is_constant, LaunchHelper& helper) {
     if (is_constant) {
-        // Push a dummy value since it is not used.
-        // TODO: remove physical kernel args for constants.
-        helper.cuargs.push_back({.i32 = 0});
         int overflow;
         long long value = PyLong_AsLongLongAndOverflow(pyobj, &overflow);
         if (PyErr_Occurred()) return ErrorRaised;
@@ -777,12 +774,13 @@ static inline Status extract_py_long(PyObject* pyobj, bool is_constant, LaunchHe
 
 static void extract_py_float(PyObject* pyobj, bool is_constant, LaunchHelper& helper) {
     double value = PyFloat_AS_DOUBLE(pyobj);
-    helper.cuargs.push_back({.f32 = static_cast<float>(value)});
     if (is_constant) {
         int64_t i64_val = 0;
         static_assert(sizeof(i64_val) == sizeof(value));
         mem_copy(&i64_val, &value, sizeof(i64_val));
         helper.constants.push_back(i64_val);
+    } else {
+        helper.cuargs.push_back({.f32 = static_cast<float>(value)});
     }
 }
 
