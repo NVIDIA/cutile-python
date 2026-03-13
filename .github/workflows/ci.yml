@@ -50,7 +50,9 @@ jobs:
         run: python scripts/cpplint.py
 
       - name: Check license headers
-        run: python scripts/check_license.py
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          python scripts/check_license.py
 
       - name: Check inline samples are up to date
         run: python test/tools/inline_samples.py --check
