@@ -116,6 +116,7 @@ BUILTIN_FUNCS = {
     float: lambda x=0, /: None,
     int: lambda x=0, /: None,
     bool: lambda x=False, /: None,
+    print: lambda *args, sep=' ', end='\n': None,
 }
 
 

@@ -19,7 +19,7 @@ from .._ir.ops import loosely_typed_const, end_branch, return_, continue_, \
     break_, flatten_block_parameters, store_var
 from .._ir.scope import Scope, LocalScope, IntMap
 from .._ir.type import FunctionTy, BoundMethodTy, DTypeConstructor, ClosureTy, \
-    ClosureDefaultPlaceholder
+    ClosureDefaultPlaceholder, StringFormat
 from .._ir.typing_support import get_signature, Closure
 
 MAX_RECURSION_DEPTH = 1000
@@ -307,10 +307,10 @@ def _get_callee_and_self(callee_var: Var) -> tuple[Any, tuple[()] | tuple[Var]]:
 
 
 def _resolve_operand(x: hir.Operand, scope: Scope) \
-        -> Var | hir.Block | hir.Function | hir.StaticEvalExpression:
+        -> Var | hir.Block | hir.Function | hir.StaticEvalExpression | StringFormat:
     if isinstance(x, hir.Value):
         return scope.hir2ir_varmap[x.id]
-    elif isinstance(x, hir.Block | hir.Function | hir.StaticEvalExpression):
+    elif isinstance(x, hir.Block | hir.Function | hir.StaticEvalExpression | StringFormat):
         return x
     else:
         return loosely_typed_const(x)

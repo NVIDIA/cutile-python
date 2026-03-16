@@ -244,6 +244,15 @@ class TupleValue(AggregateValue):
 
 
 @dataclass
+class FormattedStringValue(AggregateValue):
+    format: "Any"  # StringFormat from type.py
+    values: tuple  # tuple of Var
+
+    def as_tuple(self) -> tuple:
+        return self.values
+
+
+@dataclass
 class RangeValue(AggregateValue):
     start: Var
     stop: Var

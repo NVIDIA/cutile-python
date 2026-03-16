@@ -3,7 +3,6 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import ast
-import builtins as _builtins
 import inspect
 import itertools
 import operator
@@ -16,10 +15,9 @@ from cuda.tile import _datatype as datatype
 from cuda.tile._exception import TileSyntaxError, Loc, FunctionDesc
 from cuda.tile._ir.hir import make_value, ResolvedName, UNKNOWN_NAME
 from cuda.tile._ir import hir
-from cuda.tile._ir.type import ClosureDefaultPlaceholder
+from cuda.tile._ir.type import ClosureDefaultPlaceholder, FormattedPiece, StringFormat
 from cuda.tile._passes.ast_util import ast_get_all_local_names
 from cuda.tile._stub import static_eval, static_assert, static_iter
-import cuda.tile._stub as _ct_stub
 
 
 @lru_cache
@@ -250,8 +248,8 @@ def _register(mapping, klazz):
 _expr_handlers: Dict[Type[ast.AST], Callable] = {}
 
 
-_KEYWORD_LIKE_FUNCS = (static_eval, static_assert, static_iter, _ct_stub.print, _builtins.print)
-_KEYWORD_LIKE_FUNC_NAMES = ("static_eval", "static_assert", "static_iter", "print", "print")
+_KEYWORD_LIKE_FUNCS = (static_eval, static_assert, static_iter)
+_KEYWORD_LIKE_FUNC_NAMES = ("static_eval", "static_assert", "static_iter")
 
 
 @_register(_expr_handlers, ast.Call)
@@ -279,8 +277,6 @@ def _call_expr(call: ast.Call, ctx: _Context) -> hir.Value:
         elif kwd_func == "static_iter":
             raise TileSyntaxError("static_iter() is only allowed as iterable in a `for` loop,"
                                   " i.e. `for i in ct.static_iter(...)`")
-        elif kwd_func == "print":
-            return _handle_ct_print(call, ctx)
         else:
             raise TileSyntaxError(f"{kwd_func} is not expected here")
     else:
@@ -382,131 +378,6 @@ def _is_cuda_module(value: ast.expr, ctx: _Context) -> bool:
     return ctx.frozen_globals.get(value.id) is cuda
 
 
-# ================================
-# ct.print() helper functions
-# ================================
-
-def _escape_format_str(s: str) -> str:
-    """Escape a literal string for use in a C printf format (replace % with %%)."""
-    return s.replace('%', '%%')
-
-
-def _python_spec_to_c_printf(py_spec: str, ctx: _Context) -> str:
-    """Convert a Python format spec string to a C printf format specifier."""
-    import re
-    m = re.fullmatch(
-        r'(?P<align>[<>^])?'
-        r'(?P<sign>[+ -])?'
-        r'(?P<alt>\#)?'
-        r'(?P<zero>0)?'
-        r'(?P<width>[0-9]+)?'
-        r'(?:\.(?P<precision>[0-9]+))?'
-        r'(?P<type>[diouxXeEfFgGaA])?',
-        py_spec)
-    if m is None or m.group(0) != py_spec:
-        raise ctx.syntax_error(f"ct.print(): unsupported format spec '{py_spec}'")
-    align = m.group('align')
-    sign = m.group('sign')
-    alt = m.group('alt')
-    zero = m.group('zero')
-    width = m.group('width') or ''
-    precision = ('.' + m.group('precision')) if m.group('precision') is not None else ''
-    typ = m.group('type') or ''
-
-    flags = ''
-    if align == '<':
-        flags += '-'
-    if sign in ('+', ' '):
-        flags += sign
-    if alt:
-        flags += '#'
-    if zero and align != '<':
-        flags += '0'
-
-    return f'%{flags}{width}{precision}{typ}'
-
-
-def _extract_format_spec(spec_node, ctx: _Context):
-    """Extract explicit format spec from a FormattedValue's format_spec.
-    Returns a C printf format specifier (e.g. '%.2f') or None for type-inferred."""
-    if spec_node is None:
-        return None
-    if not isinstance(spec_node, ast.JoinedStr):
-        raise ctx.syntax_error("ct.print(): internal error: unexpected format_spec node")
-    if len(spec_node.values) == 0:
-        return None
-    if len(spec_node.values) != 1 or not isinstance(spec_node.values[0], ast.Constant):
-        raise ctx.syntax_error(
-            "ct.print() f-string: dynamic format specs (e.g. {x:{width}}) are not supported")
-    py_spec = str(spec_node.values[0].value)
-    return _python_spec_to_c_printf(py_spec, ctx)
-
-
-def _process_fstring(node: ast.JoinedStr, format_parts: list, tile_var_hirs: list,
-                     ctx: _Context) -> None:
-    """Decompose a JoinedStr (f-string) into format template parts and HIR vars."""
-    for part in node.values:
-        if isinstance(part, ast.Constant):
-            format_parts.append(_escape_format_str(str(part.value)))
-        elif isinstance(part, ast.FormattedValue):
-            if part.conversion != -1:
-                raise ctx.syntax_error(
-                    "ct.print() f-string: !r, !s, !a conversions are not supported")
-            c_spec = _extract_format_spec(part.format_spec, ctx)
-            if c_spec is not None:
-                format_parts.append(c_spec)
-            else:
-                format_parts.append('\x01')
-            tile_var_hirs.append(_expr(part.value, ctx))
-        else:
-            raise ctx.syntax_error("ct.print(): unsupported f-string component")
-
-
-def _require_str_constant(node: ast.expr, ctx: _Context, kwarg_name: str) -> str:
-    """Require a keyword argument to be a string constant at AST level."""
-    if not isinstance(node, ast.Constant) or not isinstance(node.value, str):
-        raise ctx.syntax_error(
-            f"ct.print(): keyword argument '{kwarg_name}' must be a string constant")
-    return node.value
-
-
-def _handle_ct_print(call: ast.Call, ctx: _Context) -> hir.Value:
-    """Handle ct.print() calls by decomposing f-strings and building HIR."""
-    sep = ' '
-    end = '\n'
-    for kw in call.keywords:
-        if kw.arg == 'sep':
-            sep = _require_str_constant(kw.value, ctx, 'sep')
-        elif kw.arg == 'end':
-            end = _require_str_constant(kw.value, ctx, 'end')
-        else:
-            raise ctx.syntax_error(
-                f"ct.print() got unexpected keyword argument '{kw.arg}'")
-
-    format_parts = []
-    tile_var_hirs = []
-    first = True
-
-    for arg_node in call.args:
-        if not first:
-            format_parts.append(_escape_format_str(sep))
-        first = False
-
-        if isinstance(arg_node, ast.JoinedStr):
-            _process_fstring(arg_node, format_parts, tile_var_hirs, ctx)
-        elif isinstance(arg_node, ast.Constant) and isinstance(arg_node.value, str):
-            format_parts.append(_escape_format_str(arg_node.value))
-        else:
-            format_parts.append('\x01')
-            tile_var_hirs.append(_expr(arg_node, ctx))
-
-    format_parts.append(_escape_format_str(end))
-    format_template = ''.join(format_parts)
-
-    template_hir = ctx.call(hir.identity, (format_template,))
-    return ctx.call(_ct_stub.printf, (template_hir, *tile_var_hirs))
-
-
 @_register(_expr_handlers, ast.Name)
 def _name_expr(name: ast.Name, ctx: Any) -> hir.Value:
     if not isinstance(name.ctx, ast.Load):
@@ -605,6 +476,39 @@ def _constant_expr(node: ast.Constant, ctx: Any) -> Any:
     # We could just return node.value directly here, but we wrap the constant
     # in a `identity` call in order to preserve location info.
     return ctx.call(hir.identity, (node.value,))
+
+
+@_register(_expr_handlers, ast.JoinedStr)
+def _fstring_expr(node: ast.JoinedStr, ctx: _Context) -> hir.Value:
+    pieces = []
+    var_hirs = []
+    value_idx = 0
+    for part in node.values:
+        with ctx.change_loc(part):
+            if isinstance(part, ast.Constant):
+                pieces.append(str(part.value))
+            elif isinstance(part, ast.FormattedValue):
+                if part.conversion != -1:
+                    raise ctx.syntax_error(
+                        "f-string: !r, !s, !a conversions are not supported")
+                spec_node = part.format_spec
+                if spec_node is None or len(spec_node.values) == 0:
+                    format_spec = None
+                else:
+                    assert isinstance(spec_node, ast.JoinedStr)
+                    if (len(spec_node.values) == 1
+                            and isinstance(spec_node.values[0], ast.Constant)):
+                        format_spec = str(spec_node.values[0].value)
+                    else:
+                        raise ctx.syntax_error(
+                            "f-string: format spec must be a literal string")
+                pieces.append(FormattedPiece(value_idx, format_spec))
+                var_hirs.append(_expr(part.value, ctx))
+                value_idx += 1
+            else:
+                raise ctx.syntax_error("f-string: unsupported component")
+    fmt = StringFormat(tuple(pieces))
+    return ctx.call(hir.build_formatted_string, (fmt, *var_hirs))
 
 
 @_register(_expr_handlers, ast.Tuple)

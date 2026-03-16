@@ -427,6 +427,15 @@ class PrintfValidator:
     pattern = re.compile("%" + flags + width + precision + length + specifiers)
 
     @classmethod
+    def infer_format(cls, dtype: DType) -> str:
+        if is_boolean(dtype) or is_integral(dtype):
+            return '%d'
+        elif is_float(dtype) or is_restricted_float(dtype):
+            return '%f'
+        else:
+            raise TileTypeError(f"print(): cannot infer format for dtype {dtype}")
+
+    @classmethod
     def validate_dtype(cls, dtype: DType, specifier: str) -> bool:
         if is_boolean(dtype) or is_integral(dtype):
             return specifier in cls.int_specifiers
@@ -435,8 +444,58 @@ class PrintfValidator:
         else:
             return False
 
-    # Placeholder emitted by ast2hir for type-inferred format specifiers
-    _TYPE_INFER = '\x01'
+    # Python format spec regex: [align][sign][alt][zero][width][.precision][type]
+    _py_spec_pattern = re.compile(
+        r'(?P<align>[<>^])?'
+        r'(?P<sign>[+ -])?'
+        r'(?P<alt>\#)?'
+        r'(?P<zero>0)?'
+        r'(?P<width>[0-9]+)?'
+        r'(?:\.(?P<precision>[0-9]+))?'
+        r'(?P<type>[diouxXeEfFgGaA])?'
+    )
+
+    @staticmethod
+    def escape_str(s: str) -> str:
+        """Escape a literal string for use in a C printf format (replace % with %%)."""
+        return s.replace('%', '%%')
+
+    @classmethod
+    def apply_python_spec(cls, py_spec: str, dtype: DType) -> str:
+        """Convert a Python format spec to a complete C printf specifier for the given dtype.
+
+        If py_spec omits the type character, it is inferred from dtype.
+        If py_spec includes a type character, it is validated against dtype.
+        Raises TileTypeError on type mismatch; ValueError on unrecognised spec syntax.
+        """
+        m = cls._py_spec_pattern.fullmatch(py_spec)
+        if m is None or m.group(0) != py_spec:
+            raise ValueError(f"print(): unsupported format spec '{py_spec}'")
+
+        align = m.group('align')
+        sign = m.group('sign')
+        alt = m.group('alt')
+        zero = m.group('zero')
+        width = m.group('width') or ''
+        precision = ('.' + m.group('precision')) if m.group('precision') is not None else ''
+        typ = m.group('type')
+
+        flags = ''
+        if align == '<':
+            flags += '-'
+        if sign in ('+', ' '):
+            flags += sign
+        if alt:
+            flags += '#'
+        if zero and align != '<':
+            flags += '0'
+
+        if typ is None:
+            typ = cls.infer_format(dtype)[1:]  # inferred type char, e.g. 'd' from '%d'
+        elif not cls.validate_dtype(dtype, typ):
+            raise TileTypeError(
+                f"print(): format spec '{py_spec}' is incompatible with dtype {dtype}")
+        return f'%{flags}{width}{precision}{typ}'
 
     @classmethod
     def parse_format(cls, format: str, arg_types: Tuple[Union[TileTy, DType], ...]) -> str:
@@ -445,21 +504,7 @@ class PrintfValidator:
         tokens = []
         while pos < len(format):
             ch = format[pos]
-            if ch == cls._TYPE_INFER:
-                tokens.append(format[last_pos:pos])
-                if arg_idx >= len(arg_types):
-                    raise TileTypeError("Not enough arguments for format string")
-                dtype = get_dtype(arg_types[arg_idx])
-                if is_boolean(dtype) or is_integral(dtype):
-                    tokens.append('%d')
-                elif is_float(dtype) or is_restricted_float(dtype):
-                    tokens.append('%f')
-                else:
-                    raise TileTypeError(f"Cannot infer format for dtype {dtype}")
-                arg_idx += 1
-                pos += 1
-                last_pos = pos
-            elif ch == "%":
+            if ch == "%":
                 tokens.append(format[last_pos:pos])
                 last_pos = pos
                 # escape "%%"

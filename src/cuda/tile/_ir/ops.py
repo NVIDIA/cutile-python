@@ -1,6 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) <2025> NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 #
 # SPDX-License-Identifier: Apache-2.0
+import builtins
 import enum
 import math
 import operator
@@ -23,7 +24,8 @@ from cuda.tile._ir.ir import (
     add_operation, Builder,
     enter_nested_block, nested_block, PhiState, LoopVarState,
     TupleValue, make_aggregate, RangeValue, BoundMethodValue, ArrayValue, ConstantState,
-    ListValue, TiledViewValue, ClosureValue, MemoryEffect, attribute, operand, BlockRestriction
+    ListValue, TiledViewValue, ClosureValue, MemoryEffect, attribute, operand,
+    BlockRestriction, FormattedStringValue,
 )
 from .type import PointerTy
 from . import hir
@@ -57,7 +59,8 @@ from .type import (
     PartitionViewTy, TupleTy, TileTy, NoneType, BoundMethodTy, ArrayTy,
     ListTy, make_tile_ty, SliceType, DTypeConstructor, RangeIterType, Type,
     NONE, ModuleTy, TypeTy, LooselyTypedScalar, DTypeSpec, StringTy, InvalidType,
-    array_size_type, ClosureTy, LiveCapturedScope, TokenTy, TiledViewTy
+    array_size_type, ClosureTy, LiveCapturedScope, TokenTy, TiledViewTy, FormattedStringTy,
+    StringFormat, FormattedPiece,
 )
 from cuda.tile._datatype import (
     DType, is_integral, is_float, is_signed, is_boolean, is_restricted_float,
@@ -1316,6 +1319,39 @@ def build_tuple(items: tuple[Var, ...]) -> Var:
     if all(x.is_constant() for x in items):
         res.set_constant(tuple(x.get_constant() for x in items))
     return res
+
+
+@impl(hir.build_formatted_string)
+def build_formatted_string_impl(format: StringFormat, values: tuple[Var, ...]) -> Var:
+    new_pieces = []
+    new_values = []
+    for piece in format.pieces:
+        if isinstance(piece, str):
+            new_pieces.append(piece)
+        else:
+            val_var = values[piece.value_idx]
+            val_ty = val_var.get_type()
+            if isinstance(val_ty, FormattedStringTy):
+                if piece.format_spec is not None:
+                    raise TileTypeError(
+                        "f-string: cannot apply format spec to a formatted string value",
+                        val_var.loc)
+                inner_val = val_var.get_aggregate()
+                assert isinstance(inner_val, FormattedStringValue)
+                offset = len(new_values)
+                for inner_piece in val_ty.format.pieces:
+                    if isinstance(inner_piece, str):
+                        new_pieces.append(inner_piece)
+                    else:
+                        new_pieces.append(FormattedPiece(
+                            offset + inner_piece.value_idx, inner_piece.format_spec))
+                new_values.extend(inner_val.values)
+            else:
+                new_pieces.append(FormattedPiece(len(new_values), piece.format_spec))
+                new_values.append(val_var)
+    new_fmt = StringFormat(tuple(new_pieces))
+    ty = FormattedStringTy(new_fmt, tuple(v.get_type() for v in new_values))
+    return make_aggregate(FormattedStringValue(new_fmt, tuple(new_values)), ty)
 
 
 @impl(hir.unpack)
@@ -3636,6 +3672,50 @@ def printf_impl(format: Var, args: Tuple[Var, ...]) -> None:
     arg_types = tuple(require_tile_type(x) for x in args)
     parsed_format = PrintfValidator.parse_format(format_str, arg_types)
     add_operation(TilePrintf, (), format=parsed_format, args=args)
+
+
+@impl(ct.print)
+@impl(builtins.print)
+def print_impl(args: Tuple[Var, ...], sep: Var, end: Var) -> None:
+    sep_str = PrintfValidator.escape_str(require_constant_str(sep))
+    end_str = PrintfValidator.escape_str(require_constant_str(end))
+
+    format_parts = []
+    leaf_vars = []
+    first = True
+
+    for arg_var in args:
+        if not first:
+            format_parts.append(sep_str)
+        else:
+            first = False
+
+        arg_ty = arg_var.get_type()
+        if isinstance(arg_ty, FormattedStringTy):
+            fmt_val = arg_var.get_aggregate()
+            assert isinstance(fmt_val, FormattedStringValue)
+            for piece in arg_ty.format.pieces:
+                if isinstance(piece, str):
+                    format_parts.append(PrintfValidator.escape_str(piece))
+                else:
+                    value_ty = arg_ty.value_types[piece.value_idx]
+                    dtype = get_dtype(value_ty)
+                    if piece.format_spec is not None:
+                        format_parts.append(PrintfValidator.apply_python_spec(
+                            piece.format_spec, dtype))
+                    else:
+                        format_parts.append(PrintfValidator.infer_format(dtype))
+                    leaf_vars.append(fmt_val.values[piece.value_idx])
+        elif isinstance(arg_ty, StringTy):
+            format_parts.append(PrintfValidator.escape_str(arg_ty.value))
+        else:
+            tile_ty = require_tile_type(arg_var)
+            format_parts.append(PrintfValidator.infer_format(get_dtype(tile_ty)))
+            leaf_vars.append(arg_var)
+
+    format_parts.append(end_str)
+    final_format = ''.join(format_parts)
+    add_operation(TilePrintf, (), format=final_format, args=tuple(leaf_vars))
 
 
 @dataclass(eq=False)

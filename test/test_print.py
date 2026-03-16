@@ -84,6 +84,27 @@ def kernel_builtin_print_float(x, TILE: ct.Constant[int]):
     print(f"tile[{bid}]:{tx:.5f}")
 
 
+@ct.kernel(opt_level=_OPT_LEVEL)
+def kernel_fstring_nested(x, TILE: ct.Constant[int]):
+    bid = ct.bid(0)
+    tx = ct.load(x, index=(bid,), shape=(TILE,))
+    msg = f"tile[{bid}]:{tx:10.4f}"
+    ct.print(msg)               # f-string stored in variable
+    ct.print(f"msg={msg}")      # nested f-string
+
+
+@ct.kernel(opt_level=_OPT_LEVEL)
+def kernel_print_aliases(x, TILE: ct.Constant[int]):
+    bid = ct.bid(0)
+    tx = ct.load(x, index=(bid,), shape=(TILE,))
+    p_ct = ct.print
+    p_ct(f"ct%:{tx}")
+    p_builtin = print
+    p_builtin(f"builtin%:{tx}")
+    p_printf = ct.printf
+    p_printf("printf%%[%d]:%d\n", bid, tx)
+
+
 _KERNELS_MAP_ = {
     "kernel_printf_float": kernel_printf_float,
     "kernel_printf_int": kernel_printf_int,
@@ -94,6 +115,8 @@ _KERNELS_MAP_ = {
     "kernel_print_no_end": kernel_print_no_end,
     "kernel_builtin_print_int": kernel_builtin_print_int,
     "kernel_builtin_print_float": kernel_builtin_print_float,
+    "kernel_fstring_nested": kernel_fstring_nested,
+    "kernel_print_aliases": kernel_print_aliases,
 }
 
 
@@ -122,7 +145,8 @@ def _run_kernel_proc(kernel_name, shape, dtype_str, tile):
 @pytest.mark.parametrize("float_kernel,int_kernel", [
     ("kernel_printf_float", "kernel_printf_int"),
     ("kernel_print_float", "kernel_print_int"),
-], ids=["ct_printf", "ct_print"])
+    ("kernel_builtin_print_float", "kernel_builtin_print_int"),
+], ids=["ct_printf", "ct_print", "builtin_print"])
 def test_print_1d(shape, tile, dtype_str, float_kernel, int_kernel):
     kernel_name = float_kernel if "float" in dtype_str else int_kernel
     proc = _run_kernel_proc(kernel_name, shape, dtype_str, tile)
@@ -190,30 +214,6 @@ def test_ct_print_no_end(shape, tile):
     assert f"[{formatted_x}]" in stdout
 
 
-@pytest.mark.parametrize("shape", [(8,), (16,)])
-@pytest.mark.parametrize("tile", [8])
-@pytest.mark.parametrize("dtype_str", ["float32", "int32"])
-def test_builtin_print(shape, tile, dtype_str):
-    kernel_name = ("kernel_builtin_print_float" if "float" in dtype_str
-                   else "kernel_builtin_print_int")
-    proc = _run_kernel_proc(kernel_name, shape, dtype_str, tile)
-    print(proc.stderr.decode(), file=sys.stderr)
-    assert proc.returncode == 0
-
-    actual_outs = [line for line in proc.stdout.decode("UTF-8").splitlines() if line]
-    x = np.arange(np.prod(shape)).reshape(shape)
-    num_tiles = math.ceil(shape[0] / tile)
-    for i in range(num_tiles):
-        start_idx, end_idx = tile * i, tile * (i + 1)
-        if "float" in dtype_str:
-            formatted = ', '.join([f"{elem:.5f}"
-                                   for elem in x[start_idx:end_idx].astype(np.float32)])
-        else:
-            formatted = ', '.join([f"{elem}" for elem in x[start_idx:end_idx].astype(np.int32)])
-        expected = f"tile[{i}]:[{formatted}]"
-        assert expected in actual_outs
-
-
 def test_ct_print_error_conversion():
     from cuda.tile._exception import TileSyntaxError
 
@@ -237,8 +237,44 @@ def test_ct_print_error_dynamic_format_spec():
         ct.print(f"{tx:{width}}")
 
     x = torch.zeros(8, device='cuda', dtype=torch.int32)
-    with pytest.raises(TileSyntaxError, match="dynamic format specs"):
+    with pytest.raises(TileSyntaxError, match="format spec must be a literal string"):
         ct.launch(torch.cuda.current_stream(), (1, 1, 1), bad_kernel, (x, 8))
+
+
+@pytest.mark.parametrize("shape", [(8,)])
+@pytest.mark.parametrize("tile", [8])
+def test_fstring_nested(shape, tile):
+    proc = _run_kernel_proc("kernel_fstring_nested", shape, "float32", tile)
+    print(proc.stderr.decode(), file=sys.stderr)
+    assert proc.returncode == 0
+
+    actual_outs = [line for line in proc.stdout.decode("UTF-8").splitlines() if line]
+    x = np.arange(np.prod(shape)).reshape(shape).astype(np.float32)
+    num_tiles = math.ceil(shape[0] / tile)
+    for i in range(num_tiles):
+        start_idx, end_idx = tile * i, tile * (i + 1)
+        formatted_x = ', '.join(
+            [f"{elem:10.4f}" for elem in x[start_idx:end_idx]])
+        assert f"tile[{i}]:[{formatted_x}]" in actual_outs
+        assert f"msg=tile[{i}]:[{formatted_x}]" in actual_outs
+
+
+@pytest.mark.parametrize("shape", [(8,)])
+@pytest.mark.parametrize("tile", [8])
+def test_print_aliases(shape, tile):
+    proc = _run_kernel_proc("kernel_print_aliases", shape, "int32", tile)
+    print(proc.stderr.decode(), file=sys.stderr)
+    assert proc.returncode == 0
+
+    actual_outs = [line for line in proc.stdout.decode("UTF-8").splitlines() if line]
+    x = np.arange(np.prod(shape)).reshape(shape).astype(np.int32)
+    num_tiles = math.ceil(shape[0] / tile)
+    for i in range(num_tiles):
+        start_idx, end_idx = tile * i, tile * (i + 1)
+        formatted_x = ', '.join([f"{elem}" for elem in x[start_idx:end_idx]])
+        assert f"ct%:[{formatted_x}]" in actual_outs
+        assert f"builtin%:[{formatted_x}]" in actual_outs
+        assert f"printf%[{i}]:[{formatted_x}]" in actual_outs
 
 
 if __name__ == "__main__":

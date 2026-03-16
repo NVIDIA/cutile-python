@@ -210,6 +210,50 @@ class TupleTy(Type):
         return tuple(unwrap(t) for t in self.value_types)
 
 
+# ============== Formatted String Type ===============
+
+@dataclass(frozen=True)
+class FormattedPiece:
+    """A single typed placeholder in a formatted string."""
+    value_idx: int          # index into FormattedStringTy.value_types
+    format_spec: str | None  # None = type-inferred; otherwise Python format spec (e.g. '.2f')
+
+
+@dataclass(frozen=True)
+class StringFormat:
+    """Immutable format template for a formatted string value."""
+    pieces: tuple[str | FormattedPiece, ...]
+
+
+@dataclass(frozen=True)
+class FormattedStringTy(Type):
+    format: "StringFormat"
+    value_types: tuple
+
+    def is_aggregate(self) -> bool:
+        return True
+
+    def aggregate_item_types(self) -> tuple:
+        return self.value_types
+
+    def make_aggregate_value(self, items: tuple) -> "AggregateValue":
+        from .ir import FormattedStringValue
+        return FormattedStringValue(self.format, items)
+
+    def __str__(self):
+        parts = []
+        for piece in self.format.pieces:
+            if isinstance(piece, str):
+                parts.append(piece)
+            else:
+                ty = self.value_types[piece.value_idx]
+                if piece.format_spec is not None:
+                    parts.append(f"{{<{ty}>:{piece.format_spec}}}")
+                else:
+                    parts.append(f"{{<{ty}>}}")
+        return 'FormattedString<"' + "".join(parts) + '">'
+
+
 def size_to_bytecode(s: Optional[int]) -> int:
     return bc.DYNAMIC_SHAPE if s is None else s
 
