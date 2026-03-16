@@ -112,7 +112,13 @@ def token_order_pass(root_block: Block, alias_result: AliasResult):
 
 
 def _get_input_var(op: Operation):
-    return op.array if "array" in op.operands else op.pointer
+    if "view" in op.operands:
+        return op.view
+    elif "pointer" in op.operands:
+        return op.pointer
+    else:
+        raise TileInternalError(f"Cannot determine input var for op {op}: "
+                                f"expected 'view' or 'pointer' operand")
 
 
 def _get_block_memory_effects(block: Block,
@@ -484,7 +490,7 @@ def _filter_by_store_index(loop_op: Loop,
         return loop_op.is_for_loop and idx_var.name == loop_op.induction_var.name
 
     return set(store_op for store_op in tile_store_candidates
-               if _get_input_var(store_op).get_type().elements_disjoint
+               if _get_input_var(store_op).get_type().array_ty.elements_disjoint
                and any(is_idx_injective(idx_var) for idx_var in store_op.index))
 
 

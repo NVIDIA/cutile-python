@@ -7,7 +7,7 @@ from typing import FrozenSet, Dict
 
 from cuda.tile._ir.ir import Var, Block
 from cuda.tile._ir.ops import Assign, GetArrayListItem, \
-    Loop, IfElse, Continue, Break, EndBranch, PointerOffset, \
+    Loop, IfElse, Continue, Break, EndBranch, MakePartitionView, PointerOffset, \
     TileBroadcast, TileReshape, MakeTensorView, MakeListView, AssumeDivBy, TileReduce, TileScan
 
 
@@ -108,6 +108,8 @@ def _analyze_aliases_in_block(block: Block,
                 alias_tracker[v.name] = ALIAS_UNIVERSE
         elif isinstance(op, MakeTensorView):
             _propagate(alias_tracker, op.base_ptr, op.result_var)
+        elif isinstance(op, MakePartitionView):
+            _propagate(alias_tracker, op.array, op.result_var)
         elif isinstance(op, MakeListView):
             _propagate(alias_tracker, op.base_ptr, op.result_var)
         elif isinstance(op, PointerOffset):

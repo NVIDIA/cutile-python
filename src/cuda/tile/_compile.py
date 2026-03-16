@@ -38,6 +38,7 @@ from cuda.tile._ir import ir, hir
 from cuda.tile._ir.typing_support import typeof_pyval, get_constant_value
 from cuda.tile._passes.ast2hir import get_function_hir
 from cuda.tile._passes.code_motion import hoist_loop_invariants
+from cuda.tile._passes.unhoist_partition_views import unhoist_partition_views
 from cuda.tile._passes.eliminate_assign_ops import eliminate_assign_ops
 from cuda.tile._passes.hir2ir import hir2ir
 from cuda.tile._passes.loop_split import split_loops
@@ -102,6 +103,11 @@ def _get_final_ir(pyfunc,
     # Loop invariant code motion needs to run after the token order pass.
     # Otherwise, it may incorrectly hoist load operations out of the loop.
     hoist_loop_invariants(func_body)
+
+    # For version < V_13_3, MakePartitionView must be emitted inline before its consumer.
+    # Code motion may hoist it to an outer block; copy it back where needed.
+    if tileiras_version < BytecodeVersion.V_13_3:
+        unhoist_partition_views(func_body)
 
     split_loops(func_body)
     dead_code_elimination_pass(func_body)

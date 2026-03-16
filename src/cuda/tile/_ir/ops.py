@@ -53,7 +53,7 @@ from .typing_support import (
     BYTE_BITWIDTH, typeof_pyval, dtype_registry, loose_type_of_pyval, get_constant_value
 )
 from .type import (
-    TupleTy, TileTy, NoneType, BoundMethodTy, ArrayTy,
+    PartitionViewTy, TupleTy, TileTy, NoneType, BoundMethodTy, ArrayTy,
     ListTy, make_tile_ty, SliceType, DTypeConstructor, RangeIterType, Type,
     NONE, ModuleTy, TypeTy, LooselyTypedScalar, DTypeSpec, StringTy, InvalidType,
     array_size_type, ClosureTy, LiveCapturedScope, TokenTy,
@@ -2013,25 +2013,42 @@ def _check_load_store_hints(latency_value: int | None, allow_tma_value: bool | N
 
 
 @dataclass(eq=False)
+class MakePartitionView(Operation, opcode="make_partition_view"):
+    array: Var = operand()
+
+    @override
+    def generate_bytecode(self, ctx: BytecodeContext) -> bc.Value:
+        partition_view_ty = self.result_var.get_type()
+        return bc.encode_MakePartitionViewOp(ctx.builder,
+                                             typeid(ctx.type_table, partition_view_ty),
+                                             ctx.get_value(self.array))
+
+
+def make_partition_view(array: Var, tile_shape: Sequence[int],
+                        order: Sequence[int],
+                        padding_mode: PaddingMode) -> Var:
+    array_ty = array.get_type()
+    assert isinstance(array_ty, ArrayTy)
+    view_ty = PartitionViewTy(array_ty, tuple(tile_shape), tuple(order), padding_mode)
+    return add_operation(MakePartitionView, view_ty, array=array)
+
+
+@dataclass(eq=False)
 class TileLoad(Operation, opcode="tile_load", memory_effect=MemoryEffect.LOAD):
-    order: tuple[int, ...] = attribute()
-    padding_mode: PaddingMode = attribute()
     latency: Optional[int] = attribute()
     allow_tma: Optional[bool] = attribute()
-    array: Var = operand()
+    view: Var = operand()
     index: tuple[Var, ...] = operand()
     token: Optional[Var] = operand(default=None)
 
     @override
     def generate_bytecode(self, ctx: BytecodeContext) -> tuple[bc.Value, bc.Value]:
         tile_type: TileTy = self.result_vars[0].get_type()
-        shape = tile_type.shape
-        partition = ctx.make_partition_view(self.array, self.order, shape, self.padding_mode)
         res, res_token = bc.encode_LoadViewTkoOp(
             ctx.builder,
             tile_type=typeid(ctx.type_table, tile_type),
             result_token_type=ctx.type_table.Token,
-            view=partition,
+            view=ctx.get_value(self.view),
             index=ctx.index_tuple(self.index),
             token=None if self.token is None else ctx.get_value(self.token),
             memory_ordering_semantics=bc.MemoryOrderingSemantics.WEAK,
@@ -2039,16 +2056,6 @@ class TileLoad(Operation, opcode="tile_load", memory_effect=MemoryEffect.LOAD):
             optimization_hints=ctx.load_store_hints(self.latency, self.allow_tma),
         )
         return res, res_token
-
-
-def tile_load(array: Var, index: tuple[Var, ...], shape: Sequence[int], order: Sequence[int],
-              padding_mode: PaddingMode, latency: Optional[int],
-              allow_tma: Optional[bool]) -> tuple[Var, Var]:
-    res_ty = make_tile_ty(array.get_type().dtype, shape)
-    return add_operation(TileLoad, (res_ty, TokenTy()),
-                         array=array, index=index, order=tuple(order),
-                         padding_mode=padding_mode, latency=latency,
-                         allow_tma=allow_tma)
 
 
 @impl(ct.load)
@@ -2070,49 +2077,37 @@ def tile_load_impl(array: Var, index: Var, shape: Var, order: Var,
     latency = require_optional_constant_int(latency)
     allow_tma = require_optional_constant_bool(allow_tma)
     _check_load_store_hints(latency, allow_tma)
-    result, _token = tile_load(array, index_items, broadcasted_shape, order, padding_mode, latency,
-                               allow_tma)
+
+    view = make_partition_view(array, broadcasted_shape, order, padding_mode)
+    res_ty = make_tile_ty(array_ty.dtype, broadcasted_shape)
+    result, _token = add_operation(TileLoad, (res_ty, TokenTy()),
+                                   view=view, index=index_items, latency=latency,
+                                   allow_tma=allow_tma)
     return reshape(result, shape)
 
 
 @dataclass(eq=False)
 class TileStore(Operation, opcode="tile_store", memory_effect=MemoryEffect.STORE):
-    order: tuple[int, ...] = attribute()
     latency: Optional[int] = attribute()
     allow_tma: Optional[bool] = attribute()
-    array: Var = operand()
+    view: Var = operand()
     index: tuple[Var, ...] = operand()
     tile: Var = operand()
     token: Optional[Var] = operand(default=None)
 
     @override
     def generate_bytecode(self, ctx: BytecodeContext) -> bc.Value:
-        tile_ty = self.tile.get_type()
-        tile_shape = tile_ty.shape
-        partition = ctx.make_partition_view(self.array, self.order, tile_shape,
-                                            padding_mode=PaddingMode.UNDETERMINED)
         return bc.encode_StoreViewTkoOp(
             ctx.builder,
             result_token_type=ctx.type_table.Token,
             tile=ctx.get_value(self.tile),
-            view=partition,
+            view=ctx.get_value(self.view),
             index=ctx.index_tuple(self.index),
             token=None if self.token is None else ctx.get_value(self.token),
             memory_ordering_semantics=bc.MemoryOrderingSemantics.WEAK,
             memory_scope=None,
             optimization_hints=ctx.load_store_hints(self.latency, self.allow_tma),
         )
-
-
-def tile_store(array: Var, index: tuple[Var, ...], tile: Var, order: Sequence[int],
-               latency: Optional[int], allow_tma: Optional[bool]) -> Var:
-    array_ty = array.get_type()
-    ty = require_tile_type(tile)
-    tile = astype(tile, array_ty.dtype)
-    if ty.ndim == 0:
-        tile = reshape(tile, (1,) * array_ty.ndim)
-    return add_operation(TileStore, (TokenTy(),), array=array, index=index, tile=tile,
-                         order=tuple(order), latency=latency, allow_tma=allow_tma)
 
 
 def _implicit_cast(src: Var, target_dtype: DType, error_context: str) -> Var:
@@ -2130,20 +2125,25 @@ def _implicit_cast(src: Var, target_dtype: DType, error_context: str) -> Var:
 def tile_store_impl(array: Var, index: Var, tile: Var, order: Var,
                     latency: Var, allow_tma: Var):
     array_ty = require_array_type(array)
+    tile_ty = require_tile_type(tile)
     index_ty = require_index_or_index_tuple_type(index)
     index_items = index.get_aggregate().items if isinstance(index_ty, TupleTy) else (index,)
     if array_ty.ndim != len(index_items):
         raise TileTypeError(f"Index size {len(index_items)}"
                             f" does not match the array rank {array_ty.ndim}")
 
-    tile = _implicit_cast(tile, array_ty.dtype, "Stored tile is incompatible with array's dtype")
-
+    shape = tile_ty.shape
+    broadcasted_shape = (1,) * array_ty.ndim if len(shape) == 0 else shape
     order = require_constant_axis_order(order, array_ty.ndim)
     latency = require_optional_constant_int(latency)
     allow_tma = require_optional_constant_bool(allow_tma)
     _check_load_store_hints(latency, allow_tma)
 
-    [_token] = tile_store(array, index_items, tile, order, latency, allow_tma)
+    tile = _implicit_cast(tile, array_ty.dtype, "Stored tile is incompatible with array's dtype")
+    tile = reshape(tile, broadcasted_shape)
+    view = make_partition_view(array, broadcasted_shape, order, PaddingMode.UNDETERMINED)
+    [_token] = add_operation(TileStore, (TokenTy(),), view=view, index=index_items, tile=tile,
+                             latency=latency, allow_tma=allow_tma)
 
 
 @dataclass(eq=False)
@@ -2618,22 +2618,15 @@ def join_tokens(tokens: Tuple[Var, ...], *, block: Block, res: Var, loc: Loc) ->
 @dataclass(eq=False)
 class NumTiles(Operation, opcode="num_tiles"):
     axis: int = attribute()
-    shape: tuple[int, ...] = attribute()
-    order: tuple[int, ...] = attribute()
-    array: Var = operand()
+    view: Var = operand()
 
     @override
     def generate_bytecode(self, ctx: BytecodeContext):
-        pv = ctx.make_partition_view(self.array, self.order, self.shape,
-                                     padding_mode=PaddingMode.UNDETERMINED)
-        result_types = [ctx.type_table.tile(ctx.type_table.I32, ())] * len(self.shape)
-        values = bc.encode_GetIndexSpaceShapeOp(ctx.builder, result_types, pv)
+        view_ty: PartitionViewTy = self.view.get_type()
+        result_types = [ctx.type_table.tile(ctx.type_table.I32, ())] * len(view_ty.tile_shape)
+        values = bc.encode_GetIndexSpaceShapeOp(ctx.builder, result_types,
+                                                src=ctx.get_value(self.view))
         return values[self.axis]
-
-
-def num_tiles(array: Var, axis: int, shape: Sequence[int], order: Sequence[int]) -> Var:
-    return add_operation(NumTiles, make_tile_ty(datatype.default_int_type, ()), array=array,
-                         axis=axis, shape=tuple(shape), order=tuple(order))
 
 
 @impl(ct.num_tiles)
@@ -2643,10 +2636,12 @@ def num_tiles_impl(array: Var, axis: Var, shape: Var, order: Var) -> Var:
     axis = normalize_axis(axis, array_ty.ndim)
     shape = require_constant_shape(shape, allow_single_int=True, expected_rank=array_ty.ndim,
                                    allow_0d_shape=True)
-    if len(shape) == 0:
-        shape = (1,) * array_ty.ndim
+    broadcasted_shape = (1,) * array_ty.ndim if len(shape) == 0 else shape
     order = require_constant_axis_order(order, array_ty.ndim)
-    return num_tiles(array, axis, shape, order)
+
+    view = make_partition_view(array, broadcasted_shape, order, PaddingMode.UNDETERMINED)
+    return add_operation(NumTiles, make_tile_ty(datatype.default_int_type, ()), view=view,
+                         axis=axis)
 
 
 def full_const(shape: Sequence[int], fill_value: int | float, dtype: DType) -> Var:

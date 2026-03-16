@@ -5,12 +5,12 @@
 import functools
 import os
 from contextlib import contextmanager
-from typing import Dict, Tuple, Sequence, Any, Optional
+from typing import Dict, Tuple, Any, Optional
 
 from cuda.tile import _datatype as datatype
 from cuda.tile._bytecode.attribute import make_load_store_hints
 from cuda.tile._datatype import get_signedness
-from cuda.tile import DType, PaddingMode
+from cuda.tile import DType
 import cuda.tile._bytecode as bc
 from cuda.tile._compiler_options import CompilerOptions
 from cuda.tile._exception import TileInternalError, TileError, FunctionDesc
@@ -19,7 +19,10 @@ from cuda.tile._ir.ops_utils import (
     padding_mode_to_bytecode, rounding_mode_to_bytecode,
     get_default_rounding_mode,
 )
-from cuda.tile._ir.type import Type, TileTy, PointerTy, TokenTy, TupleTy, ArrayTy, size_to_bytecode
+from cuda.tile._ir.type import (
+    PartitionViewTy, Type, TileTy, PointerTy, TokenTy, TupleTy, ArrayTy,
+    size_to_bytecode,
+)
 
 
 def dtype_typeid(tt: bc.TypeTable, dtype: datatype.DType | PointerTy) -> bc.TypeId:
@@ -49,6 +52,11 @@ def typeid(tt: bc.TypeTable, ty: Type) -> bc.TypeId:
         return tt.tile(dtype, shape)
     elif isinstance(ty, TokenTy):
         return tt.Token
+    elif isinstance(ty, PartitionViewTy):
+        padding_value = padding_mode_to_bytecode[ty.padding_mode]
+        assert isinstance(ty.array_ty, ArrayTy)
+        tv_id = tensor_view_typeid(tt, ty.array_ty)
+        return tt.partition_view(ty.tile_shape, tv_id, ty.order, padding_value)
     else:
         raise NotImplementedError(f"Lowering type '{ty}' is not supported")
 
@@ -386,20 +394,6 @@ class BytecodeContext:
             allow_tma = True
         load_store_hints = bc.LoadStoreHints(latency=latency, allow_tma=allow_tma)
         return make_load_store_hints({self.sm_arch: load_store_hints})
-
-    def make_partition_view(self,
-                            array: Var,
-                            order: Sequence[int],
-                            tile_shape: Sequence[int],
-                            padding_mode: PaddingMode) -> bc.Value:
-        padding_value = padding_mode_to_bytecode[padding_mode]
-        array_ty = self.typeof(array)
-        assert isinstance(array_ty, ArrayTy)
-        view_ty_id = tensor_view_typeid(self.type_table, array_ty)
-        partition_ty_id = self.type_table.partition_view(
-                tile_shape, view_ty_id, order, padding_value)
-        view = self.get_value(array)
-        return bc.encode_MakePartitionViewOp(self.builder, partition_ty_id, view)
 
 
 def generate_bytecode_for_block(ctx: BytecodeContext, block: Block):

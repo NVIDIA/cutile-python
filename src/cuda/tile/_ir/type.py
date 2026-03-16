@@ -13,6 +13,7 @@ import operator
 from typing import TYPE_CHECKING
 
 from cuda.tile._exception import Loc
+from cuda.tile._numeric_semantics import PaddingMode
 
 if TYPE_CHECKING:
     from cuda.tile._datatype import DType
@@ -356,6 +357,25 @@ class ArrayTy(Type):
         strides_str = ('?' if x is None else str(x) for x in self.strides)
         strides_str = "(" + ','.join(strides_str) + ")"
         return f"Array[{self.dtype},{shape_str}:{strides_str}]"
+
+
+# ============== PartitionView Type ===============
+
+
+@dataclass(frozen=True)
+class PartitionViewTy(Type):
+    array_ty: ArrayTy
+    tile_shape: tuple[int, ...]
+    order: tuple[int, ...]
+    padding_mode: PaddingMode
+
+    @property
+    def dtype(self):
+        return self.array_ty.dtype
+
+    def __str__(self):
+        return (f"PartitionView[{self.array_ty},tile_shape={self.tile_shape},order={self.order},"
+                f"padding_mode={self.padding_mode}]")
 
 
 # ============== List Type ===============
