@@ -177,3 +177,7 @@ jobs:
           name: test-results-py${{ matrix.python-version }}
           path: test-results.xml
           retention-days: 7
+
+      - name: Fix workspace permissions
+        if: always()
+        run: sudo chown -R $(id -u):$(id -g) "${{ github.workspace }}"
