@@ -178,6 +178,14 @@ jobs:
           path: test-results.xml
           retention-days: 7
 
+      - name: Report test results
+        if: always()
+        uses: dorny/test-reporter@v2
+        with:
+          name: Test Results (Python ${{ matrix.python-version }})
+          path: test-results.xml
+          reporter: java-junit
+
       - name: Fix workspace permissions
         if: always()
         run: sudo chown -R $(id -u):$(id -g) "${{ github.workspace }}"
