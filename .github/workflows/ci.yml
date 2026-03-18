@@ -20,12 +20,16 @@ jobs:
     name: Define Base Images
     runs-on: ubuntu-latest
     outputs:
-      lint: ghcr.io/nvidia/cutile-python/lint:2026-03-02-d33a8a50c68d
-      docs: ghcr.io/nvidia/cutile-python/docs:2026-03-02-2ab6fb9d9368
-      build_py310: ghcr.io/nvidia/cutile-python/build_py_3.10_x86_64:2026-03-02-c7f3f36001fd
-      build_py311: ghcr.io/nvidia/cutile-python/build_py_3.11_x86_64:2026-03-02-92c972404358
-      build_py312: ghcr.io/nvidia/cutile-python/build_py_3.12_x86_64:2026-03-02-299d123ad082
-      build_py313: ghcr.io/nvidia/cutile-python/build_py_3.13_x86_64:2026-03-02-8eea98e968b5
+      lint: ghcr.io/nvidia/cutile-python/lint:2026-03-18-3ee906b0ced0
+      docs: ghcr.io/nvidia/cutile-python/docs:2026-03-18-67c908a4176e
+      build_py310: ghcr.io/nvidia/cutile-python/build_py_3.10_x86_64:2026-03-18-a2fdea5320fe
+      build_py311: ghcr.io/nvidia/cutile-python/build_py_3.11_x86_64:2026-03-18-8573f3996301
+      build_py312: ghcr.io/nvidia/cutile-python/build_py_3.12_x86_64:2026-03-18-63835ff03f5d
+      build_py313: ghcr.io/nvidia/cutile-python/build_py_3.13_x86_64:2026-03-18-9cadab6c475e
+      test_py310: ghcr.io/nvidia/cutile-python/test_py_3.10_x86_64:2026-03-18-09e8ff4f33de
+      test_py311: ghcr.io/nvidia/cutile-python/test_py_3.11_x86_64:2026-03-18-0f68d8d46ac4
+      test_py312: ghcr.io/nvidia/cutile-python/test_py_3.12_x86_64:2026-03-18-3fe476fda925
+      test_py313: ghcr.io/nvidia/cutile-python/test_py_3.13_x86_64:2026-03-18-f40db2451d39
     steps:
       - run: echo "Defining image tags"
 
@@ -116,4 +120,60 @@ jobs:
           name: wheel-py${{ matrix.python-version }}-linux-x86_64
           path: dist/*.whl
           if-no-files-found: error
+          retention-days: 7
+
+  test:
+    name: Test (Python ${{ matrix.python-version }})
+    needs: [images, build]
+    runs-on: [self-hosted, gpu]
+    timeout-minutes: 60
+    strategy:
+      matrix:
+        include:
+          - python-version: "3.10"
+            image_key: test_py310
+          - python-version: "3.11"
+            image_key: test_py311
+          - python-version: "3.12"
+            image_key: test_py312
+          - python-version: "3.13"
+            image_key: test_py313
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Download wheel
+        uses: actions/download-artifact@v4
+        with:
+          name: wheel-py${{ matrix.python-version }}-linux-x86_64
+          path: dist/
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Pull test image
+        run: docker pull ${{ needs.images.outputs[matrix.image_key] }}
+
+      - name: Run tests
+        run: |
+          docker run --rm --gpus all \
+            -v "${{ github.workspace }}":/workspace \
+            -w /workspace \
+            ${{ needs.images.outputs[matrix.image_key] }} \
+            bash -c "pip install dist/*.whl && \
+              pytest --ignore internal \
+                -m 'not benchmark and not use_mlir' \
+                --durations=10 \
+                --junitxml=/workspace/test-results.xml"
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results-py${{ matrix.python-version }}
+          path: test-results.xml
           retention-days: 7
