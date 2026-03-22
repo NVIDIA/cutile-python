@@ -73,7 +73,7 @@ If you do not want to have `tileiras` inside the python environment, run
 ```
 pip install cuda-tile
 ```
-and install [CUDA Toolkit 13.1+](https://developer.nvidia.com/cuda-downloads) seperately.
+and install [CUDA Toolkit 13.1+](https://developer.nvidia.com/cuda-downloads) separately.
 
 On a Debian-based system, use `apt-get install cuda-tileiras-13.2
 cuda-compiler-13.2` instead of `apt-get install cuda-toolkit-13.2` if you wish
