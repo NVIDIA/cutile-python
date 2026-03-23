@@ -208,7 +208,7 @@ def test_array_core_arithmetic_rounding_mode(
             launch_binary(kernel, x, y, z, tile)
     elif should_raise_dtype:
         with pytest.raises(TileTypeError,
-                           match=r"Rounding mode can only be used for float types"):
+                           match=r"Rounding mode can only be used for unrestricted float types"):
             launch_binary(kernel, x, y, z, tile)
     else:
         bytecode = get_bytecode(kernel, (x, y, z, tile))

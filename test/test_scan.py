@@ -64,6 +64,17 @@ def test_cumsumb(shape, reverse):
     torch.testing.assert_close(y, ref_result)
 
 
+def test_cumsum_restricted_dtype_error():
+    @ct.kernel
+    def kernel(x):
+        tx = ct.load(x, (0,), (16,))
+        ct.cumsum(tx, axis=0)
+
+    x = torch.rand((16,), dtype=torch.float32, device="cuda").to(torch.float8_e4m3fn)
+    with pytest.raises(TileTypeError, match="does not support restricted float dtype"):
+        ct.launch(torch.cuda.current_stream(), (1,), kernel, (x,))
+
+
 @ct.kernel
 def cumprod_axis0(input, output, reverse: ct.Constant[bool],
                   T: ct.Constant[int], N: ct.Constant[int]):

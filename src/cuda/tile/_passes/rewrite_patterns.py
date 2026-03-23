@@ -84,8 +84,8 @@ def match_float_mul(op: RawBinaryArithmeticOperation,
                     ctx: MatchContext) -> RawBinaryArithmeticOperation:
     if op.fn != "mul":
         raise NoMatch("not a mul binop")
-    if not datatype.is_float(get_dtype(ctx.typeof(op.result_var))):
-        raise NoMatch("not a float mul")
+    if not datatype.is_unrestricted_float(get_dtype(ctx.typeof(op.result_var))):
+        raise NoMatch("not an unrestricted float mul")
     return op
 
 

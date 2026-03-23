@@ -63,7 +63,7 @@ from .type import (
     StringFormat, FormattedPiece,
 )
 from cuda.tile._datatype import (
-    DType, is_integral, is_float, is_signed, is_boolean, is_restricted_float,
+    DType, is_integral, is_float, is_signed, is_boolean,
 )
 from cuda.tile._ir2bytecode import (
     BytecodeContext, typeid,
@@ -1026,15 +1026,19 @@ def binary_arithmetic(fn: str, x: Var, y: Var, rounding_mode: Optional[RoundingM
     x_ty = require_tile_maybe_loose_type(x)
     y_ty = require_tile_maybe_loose_type(y)
 
-    if get_dtype(x_ty) == get_dtype(y_ty) == datatype.bool_:
-        raise TileTypeError(f'Binary arithmetic op `{fn}` does not support bool, '
-                            f'please cast bool to int')
-
     if isinstance(x_ty, LooselyTypedScalar) and isinstance(y_ty, LooselyTypedScalar):
         return _binop_propagate_constant(fn, x_ty.value, y_ty.value, None)
 
     force_float = (fn == "truediv")
     common_ty = promote_types(x_ty, y_ty, force_float=force_float)
+
+    common_dtype = get_dtype(common_ty)
+    if common_dtype == datatype.bool_:
+        raise TileTypeError(f'Binary arithmetic op `{fn}` does not support bool, '
+                            f'please cast bool to int')
+    if datatype.is_restricted_float(common_dtype):
+        raise TileTypeError(
+            f'Binary arithmetic op `{fn}` does not support restricted float dtype {common_dtype}')
 
     x = _promote_and_broadcast_to(x, common_ty)
     y = _promote_and_broadcast_to(y, common_ty)
@@ -1386,7 +1390,7 @@ class Unary(Operation, opcode="unaryop"):
         flush_to_zero = self.flush_to_zero
         input_type = ctx.typeof(self.operand)
         input_dtype = get_dtype(input_type)
-        flt = is_float(input_dtype) or is_restricted_float(input_dtype)
+        flt = is_float(input_dtype)
         res_type_id = ctx.typeid_of(self.result_var)
 
         match self.fn, flt:
@@ -1467,7 +1471,7 @@ def unary(fn: str, behavior: _UnaryBehavior, x: Var,
         if behavior.int_handler is None:
             raise TileTypeError("Integer inputs are not supported")
         x = behavior.int_handler(x)
-    elif is_float(input_dtype) or is_restricted_float(input_dtype):
+    elif is_float(input_dtype):
         if behavior.float_handler is None:
             raise TileTypeError("Float inputs are not supported")
         x = behavior.float_handler(x)
@@ -1569,7 +1573,7 @@ def isnan_impl(x: Var) -> Var:
         return loosely_typed_const(res)
 
     ty = x.get_type()
-    if isinstance(x_type, TileTy) and (is_float(ty.dtype) or is_restricted_float(ty.dtype)):
+    if isinstance(x_type, TileTy) and is_float(ty.dtype):
         if x.is_constant():
             res = math.isnan(x.get_constant())
             return strictly_typed_const(res, make_tile_ty(datatype.bool_, ty.shape))
@@ -3240,8 +3244,8 @@ async def reduce_simple(fn: str, x: Var, axis: int | None | tuple[int, ...], kee
 
     async def body(lhs: tuple[Var], rhs: tuple[Var]) -> tuple[Var]:
         [lhs], [rhs] = lhs, rhs
-        ret = raw_binary_arithmetic(fn, lhs, rhs,
-                                    rounding_mode=rounding_mode, flush_to_zero=flush_to_zero)
+        ret = binary_arithmetic(fn, lhs, rhs,
+                                rounding_mode=rounding_mode, flush_to_zero=flush_to_zero)
         return (ret,)
 
     [ret] = await reduce((x,), (id_val,), axis, keepdims, body)
@@ -3453,8 +3457,8 @@ async def scan_simple(fn: str, x: Var, axis: int, reverse: bool,
 
     async def body(lhs: tuple[Var], rhs: tuple[Var]) -> tuple[Var]:
         [lhs], [rhs] = lhs, rhs
-        ret = raw_binary_arithmetic(fn, lhs, rhs,
-                                    rounding_mode=rounding_mode, flush_to_zero=flush_to_zero)
+        ret = binary_arithmetic(fn, lhs, rhs,
+                                rounding_mode=rounding_mode, flush_to_zero=flush_to_zero)
         return (ret,)
 
     [ret] = await raw_scan((x,), (id_val,), axis, reverse, body)

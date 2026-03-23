@@ -81,7 +81,7 @@ def _constant_to_bytes(value: int | float, dtype: DType) -> bytes:
         return b"\xff" if value else b"\x00"
     elif datatype.is_integral(dtype):
         return int(value).to_bytes((dtype.bitwidth + 7) // 8, "little", signed=value < 0)
-    elif datatype.is_float(dtype) or datatype.is_restricted_float(dtype):
+    elif datatype.is_float(dtype):
         # Note that TF32 is stored as 3 bytes despite the "32" in its name.
         # Its float_bit_size() is 19 bits, which is rounded up to 24 bits.
         bits = bc.float_to_bits(value, dtype._bytecode_type)
@@ -94,7 +94,7 @@ def _constant_to_bytes(value: int | float, dtype: DType) -> bytes:
 def _get_type_conversion_encoder(from_dtype: Type, to_dtype: Type):
 
     def kind(t):
-        if datatype.is_float(t) or datatype.is_restricted_float(t):
+        if datatype.is_float(t):
             return 'f'
         if datatype.is_integral(t) or datatype.is_boolean(t):
             return 'si' if datatype.is_signed(t) else 'ui'

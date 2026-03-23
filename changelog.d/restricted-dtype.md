@@ -1,0 +1,1 @@
+- Fix a bug where restricted float dtype with simple reduce and scan did not raise proper TileTypeError

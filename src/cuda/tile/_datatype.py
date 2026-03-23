@@ -278,6 +278,10 @@ def get_signedness(t: DType) -> bc.Signedness:
 
 
 def is_float(t: DType) -> bool:
+    return t in NumericDTypeCategories.Float or t in NumericDTypeCategories.RestrictedFloat
+
+
+def is_unrestricted_float(t: DType) -> bool:
     return t in NumericDTypeCategories.Float
 
 

@@ -10,7 +10,7 @@ from enum import EnumMeta
 from typing import Optional, NamedTuple, Tuple, Sequence, Any, Union, Callable
 
 from cuda.tile._datatype import (
-        is_integral, is_float, is_restricted_float,
+        is_integral, is_float,
         is_boolean, is_signed, DType)
 from cuda.tile._bytecode.version import BytecodeVersion
 from cuda.tile._exception import TileTypeError, TileUnsupportedFeatureError
@@ -430,7 +430,7 @@ class PrintfValidator:
     def infer_format(cls, dtype: DType) -> str:
         if is_boolean(dtype) or is_integral(dtype):
             return '%d'
-        elif is_float(dtype) or is_restricted_float(dtype):
+        elif is_float(dtype):
             return '%f'
         else:
             raise TileTypeError(f"print(): cannot infer format for dtype {dtype}")
@@ -439,7 +439,7 @@ class PrintfValidator:
     def validate_dtype(cls, dtype: DType, specifier: str) -> bool:
         if is_boolean(dtype) or is_integral(dtype):
             return specifier in cls.int_specifiers
-        elif is_float(dtype) or is_restricted_float(dtype):
+        elif is_float(dtype):
             return specifier in cls.float_specifiers
         else:
             return False

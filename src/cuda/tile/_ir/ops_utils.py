@@ -161,9 +161,9 @@ def check_rd_and_ftz(fn: str, rounding_mode: Optional[RoundingMode], flush_to_ze
                     f'{fn} rounding_mode={rounding_mode.value} requires tileiras '
                     f'{min_version.major()}.{min_version.minor()} or later. '
                     f'Current version is {cur_version.major()}.{cur_version.minor()}.')
-        if not datatype.is_float(dtype):
+        if not datatype.is_unrestricted_float(dtype):
             raise TileTypeError(
-                f'Rounding mode can only be used for float types, '
+                f'Rounding mode can only be used for unrestricted float types, '
                 f'but got {dtype}')
         if rounding_mode in [RoundingMode.APPROX, RoundingMode.FULL]:
             if dtype != datatype.float32:

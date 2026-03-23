@@ -17,7 +17,7 @@ from cuda.tile._datatype import (
     int64, int32, int16, int8,
     uint64, uint32, uint16, uint8, bfloat16,
     tfloat32, float8_e4m3fn, float8_e5m2,
-    is_boolean, is_integral, is_float, is_restricted_float, is_signed,
+    is_boolean, is_integral, is_float, is_unrestricted_float, is_restricted_float, is_signed,
 )
 from cuda.tile._ir.ops_utils import promote_dtypes, check_implicit_cast
 from cuda.tile._ir.typing_support import to_dtype, typeof_pyval
@@ -51,6 +51,9 @@ def test_builtin_types():
     assert is_boolean(bool_)
     assert is_float(bfloat16)
     assert not is_float(uint32)
+    assert is_unrestricted_float(bfloat16)
+    assert not is_unrestricted_float(tfloat32)
+    assert is_float(tfloat32)
     assert is_restricted_float(tfloat32)
     assert is_restricted_float(float8_e4m3fn)
     assert is_restricted_float(float8_e5m2)

@@ -190,6 +190,17 @@ def test_reduce_repeated_axis_error():
         ct.launch(torch.cuda.current_stream(), (1,), kernel, (x,))
 
 
+def test_reduce_sum_restricted_dtype_error():
+    @ct.kernel
+    def kernel(x):
+        tx = ct.load(x, (0,), (16,))
+        ct.sum(tx, axis=0)
+
+    x = torch.rand((16,), dtype=torch.float32, device="cuda").to(torch.float8_e4m3fn)
+    with pytest.raises(TileTypeError, match="does not support restricted float dtype"):
+        ct.launch(torch.cuda.current_stream(), (1,), kernel, (x,))
+
+
 sumprod_cases = [
     pytest.param(ct.sum, torch.sum, id="sum"),
     pytest.param(ct.prod, torch.prod, id="prod"),
