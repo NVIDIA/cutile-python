@@ -138,6 +138,12 @@ jobs:
             image_key: test_py312
           - python-version: "3.13"
             image_key: test_py313
+    container:
+      image: ${{ needs.images.outputs[matrix.image_key] }}
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+      options: --gpus all
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
@@ -148,27 +154,15 @@ jobs:
           name: wheel-py${{ matrix.python-version }}-linux-x86_64
           path: dist/
 
-      - name: Log in to GHCR
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Pull test image
-        run: docker pull ${{ needs.images.outputs[matrix.image_key] }}
+      - name: Install wheel
+        run: pip install dist/*.whl
 
       - name: Run tests
         run: |
-          docker run --rm --gpus all \
-            -v "${{ github.workspace }}":/workspace \
-            -w /workspace \
-            ${{ needs.images.outputs[matrix.image_key] }} \
-            bash -c "pip install dist/*.whl && \
-              pytest --ignore internal \
-                -m 'not benchmark and not use_mlir' \
-                --durations=10 \
-                --junitxml=/workspace/test-results.xml"
+          pytest --ignore internal \
+            -m 'not benchmark and not use_mlir' \
+            --durations=10 \
+            --junitxml=test-results.xml
 
       - name: Upload test results
         if: always()
@@ -185,7 +179,3 @@ jobs:
           name: Test Results (Python ${{ matrix.python-version }})
           path: test-results.xml
           reporter: java-junit
-
-      - name: Fix workspace permissions
-        if: always()
-        run: sudo chown -R $(id -u):$(id -g) "${{ github.workspace }}"
