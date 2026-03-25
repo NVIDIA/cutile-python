@@ -71,7 +71,7 @@ jobs:
         uses: actions/checkout@v6
 
       - name: Download wheel
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v7
         with:
           name: wheel-py3.12-linux-x86_64
           path: dist/
@@ -83,7 +83,7 @@ jobs:
         run: make -C docs html
 
       - name: Upload docs artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: docs-html
           path: docs/build/html
@@ -115,7 +115,7 @@ jobs:
         run: python setup.py bdist_wheel
 
       - name: Upload wheel artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: wheel-py${{ matrix.python-version }}-linux-x86_64
           path: dist/*.whl
@@ -149,7 +149,7 @@ jobs:
         uses: actions/checkout@v6
 
       - name: Download wheel
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v7
         with:
           name: wheel-py${{ matrix.python-version }}-linux-x86_64
           path: dist/
@@ -166,7 +166,7 @@ jobs:
 
       - name: Upload test results
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: test-results-py${{ matrix.python-version }}
           path: test-results.xml
@@ -174,7 +174,7 @@ jobs:
 
       - name: Report test results
         if: always()
-        uses: dorny/test-reporter@v2
+        uses: dorny/test-reporter@v3
         with:
           name: Test Results (Python ${{ matrix.python-version }})
           path: test-results.xml
