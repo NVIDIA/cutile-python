@@ -191,7 +191,7 @@ jobs:
 
   benchmark:
     name: Benchmark
-    needs: [images, build]
+    needs: [images, build, test]
     runs-on: [self-hosted, gpu]
     timeout-minutes: 60
     continue-on-error: true
