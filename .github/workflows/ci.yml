@@ -15,6 +15,10 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+permissions:
+  contents: read
+  packages: read
+
 jobs:
   images:
     name: Define Base Images
@@ -95,6 +99,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     strategy:
+      fail-fast: false
       matrix:
         include:
           - python-version: "3.10"
@@ -127,7 +132,12 @@ jobs:
     needs: [images, build]
     runs-on: [self-hosted, gpu]
     timeout-minutes: 60
+    permissions:
+      contents: read
+      packages: read
+      checks: write
     strategy:
+      fail-fast: false
       matrix:
         include:
           - python-version: "3.10"
@@ -165,7 +175,7 @@ jobs:
             --junitxml=test-results.xml
 
       - name: Upload test results
-        if: always()
+        if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v6
         with:
           name: test-results-py${{ matrix.python-version }}
@@ -173,7 +183,7 @@ jobs:
           retention-days: 7
 
       - name: Report test results
-        if: always()
+        if: ${{ !cancelled() }}
         uses: dorny/test-reporter@v3
         with:
           name: Test Results (Python ${{ matrix.python-version }})
