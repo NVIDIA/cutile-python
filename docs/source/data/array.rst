@@ -13,4 +13,4 @@ cuda.tile.Array
    :members:
    :undoc-members:
    :special-members:
-   :exclude-members: __annotations__, __dict__, __module__, __weakref__
+   :exclude-members: __annotations__, __dict__, __module__, __weakref__, get_raw_memory
