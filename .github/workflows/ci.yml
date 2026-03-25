@@ -30,10 +30,10 @@ jobs:
       build_py311: ghcr.io/nvidia/cutile-python/build_py_3.11_x86_64:2026-03-18-8573f3996301
       build_py312: ghcr.io/nvidia/cutile-python/build_py_3.12_x86_64:2026-03-18-63835ff03f5d
       build_py313: ghcr.io/nvidia/cutile-python/build_py_3.13_x86_64:2026-03-18-9cadab6c475e
-      test_py310: ghcr.io/nvidia/cutile-python/test_py_3.10_x86_64:2026-03-18-09e8ff4f33de
-      test_py311: ghcr.io/nvidia/cutile-python/test_py_3.11_x86_64:2026-03-18-0f68d8d46ac4
-      test_py312: ghcr.io/nvidia/cutile-python/test_py_3.12_x86_64:2026-03-18-3fe476fda925
-      test_py313: ghcr.io/nvidia/cutile-python/test_py_3.13_x86_64:2026-03-18-f40db2451d39
+      test_py310: ghcr.io/nvidia/cutile-python/test_py_3.10_x86_64:2026-03-25-d688c40b1f28
+      test_py311: ghcr.io/nvidia/cutile-python/test_py_3.11_x86_64:2026-03-25-ee977c750e6a
+      test_py312: ghcr.io/nvidia/cutile-python/test_py_3.12_x86_64:2026-03-25-4a28b7ac9c10
+      test_py313: ghcr.io/nvidia/cutile-python/test_py_3.13_x86_64:2026-03-25-daa77b7df120
     steps:
       - run: echo "Defining image tags"
 
@@ -168,11 +168,7 @@ jobs:
         run: pip install dist/*.whl
 
       - name: Run tests
-        run: |
-          pytest --ignore internal \
-            -m 'not benchmark and not use_mlir' \
-            --durations=10 \
-            --junitxml=test-results.xml
+        run: pytest --durations=10 --junitxml=test-results.xml .
 
       - name: Upload test results
         if: ${{ !cancelled() }}
