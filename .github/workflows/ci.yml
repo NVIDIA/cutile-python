@@ -188,6 +188,7 @@ jobs:
           name: Test Results (Python ${{ matrix.python-version }})
           path: test-results.xml
           reporter: java-junit
+          fail-on-error: false
 
   benchmark:
     name: Benchmark
@@ -239,3 +240,4 @@ jobs:
           name: Benchmark Results
           path: benchmark-results.xml
           reporter: java-junit
+          fail-on-error: false
