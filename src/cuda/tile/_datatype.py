@@ -489,11 +489,15 @@ def _get_mma_scaled_scaling_block_sizes(data_dtype, scale_dtype) -> Tuple[int, .
 
 # =============== Documentation Generator ================
 
+def _is_public(dtype_name: str) -> bool:
+    import cuda.tile
+    return hasattr(cuda.tile, dtype_name)
+
+
 def _generate_rst_dtype_promotion_table() -> str:
     """Generate an RST table representation of the dtype promotion rules."""
-    import cuda.tile
     # Skip dtypes not exposed in cuda.tile yet. Promomotion table is append only.
-    n = sum(1 for dtype in _enum_to_dtype.values() if hasattr(cuda.tile, dtype.name))
+    n = sum(1 for dtype in _enum_to_dtype.values() if _is_public(dtype.name))
     table = _DTypePromotionImpl._common_dtype_table
     return _generate_rst_table([row[:n] for row in table[:n]])
 
@@ -577,7 +581,8 @@ def _generate_rst_table(common_dtype_table) -> str:
     for enum_val, dtype_obj in _enum_to_dtype.items():
         enum_name = enum_val.name.lower()
         dtype_name = dtype_obj.name
-        lines.append(f"* {enum_name}: ``{dtype_name}``")
+        if _is_public(dtype_name):
+            lines.append(f"* {enum_name}: ``{dtype_name}``")
 
     # Add an entry for the error case
     lines.append("* ERR: Implicit promotion between these types is not supported")
