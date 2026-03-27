@@ -15,17 +15,25 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+permissions:
+  contents: read
+  packages: read
+
 jobs:
   images:
     name: Define Base Images
     runs-on: ubuntu-latest
     outputs:
-      lint: ghcr.io/nvidia/cutile-python/lint:2026-03-02-d33a8a50c68d
-      docs: ghcr.io/nvidia/cutile-python/docs:2026-03-02-2ab6fb9d9368
-      build_py310: ghcr.io/nvidia/cutile-python/build_py_3.10_x86_64:2026-03-02-c7f3f36001fd
-      build_py311: ghcr.io/nvidia/cutile-python/build_py_3.11_x86_64:2026-03-02-92c972404358
-      build_py312: ghcr.io/nvidia/cutile-python/build_py_3.12_x86_64:2026-03-02-299d123ad082
-      build_py313: ghcr.io/nvidia/cutile-python/build_py_3.13_x86_64:2026-03-02-8eea98e968b5
+      lint: ghcr.io/nvidia/cutile-python/lint:2026-03-18-3ee906b0ced0
+      docs: ghcr.io/nvidia/cutile-python/docs:2026-03-18-67c908a4176e
+      build_py310: ghcr.io/nvidia/cutile-python/build_py_3.10_x86_64:2026-03-18-a2fdea5320fe
+      build_py311: ghcr.io/nvidia/cutile-python/build_py_3.11_x86_64:2026-03-18-8573f3996301
+      build_py312: ghcr.io/nvidia/cutile-python/build_py_3.12_x86_64:2026-03-18-63835ff03f5d
+      build_py313: ghcr.io/nvidia/cutile-python/build_py_3.13_x86_64:2026-03-18-9cadab6c475e
+      test_py310: ghcr.io/nvidia/cutile-python/test_py_3.10_x86_64:2026-03-25-d688c40b1f28
+      test_py311: ghcr.io/nvidia/cutile-python/test_py_3.11_x86_64:2026-03-25-ee977c750e6a
+      test_py312: ghcr.io/nvidia/cutile-python/test_py_3.12_x86_64:2026-03-25-4a28b7ac9c10
+      test_py313: ghcr.io/nvidia/cutile-python/test_py_3.13_x86_64:2026-03-25-daa77b7df120
     steps:
       - run: echo "Defining image tags"
 
@@ -67,7 +75,7 @@ jobs:
         uses: actions/checkout@v6
 
       - name: Download wheel
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v7
         with:
           name: wheel-py3.12-linux-x86_64
           path: dist/
@@ -79,7 +87,7 @@ jobs:
         run: make -C docs html
 
       - name: Upload docs artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: docs-html
           path: docs/build/html
@@ -91,6 +99,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     strategy:
+      fail-fast: false
       matrix:
         include:
           - python-version: "3.10"
@@ -111,9 +120,124 @@ jobs:
         run: python setup.py bdist_wheel
 
       - name: Upload wheel artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: wheel-py${{ matrix.python-version }}-linux-x86_64
           path: dist/*.whl
           if-no-files-found: error
           retention-days: 7
+
+  test:
+    name: Test (Python ${{ matrix.python-version }})
+    needs: [images, build]
+    runs-on: [self-hosted, gpu]
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      packages: read
+      checks: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - python-version: "3.10"
+            image_key: test_py310
+          - python-version: "3.11"
+            image_key: test_py311
+          - python-version: "3.12"
+            image_key: test_py312
+          - python-version: "3.13"
+            image_key: test_py313
+    container:
+      image: ${{ needs.images.outputs[matrix.image_key] }}
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+      options: --gpus all
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Mark workspace as safe directory
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
+      - name: Download wheel
+        uses: actions/download-artifact@v7
+        with:
+          name: wheel-py${{ matrix.python-version }}-linux-x86_64
+          path: dist/
+
+      - name: Install wheel
+        run: pip install dist/*.whl
+
+      - name: Run tests
+        run: pytest --durations=10 --junitxml=test-results.xml -m "not benchmark" .
+
+      - name: Upload test results
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v6
+        with:
+          name: test-results-py${{ matrix.python-version }}
+          path: test-results.xml
+          retention-days: 7
+
+      - name: Report test results
+        if: ${{ !cancelled() }}
+        uses: dorny/test-reporter@v3
+        with:
+          name: Test Results (Python ${{ matrix.python-version }})
+          path: test-results.xml
+          reporter: java-junit
+          fail-on-error: false
+
+  benchmark:
+    name: Benchmark
+    needs: [images, build, test]
+    runs-on: [self-hosted, gpu]
+    timeout-minutes: 60
+    continue-on-error: true
+    permissions:
+      contents: read
+      packages: read
+      checks: write
+    container:
+      image: ${{ needs.images.outputs.test_py310 }}
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+      options: --gpus all
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Mark workspace as safe directory
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
+      - name: Download wheel
+        uses: actions/download-artifact@v7
+        with:
+          name: wheel-py3.10-linux-x86_64
+          path: dist/
+
+      - name: Install wheel
+        run: pip install dist/*.whl
+
+      - name: Run benchmarks
+        run: pytest --durations=10 --junitxml=benchmark-results.xml -m "benchmark" .
+
+      - name: Upload benchmark results
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v6
+        with:
+          name: benchmark-results
+          path: benchmark-results.xml
+          retention-days: 7
+
+      - name: Report benchmark results
+        if: ${{ !cancelled() }}
+        uses: dorny/test-reporter@v3
+        with:
+          name: Benchmark Results
+          path: benchmark-results.xml
+          reporter: java-junit
+          fail-on-error: false
