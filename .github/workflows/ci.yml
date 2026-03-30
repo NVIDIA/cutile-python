@@ -173,14 +173,6 @@ jobs:
       - name: Run tests
         run: pytest --durations=10 --junitxml=test-results.xml -m "not benchmark" .
 
-      - name: Upload test results
-        if: ${{ !cancelled() }}
-        uses: actions/upload-artifact@v6
-        with:
-          name: test-results-py${{ matrix.python-version }}
-          path: test-results.xml
-          retention-days: 7
-
       - name: Report test results
         if: ${{ !cancelled() }}
         uses: dorny/test-reporter@v3
@@ -190,51 +182,13 @@ jobs:
           reporter: java-junit
           fail-on-error: false
 
-  benchmark:
-    name: Benchmark
-    needs: [images, build, test]
-    runs-on: [self-hosted, gpu]
-    timeout-minutes: 60
-    continue-on-error: true
-    permissions:
-      contents: read
-      packages: read
-      checks: write
-    container:
-      image: ${{ needs.images.outputs.test_py310 }}
-      credentials:
-        username: ${{ github.actor }}
-        password: ${{ secrets.GITHUB_TOKEN }}
-      options: --gpus all
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v6
-
-      - name: Mark workspace as safe directory
-        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
-
-      - name: Download wheel
-        uses: actions/download-artifact@v7
-        with:
-          name: wheel-py3.10-linux-x86_64
-          path: dist/
-
-      - name: Install wheel
-        run: pip install dist/*.whl
-
       - name: Run benchmarks
+        if: matrix.python-version == '3.10'
+        continue-on-error: true
         run: pytest --durations=10 --junitxml=benchmark-results.xml -m "benchmark" .
 
-      - name: Upload benchmark results
-        if: ${{ !cancelled() }}
-        uses: actions/upload-artifact@v6
-        with:
-          name: benchmark-results
-          path: benchmark-results.xml
-          retention-days: 7
-
       - name: Report benchmark results
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && matrix.python-version == '3.10' }}
         uses: dorny/test-reporter@v3
         with:
           name: Benchmark Results
