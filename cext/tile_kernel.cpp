@@ -1596,6 +1596,7 @@ static bool try_clarify_invalid_value_error(const DriverApi* driver, const Grid&
 static Status launch(const DriverApi* driver,
                      PyObject* dispatcher_pyobj,
                      Grid grid,
+                     Grid block,
                      CUstream launch_stream,
                      PyObject* const* pyargs,
                      Py_ssize_t num_pyargs) {
@@ -1730,7 +1731,7 @@ static Status launch(const DriverApi* driver,
     CUresult res = driver->cuLaunchKernel(
             reinterpret_cast<CUfunction>(kernel_item->value.cukernel.kernel),
             grid.dims[0], grid.dims[1], grid.dims[2],
-            1, 1, 1, // block size set by driver
+            block.dims[0], block.dims[1], block.dims[2],
             0, // shared memory size set by driver
             launch_stream,
             helper->cuarg_pointers.data(),
@@ -1914,46 +1915,91 @@ static Result<Grid> parse_grid(PyObject* tuple) {
     return grid;
 }
 
-#define LAUNCH_SIGNATURE "launch(stream, grid, kernel, kernel_args, /)"
+struct LaunchArgs {
+    CUstream stream;
+    Grid grid;
+    Grid block;
+    PyObject* dispatcher;
+    PyObject** kernel_args;
+    Py_ssize_t num_kernel_args;
+};
 
-static PyObject* cuda_tile_launch(PyObject* mod, PyObject* const* args, Py_ssize_t nargs) {
-    Result<const DriverApi*> driver = get_driver_api();
-    if (!driver.is_ok()) return nullptr;
-
-    if (nargs != 4)
-        return PyErr_Format(PyExc_TypeError, "Wrong number of arguments to " LAUNCH_SIGNATURE);
+static Status parse_launch_args(PyObject* const* args, Py_ssize_t nargs, const char* signature,
+                                bool with_block, LaunchArgs* out) {
+    if (nargs != 4 + with_block)
+        return raise(PyExc_TypeError, "Wrong number of arguments to %s", signature);
 
     PyObject* stream_pyobj = args[0];
     Result<CUstream> stream_res = parse_stream(stream_pyobj);
-    if (!stream_res.is_ok()) return nullptr;
+    if (!stream_res.is_ok()) return ErrorRaised;
+    out->stream = *stream_res;
 
     PyObject* grid_pyobj = args[1];
     Result<Grid> grid_res = parse_grid(grid_pyobj);
-    if (!grid_res.is_ok()) return nullptr;
+    if (!grid_res.is_ok()) return ErrorRaised;
+    out->grid = *grid_res;
 
-    PyObject* dispatcher_pyobj = args[2];
+    if (with_block) {
+        PyObject* block_pyobj = args[2];
+        Result<Grid> block_res = parse_grid(block_pyobj);
+        if (!block_res.is_ok()) return ErrorRaised;
+        out->block = *block_res;
+    } else {
+        out->block = Grid{1, 1, 1};
+    }
+
+    PyObject* dispatcher_pyobj = args[2 + with_block];
     if (!PyObject_TypeCheck(dispatcher_pyobj, &TileDispatcher::pytype)) {
-        return PyErr_Format(PyExc_TypeError,
-                LAUNCH_SIGNATURE " expects a tile kernel as the third argument, got %s",
-                Py_TYPE(dispatcher_pyobj)->tp_name);
+        const char* which = with_block ? "fourth" : "third";
+        return raise(PyExc_TypeError,
+                "%s expects a tile kernel as the %s argument, got %s",
+                signature, which, Py_TYPE(dispatcher_pyobj)->tp_name);
     }
+    out->dispatcher = dispatcher_pyobj;
 
-    PyObject* kernel_args_pyobj = args[3];
+    PyObject* kernel_args_pyobj = args[3 + with_block];
     if (!PyTuple_Check(kernel_args_pyobj)) {
-        return PyErr_Format(PyExc_TypeError,
-                LAUNCH_SIGNATURE " expects a tuple as the fourth argument, got %s",
-                Py_TYPE(kernel_args_pyobj)->tp_name);
+        const char* which = with_block ? "fifth" : "fourth";
+        return raise(PyExc_TypeError,
+                "%s expects a tuple as the %s argument, got %s",
+                signature, which, Py_TYPE(kernel_args_pyobj)->tp_name);
     }
 
-    PyObject** kernel_args = reinterpret_cast<PyTupleObject*>(kernel_args_pyobj)->ob_item;
-    Py_ssize_t num_kernel_args = PyTuple_GET_SIZE(kernel_args_pyobj);
+    out->kernel_args = reinterpret_cast<PyTupleObject*>(kernel_args_pyobj)->ob_item;
+    out->num_kernel_args = PyTuple_GET_SIZE(kernel_args_pyobj);
+    return OK;
+}
 
-    if (!launch(*driver, dispatcher_pyobj, *grid_res, *stream_res,
-                kernel_args, num_kernel_args))
+static PyObject* launch_impl(PyObject* const* args, Py_ssize_t nargs,
+                             const char* signature, bool with_block) {
+    LaunchArgs launch_args;
+    if (!parse_launch_args(args, nargs, signature, with_block, &launch_args))
+        return nullptr;
+
+    Result<const DriverApi*> driver = get_driver_api();
+    if (!driver.is_ok()) return nullptr;
+
+    if (!launch(*driver, launch_args.dispatcher, launch_args.grid, launch_args.block,
+                launch_args.stream, launch_args.kernel_args, launch_args.num_kernel_args))
         return nullptr;
 
     return Py_NewRef(Py_None);
 }
+
+
+#define LAUNCH_SIGNATURE "launch(stream, grid, kernel, kernel_args, /)"
+
+static PyObject* cuda_tile_launch(PyObject*, PyObject* const* args, Py_ssize_t nargs) {
+    return launch_impl(args, nargs, LAUNCH_SIGNATURE, /*with_block=*/ false);
+}
+
+
+#define LAUNCH_WITH_BLOCK_SIGNATURE "launch(stream, grid, block, kernel, kernel_args, /)"
+
+static PyObject* launch_with_block(PyObject*, PyObject* const* args, Py_ssize_t nargs) {
+    return launch_impl(args, nargs, LAUNCH_WITH_BLOCK_SIGNATURE, /*with_block=*/ true);
+}
+
 
 static Status init_default_tile_context() {
     PyPtr context_module = steal(PyImport_ImportModule("cuda.tile._context"));
@@ -2061,6 +2107,20 @@ static PyMethodDef functions[] = {
     nullptr
 };
 
+// Add the launch_with_block() function separately because we want its name
+// to be just "launch"
+static Status add_launch_with_block_func(PyObject* m) {
+    static PyMethodDef launch_with_block_def = {
+        "launch", reinterpret_cast<PyCFunction>(launch_with_block), METH_FASTCALL,
+        LAUNCH_WITH_BLOCK_SIGNATURE"\n"
+        "--\n\n"
+    };
+    PyPtr func = steal(PyCFunction_New(&launch_with_block_def, m));
+    if (PyModule_AddObjectRef(m, "launch_with_block", func.get()) < 0)
+        return ErrorRaised;
+    return OK;
+}
+
 
 #define INIT_STRING_CONSTANT(ident) \
     if (!(g_##ident##_pyunicode = PyUnicode_InternFromString(#ident))) return ErrorRaised;
@@ -2104,6 +2164,9 @@ Status tile_kernel_init(PyObject* m) {
         return ErrorRaised;
 
     if (PyModule_AddFunctions(m, functions) < 0)
+        return ErrorRaised;
+
+    if (!add_launch_with_block_func(m))
         return ErrorRaised;
 
     if (!init_default_tile_context()) return ErrorRaised;
