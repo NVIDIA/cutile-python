@@ -6,6 +6,7 @@ import functools
 import inspect
 import threading
 import re
+from dataclasses import dataclass
 from enum import EnumMeta
 from typing import Optional, NamedTuple, Tuple, Sequence, Any, Union, Callable
 
@@ -35,10 +36,81 @@ def _verify_params_match(stub_sig: inspect.Signature, func_sig: inspect.Signatur
 
 
 op_implementations = dict()
+_overloaded_implementations = dict()
+
+
+@dataclass(frozen=True)
+class WildcardClass:
+    pass
+
+
+# Can be used as a parameter of an overloaded implementation to match any value.
+#
+# For example, a getattr() implementation for a specific type may choose to handle
+# all attributes in a generic way, instead of registering an individual overload
+# for each attribute. In this case, one can use WILDCARD in place of the attribute name.
+WILDCARD = WildcardClass()
+
+
+class OverloadNotFoundError(Exception):
+    pass
+
+
+def overload_dispatcher(stub):
+    """
+    Decorates a function to attach an overloaded implementation dispatcher to a stub.
+
+    The decorated function must yield an "overload key", i.e. a tuple of values based
+    on which the appropriate overload should be selected, and then handle the OverloadNotFoundError
+    by re-raising a TileError. See getattr_overload_dispatcher() for an example.
+    """
+
+    def decorate(key_func):
+        @functools.wraps(key_func)
+        async def implementation(*args):
+            generator = key_func(*args)
+            key = next(generator)
+            overload_impl = _find_overload(stub, key)
+            if overload_impl is None:
+                generator.throw(OverloadNotFoundError())
+                raise RuntimeError("Expected the overload key provider to re-throw a TileError")
+
+            try:
+                next(generator)
+            except StopIteration:
+                pass  # Good, that's what we expect
+            else:
+                raise RuntimeError("Expected the overload key provider to yield exactly once")
+
+            result = overload_impl(*args)
+            if overload_impl._is_coroutine:
+                result = await result
+
+            return result
+
+        assert stub not in _overloaded_implementations
+        _overloaded_implementations[stub] = dict()
+        return impl(stub)(implementation)
+
+    return decorate
+
+
+def _find_overload(stub: Callable, overload: tuple[Any, ...]) -> Callable | None:
+    candidates = _overloaded_implementations[stub]
+    match = None
+    for parameters, impl in candidates.items():
+        is_matching = all(p == WILDCARD or p == arg
+                          for p, arg in zip(parameters, overload, strict=True))
+        if is_matching:
+            if match is not None:
+                raise ValueError(f"Multiple matching overloads found for {stub}, {overload}")
+            match = impl
+    return match
 
 
 def impl(stub, *, fixed_args: Sequence[Any] = (),
-         min_version: Optional[BytecodeVersion] = None):
+         min_version: Optional[BytecodeVersion] = None,
+         overload: tuple[Any, ...] = ()):
     stub_sig = get_signature(stub)
 
     def _check_version():
@@ -84,7 +156,12 @@ def impl(stub, *, fixed_args: Sequence[Any] = (),
                     _current_stub.stub_and_args = old
 
         wrapper._is_coroutine = is_coroutine
-        op_implementations[stub] = wrapper
+
+        if len(overload) == 0:
+            op_implementations[stub] = wrapper
+        else:
+            _overloaded_implementations[stub][overload] = wrapper
+
         return orig_func
 
     return decorate

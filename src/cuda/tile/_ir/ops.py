@@ -42,7 +42,8 @@ from .op_impl import (
     require_optional_constant_str, PrintfValidator, require_tile_maybe_loose_type,
     require_0d_tile_maybe_loose_type, require_bool, require_optional_range_type,
     require_tile_or_tile_tuple_type, require_constant_scalar_tuple, require_constant_scalar,
-    require_callable_type, require_raw_array_memory_type)
+    require_callable_type, require_raw_array_memory_type,
+    overload_dispatcher, OverloadNotFoundError, WILDCARD)
 from .ops_utils import (
     BINOP_REGISTRY, UNARYOP_REGISTRY,
     check_rd_and_ftz, PaddingMode, get_default_order,
@@ -1598,60 +1599,179 @@ def isnan_impl(x: Var) -> Var:
     raise TileTypeError(f"Unexpected input type {x_type}")
 
 
-@impl(getattr)
-def getattr_impl(object: Var, name: Var) -> Var:
+@overload_dispatcher(getattr)
+def getattr_overload_dispatcher(object: Var, name: Var):
     ty = object.get_type()
     attr_name = require_constant_str(name)
-    match ty, attr_name:
-        case ArrayTy(), "dtype": return loosely_typed_const(ty.dtype)
-        case ArrayTy(), "ndim": return loosely_typed_const(ty.ndim)
-        case ArrayTy(), "shape": return build_tuple(object.get_aggregate().shape)
-        case ArrayTy(), "strides": return build_tuple(object.get_aggregate().strides)
-        case ArrayTy(), "slice": return bind_method(object, ct._m_array_slice)
-        case ArrayTy(), "tiled_view": return bind_method(object, ct._m_array_tiled_view)
-        case ArrayTy(), "get_raw_memory": return bind_method(object, ct._m_array_get_raw_memory)
+    try:
+        yield type(ty), attr_name
+    except OverloadNotFoundError:
+        raise TileTypeError(f"No such attribute '{attr_name}' for object of type {ty}")
 
-        case TileTy(), "dtype": return loosely_typed_const(ty.dtype)
-        case TileTy(), "shape": return loosely_typed_const(ty.shape)
-        case TileTy(), "ndim": return loosely_typed_const(ty.ndim)
 
-        case TileTy(), "extract": return bind_method(object, ct.extract)
-        case TileTy(), "reshape": return bind_method(object, ct.reshape)
-        case TileTy(), "astype": return bind_method(object, ct.astype)
-        case TileTy(), "permute": return bind_method(object, ct.permute)
-        case TileTy(), "transpose": return bind_method(object, ct.transpose)
-        case TileTy(), "item": return bind_method(object, ct._m_tile_item)
+# ===========================================================================================
+# Array attributes
+# ===========================================================================================
 
-        case TiledViewTy(), "dtype": return loosely_typed_const(ty.dtype)
-        case TiledViewTy(), "tile_shape": return loosely_typed_const(ty.tile_shape)
-        case TiledViewTy(), "num_tiles":
-            [array] = object.get_aggregate().as_tuple()
-            return build_tuple(num_tiles(array, ty.tile_shape, get_default_order(ty.ndim)))
+@impl(getattr, overload=(ArrayTy, "dtype"))
+def getattr_array_dtype_impl(object: Var, name: Var):
+    return loosely_typed_const(object.get_type().dtype)
 
-        case TiledViewTy(), "load": return bind_method(object, ct._m_tiled_view_load)
-        case TiledViewTy(), "store": return bind_method(object, ct._m_tiled_view_store)
 
-        case RawArrayMemoryTy(), "dtype": return loosely_typed_const(ty.dtype)
-        case RawArrayMemoryTy(), "load_offset": return bind_method(
-            object, ct._m_raw_array_memory_load_offset)
-        case RawArrayMemoryTy(), "store_offset": return bind_method(
-            object, ct._m_raw_array_memory_store_offset)
+@impl(getattr, overload=(ArrayTy, "ndim"))
+def getattr_array_ndim_impl(object: Var, name: Var):
+    return loosely_typed_const(object.get_type().ndim)
 
-        case ModuleTy(), _:
-            try:
-                return loosely_typed_const(getattr(ty.py_mod, attr_name))
-            except AttributeError:
-                pass
 
-        case TypeTy(), _:
-            try:
-                return loosely_typed_const(getattr(ty.ty, attr_name))
-            except AttributeError:
-                pass
+@impl(getattr, overload=(ArrayTy, "shape"))
+def getattr_array_shape_impl(object: Var, name: Var):
+    return build_tuple(object.get_aggregate().shape)
 
-        case _: pass
 
-    raise TileTypeError(f"No such attribute '{attr_name}' for object of type {ty}")
+@impl(getattr, overload=(ArrayTy, "strides"))
+def getattr_array_strides_impl(object: Var, name: Var):
+    return build_tuple(object.get_aggregate().strides)
+
+
+@impl(getattr, overload=(ArrayTy, "slice"))
+def getattr_array_slice_impl(object: Var, name: Var):
+    return bind_method(object, ct._m_array_slice)
+
+
+@impl(getattr, overload=(ArrayTy, "tiled_view"))
+def getattr_array_tiled_view_impl(object: Var, name: Var):
+    return bind_method(object, ct._m_array_tiled_view)
+
+
+@impl(getattr, overload=(ArrayTy, "get_raw_memory"))
+def getattr_array_get_raw_memory_impl(object: Var, name: Var):
+    return bind_method(object, ct._m_array_get_raw_memory)
+
+
+# ===========================================================================================
+# Tile attributes
+# ===========================================================================================
+
+@impl(getattr, overload=(TileTy, "dtype"))
+def getattr_tile_dtype_impl(object: Var, name: Var):
+    return loosely_typed_const(object.get_type().dtype)
+
+
+@impl(getattr, overload=(TileTy, "shape"))
+def getattr_tile_shape_impl(object: Var, name: Var):
+    return loosely_typed_const(object.get_type().shape)
+
+
+@impl(getattr, overload=(TileTy, "ndim"))
+def getattr_tile_ndim_impl(object: Var, name: Var):
+    return loosely_typed_const(object.get_type().ndim)
+
+
+@impl(getattr, overload=(TileTy, "extract"))
+def getattr_tile_extract_impl(object: Var, name: Var):
+    return bind_method(object, ct.extract)
+
+
+@impl(getattr, overload=(TileTy, "reshape"))
+def getattr_tile_reshape_impl(object: Var, name: Var):
+    return bind_method(object, ct.reshape)
+
+
+@impl(getattr, overload=(TileTy, "astype"))
+def getattr_tile_astype_impl(object: Var, name: Var):
+    return bind_method(object, ct.astype)
+
+
+@impl(getattr, overload=(TileTy, "permute"))
+def getattr_tile_permute_impl(object: Var, name: Var):
+    return bind_method(object, ct.permute)
+
+
+@impl(getattr, overload=(TileTy, "transpose"))
+def getattr_tile_transpose_impl(object: Var, name: Var):
+    return bind_method(object, ct.transpose)
+
+
+@impl(getattr, overload=(TileTy, "item"))
+def getattr_tile_item_impl(object: Var, name: Var):
+    return bind_method(object, ct._m_tile_item)
+
+
+# ===========================================================================================
+# TiledView attributes
+# ===========================================================================================
+
+@impl(getattr, overload=(TiledViewTy, "dtype"))
+def getattr_tiled_view_dtype_impl(object: Var, name: Var):
+    return loosely_typed_const(object.get_type().dtype)
+
+
+@impl(getattr, overload=(TiledViewTy, "tile_shape"))
+def getattr_tiled_view_tile_shape_impl(object: Var, name: Var):
+    return loosely_typed_const(object.get_type().tile_shape)
+
+
+@impl(getattr, overload=(TiledViewTy, "num_tiles"))
+def getattr_tiled_view_num_tiles_impl(object: Var, name: Var):
+    ty = object.get_type()
+    [array] = object.get_aggregate().as_tuple()
+    return build_tuple(num_tiles(array, ty.tile_shape, get_default_order(ty.ndim)))
+
+
+@impl(getattr, overload=(TiledViewTy, "load"))
+def getattr_tiled_view_load_impl(object: Var, name: Var):
+    return bind_method(object, ct._m_tiled_view_load)
+
+
+@impl(getattr, overload=(TiledViewTy, "store"))
+def getattr_tiled_view_store_impl(object: Var, name: Var):
+    return bind_method(object, ct._m_tiled_view_store)
+
+
+# ===========================================================================================
+# RawArrayMemory attributes
+# ===========================================================================================
+
+@impl(getattr, overload=(RawArrayMemoryTy, "dtype"))
+def getattr_raw_array_memory_dtype_impl(object: Var, name: Var):
+    return loosely_typed_const(object.get_type().dtype)
+
+
+@impl(getattr, overload=(RawArrayMemoryTy, "load_offset"))
+def getattr_raw_array_memory_load_offset_impl(object: Var, name: Var):
+    return bind_method(object, ct._m_raw_array_memory_load_offset)
+
+
+@impl(getattr, overload=(RawArrayMemoryTy, "store_offset"))
+def getattr_raw_array_memory_store_offset_impl(object: Var, name: Var):
+    return bind_method(object, ct._m_raw_array_memory_store_offset)
+
+
+# ===========================================================================================
+# Module & class attributes
+# ===========================================================================================
+
+@impl(getattr, overload=(ModuleTy, WILDCARD))
+def getattr_module_impl(object: Var, name: Var):
+    ty = object.get_type()
+    attr_name = require_constant_str(name)
+    try:
+        return loosely_typed_const(getattr(ty.py_mod, attr_name))
+    except AttributeError:
+        raise TileTypeError(f"Module '{ty.py_mod.__name__}' has no attribute '{attr_name}'")
+
+
+@impl(getattr, overload=(TypeTy, WILDCARD))
+def getattr_type_impl(object: Var, name: Var):
+    ty = object.get_type()
+    attr_name = require_constant_str(name)
+    try:
+        return loosely_typed_const(getattr(ty.ty, attr_name))
+    except AttributeError:
+        raise TileTypeError(f"'{ty.ty.__name__}' object has no attribute '{attr_name}'")
+
+
+# ===========================================================================================
 
 
 def bind_method(object: Var, func) -> Var:

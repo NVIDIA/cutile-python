@@ -351,7 +351,7 @@ def test_error_message_stack_trace():
     x = torch.zeros((), device="cuda")
     _, first_line = inspect.getsourcelines(test_error_message_stack_trace)
     msg_regex = (
-        "No such attribute 'abracadabra'.*\n"
+        "Module 'cuda.tile' has no attribute 'abracadabra'.*\n"
         f".*test_helper_function.py\", line {first_line + 9}.*, in kernel:\n"
         f" *foo\\(x\\)\n"
         f" *\\^\\^\\^\\^\\^\\^\n"
