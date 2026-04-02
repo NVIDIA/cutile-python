@@ -55,8 +55,8 @@ class ArrayConstraint:
             array has a zero stride. For most arrays produced by major tensor libraries,
             this can be assumed to be false. Setting this to True may disable certain
             optimizations of loads and stores to/from this array.
-        stride_static (Sequence[int | None] | None):
-            For each dimension of the array, an optional statically known value of its stride.
+        stride_constant (Sequence[int | None] | None):
+            For each dimension of the array, an optional constant value of its stride.
             For example, if the array is known to have a C-contiguous layout, the stride of
             the last dimension can be set to 1, which may enable certain optimizations of loads
             and stores from/to this array. Can be set to `None` if none of the dimensions
@@ -84,7 +84,7 @@ class ArrayConstraint:
     stride_lower_bound_incl: tuple[int | None, ...]
     alias_groups: tuple[str, ...]
     may_alias_internally: bool
-    stride_static: tuple[int | None, ...]
+    stride_constant: tuple[int | None, ...]
     stride_divisible_by: tuple[int, ...]
     shape_divisible_by: tuple[int, ...]
     base_addr_divisible_by: int
@@ -96,7 +96,7 @@ class ArrayConstraint:
                  stride_lower_bound_incl: Sequence[int | None] | int | None,
                  alias_groups: Sequence[str],
                  may_alias_internally: bool,
-                 stride_static: Sequence[int | None] | None = None,
+                 stride_constant: Sequence[int | None] | None = None,
                  stride_divisible_by: Sequence[int] | int = 1,
                  shape_divisible_by: Sequence[int] | int = 1,
                  base_addr_divisible_by: int = 1):
@@ -110,21 +110,21 @@ class ArrayConstraint:
         if ndim < 0:
             raise ValueError("`ndim` cannot be negative")
 
-        # stride_static
-        stride_static = _parse_assumption_tuple(
-                stride_static, ndim, "stride_static", None, _check_optional_int)
+        # stride_constant
+        stride_constant = _parse_assumption_tuple(
+                stride_constant, ndim, "stride_constant", None, _check_optional_int)
 
         # stride_lower_bound
         stride_lower_bound_incl = _parse_assumption_tuple(
             stride_lower_bound_incl, ndim, "stride_lower_bound_incl", None, _check_optional_int)
         stride_lower_bound_incl = _remove_redundant_lower_bounds(
-            stride_static, stride_lower_bound_incl, "stride_lower_bound_incl")
+            stride_constant, stride_lower_bound_incl, "stride_lower_bound_incl")
 
         # stride_divisible_by
         stride_divisible_by = _parse_assumption_tuple(
                 stride_divisible_by, ndim, "stride_divisible_by", 1, _check_divisibility)
         stride_divisible_by = _remove_redundant_divisibility_constraints(
-                stride_static, stride_divisible_by, "stride_static")
+                stride_constant, stride_divisible_by, "stride_constant")
 
         # shape_divisible_by
         shape_divisible_by = _parse_assumption_tuple(

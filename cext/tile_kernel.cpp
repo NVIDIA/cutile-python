@@ -699,8 +699,8 @@ static PyPtr parse_array_constraint(ConstantCursor& cursor) {
     PyPtr dtype = dtype_to_python(arrty.dtype);
     if (!dtype) return {};
 
-    PyPtr static_strides = steal(PyTuple_New(arrty.ndim));
-    if (!static_strides) return {};
+    PyPtr constant_strides = steal(PyTuple_New(arrty.ndim));
+    if (!constant_strides) return {};
 
     PyPtr stride_divisible_by = steal(PyTuple_New(arrty.ndim));
     if (!stride_divisible_by) return {};
@@ -726,7 +726,7 @@ static PyPtr parse_array_constraint(ConstantCursor& cursor) {
 
     for (size_t i = 0; i < arrty.ndim; ++i) {
         PyObject* obj = special_bits.is_stride_one(i) ? one.get() : Py_None;
-        PyTuple_SET_ITEM(static_strides.get(), i, Py_NewRef(obj));
+        PyTuple_SET_ITEM(constant_strides.get(), i, Py_NewRef(obj));
 
         obj = special_bits.is_stride_16byte_divisible(i) ? stride_divisor.get() : one.get();
         PyTuple_SET_ITEM(stride_divisible_by.get(), i, Py_NewRef(obj));
@@ -739,7 +739,7 @@ static PyPtr parse_array_constraint(ConstantCursor& cursor) {
             "{sO sI sO sO s() sO sO sO sO}",
             "dtype", dtype.get(),
             "ndim", static_cast<unsigned>(arrty.ndim),
-            "stride_static", static_strides.get(),
+            "stride_constant", constant_strides.get(),
             "stride_lower_bound_incl", zero.get(),
             "alias_groups",
             "may_alias_internally", special_bits.disjoint_elements ? Py_False : Py_True,

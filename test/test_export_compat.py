@@ -105,7 +105,7 @@ def test_export_compat_cutile_python_v1():
             ct.compilation.ArrayConstraint(ct.int32, 2, stride_lower_bound_incl=0,
                                            alias_groups=(), may_alias_internally=False,
                                            stride_divisible_by=(4, 1),
-                                           stride_static=(None, 1)),
+                                           stride_constant=(None, 1)),
             ct.compilation.ArrayConstraint(ct.float32, 3, stride_lower_bound_incl=0,
                                            alias_groups=(), may_alias_internally=False),
         ],

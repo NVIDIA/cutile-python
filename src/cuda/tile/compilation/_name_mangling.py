@@ -188,7 +188,7 @@ def _mangle_array_constraint(a: ArrayConstraint,
 
     axis_predicates = OrderedDict()
     _collect_axis_predicate(a.shape_divisible_by, "i", 1, axis_predicates)
-    _collect_axis_predicate(a.stride_static, "t", None, axis_predicates)
+    _collect_axis_predicate(a.stride_constant, "t", None, axis_predicates)
     _collect_axis_predicate(a.stride_divisible_by, "v", 1, axis_predicates)
     _collect_axis_predicate(a.stride_lower_bound_incl, "l", None, axis_predicates)
 
@@ -221,7 +221,7 @@ def _demangle_array_constraint(cursor: _Cursor,
 
     # Read axis predicates
     shape_divisible_by = [1] * ndim
-    stride_static = [None] * ndim
+    stride_constant = [None] * ndim
     stride_divisible_by = [1] * ndim
     stride_lower_bound_incl = [None] * ndim
     while True:
@@ -241,9 +241,9 @@ def _demangle_array_constraint(cursor: _Cursor,
         if cursor.read("i") is not None:
             axis_shape_div_by = _demangle_divisibility(cursor)
 
-        axis_stride_static = None
+        axis_stride_constant = None
         if cursor.read("t") is not None:
-            axis_stride_static = _demangle_signed_int(cursor)
+            axis_stride_constant = _demangle_signed_int(cursor)
 
         axis_stride_div_by = 1
         if cursor.read("v") is not None:
@@ -262,11 +262,11 @@ def _demangle_array_constraint(cursor: _Cursor,
                         f"Shape divisibility specified more than once for axis #{i}")
                 shape_divisible_by[i] = axis_shape_div_by
 
-            if axis_stride_static is not None:
-                if stride_static[i] is not None:
+            if axis_stride_constant is not None:
+                if stride_constant[i] is not None:
                     raise mask_cursor.make_error(
                         f"Static stride specified more than once for axis #{i}")
-                stride_static[i] = axis_stride_static
+                stride_constant[i] = axis_stride_constant
 
             if axis_stride_div_by != 1:
                 if stride_divisible_by[i] != 1:
@@ -283,7 +283,7 @@ def _demangle_array_constraint(cursor: _Cursor,
             axis_mask &= ~(1 << i)
 
     for i in range(ndim):
-        if stride_static[i] is not None:
+        if stride_constant[i] is not None:
             if stride_divisible_by[i] != 1:
                 raise orig_cursor.make_error(f"Stride divisibility specified together"
                                              f" with static stride for axis {i}")
@@ -309,7 +309,7 @@ def _demangle_array_constraint(cursor: _Cursor,
                            stride_lower_bound_incl=stride_lower_bound_incl,
                            alias_groups=alias_groups,
                            may_alias_internally=may_alias_internally,
-                           stride_static=stride_static,
+                           stride_constant=stride_constant,
                            stride_divisible_by=stride_divisible_by,
                            shape_divisible_by=shape_divisible_by,
                            base_addr_divisible_by=base_addr_div_by)

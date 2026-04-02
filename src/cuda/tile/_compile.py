@@ -151,7 +151,7 @@ def _create_kernel_parameters(parameter_constraints: Sequence[ParameterConstrain
 
 
 def _get_array_ty(param: ArrayConstraint):
-    for static_stride, bound in zip(param.stride_static, param.stride_lower_bound_incl,
+    for static_stride, bound in zip(param.stride_constant, param.stride_lower_bound_incl,
                                     strict=True):
         if static_stride is not None:
             continue
@@ -161,7 +161,7 @@ def _get_array_ty(param: ArrayConstraint):
 
     return ArrayTy(param.dtype,
                    shape=(None,) * param.ndim,
-                   strides=param.stride_static,
+                   strides=param.stride_constant,
                    elements_disjoint=not param.may_alias_internally,
                    base_ptr_div_by=param.base_addr_divisible_by,
                    stride_div_by=param.stride_divisible_by,

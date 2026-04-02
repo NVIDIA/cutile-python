@@ -47,7 +47,7 @@ _SIMPLE_2D = ArrayConstraint(float32, 2, stride_lower_bound_incl=0,
         id="array_simple",
     ),
 
-    # 3D array with stride_static, stride_divisible_by, shape_divisible_by
+    # 3D array with stride_constant, stride_divisible_by, shape_divisible_by
     # (dims 0 and 1 share shape_divisible_by=16), stride_lower_bound_incl,
     # and base_addr_divisible_by
     pytest.param(
@@ -55,7 +55,7 @@ _SIMPLE_2D = ArrayConstraint(float32, 2, stride_lower_bound_incl=0,
                          stride_lower_bound_incl=0,
                          alias_groups=(),
                          may_alias_internally=False,
-                         stride_static=[None, None, 1],
+                         stride_constant=[None, None, 1],
                          stride_divisible_by=[8, 1, 1],
                          shape_divisible_by=[16, 16, 1],
                          base_addr_divisible_by=16)],
