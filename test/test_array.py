@@ -44,3 +44,13 @@ def test_array_getitem():
     x = torch.zeros((10,), device='cuda')
     with pytest.raises(TileTypeError, match="Arrays are not directly subscriptable"):
         ct.launch(torch.cuda.current_stream(), (1,), kernel, (x,))
+
+
+def test_array_setitem():
+    @ct.kernel
+    def kernel(x):
+        x[0] = 3.0
+
+    x = torch.zeros((10,), device='cuda')
+    with pytest.raises(TileTypeError, match="Arrays do not support item assignment. Use store()"):
+        ct.launch(torch.cuda.current_stream(), (1,), kernel, (x,))

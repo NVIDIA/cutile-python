@@ -69,3 +69,14 @@ def test_tuple_getitem_nontile():
 
     with pytest.raises(TileTypeError, match="Tuple indices must be integers or slices"):
         ct.launch(torch.cuda.current_stream(), (1,), kernel, ())
+
+
+def test_tuple_setitem():
+    @ct.kernel
+    def kernel():
+        t = (1, 2, 3)
+        t[0] = 7
+
+    with pytest.raises(TileTypeError,
+                       match="Tuples are immutable: item assignment is not supported"):
+        ct.launch(torch.cuda.current_stream(), (1,), kernel, ())

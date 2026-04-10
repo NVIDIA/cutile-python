@@ -577,6 +577,10 @@ def _do_assign(value: hir.Operand, target, ctx: _Context):
             for i, el in enumerate(target.elts):
                 item_var = ctx.call(operator.getitem, (value, i), )
                 _do_assign(item_var, el, ctx)
+        elif isinstance(target, ast.Subscript):
+            object = _expr(target.value, ctx)
+            key = _expr(target.slice, ctx)
+            ctx.call(operator.setitem, (object, key, value))
         else:
             raise ctx.unsupported_syntax()
 

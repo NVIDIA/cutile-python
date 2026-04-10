@@ -464,3 +464,14 @@ def test_mixed_const_nonconst_params():
     ct.launch(torch.cuda.current_stream(), (1,), kernel, (x, 3, 4, 7.5, 8.5, y))
     assert x.item() == 34
     assert y.item() == 758.5
+
+
+def test_tile_setitem():
+    @ct.kernel
+    def kernel():
+        t = ct.ones((8,), dtype=ct.int32)
+        t[0] = 7
+
+    with pytest.raises(TileTypeError,
+                       match="Tiles are immutable: item assignment is not supported"):
+        ct.launch(torch.cuda.current_stream(), (1,), kernel, ())

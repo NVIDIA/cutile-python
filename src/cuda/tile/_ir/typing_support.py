@@ -98,6 +98,7 @@ BUILTIN_FUNCS = {
     operator.neg: lambda x, /: None,
     getattr: lambda object, name, /: None,
     operator.getitem: lambda object, key, /: None,
+    operator.setitem: lambda object, key, value, /: None,
     float: lambda x=0, /: None,
     int: lambda x=0, /: None,
     bool: lambda x=False, /: None,

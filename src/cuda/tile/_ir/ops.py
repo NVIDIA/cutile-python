@@ -1364,6 +1364,36 @@ def getitem_array_impl(object: Var, key: Var) -> Var:
 
 # ===========================================================================================
 
+@overload_dispatcher(operator.setitem)
+def setitem_overload_dispatcher(object: Var, key: Var, value: Var):
+    object_ty = object.get_type()
+    key_ty = key.get_type()
+    value_ty = value.get_type()
+    try:
+        yield type(object_ty), type(key_ty), type(value_ty)
+    except OverloadNotFoundError as e:
+        if e.found_overload_matching_first_param:
+            raise TileTypeError(f"Object of type {object_ty} does not support"
+                                f" item assignment with key type {key_ty}"
+                                f" and value type {value_ty}")
+        else:
+            raise TileTypeError(f"Object of type {object_ty} does not support item assignment")
+
+
+@impl(operator.setitem, overload=(ArrayTy, WILDCARD, WILDCARD))
+def setitem_array_impl(object: Var, key: Var, value: Var):
+    raise TileTypeError("Arrays do not support item assignment. Use store() or scatter() instead.")
+
+
+@impl(operator.setitem, overload=(TileTy, WILDCARD, WILDCARD))
+def setitem_tile_impl(object: Var, key: Var, value: Var):
+    raise TileTypeError("Tiles are immutable: item assignment is not supported.")
+
+
+@impl(operator.setitem, overload=(TupleTy, WILDCARD, WILDCARD))
+def setitem_tuple_impl(object: Var, key: Var, value: Var):
+    raise TileTypeError("Tuples are immutable: item assignment is not supported.")
+
 
 @impl(len)
 def len_impl(x: Var) -> Var:
