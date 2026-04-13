@@ -125,12 +125,15 @@ class FdCaptureDocTestRunner(SphinxDocTestRunner):
     (failure reports) reaches the terminal instead of the temp file.
     """
 
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._test_stats = {}
+
     def summarize(self, out, verbose=None):
-        groups = self._name2ft
         totalf = totalt = 0
         lines = []
-        only_default = set(groups.keys()) <= {'default'}
-        for name, (f, t) in sorted(groups.items()):
+        only_default = set(self._test_stats.keys()) <= {'default'}
+        for name, (f, t) in sorted(self._test_stats.items()):
             totalf += f
             totalt += t
             if not only_default:
@@ -156,7 +159,10 @@ class FdCaptureDocTestRunner(SphinxDocTestRunner):
         orig_logger = _mod.logger
         _mod.logger = _TerminalLogger(orig_logger, saved_fd)
         try:
-            return super().run(test, compileflags, out, clear_globs)
+            result = super().run(test, compileflags, out, clear_globs)
+            f, t = self._test_stats.get(test.name, (0, 0))
+            self._test_stats[test.name] = (f + result.failed, t + result.attempted)
+            return result
         finally:
             _mod.logger = orig_logger
             self._fakeout = save_fakeout

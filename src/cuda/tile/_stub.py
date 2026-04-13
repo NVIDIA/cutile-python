@@ -1193,22 +1193,22 @@ def _doc_atomic_rmw_op(f):
 
     Examples:
 
-        .. testcode::
-            :template: setup_only.py
+    .. testcode::
+        :template: setup_only.py
 
-            @ct.kernel
-            def kernel(x):
-                indices = ct.arange(4, dtype=ct.int32)
-                update = ct.full((4,), 10, dtype=ct.int32)
-                old = ct.{op_name}(x, indices, update)
-                print(old)
+        @ct.kernel
+        def kernel(x):
+            indices = ct.arange(4, dtype=ct.int32)
+            update = ct.full((4,), 10, dtype=ct.int32)
+            old = ct.{op_name}(x, indices, update)
+            print(old)
 
-            x = torch.ones(4, dtype=torch.int32, device='cuda')
-            ct.launch(stream, (1,), kernel, (x,))
+        x = torch.ones(4, dtype=torch.int32, device='cuda')
+        ct.launch(stream, (1,), kernel, (x,))
 
-        .. testoutput::
+    .. testoutput::
 
-            [1, 1, 1, 1]
+        [1, 1, 1, 1]
     """
 
     return f
@@ -1930,20 +1930,21 @@ def _doc_reduce_op(f):
     orig_doc = f.__doc__ or ""
     extra_block = _math_op_extra_block(f, indent="        ")
 
-    wrapped.__doc__ = f"""Performs {op_name} reduction on tile along the `axis`.
+    wrapped.__doc__ = f"""\
+Performs {op_name} reduction on tile along the `axis`.
 
-    Args:
-        x (Tile): input tile.
-        axis (None | const int | tuple[const int,...]): the axis for reduction.
-            The default, `axis=None`, will reduce all of the elements.
-            For `argmin` and `argmax`, tuple of axis is not supported.
-        keepdims (const bool): If true, preserves the number of dimension
-            from the input tile.{extra_block}
+Args:
+    x (Tile): input tile.
+    axis (None | const int | tuple[const int,...]): the axis for reduction.
+        The default, `axis=None`, will reduce all of the elements.
+        For `argmin` and `argmax`, tuple of axis is not supported.
+    keepdims (const bool): If true, preserves the number of dimension
+        from the input tile.{extra_block}
 
-    Returns:
-        Tile:
+Returns:
+    Tile:
 
-    """ + orig_doc
+""" + orig_doc
 
     return wrapped
 
