@@ -95,8 +95,10 @@ def fuse_mul_addsub(op: RawBinaryArithmeticOperation, ctx: MatchContext):
         raise NoMatch("not an add/sub binop")
     if (mul_op := ctx.get_match(op.lhs, match_float_mul)) is not None:
         acc = op.rhs
-    elif op.fn == "add" and (mul_op := ctx.get_match(op.rhs, match_float_mul)) is not None:
+        rhs_is_mul = False
+    elif (mul_op := ctx.get_match(op.rhs, match_float_mul)) is not None:
         acc = op.lhs
+        rhs_is_mul = True
     else:
         raise NoMatch("no float mul operand")
 
@@ -112,14 +114,19 @@ def fuse_mul_addsub(op: RawBinaryArithmeticOperation, ctx: MatchContext):
 
     # FIXME: fuse location
     new_ops = []
+    mul_lhs = mul_op.lhs
     if op.fn == "sub":
-        negated_acc = ctx.make_temp_var(op.loc)
-        ctx.set_type(negated_acc, ctx.typeof(acc))
-        new_ops.append(Unary(fn="neg", operand=acc, rounding_mode=None, flush_to_zero=False,
-                             result_vars=(negated_acc,), loc=op.loc))
-        acc = negated_acc
+        neg_target = mul_op.lhs if rhs_is_mul else acc
+        negated = ctx.make_temp_var(op.loc)
+        ctx.set_type(negated, ctx.typeof(neg_target))
+        new_ops.append(Unary(fn="neg", operand=neg_target, rounding_mode=None, flush_to_zero=False,
+                             result_vars=(negated,), loc=op.loc))
+        if rhs_is_mul:
+            mul_lhs = negated
+        else:
+            acc = negated
 
-    new_ops.append(FusedMulAddOperation(lhs=mul_op.lhs, rhs=mul_op.rhs, acc=acc,
+    new_ops.append(FusedMulAddOperation(lhs=mul_lhs, rhs=mul_op.rhs, acc=acc,
                                         rounding_mode=rm, flush_to_zero=ftz,
                                         result_vars=(op.result_var,), loc=op.loc))
     ctx.add_rewrite((mul_op, op), new_ops)
