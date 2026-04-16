@@ -41,7 +41,9 @@ class ArrayConstraint:
             Number of dimensions of the array, also known as rank.
         index_dtype (DType):
             Data type used to represent array's shape, strides and indices.
-            Currently, only :py:data:`ct.int32 <cuda.tile.int32>` is supported.
+            Supported values are :py:data:`ct.int32 <cuda.tile.int32>` and
+            :py:data:`ct.int64 <cuda.tile.int64>`. Using ``int64`` enables support for
+            arrays whose shape or stride values exceed the range of a 32-bit integer.
         stride_lower_bound_incl (Sequence[int | None] | int | None):
             For each dimension of the array, an optional inclusive lower bound for its stride.
             If all dimensions have the same lower bound, a single number can be passed

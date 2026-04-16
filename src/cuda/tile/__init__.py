@@ -55,9 +55,13 @@ from cuda.tile._exception import (
 
 from cuda.tile._stub import (
     Array,
+    ArrayAnnotation,
     Constant,
     ConstantAnnotation,
+    IndexedWithInt64,
+    ListAnnotation,
     Scalar,
+    ScalarInt64,
     Tile,
     TiledView,
 
@@ -204,9 +208,13 @@ __all__ = [
     "TileValueError",
 
     "Array",
+    "ArrayAnnotation",
     "Constant",
     "ConstantAnnotation",
+    "IndexedWithInt64",
+    "ListAnnotation",
     "Scalar",
+    "ScalarInt64",
     "Tile",
     "TiledView",
 

@@ -483,6 +483,7 @@ static Result<DLDataType> parse_typestr(PyObject* typestr) {
 struct ArrayType {
     DLDataType dtype;
     size_t ndim;
+    unsigned index_bitwidth;
 };
 
 // This should compile to a no-op
@@ -546,41 +547,47 @@ static PyPtr dtype_to_python(DLDataType dtype) {
     return getattr(dtype_module, *name);
 }
 
-// Pack data type and array rank in a single int64_t so it could be used
-// as a single constant for looking up the kernel in a family
+// Pack data type, array rank, and index bitwidth in a single int64_t so it
+// could be used as a single constant for looking up the kernel in a family.
+// Layout: [63: index_bitwidth (0=32, 1=64)] [62..32: ndim] [31..0: dtype]
 static int64_t pack_array_type(ArrayType a) {
     uint64_t dtype_u = static_cast<uint64_t>(dtype_as_uint(a.dtype));
-    return static_cast<int64_t>(dtype_u | (static_cast<uint64_t>(a.ndim) << 32));
+    uint64_t ndim_u = static_cast<uint64_t>(a.ndim);
+    uint64_t ibw_bit = (a.index_bitwidth == 64) ? 1ULL : 0ULL;
+    return static_cast<int64_t>(dtype_u | (ndim_u << 32) | (ibw_bit << 63));
 }
 
 static ArrayType unpack_array_type(int64_t c) {
     uint64_t u = c;
     uint32_t dtype = u & 0xffffffff;
-    uint32_t ndim = (u >> 32) & 0xffffffff;
-    return {dtype_from_uint(dtype), ndim};
+    uint32_t ndim = (u >> 32) & 0x7fffffff;
+    unsigned ibw = ((u >> 63) & 1) ? 64 : 32;
+    return {dtype_from_uint(dtype), ndim, ibw};
 }
 
-static Status extract_compact_row_major_strides(size_t ndim, size_t shape_offset, Vec<Word>& dst) {
+static Status extract_compact_row_major_strides(size_t ndim, size_t shape_offset,
+                                                unsigned index_bitwidth, Vec<Word>& dst) {
     if (ndim == 0) return OK;
 
     dst.resize(dst.size() + ndim);
     size_t stride_idx = dst.size();
     size_t shape_idx = shape_offset + ndim;
     uint64_t prev_stride = 1;
-    dst[--stride_idx].i32 = 1;
+    dst[--stride_idx].i64 = 1;
 
     for (size_t i = 0; i < ndim - 1; ++i) {
-        uint64_t new_stride = prev_stride * static_cast<uint64_t>(dst[--shape_idx].i32);
-        if (new_stride > INT32_MAX)
+        uint64_t new_stride = prev_stride * static_cast<uint64_t>(dst[--shape_idx].i64);
+        if (index_bitwidth != 64 && new_stride > INT32_MAX)
             return raise(PyExc_OverflowError, "stride is too big");
-        dst[--stride_idx].i32 = new_stride;
+        dst[--stride_idx].i64 = new_stride;
         prev_stride = new_stride;
     }
     return OK;
 }
 
 static ArraySpecializationBits compute_array_specialization_bits(
-    void* data_ptr, size_t ndim, int32_t dtype_bitwidth, const Word* shape_stride) {
+    void* data_ptr, size_t ndim, unsigned dtype_bitwidth, const Word* shape_stride,
+    unsigned index_bitwidth) {
 
     ArraySpecializationBits ret = {};
 
@@ -589,8 +596,8 @@ static ArraySpecializationBits compute_array_specialization_bits(
     // Only specialize stride divisibility, stride 1 and shape divisibility for ndim <= TMA_MAX_NDIM
     if (ndim <= TMA_MAX_NDIM) {
         for (size_t i = 0; i < ndim; ++i) {
-            int32_t stride = strides[i].i32;
-            int32_t shape = shape_stride[i].i32;
+            int64_t stride = strides[i].i64;
+            int64_t shape = shape_stride[i].i64;
             int64_t stride_bitwidth = stride * dtype_bitwidth;
             int64_t shape_bitwidth = shape * dtype_bitwidth;
             bool is_stride_byte_aligned = stride_bitwidth % BYTE_BITWIDTH == 0;
@@ -617,9 +624,9 @@ static ArraySpecializationBits compute_array_specialization_bits(
     // check elements disjoint.
     // sort by stride. the smallest stride indicates the contiguous axis
     // of the underlying array.
-    Vec<std::pair<int32_t, size_t>> strides_and_shape(ndim);
+    Vec<std::pair<int64_t, int64_t>> strides_and_shape(ndim);
     for (size_t i = 0; i < ndim; ++i) {
-        strides_and_shape[i] = {strides[i].i32, shape_stride[i].i32};
+        strides_and_shape[i] = {strides[i].i64, shape_stride[i].i64};
     }
     std::sort(strides_and_shape.begin(), strides_and_shape.end());
 
@@ -630,9 +637,9 @@ static ArraySpecializationBits compute_array_specialization_bits(
     //    the previous shape.
     bool elems_disjoint = (ndim == 0) || (strides_and_shape[0].first > 0);
     for (size_t i = 0; i + 1 < ndim; ++i) {
-        int32_t prev_stride = strides_and_shape[i].first;
-        int32_t prev_shape = strides_and_shape[i].second;
-        int32_t cur_stride = strides_and_shape[i + 1].first;
+        int64_t prev_stride = strides_and_shape[i].first;
+        int64_t prev_shape = strides_and_shape[i].second;
+        int64_t cur_stride = strides_and_shape[i + 1].first;
         elems_disjoint &= (
             cur_stride > 0 && cur_stride >= prev_stride * prev_shape);
     }
@@ -674,7 +681,7 @@ static void extract_array_specialization_constants(const DriverApi* driver,
         void* data_ptr = array_repr[0].device_ptr;
         special_bits &= compute_array_specialization_bits(
                 data_ptr, arrtype.ndim, arrtype.dtype.bits * arrtype.dtype.lanes,
-                array_repr + 1).u64;
+                array_repr + 1, arrtype.index_bitwidth).u64;
         array_repr += repr_len;
     }
 
@@ -687,6 +694,9 @@ static PyPtr parse_array_constraint(ConstantCursor& cursor) {
     ArrayType arrty = unpack_array_type(cursor.next());
     ArraySpecializationBits special_bits;
     special_bits.u64 = cursor.next();
+    unsigned index_bitwidth = arrty.index_bitwidth;
+    // Only int32 or int64 are supported now.
+    CHECK(index_bitwidth == 32 || index_bitwidth == 64);
 
     PyObject* signature_module = get_signature_module();
     if (!signature_module) return {};
@@ -700,7 +710,8 @@ static PyPtr parse_array_constraint(ConstantCursor& cursor) {
     PyPtr dtype = dtype_to_python(arrty.dtype);
     if (!dtype) return {};
 
-    PyPtr index_dtype = dtype_to_python(DLDataType{kDLInt, 32, 1});
+    PyPtr index_dtype = dtype_to_python(
+            DLDataType{kDLInt, static_cast<uint8_t>(index_bitwidth), 1});
     if (!index_dtype) return {};
 
     PyPtr constant_strides = steal(PyTuple_New(arrty.ndim));
@@ -768,12 +779,13 @@ static PyPtr parse_array_constraint(ConstantCursor& cursor) {
 
 
 #define ASSERT_NDIM(ndim) \
-    if (static_cast<uintmax_t>(ndim) > UINT32_MAX) \
+    if (static_cast<uintmax_t>(ndim) > INT32_MAX) \
         return raise(PyExc_TypeError, "Input array exceeds max supported dimensions: %ld > %u", \
-                     ndim, UINT32_MAX);
+                     ndim, INT32_MAX);
 
 
-static Status arrayrepr_cuda_array_iface(PyObject* pyobj, Vec<Word>& dst, ArrayType& arrtype) {
+static Status arrayrepr_cuda_array_iface(PyObject* pyobj, unsigned index_bitwidth,
+                                          Vec<Word>& dst, ArrayType& arrtype) {
     PyPtr dict = steal(PyObject_GetAttr(pyobj, g___cuda_array_interface___pyunicode));
     if (!PyDict_Check(dict.get())) {
         PyErr_SetString(PyExc_TypeError,
@@ -815,25 +827,25 @@ static Status arrayrepr_cuda_array_iface(PyObject* pyobj, Vec<Word>& dst, ArrayT
 
     size_t shape_offset = dst.size();
     for (Py_ssize_t i = 0; i < ndim; ++i) {
-        int32_t size = pylong_as<int32_t>(PyTuple_GET_ITEM(shape, i));
+        int64_t size = pylong_as<int64_t>(PyTuple_GET_ITEM(shape, i));
         if (PyErr_Occurred()) return ErrorRaised;
-        dst.push_back({.i32 = size});
+        dst.push_back({.i64 = size});
     }
 
     // Parse the strides
     PyObject* strides = PyDict_GetItem(dict.get(), g_strides_pyunicode);
     if (PyErr_Occurred()) return ErrorRaised;
     if (!strides || strides == Py_None) {
-        if (!extract_compact_row_major_strides(ndim, shape_offset, dst))
+        if (!extract_compact_row_major_strides(ndim, shape_offset, index_bitwidth, dst))
             return ErrorRaised;
     } else if (PyTuple_Check(strides)) {
         // Only byte-aligned types should be supported by __cuda_array_interface__
         uint8_t dtype_bytewidth = dtype->bits / BYTE_BITWIDTH;
         for (Py_ssize_t i = 0; i < ndim; ++i) {
-            int32_t stride = pylong_as<int32_t>(PyTuple_GET_ITEM(strides, i));
+            int64_t stride = pylong_as<int64_t>(PyTuple_GET_ITEM(strides, i));
             if (PyErr_Occurred()) return ErrorRaised;
             dst.push_back(
-                    {.i32 = static_cast<int32_t>(stride / dtype_bytewidth)});
+                    {.i64 = static_cast<int64_t>(stride / dtype_bytewidth)});
         }
     } else {
         return raise(PyExc_TypeError, "__cuda_array_interface['strides'] can only be"
@@ -842,11 +854,12 @@ static Status arrayrepr_cuda_array_iface(PyObject* pyobj, Vec<Word>& dst, ArrayT
 
     arrtype.dtype = *dtype;
     arrtype.ndim = ndim;
+    arrtype.index_bitwidth = index_bitwidth;
     return OK;
 }
 
-static Status arrayrepr_dlpack_common(PyObject* dlpack_capsule, Vec<Word>& dst,
-                                      ArrayType& arrtype) {
+static Status arrayrepr_dlpack_common(PyObject* dlpack_capsule, unsigned index_bitwidth,
+                                      Vec<Word>& dst, ArrayType& arrtype) {
     void* ptr = PyCapsule_GetPointer(dlpack_capsule, "dltensor");
     if (!ptr) return ErrorRaised;
     DLManagedTensor* tensor = static_cast<DLManagedTensor*>(ptr);
@@ -864,25 +877,27 @@ static Status arrayrepr_dlpack_common(PyObject* dlpack_capsule, Vec<Word>& dst,
 
     size_t shape_offset = dst.size();
     for (int32_t i = 0; i < ndim; ++i) {
-        if (tensor->dl_tensor.shape[i] < INT32_MIN || tensor->dl_tensor.shape[i] > INT32_MAX)
+        if (index_bitwidth != 64 && (tensor->dl_tensor.shape[i] < INT32_MIN
+            || tensor->dl_tensor.shape[i] > INT32_MAX))
             return raise(PyExc_OverflowError, "shape is too big");
-        dst.push_back({.i32 = static_cast<int32_t>(tensor->dl_tensor.shape[i])});
+        dst.push_back({.i64 = tensor->dl_tensor.shape[i]});
     }
 
     if (!tensor->dl_tensor.strides) {
-        if (!extract_compact_row_major_strides(ndim, shape_offset, dst))
+        if (!extract_compact_row_major_strides(ndim, shape_offset, index_bitwidth, dst))
             return ErrorRaised;
     } else {
         for (int32_t i = 0; i < ndim; ++i) {
-            if(tensor->dl_tensor.strides[i] < INT32_MIN || tensor->dl_tensor.strides[i] > INT32_MAX)
+            if(index_bitwidth != 64 && (tensor->dl_tensor.strides[i] < INT32_MIN
+                || tensor->dl_tensor.strides[i] > INT32_MAX))
                 return raise(PyExc_OverflowError, "stride is too big");
-            dst.push_back(
-                    {.i32 = static_cast<int32_t>(tensor->dl_tensor.strides[i])});
+            dst.push_back({.i64 = tensor->dl_tensor.strides[i]});
         }
     }
 
     arrtype.dtype = tensor->dl_tensor.dtype;
     arrtype.ndim = ndim;
+    arrtype.index_bitwidth = index_bitwidth;
 
     PyCapsule_SetName(dlpack_capsule, "used_dltensor");
 
@@ -910,7 +925,7 @@ static Status dtype_from_torch_dtype(PyObject* torch_dtype, DLDataType& out) {
     return raise(PyExc_TypeError, "dtype is not supported");
 }
 
-static Status arrayrepr_torch_tensor_pymethod(PyObject* tensor,
+static Status arrayrepr_torch_tensor_pymethod(PyObject* tensor, unsigned index_bitwidth,
         Vec<Word>& dst, ArrayType& arrtype) {
     PyPtr data_ptr = steal(PyObject_CallMethod(tensor, "data_ptr", nullptr));
     if (!data_ptr) return ErrorRaised;
@@ -947,9 +962,10 @@ static Status arrayrepr_torch_tensor_pymethod(PyObject* tensor,
             return raise(PyExc_TypeError, "unexpected type from .shape");
         long long si = PyLong_AsLongLong(item_ptr);
         if (PyErr_Occurred()) return ErrorRaised;
-        if (si < INT32_MIN || si > INT32_MAX)
+
+        if (index_bitwidth != 64 && (si < INT32_MIN || si > INT32_MAX))
             return raise(PyExc_OverflowError, "shape is too big");
-        dst.push_back({.i32 = static_cast<int32_t>(si)});
+        dst.push_back({.i64 = static_cast<int64_t>(si)});
     }
 
     // Extract stride
@@ -967,29 +983,32 @@ static Status arrayrepr_torch_tensor_pymethod(PyObject* tensor,
             return raise(PyExc_TypeError, "unexpected type of .stride");
         long long si = PyLong_AsLongLong(item_ptr);
         if (PyErr_Occurred()) return ErrorRaised;
-        if (si < INT32_MIN || si > INT32_MAX)
+        if (index_bitwidth != 64 && (si < INT32_MIN || si > INT32_MAX))
             return raise(PyExc_OverflowError, "stride is too big");
-        dst.push_back({.i32 = static_cast<int32_t>(si)});
+        dst.push_back({.i64 = static_cast<int64_t>(si)});
     }
 
     arrtype.ndim = ndim;
+    arrtype.index_bitwidth = index_bitwidth;
     return dtype_from_torch_dtype(dtype_ptr.get(), arrtype.dtype);
 }
 
-static Status arrayrepr_torch_tensor_dlpack(PyObject* pyobj, Vec<Word>& dst, ArrayType& arrtype) {
+static Status arrayrepr_torch_tensor_dlpack(PyObject* pyobj, unsigned index_bitwidth,
+                                             Vec<Word>& dst, ArrayType& arrtype) {
     PyPtr dlpack_capsule = steal(PyObject_CallFunctionObjArgs(
                 g_torch_to_dlpack_func, pyobj, nullptr));
 
     if (!dlpack_capsule) {
         SavedException exc = save_raised_exception();
         LOG_PYTHON_ERROR("debug", exc, "Fail to convert to dlpack, use fallback path");
-        return arrayrepr_torch_tensor_pymethod(pyobj, dst, arrtype);
+        return arrayrepr_torch_tensor_pymethod(pyobj, index_bitwidth, dst, arrtype);
     }
 
-    return arrayrepr_dlpack_common(dlpack_capsule.get(), dst, arrtype);
+    return arrayrepr_dlpack_common(dlpack_capsule.get(), index_bitwidth, dst, arrtype);
 }
 
-static Status arrayrepr_dlpack(PyObject* pyobj, Vec<Word>& dst, ArrayType& arrtype) {
+static Status arrayrepr_dlpack(PyObject* pyobj, unsigned index_bitwidth,
+                               Vec<Word>& dst, ArrayType& arrtype) {
     PyPtr dlpack_method = steal(PyObject_GetAttr(pyobj, g___dlpack___pyunicode));
     if (!dlpack_method) return ErrorRaised;
 
@@ -1008,19 +1027,20 @@ static Status arrayrepr_dlpack(PyObject* pyobj, Vec<Word>& dst, ArrayType& arrty
                 dlpack_method.get(), empty_args.get(), kwargs.get()));
     if (!dlpack_capsule) return ErrorRaised;
 
-    return arrayrepr_dlpack_common(dlpack_capsule.get(), dst, arrtype);
+    return arrayrepr_dlpack_common(dlpack_capsule.get(), index_bitwidth, dst, arrtype);
 }
 
 
-typedef Status(*ArrayReprFunc)(PyObject*, Vec<Word>&, ArrayType&);
+typedef Status(*ArrayReprFunc)(PyObject*, unsigned, Vec<Word>&, ArrayType&);
 
 
 template <ArrayReprFunc F>
-static Status extract_array(const DriverApi* driver, PyObject* pyobj, LaunchHelper& helper) {
+static Status extract_array(const DriverApi* driver, PyObject* pyobj, unsigned index_bitwidth,
+                             LaunchHelper& helper) {
     size_t offset = helper.cuargs.size();
 
     ArrayType arrtype;
-    if (!F(pyobj, helper.cuargs, arrtype))
+    if (!F(pyobj, index_bitwidth, helper.cuargs, arrtype))
         return ErrorRaised;
 
     CHECK(helper.cuargs.size() == offset + 1 + 2 * arrtype.ndim);
@@ -1071,7 +1091,8 @@ static PyPtr parse_pybool_constraint(ConstantCursor& cursor, bool is_constant) {
     }
 }
 
-static inline Status extract_py_long(PyObject* pyobj, bool is_constant, LaunchHelper& helper) {
+static inline Status extract_py_long(PyObject* pyobj, bool is_constant, bool use_i64,
+                                     LaunchHelper& helper) {
     if (is_constant) {
         int overflow;
         int64_t value = pylong_as_overflow_and<int64_t>(pyobj, &overflow);
@@ -1087,14 +1108,20 @@ static inline Status extract_py_long(PyObject* pyobj, bool is_constant, LaunchHe
             helper.constants.push_back(value);
         }
     } else {
-        int32_t value = pylong_as<int32_t>(pyobj);
-        if (PyErr_Occurred()) return ErrorRaised;
-        helper.cuargs.push_back({.i32 = value});
+        if (use_i64) {
+            int64_t value = pylong_as<int64_t>(pyobj);
+            if (PyErr_Occurred()) return ErrorRaised;
+            helper.cuargs.push_back({.i64 = value});
+        } else {
+            int32_t value = pylong_as<int32_t>(pyobj);
+            if (PyErr_Occurred()) return ErrorRaised;
+            helper.cuargs.push_back({.i32 = value});
+        }
     }
     return OK;
 }
 
-static PyPtr parse_pylong_constraint(ConstantCursor& cursor, bool is_constant) {
+static PyPtr parse_pylong_constraint(ConstantCursor& cursor, bool is_constant, bool use_i64) {
     if (is_constant) {
         int64_t format = cursor.next();
         PyPtr value;
@@ -1108,7 +1135,9 @@ static PyPtr parse_pylong_constraint(ConstantCursor& cursor, bool is_constant) {
         if (!value) return {};
         return make_constant_constraint(value.get());
     } else {
-        return make_scalar_constraint(DLDataType{kDLInt, 32, 1});
+        return make_scalar_constraint(
+            DLDataType{kDLInt, static_cast<uint8_t>(use_i64 ? 64 : 32), 1}
+        );
     }
 }
 
@@ -1135,22 +1164,23 @@ static PyPtr parse_pyfloat_constraint(ConstantCursor& cursor, bool is_constant) 
     }
 }
 
-static Status get_array_repr(PythonArgKind kind, PyObject* pyobj, Vec<Word>& dst,
-                             ArrayType& arrtype) {
+static Status get_array_repr(PythonArgKind kind, PyObject* pyobj, unsigned index_bitwidth,
+                             Vec<Word>& dst, ArrayType& arrtype) {
     switch (kind) {
         case PythonArgKind::TorchTensorDlpack:
-            return arrayrepr_torch_tensor_dlpack(pyobj, dst, arrtype);
+            return arrayrepr_torch_tensor_dlpack(pyobj, index_bitwidth, dst, arrtype);
         case PythonArgKind::DlpackArray:
-            return arrayrepr_dlpack(pyobj, dst, arrtype);
+            return arrayrepr_dlpack(pyobj, index_bitwidth, dst, arrtype);
         case PythonArgKind::CudaArray:
-            return arrayrepr_cuda_array_iface(pyobj, dst, arrtype);
+            return arrayrepr_cuda_array_iface(pyobj, index_bitwidth, dst, arrtype);
         default:
             return raise(PyExc_AssertionError, "Unexpected argument kind for array: %d",
                          static_cast<int>(kind));
     }
 }
 
-static Status extract_py_list(const DriverApi* driver, PyObject* pyobj, LaunchHelper& helper) {
+static Status extract_py_list(const DriverApi* driver, PyObject* pyobj, unsigned index_bitwidth,
+                              LaunchHelper& helper) {
     size_t len = PyList_GET_SIZE(pyobj);
     if (len > INT32_MAX)
         return raise(PyExc_TypeError, "List is too long");
@@ -1180,7 +1210,8 @@ static Status extract_py_list(const DriverApi* driver, PyObject* pyobj, LaunchHe
 
     size_t offset = helper.nested_arrays.size();
     ArrayType first_arrtype;
-    if (!get_array_repr(first_arg_kind, first_item, helper.nested_arrays, first_arrtype))
+    if (!get_array_repr(first_arg_kind, first_item, index_bitwidth,
+                        helper.nested_arrays, first_arrtype))
         return ErrorRaised;
 
     // Handle the rest of the list
@@ -1196,7 +1227,7 @@ static Status extract_py_list(const DriverApi* driver, PyObject* pyobj, LaunchHe
         }
 
         ArrayType arrtype;
-        if (!get_array_repr(kind, item, helper.nested_arrays, arrtype))
+        if (!get_array_repr(kind, item, index_bitwidth, helper.nested_arrays, arrtype))
             return ErrorRaised;
 
         // TODO: nicer error messages
@@ -1244,6 +1275,8 @@ static Status extract_cuda_args(const DriverApi* driver,
                                 PyObject* const* pyargs, size_t num_pyargs,
                                 const Vec<PythonArgKind>& arg_kinds,
                                 const Vec<bool>& constant_arg_flags,
+                                const Vec<bool>& int64_index_flags,
+                                const Vec<bool>& int64_param_flags,
                                 LaunchHelper& helper) {
     CHECK(num_pyargs == arg_kinds.size());
     helper.cuargs.clear();
@@ -1253,23 +1286,26 @@ static Status extract_cuda_args(const DriverApi* driver,
     for (size_t i = 0; i < num_pyargs; ++i) {
         PyObject* pyobj = pyargs[i];
         bool is_constant = constant_arg_flags[i];
+        unsigned index_bitwidth = int64_index_flags[i] ? 64 : 32;
+        bool use_int64 = int64_param_flags[i];
         // TODO: apply is_constant to array args?
 
         switch (arg_kinds[i]) {
         case PythonArgKind::TorchTensorDlpack:
-            if (!extract_array<arrayrepr_torch_tensor_dlpack>(driver, pyobj, helper))
+            if (!extract_array<arrayrepr_torch_tensor_dlpack>(
+                    driver, pyobj, index_bitwidth, helper))
                 return ErrorRaised;
             break;
         case PythonArgKind::DlpackArray:
-            if (!extract_array<arrayrepr_dlpack>(driver, pyobj, helper))
+            if (!extract_array<arrayrepr_dlpack>(driver, pyobj, index_bitwidth, helper))
                 return ErrorRaised;
             break;
         case PythonArgKind::CudaArray:
-            if (!extract_array<arrayrepr_cuda_array_iface>(driver, pyobj, helper))
+            if (!extract_array<arrayrepr_cuda_array_iface>(driver, pyobj, index_bitwidth, helper))
                 return ErrorRaised;
             break;
         case PythonArgKind::PyLong:
-            if (!extract_py_long(pyobj, is_constant, helper)) return ErrorRaised;
+            if (!extract_py_long(pyobj, is_constant, use_int64, helper)) return ErrorRaised;
             break;
         case PythonArgKind::PyFloat:
             extract_py_float(pyobj, is_constant, helper);
@@ -1278,7 +1314,7 @@ static Status extract_cuda_args(const DriverApi* driver,
             if (!extract_py_bool(pyobj, is_constant, helper)) return ErrorRaised;
             break;
         case PythonArgKind::PyList:
-            if (!extract_py_list(driver, pyobj, helper)) return ErrorRaised;
+            if (!extract_py_list(driver, pyobj, index_bitwidth, helper)) return ErrorRaised;
             break;
         }
     }
@@ -1287,9 +1323,11 @@ static Status extract_cuda_args(const DriverApi* driver,
 
 static PyPtr parse_parameter_constraints(const Vec<int64_t>& constants,
                                          const Vec<ParameterKind>& param_kinds,
-                                         const Vec<bool>& constant_arg_flags) {
+                                         const Vec<bool>& constant_arg_flags,
+                                         const Vec<bool>& int64_param_flags) {
     size_t num_args = param_kinds.size();
     CHECK(num_args == constant_arg_flags.size());
+    CHECK(num_args == int64_param_flags.size());
     ConstantCursor cursor = {constants.data(), constants.size()};
     PyPtr param_constraints = steal(PyList_New(0));
     if (!param_constraints) return {};
@@ -1303,7 +1341,9 @@ static PyPtr parse_parameter_constraints(const Vec<int64_t>& constants,
             constraint = parse_pybool_constraint(cursor, constant_arg_flags[i]);
             break;
         case ParameterKind::Integer:
-            constraint = parse_pylong_constraint(cursor, constant_arg_flags[i]);
+            constraint = parse_pylong_constraint(
+                cursor, constant_arg_flags[i], int64_param_flags[i]
+            );
             break;
         case ParameterKind::Float:
             constraint = parse_pyfloat_constraint(cursor, constant_arg_flags[i]);
@@ -1323,8 +1363,10 @@ static PyPtr parse_parameter_constraints(const Vec<int64_t>& constants,
 static PyPtr make_signature(const Vec<int64_t>& constants,
                             const Vec<ParameterKind>& param_kinds,
                             const Vec<bool>& constant_arg_flags,
+                            const Vec<bool>& int64_param_flags,
                             const PyPtr& calling_convention) {
-    PyPtr parameters = parse_parameter_constraints(constants, param_kinds, constant_arg_flags);
+    PyPtr parameters = parse_parameter_constraints(constants, param_kinds, constant_arg_flags,
+                                                   int64_param_flags);
     if (!parameters) return {};
 
     PyObject* signature_module = get_signature_module();
@@ -1370,6 +1412,8 @@ struct TileContextDispatcher {
 
 namespace { struct TileDispatcher {
     Vec<bool> constant_arg_flags;
+    Vec<bool> int64_index_flags;
+    Vec<bool> int64_param_flags;
     TileContextDispatcher default_context_dispatcher;
 
     static PyTypeObject pytype;
@@ -1671,7 +1715,8 @@ static Result<PreparedLaunch> prepare_launch(
     }
 
     if (!extract_cuda_args(driver, pyargs, num_pyargs, profile_item->value.arg_kinds,
-                           dispatcher.constant_arg_flags, *helper)) {
+                           dispatcher.constant_arg_flags, dispatcher.int64_index_flags,
+                           dispatcher.int64_param_flags, *helper)) {
         return ErrorRaised;
     }
 
@@ -1687,7 +1732,8 @@ static Result<PreparedLaunch> prepare_launch(
         if (!cconv) return ErrorRaised;
 
         PyPtr signature = make_signature(
-                helper->constants, param_kinds, dispatcher.constant_arg_flags, cconv);
+                helper->constants, param_kinds, dispatcher.constant_arg_flags,
+                dispatcher.int64_param_flags, cconv);
         if (!signature) return ErrorRaised;
 
         Result<TileKernel> res = compile(driver, dispatcher_pyobj, signature.get(),
@@ -1919,23 +1965,23 @@ static Result<double> benchmark(const DriverApi* driver,
     return total_us;
 }
 
-static Result<Vec<bool>> parse_constant_arg_flags(PyObject* tuple) {
+static Result<Vec<bool>> parse_flags_tuple(PyObject* tuple) {
     if (!PyTuple_Check(tuple))
-        return raise(PyExc_TypeError, "constant_arg_flags must be a tuple");
+        return raise(PyExc_TypeError, "expected a tuple of booleans");
 
-    Vec<bool> constant_arg_flags;
+    Vec<bool> flags;
     Py_ssize_t tuple_size = PyTuple_GET_SIZE(tuple);
-    constant_arg_flags.reserve(tuple_size);
+    flags.reserve(tuple_size);
     for (Py_ssize_t i = 0; i < tuple_size; ++i) {
         PyObject* item = PyTuple_GET_ITEM(tuple, i);
         if (!PyBool_Check(item))
-            return raise(PyExc_TypeError, "constant_arg_flags must be a tuple of booleans");
+            return raise(PyExc_TypeError, "expected a tuple of booleans");
 
-        int is_constant = PyObject_IsTrue(item);
-        if (is_constant < 0) return ErrorRaised;
-        constant_arg_flags.push_back(static_cast<bool>(is_constant));
+        int value = PyObject_IsTrue(item);
+        if (value < 0) return ErrorRaised;
+        flags.push_back(static_cast<bool>(value));
     }
-    return constant_arg_flags;
+    return flags;
 }
 
 
@@ -1998,17 +2044,28 @@ PyTypeObject TileContext::pytype = {
 
 
 static int TileDispatcher_init(PyObject* self, PyObject* args, PyObject* kwargs) {
-    const char* keywords[] = {"", nullptr};
+    const char* keywords[] = {"", "", "", nullptr};
     PyObject* py_constant_arg_flags = nullptr;
-    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "O", const_cast<char**>(keywords),
-                                     &py_constant_arg_flags))
+    PyObject* py_int64_index_flags = nullptr;
+    PyObject* py_int64_param_flags = nullptr;
+    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "OOO", const_cast<char**>(keywords),
+                                     &py_constant_arg_flags, &py_int64_index_flags,
+                                     &py_int64_param_flags))
         return -1;
 
-    Result<Vec<bool>> constant_arg_flags = parse_constant_arg_flags(py_constant_arg_flags);
+    Result<Vec<bool>> constant_arg_flags = parse_flags_tuple(py_constant_arg_flags);
     if (!constant_arg_flags.is_ok()) return -1;
+
+    Result<Vec<bool>> int64_index_flags = parse_flags_tuple(py_int64_index_flags);
+    if (!int64_index_flags.is_ok()) return -1;
+
+    Result<Vec<bool>> int64_param_flags = parse_flags_tuple(py_int64_param_flags);
+    if (!int64_param_flags.is_ok()) return -1;
 
     TileDispatcher& dispatcher = py_unwrap<TileDispatcher>(self);
     dispatcher.constant_arg_flags = std::move(*constant_arg_flags);
+    dispatcher.int64_index_flags = std::move(*int64_index_flags);
+    dispatcher.int64_param_flags = std::move(*int64_param_flags);
     return 0;
 }
 
@@ -2052,12 +2109,14 @@ static PyObject* get_parameter_constraints_from_pyargs(PyObject* self, PyObject*
     if (!driver.is_ok()) return nullptr;
 
     if (!extract_cuda_args(*driver, kernel_args, num_kernel_args, kinds,
-                           dispatcher.constant_arg_flags, *helper)) {
+                           dispatcher.constant_arg_flags, dispatcher.int64_index_flags,
+                           dispatcher.int64_param_flags, *helper)) {
         return nullptr;
     }
 
     return parse_parameter_constraints(
-            helper->constants, param_kinds, dispatcher.constant_arg_flags).release();
+            helper->constants, param_kinds, dispatcher.constant_arg_flags,
+            dispatcher.int64_param_flags).release();
 }
 
 static Result<Grid> parse_grid(PyObject* tuple) {

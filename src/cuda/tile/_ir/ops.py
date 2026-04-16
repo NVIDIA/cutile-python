@@ -1326,12 +1326,20 @@ class GetArrayListItem(Operation, opcode="get_array_list_item"):
         )
 
         # Cast each of the i64 words to appropriate types
+        if list_ty.item_type.index_dtype.bitwidth >= 64:
+            # Already i64, no truncation needed
+            shape_stride_results = list(extracted_words[1:])
+        else:
+            shape_stride_results = [
+                bc.encode_TruncIOp(ctx.builder, ty_id, w, bc.IntegerOverflow.NONE)
+                for ty_id, w in zip(item_typeid_tuple[1:], extracted_words[1:], strict=True)
+            ]
+
         return (
             # Cast the first word to data pointer
             bc.encode_IntToPtrOp(ctx.builder, item_typeid_tuple[0], extracted_words[0]),
-            # Cast the remaining words to i32 shape/strides
-            *(bc.encode_TruncIOp(ctx.builder, ty, w, bc.IntegerOverflow.NONE)
-              for ty, w in zip(item_typeid_tuple[1:], extracted_words[1:], strict=True))
+            # Cast the remaining words to shape/stride types (i32 or i64)
+            *shape_stride_results
         )
 
 
@@ -2260,6 +2268,7 @@ def array_slice_impl(array: Var, axis: Var, start: Var, stop: Var) -> Var:
         array_ty.element_type,
         shape=new_shape_ty,
         strides=array_ty.strides,
+        index_dtype=array_ty.index_dtype,
     )
 
     array_val = array.get_aggregate()
@@ -2334,12 +2343,15 @@ class TileLoad(Operation, opcode="tile_load", memory_effect=MemoryEffect.LOAD):
     @override
     def generate_bytecode(self, ctx: BytecodeContext) -> tuple[bc.Value, bc.Value]:
         tile_type: TileTy = self.result_vars[0].get_type()
+        view_ty = self.view.get_type()
+        keep_i64 = (isinstance(view_ty, PartitionViewTy)
+                    and view_ty.array_ty.index_dtype.bitwidth > 32)
         res, res_token = bc.encode_LoadViewTkoOp(
             ctx.builder,
             tile_type=typeid(ctx.type_table, tile_type),
             result_token_type=ctx.type_table.Token,
             view=ctx.get_value(self.view),
-            index=ctx.index_tuple(self.index),
+            index=ctx.index_tuple(self.index, keep_i64=keep_i64),
             token=None if self.token is None else ctx.get_value(self.token),
             memory_ordering_semantics=memory_order_to_bytecode[self.memory_order],
             memory_scope=memory_scope_to_bytecode[self.memory_scope],
@@ -2358,6 +2370,11 @@ def _tile_load_impl_inner(array: Var, index_items: tuple[Var, ...], shape: Seque
     latency = require_optional_constant_int(latency)
     allow_tma = require_optional_constant_bool(allow_tma)
     _check_load_store_hints(latency, allow_tma)
+
+    # Promote indices to i64 for big arrays so that blockId * tileSize
+    # doesn't overflow i32 in the backend's address computation.
+    if array_ty.index_dtype.bitwidth > 32:
+        index_items = tuple(astype(idx, array_ty.index_dtype) for idx in index_items)
 
     view = make_partition_view(array, broadcasted_shape, order, padding_mode)
     res_ty = make_tile_ty(array_ty.dtype, broadcasted_shape)
@@ -2482,12 +2499,15 @@ class TileStore(Operation, opcode="tile_store", memory_effect=MemoryEffect.STORE
 
     @override
     def generate_bytecode(self, ctx: BytecodeContext) -> bc.Value:
+        view_ty = self.view.get_type()
+        keep_i64 = (isinstance(view_ty, PartitionViewTy)
+                    and view_ty.array_ty.index_dtype.bitwidth > 32)
         return bc.encode_StoreViewTkoOp(
             ctx.builder,
             result_token_type=ctx.type_table.Token,
             tile=ctx.get_value(self.tile),
             view=ctx.get_value(self.view),
-            index=ctx.index_tuple(self.index),
+            index=ctx.index_tuple(self.index, keep_i64=keep_i64),
             token=None if self.token is None else ctx.get_value(self.token),
             memory_ordering_semantics=memory_order_to_bytecode[self.memory_order],
             memory_scope=memory_scope_to_bytecode[self.memory_scope],
@@ -2516,6 +2536,11 @@ def _tile_store_impl_inner(array: Var, index_items: tuple[Var, ...], tile: Var,
     latency = require_optional_constant_int(latency)
     allow_tma = require_optional_constant_bool(allow_tma)
     _check_load_store_hints(latency, allow_tma)
+
+    # Promote indices to i64 for big arrays so that blockId * tileSize
+    # doesn't overflow i32 in the backend's address computation.
+    if array_ty.index_dtype.bitwidth > 32:
+        index_items = tuple(astype(idx, array_ty.index_dtype) for idx in index_items)
 
     tile = reshape(tile, broadcasted_shape)
     view = make_partition_view(array, broadcasted_shape, order, PaddingMode.UNDETERMINED)

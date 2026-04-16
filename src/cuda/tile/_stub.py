@@ -6,11 +6,12 @@ from __future__ import annotations
 import functools
 import inspect
 import textwrap
-from typing import Annotated, TypeVar, Union, Literal, Optional, Protocol
+from dataclasses import dataclass
+from typing import Annotated, Any, TypeVar, Union, Literal, Optional, Protocol
 
 from cuda.tile._memory_model import MemoryOrder, MemoryScope
 from cuda.tile._execution import function, stub
-from cuda.tile._datatype import DType
+from cuda.tile._datatype import DType, int32, int64
 from cuda.tile._numeric_semantics import RoundingMode, PaddingMode
 
 
@@ -844,6 +845,84 @@ Constant = Annotated[T, ConstantAnnotation()]
 Constant.__doc__ = """A type hint indicating that a value shall be |constant embedded|.
 It can be used either with (``Constant[int]``) or without (``Constant``, meaning a constant of any
 type) an underlying type hint.
+"""
+
+
+###############################################################################
+# Type Annotations
+
+
+@dataclass(frozen=True, kw_only=True)
+class ArrayAnnotation:
+    """A ``typing.Annotated`` metadata class for array parameters.
+
+    Attributes:
+        index_dtype: Data type for shape and stride values. Must be ``int32`` or
+            ``int64``. Use ``int64`` to enable support for tensors whose shape or
+            stride values exceed the range of a 32-bit integer.
+    """
+    index_dtype: DType
+
+    def __post_init__(self):
+        if self.index_dtype not in (int32, int64):
+            raise ValueError(f"`index_dtype` must be int32 or int64, got {self.index_dtype}")
+
+
+@dataclass(frozen=True, kw_only=True)
+class ScalarAnnotation:
+    """A ``typing.Annotated`` metadata class for scalar parameters.
+
+    Attributes:
+        dtype: Data type of the scalar. Must be ``int32`` or ``int64``.
+    """
+    dtype: DType
+
+    def __post_init__(self):
+        if self.dtype not in (int32, int64):
+            raise ValueError(f"`dtype` must be int32 or int64, got {self.dtype}")
+
+
+@dataclass(frozen=True, kw_only=True)
+class ListAnnotation:
+    """A ``typing.Annotated`` metadata class for list parameters.
+
+    Attributes:
+        element: Annotation for the list's element type. Currently must be an
+            :class:`ArrayAnnotation`.
+    """
+    element: Any
+
+    def __post_init__(self):
+        if not isinstance(self.element, ArrayAnnotation):
+            raise TypeError(
+                f"`element` must be an ArrayAnnotation,"
+                f" got {type(self.element).__name__}")
+
+
+IndexedWithInt64 = Annotated[T, ArrayAnnotation(index_dtype=int64)]
+IndexedWithInt64.__doc__ = """A type hint indicating that an array uses i64 for shape and stride.
+
+Example::
+
+    @ct.kernel
+    def my_kernel(big: ct.IndexedWithInt64, small):
+        # big.shape[i] is i64, small.shape[i] is i32
+        ...
+"""
+
+ScalarInt64 = Annotated[T, ScalarAnnotation(dtype=int64)]
+ScalarInt64.__doc__ = """A type hint indicating that a scalar integer parameter uses int64.
+
+By default, integer kernel parameters are inferred as int32. Use this annotation to
+force int64 inference for parameters that need the wider range.
+
+Example::
+
+    @ct.kernel
+    def my_kernel(small_int, large_int: ct.ScalarInt64):
+        # small_int is inferred as int32
+        # large_int is inferred as int64
+        ...
 """
 
 

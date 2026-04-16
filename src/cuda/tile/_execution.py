@@ -105,7 +105,8 @@ class kernel(TileDispatcher):
             occupancy=occupancy,
             opt_level=opt_level
         )
-        super().__init__(ann_func.constant_parameter_mask)
+        super().__init__(ann_func.constant_parameter_mask, ann_func.int64_index_parameter_mask,
+                         ann_func.int64_parameter_mask)
         self._annotated_function = ann_func
         self._compiler_options = compiler_options
 

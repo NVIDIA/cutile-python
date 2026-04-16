@@ -362,10 +362,13 @@ class BytecodeContext:
                         for item_ty, item_val in zip(ty.value_types, value, strict=True)), ())
         return self.constant(value, ty),
 
-    def index_tuple(self, index: tuple[Var, ...]) -> Tuple[bc.Value, ...]:
+    def index_tuple(self,
+                    index: tuple[Var, ...], *, keep_i64: bool = False) -> Tuple[bc.Value, ...]:
         i32_tile_ty = self.type_table.tile(self.type_table.I32, ())
         item_types = tuple(x.get_type() for x in index)
         index_values = tuple(self.get_value(x) for x in index)
+        if keep_i64:
+            return index_values
         return tuple(
             bc.encode_TruncIOp(self.builder, i32_tile_ty, v, bc.IntegerOverflow.NONE)
             if (t.dtype if isinstance(t, TileTy) else t).bitwidth > 32 else v

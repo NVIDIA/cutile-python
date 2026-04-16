@@ -5,8 +5,11 @@ import pytest
 
 import cuda.tile as ct
 import torch
-
+import math
 from cuda.tile import TileTypeError
+from cuda.tile._bytecode import BytecodeVersion
+from util import assert_equal
+from conftest import requires_tileiras
 
 
 @ct.kernel
@@ -64,3 +67,43 @@ def test_array_aug_setitem():
     x = torch.zeros((10,), device='cuda')
     with pytest.raises(TileTypeError, match="Arrays are not directly subscriptable"):
         ct.launch(torch.cuda.current_stream(), (1,), kernel, (x,))
+
+
+@ct.kernel
+def int64_index_inc1(x: ct.IndexedWithInt64, y: ct.IndexedWithInt64, TILE: ct.Constant[int]):
+    bid = ct.bid(0)
+    tx = ct.load(x, index=(bid, 0), shape=(TILE, 1))
+    ct.store(y, index=(bid, 0), tile=tx + 1)
+
+
+@requires_tileiras(BytecodeVersion.V_13_3)
+def test_int64_index_inc1():
+    """
+    This test may be excluded from selected CI jobs with
+    ``-k "not int64_index"`` because it requires a very large allocation.
+    Keep ``int64_index`` in the test name unless those CI filters are updated.
+    """
+    n = (1 << 32) + 5
+
+    x = torch.randint(-128, 127, (n, 1), device='cuda', dtype=torch.int8)
+    y = torch.zeros(n, 1, device='cuda', dtype=torch.int8)
+
+    TILE = 2048
+    grid = (math.ceil(n / TILE), 1, 1)
+    ct.launch(torch.cuda.current_stream(), grid, int64_index_inc1, (x, y, TILE))
+    assert_equal(y, x + 1)
+
+
+def test_int64_index_overflow_without_annotation():
+    import pytest
+    x = torch.randn(1, 25165824, 1, 128, device='cuda', dtype=torch.bfloat16)
+    out = torch.zeros(1, 25165824, 1, 128, device='cuda', dtype=torch.bfloat16)
+
+    @ct.kernel
+    def kernel(value, out_):
+        pass
+
+    with pytest.raises(OverflowError):
+        ct.launch(torch.cuda.current_stream(),
+                  (1,),
+                  kernel, (x, out))

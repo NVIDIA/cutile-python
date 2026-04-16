@@ -104,7 +104,7 @@ class _HackKernel(_cext.TileDispatcher):
     def __init__(self, cubin: bytes, func_name: str):
         self._cubin = cubin
         self._func_name = func_name
-        super().__init__((False, False, False))
+        super().__init__((False, False, False), (False, False, False), (False, False, False))
 
     def _compile(self, signature, ctx):
         assert len(signature.parameters) == 3

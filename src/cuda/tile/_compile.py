@@ -23,7 +23,6 @@ from types import FunctionType
 from typing import Optional, Sequence
 import zipfile
 
-from cuda.tile import int32
 from cuda.tile._annotated_function import AnnotatedFunction, get_annotated_function
 from cuda.tile._bytecode.version import BytecodeVersion
 from cuda.tile._cext import get_compute_capability, TileContext, default_tile_context
@@ -157,9 +156,6 @@ def _create_kernel_parameters(parameter_constraints: Sequence[ParameterConstrain
 
 
 def _get_array_ty(param: ArrayConstraint):
-    if param.index_dtype != int32:
-        raise NotImplementedError("Only int32 is currently supported as array index type")
-
     for static_stride, bound in zip(param.stride_constant, param.stride_lower_bound_incl,
                                     strict=True):
         if static_stride is not None:
@@ -170,7 +166,8 @@ def _get_array_ty(param: ArrayConstraint):
 
     return ArrayTy(make_tile_ty(param.dtype, ()),
                    shape=(None,) * param.ndim,
-                   strides=param.stride_constant)
+                   strides=param.stride_constant,
+                   index_dtype=param.index_dtype)
 
 
 def _log_mlir(bytecode_buf):

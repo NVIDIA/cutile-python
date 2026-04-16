@@ -4,9 +4,14 @@
 
 import torch
 import pytest
+import math
 
 import cuda.tile as ct
+from cuda.tile._bytecode import BytecodeVersion
+from cuda.tile._datatype import int64
+from typing import Annotated
 from util import assert_equal
+from conftest import requires_tileiras
 
 
 @ct.kernel
@@ -49,3 +54,41 @@ def test_add_list_of_arrays(kernel):
 
     ct.launch(torch.cuda.current_stream(), (1,), kernel, (arrays, out))
     assert_equal(out, ref)
+
+
+ListOfArrayIndexedWithInt64 = Annotated[
+    list, ct.ListAnnotation(element=ct.ArrayAnnotation(index_dtype=int64))
+]
+
+
+@ct.kernel
+def add_int64_index_arrays(
+    arrays: ListOfArrayIndexedWithInt64,
+    out: ct.IndexedWithInt64,
+    TILE: ct.Constant[int]
+):
+    bid = ct.bid(0)
+    res = ct.zeros((TILE, 1), dtype=out.dtype)
+    for i in range(len(arrays)):
+        t = ct.load(arrays[i], (bid, 0), (TILE, 1))
+        res += t
+    ct.store(out, (bid, 0), res)
+
+
+@requires_tileiras(BytecodeVersion.V_13_3)
+def test_add_list_of_int64_index_arrays():
+    """
+    Sum a list of large 2D arrays whose stride[0] exceeds INT32_MAX.
+
+    This test may be excluded from selected CI jobs with
+    ``-k "not int64_index"`` because it requires a very large allocation.
+    Keep ``int64_index`` in the test name unless those CI filters are updated.
+    """
+    TILE = 2048
+    n = (1 << 32) + TILE  # shape[0] > UINT32_MAX
+    arrays = [torch.full((n, 1), i + 1, device='cuda', dtype=torch.int8) for i in range(3)]
+    out = torch.zeros(n, 1, device='cuda', dtype=torch.int8)
+
+    grid = (math.ceil(n / TILE), 1, 1)
+    ct.launch(torch.cuda.current_stream(), grid, add_int64_index_arrays, (arrays, out, TILE))
+    assert (out == 6).all().item()
