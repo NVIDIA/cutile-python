@@ -145,9 +145,9 @@ class kernel(TileDispatcher):
             new_kernel = kernel.replace_hints(num_ctas=4)
 
             # compile with new hints
-            ct.launch(torch.cuda.current_stream(), (1,), kernel, ())
+            ct.launch(torch.cuda.current_stream(), (1,), new_kernel, ())
             # cache hit
-            ct.launch(torch.cuda.current_stream(), (1,), kernel, ())
+            ct.launch(torch.cuda.current_stream(), (1,), new_kernel, ())
         """
         compiler_options = dataclasses.replace(self._compiler_options, **hints)
         return kernel(self._pyfunc, **dataclasses.asdict(compiler_options))

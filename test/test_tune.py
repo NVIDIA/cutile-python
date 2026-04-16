@@ -12,6 +12,7 @@ from util import assert_equal
 from cuda.tile._exception import TileCompilerTimeoutError, TileCompilerExecutionError
 from cuda.tile.tune import _tune as tune_mod
 from cuda.tile.tune import exhaustive_search, TuningResult
+from operator import attrgetter
 
 
 @ct.kernel
@@ -33,14 +34,9 @@ def test_exhaustive_search_returns_best(monkeypatch):
     def fake_time_us(stream, grid, kernel, get_args):
         args = get_args()
         cfg = args[1]
-        return times[cfg], 1
+        return times[cfg], 1, 20
 
     monkeypatch.setattr(tune_mod, "_time_us", fake_time_us, raising=True)
-
-    records = []
-
-    def cb(cfg, time_us=None, error=None):
-        records.append((cfg, time_us, error))
 
     result = exhaustive_search(
             search_space,
@@ -48,18 +44,17 @@ def test_exhaustive_search_returns_best(monkeypatch):
             grid_fn=partial(grid_fn_on_x, x),
             kernel=dummy_kernel,
             args_fn=lambda cfg: (x, cfg),
-            callback=cb,
     )
 
     assert isinstance(result, TuningResult)
-    assert result.best_config == 128
-    assert result.best_time_us == 1.0
-    assert result.errors == ()
-    assert len(result.timings) == 3
-    assert (128, 1.0) in result.timings
+    assert result.best.config == 128
+    assert result.best.mean_us == 1.0
+    assert result.failures == ()
+    assert len(result.successes) == 3
     assert "3 succeeded, 0 failed" in str(result)
 
-    assert records == [(64, 5.0, None), (128, 1.0, None), (256, 3.0, None)]
+    assert list(map(attrgetter("config"), result.successes)) == [64, 128, 256]
+    assert list(map(attrgetter("mean_us"), result.successes)) == [5.0, 1.0, 3.0]
 
 
 # ========== Test empty search space ==========
@@ -89,14 +84,9 @@ def test_skips_failed_configs(monkeypatch):
         cfg = args[1]
         if cfg in failures:
             raise failures[cfg]
-        return 2.0, 1
+        return 2.0, 1, 20
 
     monkeypatch.setattr(tune_mod, "_time_us", fake_time_us, raising=True)
-
-    records = []
-
-    def cb(cfg, time_us=None, error=None):
-        records.append((cfg, time_us, error))
 
     result = exhaustive_search(
         [64, 128, 256],
@@ -104,34 +94,24 @@ def test_skips_failed_configs(monkeypatch):
         grid_fn=partial(grid_fn_on_x, x),
         kernel=dummy_kernel,
         args_fn=lambda cfg: (x, cfg),
-        callback=cb,
     )
 
-    assert result.best_config == 128
-    assert result.best_time_us == 2.0
-    assert len(result.errors) == 2
+    assert result.best.config == 128
+    assert result.best.mean_us == 2.0
+    assert len(result.failures) == 2
 
-    err_cfg, err_type, err_msg = result.errors[0]
+    err_cfg, err_type, err_msg = result.failures[0]
     assert (err_cfg, err_type) == (64, "TileCompilerTimeoutError")
     assert "simulated timeout" in err_msg
 
-    err_cfg, err_type, _ = result.errors[1]
+    err_cfg, err_type, _ = result.failures[1]
     assert (err_cfg, err_type) == (256, "TileCompilerExecutionError")
     assert "1 succeeded, 2 failed" in str(result)
 
-    assert len(records) == 3
-
-    cfg, time_us, error = records[0]
-    assert cfg == 64
-    assert time_us is None
-    err_type, err_msg = error
-    assert err_type == "TileCompilerTimeoutError"
-    assert "simulated timeout" in err_msg
-
-    assert records[1] == (128, 2.0, None)
-
-    cfg, time_us, _ = records[2]
-    assert (cfg, time_us) == (256, None)
+    assert len(result.successes) == 1
+    m = result.successes[0]
+    assert m.config == 128
+    assert m.mean_us == 2.0
 
 
 # ========== Test all configs fail ==========
@@ -177,9 +157,9 @@ def test_inplace_plus_one():
 
     ct.launch(
         torch.cuda.current_stream(),
-        (math.ceil(1024 / result.best_config), 1, 1),
+        (math.ceil(1024 / result.best.config), 1, 1),
         inplace_kernel,
-        (x, result.best_config),
+        (x, result.best.config),
     )
     assert_equal(x, original_x + 1)
 
@@ -206,4 +186,4 @@ def test_tune_list_of_arrays():
         args_fn=lambda cfg: (arrays, out.clone()),
     )
 
-    assert len(result.errors) == 0
+    assert len(result.failures) == 0

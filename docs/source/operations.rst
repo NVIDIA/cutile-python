@@ -255,8 +255,20 @@ Enums
 Autotuning
 ----------
 .. autosummary::
-   :toctree: generated
    :nosignatures:
 
    tune.exhaustive_search
+
+.. autosummary::
+   :toctree: generated
+   :nosignatures:
+   :template: autosummary/dataclass_no_init.rst
+
    tune.TuningResult
+   tune.Measurement
+
+.. autosummary::
+   :nosignatures:
+
+   kernel.replace_hints
+   compiler_timeout

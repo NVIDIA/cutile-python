@@ -145,10 +145,8 @@ def tune_cutile_fmha(Q: torch.Tensor,
                 "num_ctas": cfg.num_ctas,
                 "occupancy": cfg.occupancy,
             },
-            callback=lambda cfg, timing, error: print('x' if error else '.', end='')
         )
-    print(result)
-    return result.best_config
+    return result.best.config
 
 
 def torch_fmha(Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor,

@@ -56,6 +56,12 @@ Example
 Autotuning
 ----------
 
+:func:`tune.exhaustive_search` provides a reliable way to measure
+kernel performance given a finite search space of configurations.
+
+.. autofunction:: cuda.tile.tune.exhaustive_search
+
+
 To achieve consistent result with tuning, it is best to fix GPU clock and memory clock.
 
 Enable persistent mode::
@@ -72,5 +78,4 @@ Fix graphics and memory clocks::
     nvidia-smi -i <GPU_ID> -lmc <MIN_CLOCK>,<MAX_CLOCK>
 
 
-The :ref:`cuda.tile.tune module <operations-tuning>` provides utilities for finding the best
-kernel configuration by benchmarking over a search space.
+See :ref:`cuda.tile.tune module <operations-tuning>` for more details.

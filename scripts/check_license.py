@@ -11,7 +11,7 @@ skip_patterns = [
     "uv.lock",
     "LICENSES/",
     "changelog.d/",
-    "docs/source/_templates/doctest/"
+    "docs/source/_templates/"
 ]
 
 max_lines_to_check = 10
