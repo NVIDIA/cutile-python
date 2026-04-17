@@ -53,11 +53,13 @@ Example
     :end-before: example-end
 
 
+.. _autotuning:
+
 Autotuning
 ----------
 
-:func:`tune.exhaustive_search` provides a reliable way to measure
-kernel performance given a finite search space of configurations.
+:func:`tune.exhaustive_search` provides a convenient way to measure kernel performance
+on a finite space of configurations and return the best configuration.
 
 .. autofunction:: cuda.tile.tune.exhaustive_search
 
@@ -76,6 +78,3 @@ Fix graphics and memory clocks::
 
     nvidia-smi -i <GPU_ID> -lgc <MIN_CLOCK>,<MAX_CLOCK>
     nvidia-smi -i <GPU_ID> -lmc <MIN_CLOCK>,<MAX_CLOCK>
-
-
-See :ref:`cuda.tile.tune module <operations-tuning>` for more details.

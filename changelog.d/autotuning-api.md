@@ -1,3 +1,0 @@
-- Add an autotuning API `cuda.tile.tune.exhaustive_search` that evaluates a search space of kernel configurations and returns the best one.
-- Add a helper function `kernel.replace_hints()` to get a new kernel with updated hints.
-- Add a helper function `compiler_timeout()` for temporarily setting the timeout on the tileiras compiler.

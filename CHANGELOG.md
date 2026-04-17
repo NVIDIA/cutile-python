@@ -3,6 +3,32 @@
 
 Release Notes
 =============
+1.3.0 (2026-04-20)
+------------------
+### Features
+- Add API for ahead-of-time compilation and export via {py:func}`compilation.export_kernel() <cuda.tile.compilation.export_kernel>`.<br>
+  See the {doc}`Compilation and Export </compilation>` section for more details.
+- Add API for autotuning via {py:func}`tune.exhaustive_search() <cuda.tile.tune.exhaustive_search>` and the following helpers:
+    - Add API {py:meth}`kernel.replace_hints() <cuda.tile.kernel.replace_hints>` to get a new kernel with updated hints.
+    - Add API function {py:func}`compiler_timeout() <cuda.tile.compiler_timeout>` for temporarily setting the
+      timeout on the tileiras compiler.<br>
+  See the {ref}`Autotuning <autotuning>` section for more details.
+- Add API {py:meth}`Array.tiled_view() <cuda.tile.Array.tiled_view>` to create a tiled view of an array
+  with a fixed tile shape and padding mode.
+
+### Enhancements
+- Add support for specifying `memory_order` and `memory_scope` on `cuda.tile.load` and
+  `cuda.tile.store` operations.
+- Improve `print()` to handle tuple and nested fstring.
+
+
+### Bug Fixes
+- Fix a bug where restricted float dtype with simple reduce and scan did not
+  raise proper `TileTypeError`.
+
+### ABI Changes
+- Change kernel ABI convention to omit parameters annotated with `cuda.tile.Constant`.
+
 1.2.0 (2026-03-05)
 ------------------
 ### CTK 13.2 features
