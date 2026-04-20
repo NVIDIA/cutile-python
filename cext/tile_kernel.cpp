@@ -27,6 +27,7 @@ static PyObject* g_data_pyunicode;
 static PyObject* g_strides_pyunicode;
 static PyObject* g___dlpack___pyunicode;
 static PyObject* g_compile_pyunicode;
+static PyObject* g_dynamic_shared_memory_bytes_pyunicode;
 
 static PyTypeObject* g_torch_Tensor_type;
 static PyTypeObject* g_torch_cuda_Stream_type;
@@ -1751,6 +1752,7 @@ static Status launch(const DriverApi* driver,
                      PyObject* dispatcher_pyobj,
                      Grid grid,
                      Grid block,
+                     unsigned dynamic_shared_memory_bytes,
                      CUstream launch_stream,
                      PyObject* const* pyargs,
                      Py_ssize_t num_pyargs) {
@@ -1767,7 +1769,7 @@ static Status launch(const DriverApi* driver,
             reinterpret_cast<CUfunction>(prep->kernel),
             grid.dims[0], grid.dims[1], grid.dims[2],
             block.dims[0], block.dims[1], block.dims[2],
-            0, // shared memory size set by driver
+            dynamic_shared_memory_bytes,
             launch_stream,
             prep->helper->cuarg_pointers.data(),
             nullptr);
@@ -2140,7 +2142,8 @@ static Status parse_launch_args(PyObject* const* args, Py_ssize_t nargs, const c
 }
 
 static PyObject* launch_impl(PyObject* const* args, Py_ssize_t nargs,
-                             const char* signature, bool with_block) {
+                             const char* signature, unsigned dynamic_shared_memory_bytes,
+                             bool with_block) {
     LaunchArgs launch_args;
     if (!parse_launch_args(args, nargs, signature, with_block, &launch_args))
         return nullptr;
@@ -2149,7 +2152,8 @@ static PyObject* launch_impl(PyObject* const* args, Py_ssize_t nargs,
     if (!driver.is_ok()) return nullptr;
 
     if (!launch(*driver, launch_args.dispatcher, launch_args.grid, launch_args.block,
-                launch_args.stream, launch_args.kernel_args, launch_args.num_kernel_args))
+                dynamic_shared_memory_bytes, launch_args.stream, launch_args.kernel_args,
+                launch_args.num_kernel_args))
         return nullptr;
 
     return Py_NewRef(Py_None);
@@ -2158,13 +2162,47 @@ static PyObject* launch_impl(PyObject* const* args, Py_ssize_t nargs,
 #define LAUNCH_SIGNATURE "launch(stream, grid, kernel, kernel_args, /)"
 
 static PyObject* cuda_tile_launch(PyObject*, PyObject* const* args, Py_ssize_t nargs) {
-    return launch_impl(args, nargs, LAUNCH_SIGNATURE, /*with_block=*/ false);
+    return launch_impl(args, nargs, LAUNCH_SIGNATURE,
+                       /*dynamic_shared_memory_bytes=*/ 0,
+                       /*with_block=*/ false);
 }
 
-#define LAUNCH_WITH_BLOCK_SIGNATURE "launch(stream, grid, block, kernel, kernel_args, /)"
+#define LAUNCH_EXTENDED_SIGNATURE "launch(stream, grid, block, kernel, kernel_args, /,"\
+                                  " *, dynamic_shared_memory_bytes=None)"
 
-static PyObject* launch_with_block(PyObject*, PyObject* const* args, Py_ssize_t nargs) {
-    return launch_impl(args, nargs, LAUNCH_WITH_BLOCK_SIGNATURE, /*with_block=*/ true);
+static PyObject* launch_extended(PyObject*, PyObject* const* args, Py_ssize_t nargs,
+                                 PyObject* kwnames) {
+    unsigned dynamic_shared_memory_bytes = 0;
+    if (kwnames) {
+        Py_ssize_t num_kwargs = PyTuple_GET_SIZE(kwnames);
+        if (num_kwargs > 1) {
+            return PyErr_Format(PyExc_TypeError,
+                                "Too many keyword arguments to " LAUNCH_EXTENDED_SIGNATURE);
+        }
+        if (num_kwargs) {
+            PyObject* keyword = PyTuple_GET_ITEM(kwnames, 0);
+            if (PyUnicode_Compare(keyword, g_dynamic_shared_memory_bytes_pyunicode)) {
+                return PyErr_Format(
+                        PyExc_TypeError,
+                        "Unexpected keyword argument '%U' to " LAUNCH_EXTENDED_SIGNATURE,
+                        keyword);
+            }
+            PyObject* py_smem_size = args[nargs];
+            if (py_smem_size != Py_None) {
+                unsigned long smem_size_ul = PyLong_AsUnsignedLong(py_smem_size);
+                if (PyErr_Occurred()) return nullptr;
+
+                if (smem_size_ul > UINT_MAX) {
+                    PyErr_SetString(PyExc_OverflowError,
+                                    "dynamic_shared_memory_bytes is out of range");
+                    return nullptr;
+                }
+                dynamic_shared_memory_bytes = static_cast<unsigned>(smem_size_ul);
+            }
+        }
+    }
+    return launch_impl(args, nargs, LAUNCH_EXTENDED_SIGNATURE, dynamic_shared_memory_bytes,
+                       /*with_block=*/ true);
 }
 
 #define BENCHMARK_SIGNATURE "_benchmark(stream, grid, kernel, pyargs_tuples, /)"
@@ -2297,16 +2335,17 @@ static PyMethodDef functions[] = {
     nullptr
 };
 
-// Add the launch_with_block() function separately because we want its name
+// Add the launch_extended() function separately because we want its name
 // to be just "launch"
-static Status add_launch_with_block_func(PyObject* m) {
-    static PyMethodDef launch_with_block_def = {
-        "launch", reinterpret_cast<PyCFunction>(launch_with_block), METH_FASTCALL,
-        LAUNCH_WITH_BLOCK_SIGNATURE"\n"
+static Status add_launch_extended_func(PyObject* m) {
+    static PyMethodDef launch_extended_def = {
+        "launch", reinterpret_cast<PyCFunction>(launch_extended),
+        METH_FASTCALL | METH_KEYWORDS,
+        LAUNCH_EXTENDED_SIGNATURE"\n"
         "--\n\n"
     };
-    PyPtr func = steal(PyCFunction_New(&launch_with_block_def, m));
-    if (PyModule_AddObjectRef(m, "launch_with_block", func.get()) < 0)
+    PyPtr func = steal(PyCFunction_New(&launch_extended_def, m));
+    if (PyModule_AddObjectRef(m, "launch_extended", func.get()) < 0)
         return ErrorRaised;
     return OK;
 }
@@ -2322,6 +2361,7 @@ Status tile_kernel_init(PyObject* m) {
     INIT_STRING_CONSTANT(strides);
     INIT_STRING_CONSTANT(__dlpack__);
     INIT_STRING_CONSTANT(compile);
+    INIT_STRING_CONSTANT(dynamic_shared_memory_bytes);
 
     g_stream_buffer_pool_by_ctx_id = new StreamBufferPoolMap();
 
@@ -2355,7 +2395,7 @@ Status tile_kernel_init(PyObject* m) {
     if (PyModule_AddFunctions(m, functions) < 0)
         return ErrorRaised;
 
-    if (!add_launch_with_block_func(m))
+    if (!add_launch_extended_func(m))
         return ErrorRaised;
 
     if (!init_default_tile_context()) return ErrorRaised;

@@ -15,12 +15,14 @@ def launch(stream,
     ...
 
 
-def launch_with_block(stream,
-                      grid: tuple[int] | tuple[int, int] | tuple[int, int, int],
-                      block: tuple[int] | tuple[int, int] | tuple[int, int, int],
-                      kernel,
-                      kernel_args: tuple[Any, ...],
-                      /):
+def launch_extended(stream,
+                    grid: tuple[int] | tuple[int, int] | tuple[int, int, int],
+                    block: tuple[int] | tuple[int, int] | tuple[int, int, int],
+                    kernel,
+                    kernel_args: tuple[Any, ...],
+                    /,
+                    *,
+                    dynamic_shared_memory_bytes=None):
     ...
 
 
