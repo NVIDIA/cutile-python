@@ -181,8 +181,7 @@ def torch_batch_matmul(bs, A, B, C):
             A_row = A[i].contiguous()
             B_col = B[i].transpose(-2, -1).contiguous().transpose(-2, -1)
             C[i] = torch._scaled_mm(
-                A_row, B_col, scale_a=inv_sa, scale_b=inv_sb, out_dtype=torch.float32,
-                use_fast_accum=True
+                A_row, B_col, scale_a=inv_sa, scale_b=inv_sb, out_dtype=torch.float32
             )
 
 

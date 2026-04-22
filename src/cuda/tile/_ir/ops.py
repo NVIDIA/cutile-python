@@ -3217,8 +3217,9 @@ class TileMma(Operation, opcode="tile_mma"):
             return bc.encode_MmaIOp(ctx.builder, res_typeid, x_value, y_value,
                                     acc_value, signedness_lhs, signedness_rhs)
         else:
+            # TODO: consider expose fast_acc
             return bc.encode_MmaFOp(ctx.builder, res_typeid, x_value, y_value,
-                                    acc_value)
+                                    acc_value, fast_acc=False)
 
 
 @impl(ct.mma)

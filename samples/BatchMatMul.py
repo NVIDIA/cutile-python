@@ -80,7 +80,7 @@ def bmm(a: torch.Tensor, b: torch.Tensor, out_dtype: torch.dtype) -> torch.Tenso
     output = torch.empty((Batch, M, N), device=a.device, dtype=out_dtype)
 
     # --- Determine Tile Shapes for Optimization (Fixed for float16 as per previous request) ---
-    tm_val, tn_val, tk_val = 128, 256, 64  # Larger tiles for Tensor Core benefits
+    tm_val, tn_val, tk_val = 128, 256, 128  # Larger tiles for Tensor Core benefits
 
     # --- Grid calculation for standard 3D tiled kernel ---
     grid = (Batch, ceil(M / tm_val), ceil(N / tn_val))
@@ -103,8 +103,7 @@ def torch_batch_matmul_fp8(A: torch.Tensor, B: torch.Tensor) -> torch.Tensor:
         A_row = A[i].contiguous()
         B_col = B[i].transpose(-2, -1).contiguous().transpose(-2, -1)
         C[i] = torch._scaled_mm(
-            A_row, B_col, scale_a=inv_sa, scale_b=inv_sb, out_dtype=torch.float32,
-            use_fast_accum=True
+            A_row, B_col, scale_a=inv_sa, scale_b=inv_sb, out_dtype=torch.float32
         )
     return C
 

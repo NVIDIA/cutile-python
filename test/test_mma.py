@@ -125,7 +125,7 @@ def test_mma_fp8(tile_size, case):
     C = torch.ones((m, n), dtype=case.acc_dtype, device="cuda")
     scale = torch.tensor([1.0], dtype=torch.float32, device="cuda")
     try:
-        ref = torch._scaled_mm(A, B.T, scale, scale, out_dtype=C.dtype, use_fast_accum=True) + C
+        ref = torch._scaled_mm(A, B.T, scale, scale, out_dtype=C.dtype) + C
     except (RuntimeError, ValueError) as e:
         assert 'Multiplication of two Float8_e5m2 matrices is not supported' in str(e)
         ref = None
@@ -280,7 +280,7 @@ def test_matmul_fp8(tile_size, dtype):
     scale = torch.tensor([1.0], dtype=torch.float32, device="cuda")
     try:
         ref = torch._scaled_mm(A, B.T, scale, scale,
-                               out_dtype=torch.float16, use_fast_accum=True)
+                               out_dtype=torch.float16)
     except (RuntimeError, ValueError) as e:
         assert 'Multiplication of two Float8_e5m2 matrices is not supported' in str(e)
         ref = None

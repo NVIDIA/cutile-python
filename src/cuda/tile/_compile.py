@@ -571,6 +571,7 @@ def _find_compiler_bin() -> _CompilerBinary:
 _SUPPORTED_VERSIONS = [
     BytecodeVersion.V_13_1,
     BytecodeVersion.V_13_2,
+    BytecodeVersion.V_13_3,
 ]
 
 

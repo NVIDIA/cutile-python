@@ -63,6 +63,18 @@ class MemoryScope(enum.Enum):
     SYS = b"\x02"
 
 
+class ProgramIDDim(enum.Enum):
+    X = b"\x00"
+    Y = b"\x01"
+    Z = b"\x02"
+
+
+class PtrAttr(enum.Enum):
+    NONE = b"\x00"
+    UNICAST = b"\x01"
+    MULTICAST = b"\x02"
+
+
 class RoundingMode(enum.Enum):
     NEAREST_EVEN = b"\x00"
     ZERO = b"\x01"
@@ -313,8 +325,8 @@ def encode_AtomicRedViewTkoOp(  # since 13.3
     code_builder: CodeBuilder,
     result_token_type: TypeId,  # since 13.3
     view: Value,  # since 13.3
+    index: Sequence[Value],  # since 13.3
     value: Value,  # since 13.3
-    mask: Optional[Value],  # since 13.3
     token: Optional[Value],  # since 13.3
     memory_ordering_semantics: MemoryOrderingSemantics,  # since 13.3
     memory_scope: MemoryScope,  # since 13.3
@@ -323,19 +335,18 @@ def encode_AtomicRedViewTkoOp(  # since 13.3
     _buf = code_builder.buf
     # Opcode
     encode_varint(117, _buf)
-    # Result types
-    encode_typeid(result_token_type, _buf)
+    # Variadic result types
+    encode_sized_typeid_seq((result_token_type,), _buf)
     # Flags
-    encode_varint((mask is not None)
-                  | ((token is not None) << 1), _buf)
+    encode_varint((token is not None), _buf)
     # Attributes
     code_builder.encode_opattr_enum(MemoryOrderingSemantics, memory_ordering_semantics)
     code_builder.encode_opattr_enum(MemoryScope, memory_scope)
     code_builder.encode_opattr_enum(AtomicRMWMode, mode)
     # Operands
     encode_operand(view, _buf)
+    encode_sized_variadic_operands(index, _buf)
     encode_operand(value, _buf)
-    encode_optional_operand(mask, _buf)
     encode_optional_operand(token, _buf)
     return code_builder.new_op()
 
@@ -1242,12 +1253,18 @@ def encode_MmaFOp(
     lhs: Value,
     rhs: Value,
     acc: Value,
+    fast_acc: bool,  # since 13.3
 ) -> Value:
     _buf = code_builder.buf
     # Opcode
     encode_varint(73, _buf)
     # Result types
     encode_typeid(result_type, _buf)
+    # Flags
+    _flag_bits = bool(fast_acc)
+    assert _flag_bits < 1 or code_builder.version >= BytecodeVersion.V_13_3
+    if code_builder.version >= BytecodeVersion.V_13_3:
+        encode_varint(_flag_bits, _buf)
     # Operands
     encode_operand(lhs, _buf)
     encode_operand(rhs, _buf)
@@ -2024,6 +2041,8 @@ __all__ = [
     'IntegerOverflow',
     'MemoryOrderingSemantics',
     'MemoryScope',
+    'ProgramIDDim',
+    'PtrAttr',
     'RoundingMode',
     'Signedness',
     'SymbolVisibility',
