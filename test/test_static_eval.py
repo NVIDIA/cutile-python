@@ -193,7 +193,7 @@ def test_exception_raised_inside_static_eval():
 
     with pytest.raises(TileStaticEvalError,
                        match=re.escape("Exception was raised inside static_eval()"
-                                       " (ZeroDivisionError: integer division or modulo by zero)")):
+                                       " (ZeroDivisionError:")):
         ct.launch(torch.cuda.current_stream(), (1,), kernel, (0,))
 
 

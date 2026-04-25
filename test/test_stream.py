@@ -6,6 +6,8 @@ import torch
 from torch.testing import make_tensor
 import cupy
 import cuda.tile as ct
+from ctypes import c_void_p
+from cuda.bindings.driver import CUstream
 
 
 @ct.kernel
@@ -54,4 +56,13 @@ def test_numba_pass_stream(numba_cuda):
 
 def test_numba_pass_stream_ptr(numba_cuda):
     stream = numba_cuda.stream()
-    _test_stream(stream.handle.value, stream.synchronize)
+    handle = stream.handle
+    # numba-cuda < 0.30: handle is ctypes c_void_p
+    # numba-cuda >= 0.30: handle is cuda.bindings.driver.CUstream
+    if isinstance(handle, c_void_p):
+        stream_ptr = handle.value
+    elif isinstance(handle, CUstream):
+        stream_ptr = int(handle)
+    else:
+        raise ValueError(f"Unsupported stream type: {type(handle)}")
+    _test_stream(stream_ptr, stream.synchronize)

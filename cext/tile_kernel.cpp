@@ -80,6 +80,7 @@ static PyTypeObject* g_cupy_ndarray_type;
 static PyTypeObject* g_cupy_cuda_Stream_type;
 
 static PyTypeObject* g_numba_cuda_Stream_type;
+static PyTypeObject* g_cuda_bindings_CUstream_type;
 
 constexpr uint8_t BYTE_BITWIDTH = 8;
 
@@ -1615,15 +1616,25 @@ static Result<CUstream> parse_stream(PyObject* py_stream) {
             && PyObject_TypeCheck(py_stream, g_numba_cuda_Stream_type)) {
         PyPtr py_stream_handle = getattr(py_stream, "handle");
         if (!py_stream_handle) return ErrorRaised;
-        PyPtr py_stream_handle_value = getattr(py_stream_handle, "value");
-        if (!py_stream_handle_value) return ErrorRaised;
 
-        // numba stream.handle.value is None for default stream
-        if (py_stream_handle_value.get() == Py_None)
-            return static_cast<CUstream>(nullptr);
+        // numba-cuda >= 0.30: handle is cuda.bindings.driver.CUstream
+        // numba-cuda < 0.30: handle is ctypes c_void_p
+        if (g_cuda_bindings_CUstream_type
+                && PyObject_TypeCheck(py_stream_handle.get(),
+                                      g_cuda_bindings_CUstream_type)) {
+            py_raw_stream = steal(PyNumber_Long(py_stream_handle.get()));
+            if (!py_raw_stream) return ErrorRaised;
+        } else {
+            PyPtr py_stream_handle_value = getattr(py_stream_handle, "value");
+            if (!py_stream_handle_value) return ErrorRaised;
 
-        if (PyLong_Check(py_stream_handle_value.get()))
-            py_raw_stream = py_stream_handle_value;
+            // numba stream.handle.value is None for default stream
+            if (py_stream_handle_value.get() == Py_None)
+                return static_cast<CUstream>(nullptr);
+
+            if (PyLong_Check(py_stream_handle_value.get()))
+                py_raw_stream = py_stream_handle_value;
+        }
 
     } else if (PyLong_Check(py_stream)) {
         py_raw_stream = newref(py_stream);
@@ -2462,6 +2473,18 @@ static void try_get_numba_globals() {
     }
 }
 
+static void try_get_cuda_bindings_globals() {
+    PyPtr cuda_bindings_driver = try_import("cuda.bindings.driver");
+    if (!cuda_bindings_driver) return;
+
+    if (PyPtr CUstream = try_getattr(cuda_bindings_driver, "CUstream")) {
+        if (PyType_Check(CUstream.get())) {
+            g_cuda_bindings_CUstream_type = reinterpret_cast<PyTypeObject*>(
+                    CUstream.release());
+        }
+    }
+}
+
 static PyMethodDef functions[] = {
     {"launch", reinterpret_cast<PyCFunction>(cuda_tile_launch), METH_FASTCALL,
         LAUNCH_SIGNATURE "\n"
@@ -2519,6 +2542,8 @@ Status tile_kernel_init(PyObject* m) {
     try_get_cupy_globals();
 
     try_get_numba_globals();
+
+    try_get_cuda_bindings_globals();
 
     if (PyType_Ready(&CallingConvention::pytype) < 0)
         return ErrorRaised;

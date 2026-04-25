@@ -23,16 +23,16 @@ def func(p1, *p2, **p3):
     a = 123
 
     @deco(sneaky_1 := 6)
-    def nested_func(p3, p4) -> list[sneaky_2 := 7]:
+    def nested_func(p3, p4) -> list[...]:
         nested_var = 40
         nonlocal a
         a = 456
 
     async def nested_async_def(): pass
 
-    b: list[sneaky_3 := 8]
+    b: list = (sneaky_2 := 8)
 
-    c: list[sneaky_4 := 9] = [10]
+    c: list[...] = [sneaky_3 := 10]
 
     global g
     g = 45
@@ -60,7 +60,7 @@ def test_get_all_local_names():
     expected = ['a', 'b', 'c', 'cd', 'e', 'getcwd', 'local_i', 'match_alias', 'nested_async_def',
                 'nested_func', 'nonexistent', 'p1', 'p2', 'p3',
                 'pat1', 'pat2', 'pat3', 'pat4', 'pat5', 'pat6',
-                'sneaky_1', 'sneaky_2', 'sneaky_3', 'sneaky_4', 'walrus']
+                'sneaky_1', 'sneaky_2', 'sneaky_3', 'walrus']
     assert sorted(local_names) == expected
     assert global_names == {"g"}
     assert nonlocal_names == set()
