@@ -131,13 +131,13 @@ These are **not** part of the stable `cuda.tile` API and may change.
 To enable the experimental features when working from a source checkout, install the experimental
 package from the repository root:
 ```
-pip install ./experimental
+pip install ./experimental/tile_experimental
 ```
 
 You can also install it directly from a GitHub repository subdirectory:
 ```
 pip install \
-  "git+https://github.com/NVIDIA/cutile-python.git#egg=cuda-tile-experimental&subdirectory=experimental"
+  "git+https://github.com/NVIDIA/cutile-python.git#egg=cuda-tile-experimental&subdirectory=experimental/tile_experimental"
 ```
 
 For example, this will make the experimental namespace available for autotuner:
