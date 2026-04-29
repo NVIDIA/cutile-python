@@ -34,7 +34,7 @@ class BuildExtWithCmake(build_ext):
                         f"/p:Configuration={build_type}",
                         "/t:_cext"])
         else:
-            self.spawn(["make", "-C", build_dir, "-j", str(parallel)])
+            self.spawn(["cmake", "--build", build_dir, "-j", str(parallel)])
         # TODO: ideally, we should "make install" the library somewhere, so that CMake removes
         #   any build RPATHs etc. But I'll leave that for another day.
 
