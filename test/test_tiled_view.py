@@ -3,6 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import math
+from typing import Callable, NamedTuple, Set
 import pytest
 import torch
 from torch.testing import make_tensor
@@ -13,8 +14,13 @@ from cuda.tile._bytecode.version import BytecodeVersion
 from cuda.tile._compile import compile_tile
 from cuda.tile._exception import TileTypeError, TileUnsupportedFeatureError
 from cuda.tile.compilation import CallingConvention, KernelSignature
+from cuda.tile._ir.ops_utils import _is_implicit_cast_ok
+from cuda.tile._ir.typing_support import to_dtype
 from conftest import arithmetic_dtypes, dtype_id, requires_tileiras
-from util import assert_equal
+from util import (
+    assert_equal, AtomicOp, int_32_64_dtypes, int_float_32_64_dtypes,
+    is_hopper_or_newer, raises_if, ref_atomic_arith, ref_atomic_bitwise
+)
 
 ConstInt = ct.Constant[int]
 
@@ -451,3 +457,134 @@ def test_tiled_view_traversal_steps_property(array_shape, tile_shape, traversal_
     x = torch.zeros(array_shape, dtype=torch.float32, device='cuda')
     grid = (1,) * len(array_shape)
     ct.launch(torch.cuda.current_stream(), grid, kernel, (x,))
+
+
+class AtomicConfig(NamedTuple):
+    get_tv_method: Callable
+    torch_op: Callable
+    supported_dtypes: Set
+
+
+def add_method(tv): return tv.atomic_add
+def and_method(tv): return tv.atomic_and
+def max_method(tv): return tv.atomic_max
+def min_method(tv): return tv.atomic_min
+def or_method(tv): return tv.atomic_or
+def xor_method(tv): return tv.atomic_xor
+
+
+tv_atomic_configs = {
+    AtomicOp.ADD: AtomicConfig(add_method, lambda x, y: x + y,
+                               set(int_float_32_64_dtypes + [torch.float16, torch.bfloat16])),
+    AtomicOp.MAX: AtomicConfig(max_method, torch.maximum,
+                               set(int_32_64_dtypes)),
+    AtomicOp.MIN: AtomicConfig(min_method, torch.minimum,
+                               set(int_32_64_dtypes)),
+    AtomicOp.AND: AtomicConfig(and_method, lambda x, y: x & y,
+                               set(int_32_64_dtypes)),
+    AtomicOp.OR: AtomicConfig(or_method, lambda x, y: x | y,
+                              set(int_32_64_dtypes)),
+    AtomicOp.XOR: AtomicConfig(xor_method, lambda x, y: x ^ y,
+                               set(int_32_64_dtypes)),
+}
+
+
+def make_tv_atomic_kernel(get_tv_method, traversal_steps):
+    @ct.kernel
+    def kernel(x, y, TILE_M: ct.Constant[int], TILE_N: ct.Constant[int]):
+        bidm = ct.bid(0)
+        bidn = ct.bid(1)
+        tv_x = x.tiled_view((TILE_M, TILE_N), traversal_steps=traversal_steps)
+        tv_y = y.tiled_view((TILE_M, TILE_N), traversal_steps=traversal_steps)
+        update = tv_y.load((bidm, bidn))
+        get_tv_method(tv_x)((bidm, bidn), update)
+    return kernel
+
+
+def make_ref_tv_atomic(ref_fn, torch_op, tile_size, traversal_steps):
+    def ref_tv_atomic(x, y):
+        for r0 in range(0, x.shape[0], traversal_steps[0]):
+            for c0 in range(0, x.shape[1], traversal_steps[1]):
+                r = slice(r0, r0 + tile_size[0])
+                c = slice(c0, c0 + tile_size[1])
+                ref_x, _ = ref_fn(x[r, c], y[r, c], torch_op)
+                x[r, c] = ref_x
+    return ref_tv_atomic
+
+
+@requires_tileiras(BytecodeVersion.V_13_3)
+@pytest.mark.parametrize("atomic_op", [AtomicOp.ADD, AtomicOp.MAX, AtomicOp.MIN,
+                                       AtomicOp.AND, AtomicOp.OR, AtomicOp.XOR])
+@pytest.mark.parametrize("x_dtype", arithmetic_dtypes, ids=dtype_id)
+@pytest.mark.parametrize("y_dtype", arithmetic_dtypes, ids=dtype_id)
+@pytest.mark.parametrize("shape", [(50, 60), (512, 256)])
+@pytest.mark.parametrize("tile_size", [(128, 128)])
+@pytest.mark.parametrize("traversal_steps", [None, (110, 110), (130, 130)])
+def test_tiled_view_atomic(atomic_op, x_dtype, y_dtype, shape, tile_size, traversal_steps):
+    get_tv_method, torch_op, supported_dtypes = tv_atomic_configs[atomic_op]
+    x = make_tensor(shape, dtype=x_dtype, device='cuda')
+    y = make_tensor(shape, dtype=y_dtype, device='cuda')
+    ref_x = x.clone()
+    effective_steps = traversal_steps if traversal_steps is not None else tile_size
+    grid = (ct.cdiv(x.shape[0], effective_steps[0]), ct.cdiv(x.shape[1], effective_steps[1]),)
+    kernel = make_tv_atomic_kernel(get_tv_method, traversal_steps)
+
+    if x_dtype not in supported_dtypes:
+        should_raise = True
+        err_match = "Unsupported tiled view dtype"
+        ref_fn = None
+    elif atomic_op.is_bitwise():
+        should_raise = x_dtype != y_dtype
+        err_match = "to exactly match the target dtype"
+        ref_fn = make_ref_tv_atomic(ref_atomic_bitwise, torch_op, tile_size, effective_steps)
+    else:
+        if x_dtype == torch.bfloat16 and not is_hopper_or_newer():
+            pytest.skip("bf16 is only supported on hopper or newer")
+
+        should_raise = not _is_implicit_cast_ok(to_dtype(y_dtype), to_dtype(x_dtype))
+        err_match = "cannot implicitly cast"
+        ref_fn = make_ref_tv_atomic(ref_atomic_arith, torch_op, tile_size, effective_steps)
+
+    with raises_if(should_raise, TileTypeError, match=err_match):
+        ct.launch(torch.cuda.current_stream(), grid, kernel,
+                  (x, y, tile_size[0], tile_size[1]))
+        ref_fn(ref_x, y)
+        torch.testing.assert_close(x, ref_x)
+
+
+@requires_tileiras(BytecodeVersion.V_13_3)
+@pytest.mark.parametrize("tile_size,update_size", [
+    ((16, 16),  ()),
+    ((128, 16), (1, 16)),
+    ((16, 64),  (16, 1)),
+    ((32, 16),  (1, 1)),
+])
+def test_tiled_view_atomic_broadcast(tile_size, update_size):
+    @ct.kernel
+    def kernel(x, y):
+        tv_x = x.tiled_view(tile_size)
+        update = y.tiled_view(update_size).load((0, 0))
+        tv_x.atomic_add((0, 0), update)
+
+    y_shape = update_size if len(update_size) > 0 else (1, 1)
+    x = make_tensor(tile_size, dtype=torch.float32, device='cuda')
+    y = make_tensor(y_shape, dtype=torch.float32, device='cuda')
+    ref = x + torch.broadcast_to(y, tile_size)
+
+    ct.launch(torch.cuda.current_stream(), (1,), kernel, (x, y))
+    torch.testing.assert_close(x, ref)
+
+
+@requires_tileiras(BytecodeVersion.V_13_3)
+def test_tiled_view_atomic_shape_mismatch():
+    @ct.kernel
+    def kernel(x, y):
+        tv_x = x.tiled_view(16)
+        update = y.tiled_view(8).load(0)
+        tv_x.atomic_add(0, update)
+
+    x = torch.zeros((16,), dtype=torch.float32, device='cuda')
+    y = torch.zeros((8,), dtype=torch.float32, device='cuda')
+
+    with pytest.raises(TileTypeError, match=r"Update shape \(8,\) is not broadcastable"):
+        ct.launch(torch.cuda.current_stream(), (1,), kernel, (x, y))

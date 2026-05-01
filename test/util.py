@@ -2,6 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+from enum import Enum
 import re
 import shutil
 import subprocess
@@ -264,3 +265,39 @@ def make_test_tensor(shape, dtype, device):
         return make_tensor(shape, dtype=torch.uint8, device=device).view(dtype)
     else:
         return make_tensor(shape, dtype=dtype, device=device)
+
+
+class AtomicOp(Enum):
+    XCHG = 0
+    ADD = 1
+    MAX = 2
+    MIN = 3
+    AND = 4
+    OR = 5
+    XOR = 6
+
+    def is_bitwise(self):
+        return self in {AtomicOp.AND, AtomicOp.OR, AtomicOp.XOR}
+
+
+int_32_64_dtypes = [torch.uint32, torch.uint64, torch.int32, torch.int64]
+float_32_64_dtypes = [torch.float32, torch.float64]
+int_float_32_64_dtypes = int_32_64_dtypes + float_32_64_dtypes
+
+
+def ref_atomic_arith(x, y, operation):
+    if x.dtype in [torch.uint32, torch.uint64]:
+        # Cast to float64 because torch cuda maximum, minimum do not support uint32/64
+        ref_x = operation(x.to(torch.float64), y.to(torch.float64))
+        ref_x = ref_x.to(x.dtype)
+    else:
+        ref_x = operation(x, y.to(x.dtype))
+    ref_z = x.clone()
+    return ref_x, ref_z
+
+
+def ref_atomic_bitwise(x, y, operation):
+    int_dtype = get_int_dtype_of_same_size(x.dtype)
+    ref_x = operation(x.view(int_dtype), y.view(int_dtype)).view(x.dtype)
+    ref_z = x.clone()
+    return ref_x, ref_z

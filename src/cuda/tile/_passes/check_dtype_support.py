@@ -5,9 +5,11 @@
 import math
 from typing import Callable
 from cuda.tile._ir.ir import Block
-from cuda.tile._ir.ops import TypedConst
+from cuda.tile._ir.ops import TileAtomicRMW, TileAtomicRedView, TypedConst, AtomicRMWMode
 from cuda.tile._ir.type import TileTy, PointerTy, Type
-from cuda.tile._datatype import DType, float4_e2m1fn, float8_e4m3fn, float8_e5m2, float8_e8m0fnu
+from cuda.tile._datatype import (
+    DType, float4_e2m1fn, float8_e4m3fn, float8_e5m2, float8_e8m0fnu, bfloat16
+)
 from cuda.tile._bytecode.version import BytecodeVersion
 from cuda.tile._exception import TileUnsupportedFeatureError, TileValueError
 
@@ -65,8 +67,33 @@ def _check_const_value(op: TypedConst):
             raise TileValueError(msg, loc=op.loc)
 
 
-def _check_dtype(dtype: DType, sm_arch: str, version: BytecodeVersion, loc):
-    sm_number = int(sm_arch.removeprefix("sm_"))
+def _check_atomic_rmw_dtype(op: TileAtomicRedView | TileAtomicRMW,
+                            sm_arch: str,
+                            sm_number: int,
+                            version: BytecodeVersion):
+    dtypes = (_extract_dtypes(op.view.try_get_type())
+              if isinstance(op, TileAtomicRedView) else
+              _extract_dtypes(op.result_vars[0].try_get_type()))
+    if not (op.mode == AtomicRMWMode.ADD_FLOAT and bfloat16 in dtypes):
+        return
+
+    if sm_number < 90:
+        raise TileUnsupportedFeatureError(
+            f"{bfloat16} is not supported by atomic add on {sm_arch}",
+            loc=op.loc
+        )
+
+    min_version = BytecodeVersion.V_13_3
+    if version < min_version:
+        raise TileUnsupportedFeatureError(
+            f"{bfloat16} on atomic add requires tileiras"
+            f" {min_version.as_string()} or later."
+            f" Current version is {version.as_string()}.",
+            loc=op.loc
+        )
+
+
+def _check_dtype(dtype: DType, sm_arch: str, sm_number: int, version: BytecodeVersion, loc):
     min_sm = _DTYPE_MIN_SM.get(dtype)
     if min_sm is not None and sm_number < min_sm:
         raise TileUnsupportedFeatureError(
@@ -78,17 +105,21 @@ def _check_dtype(dtype: DType, sm_arch: str, version: BytecodeVersion, loc):
     if min_version is not None and version < min_version:
         raise TileUnsupportedFeatureError(
             f"{dtype} requires tileiras"
-            f" {min_version.major()}.{min_version.minor()} or later."
-            f" Current version is {version.major()}.{version.minor()}.",
+            f" {min_version.as_string()} or later."
+            f" Current version is {version.as_string()}.",
             loc=loc,
         )
 
 
 def check_dtype_support(root_block: Block, sm_arch: str, version: BytecodeVersion) -> None:
+    sm_number = int(sm_arch.removeprefix("sm_"))
     for op in root_block.traverse():
         if isinstance(op, TypedConst):
             _check_const_value(op)
 
+        if isinstance(op, (TileAtomicRedView, TileAtomicRMW)):
+            _check_atomic_rmw_dtype(op, sm_arch, sm_number, version)
+
         all_dtypes = set().union(*(_extract_dtypes(v.try_get_type()) for v in op.all_inputs()))
         for dtype in all_dtypes:
-            _check_dtype(dtype, sm_arch, version, op.loc)
+            _check_dtype(dtype, sm_arch, sm_number, version, op.loc)

@@ -2,7 +2,6 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-from enum import Enum
 import re
 import pytest
 from math import ceil
@@ -16,30 +15,21 @@ from cuda.tile._exception import TileTypeError
 from cuda.tile._ir.ops_utils import _is_implicit_cast_ok
 from cuda.tile._ir.typing_support import to_dtype
 from util import (
-    assert_equal, filecheck, get_int_dtype_of_same_size,
-    get_bytecode, raises_if
+    assert_equal, filecheck, get_bytecode, int_32_64_dtypes,
+    int_float_32_64_dtypes, is_hopper_or_newer, raises_if, AtomicOp,
+    ref_atomic_arith, ref_atomic_bitwise
 )
 from conftest import arithmetic_dtypes, dtype_id, get_tileiras_version
 
 
-class ArithOp(Enum):
-    XCHG = 0
-    ADD = 1
-    MAX = 2
-    MIN = 3
-    AND = 4
-    OR = 5
-    XOR = 6
-
-
 _op_to_func = {
-    ArithOp.XCHG: ct.atomic_xchg,
-    ArithOp.ADD: ct.atomic_add,
-    ArithOp.MAX: ct.atomic_max,
-    ArithOp.MIN: ct.atomic_min,
-    ArithOp.AND: ct.atomic_and,
-    ArithOp.OR: ct.atomic_or,
-    ArithOp.XOR: ct.atomic_xor,
+    AtomicOp.XCHG: ct.atomic_xchg,
+    AtomicOp.ADD: ct.atomic_add,
+    AtomicOp.MAX: ct.atomic_max,
+    AtomicOp.MIN: ct.atomic_min,
+    AtomicOp.AND: ct.atomic_and,
+    AtomicOp.OR: ct.atomic_or,
+    AtomicOp.XOR: ct.atomic_xor,
 }
 
 
@@ -53,13 +43,13 @@ def xor_func(x): return x.get_raw_memory().atomic_xor_offset
 
 
 _op_to_raw_memory_func = {
-    ArithOp.XCHG: xchg_func,
-    ArithOp.ADD: add_func,
-    ArithOp.MAX: max_func,
-    ArithOp.MIN: min_func,
-    ArithOp.AND: and_func,
-    ArithOp.OR: or_func,
-    ArithOp.XOR: xor_func,
+    AtomicOp.XCHG: xchg_func,
+    AtomicOp.ADD: add_func,
+    AtomicOp.MAX: max_func,
+    AtomicOp.MIN: min_func,
+    AtomicOp.AND: and_func,
+    AtomicOp.OR: or_func,
+    AtomicOp.XOR: xor_func,
 }
 
 
@@ -71,12 +61,12 @@ def atomic_arith_kernel(x, y, z, TILE: ct.Constant[int], op_id: ct.Constant[int]
     offset += bid*TILE
     val = ct.gather(y, offset)
     if not test_raw_memory:
-        func = ct.static_eval(_op_to_func[ArithOp(op_id)])
+        func = ct.static_eval(_op_to_func[AtomicOp(op_id)])
         old_val = func(x, offset, val,
                        memory_order=ct.MemoryOrder.ACQ_REL,
                        memory_scope=ct.MemoryScope.DEVICE)
     else:
-        get_func = ct.static_eval(_op_to_raw_memory_func[ArithOp(op_id)])
+        get_func = ct.static_eval(_op_to_raw_memory_func[AtomicOp(op_id)])
         func = get_func(x)
         old_val = func(offset, val,
                        memory_order=ct.MemoryOrder.ACQ_REL,
@@ -88,25 +78,14 @@ def atomic_arith_kernel(x, y, z, TILE: ct.Constant[int], op_id: ct.Constant[int]
 def scalar_atomic_arith_kernel(x, y, z, op_id: ct.Constant[int], test_raw_memory: ct.Constant[int]):
     val = ct.gather(y, 0)
     if not test_raw_memory:
-        func = ct.static_eval(_op_to_func[ArithOp(op_id)])
+        func = ct.static_eval(_op_to_func[AtomicOp(op_id)])
         old_val = func(x, 0, val)
     else:
-        get_func = ct.static_eval(_op_to_raw_memory_func[ArithOp(op_id)])
+        get_func = ct.static_eval(_op_to_raw_memory_func[AtomicOp(op_id)])
         func = get_func(x)
 
         old_val = func(0, val)
     ct.scatter(z, 0, old_val)
-
-
-def ref_atomic_arith(x, y, operation):
-    if x.dtype in [torch.uint32, torch.uint64]:
-        # Cast to float64 because torch cuda maximum, minimum do not support uint32/64
-        ref_x = operation(x.to(torch.float64), y.to(torch.float64))
-        ref_x = ref_x.to(x.dtype)
-    else:
-        ref_x = operation(x, y.to(x.dtype))
-    ref_z = x.clone()
-    return ref_x, ref_z
 
 
 def create_atomic_test_params(ops_config):
@@ -118,15 +97,11 @@ def create_atomic_test_params(ops_config):
     return params
 
 
-int_32_64_dtypes = [torch.uint32, torch.uint64, torch.int32, torch.int64]
-float_32_64_dtypes = [torch.float32, torch.float64]
-int_float_32_64_dtypes = int_32_64_dtypes + float_32_64_dtypes
-
 atomic_arith_config = [
-    (ArithOp.XCHG, lambda _, y: y, int_float_32_64_dtypes),
-    (ArithOp.ADD, torch.add, int_float_32_64_dtypes + [torch.float16]),
-    (ArithOp.MAX, torch.maximum, int_32_64_dtypes),
-    (ArithOp.MIN, torch.minimum, int_32_64_dtypes),
+    (AtomicOp.XCHG, lambda _, y: y, int_float_32_64_dtypes),
+    (AtomicOp.ADD, torch.add, int_float_32_64_dtypes + [torch.float16, torch.bfloat16]),
+    (AtomicOp.MAX, torch.maximum, int_32_64_dtypes),
+    (AtomicOp.MIN, torch.minimum, int_32_64_dtypes),
 ]
 
 
@@ -136,8 +111,10 @@ atomic_arith_config = [
 @pytest.mark.parametrize("mode", ["array", "scalar"])
 @pytest.mark.parametrize("test_raw_memory", [True, False])
 def test_atomic_arith(op_name, torch_op, x_dtype, y_dtype, mode, test_raw_memory):
-    if op_name == ArithOp.XCHG and get_tileiras_version() == BytecodeVersion.V_13_3:
-        pytest.xfail(reason="unblock development only. TODO: remove before release")
+    if (x_dtype == torch.bfloat16
+            and (not is_hopper_or_newer()
+                 or get_tileiras_version() < BytecodeVersion.V_13_3)):
+        pytest.skip("bfloat16 atomics require Hopper or newer and tileiras V_13_3+")
 
     if mode == "array":
         x = make_tensor((512,), dtype=x_dtype, device='cuda')
@@ -167,17 +144,10 @@ def test_atomic_arith(op_name, torch_op, x_dtype, y_dtype, mode, test_raw_memory
         assert_equal(z, ref_z)
 
 
-def ref_atomic_bitwise(x, y, operation):
-    int_dtype = get_int_dtype_of_same_size(x.dtype)
-    ref_x = operation(x.view(int_dtype), y.view(int_dtype)).view(x.dtype)
-    ref_z = x.clone()
-    return ref_x, ref_z
-
-
 atomic_bitwise_config = [
-    (ArithOp.AND, lambda x, y: x & y, int_float_32_64_dtypes),
-    (ArithOp.OR, lambda x, y: x | y, int_float_32_64_dtypes),
-    (ArithOp.XOR, lambda x, y: x ^ y, int_float_32_64_dtypes),
+    (AtomicOp.AND, lambda x, y: x & y, int_float_32_64_dtypes),
+    (AtomicOp.OR, lambda x, y: x | y, int_float_32_64_dtypes),
+    (AtomicOp.XOR, lambda x, y: x ^ y, int_float_32_64_dtypes),
 ]
 
 
@@ -212,8 +182,8 @@ def test_atomic_bitwise(op_name, torch_op, x_dtype, y_dtype, mode, test_raw_memo
         with pytest.raises(TileTypeError, match="Unsupported array dtype"):
             launch()
     elif x_dtype != y_dtype:
-        msg = re.escape(f"Bitwise atomic read-modify-write operations require that the "
-                        f"update dtype ({y_dtype}) exactly matches the array dtype ({x_dtype})")
+        msg = re.escape(f"Bitwise atomic read-modify-write operations require the "
+                        f"update dtype ({y_dtype}) to exactly match the target dtype ({x_dtype})")
         with pytest.raises(TileTypeError, match=msg):
             launch()
     else:
@@ -269,9 +239,6 @@ atomic_cas_dtypes = [torch.uint32, torch.uint64, torch.int32, torch.int64,
 @pytest.mark.parametrize("mode", ["array", "scalar"])
 @pytest.mark.parametrize("test_raw_memory", [True, False])
 def test_atomic_cas(x_dtype, y_dtype, mode, test_raw_memory):
-    if get_tileiras_version() == BytecodeVersion.V_13_3:
-        pytest.xfail(reason="unblock development only. TODO: remove before release")
-
     if mode == "array":
         x = make_tensor((512,), dtype=x_dtype, device='cuda')
         y = make_tensor((512,), dtype=y_dtype, device='cuda')

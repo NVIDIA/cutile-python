@@ -15,7 +15,7 @@ from cuda.tile._ir.ir import Block, IRContext, Var, Operation, MemoryEffect, Arr
 from cuda.tile._ir.ops import (
     Break, Continue, EndBranch, IfElse,
     JoinTokens, Loop, MakeToken,
-    TileAtomicCAS, TileAtomicRMW, LoadPointer,
+    TileAtomicCAS, TileAtomicRMW, LoadPointer, TileAtomicRedView,
     TileLoad, StorePointer,
     TileStore, TileAssert, TilePrintf,
 )
@@ -132,7 +132,8 @@ def _get_block_memory_effects(block: Block,
             return EMPTY_MEMORY_EFFECTS
 
         has_acquire_order = False
-        if isinstance(cur_op, (TileAtomicCAS, TileAtomicRMW, TileLoad, TileStore)):
+        if isinstance(cur_op, (TileAtomicCAS, TileAtomicRMW, TileAtomicRedView,
+                               TileLoad, TileStore)):
             has_acquire_order = memory_order_has_acquire(cur_op.memory_order)
 
         return MemoryEffects({dataflow_result[_get_input_var(cur_op).name].alias_set: effect},
@@ -214,7 +215,7 @@ def _to_token_order_in_block(block: Block,
             token_map[last_op_key] = result_tok
             token_map[last_store_key] = result_tok
 
-        elif isinstance(op, (TileAtomicCAS, TileAtomicRMW)):
+        elif isinstance(op, (TileAtomicCAS, TileAtomicRMW, TileAtomicRedView)):
             alias_set = context.dataflow_result[_get_input_var(op).name].alias_set
             last_op_key = _last_op_key(alias_set)
             last_store_key = _last_store_key(alias_set)
@@ -224,7 +225,11 @@ def _to_token_order_in_block(block: Block,
             if maybe_input_tok_join_op:
                 operations.append(maybe_input_tok_join_op)
 
-            _, result_tok = op.result_vars
+            if isinstance(op, TileAtomicRedView):
+                [result_tok] = op.result_vars
+            else:
+                _, result_tok = op.result_vars
+
             operations.append(dataclasses.replace(op, token=input_tok))
 
             token_map[last_op_key] = result_tok
@@ -460,7 +465,7 @@ def _get_parallel_stores(
     alias_set_to_mem_ops = defaultdict(list)
     for op in loop_op.body.operations:
         if isinstance(op, (TileLoad, StorePointer, LoadPointer, TileStore,
-                           TileAtomicCAS, TileAtomicRMW)):
+                           TileAtomicCAS, TileAtomicRMW, TileAtomicRedView)):
             alias_set = context.dataflow_result[_get_input_var(op).name].alias_set
             alias_set_to_mem_ops[alias_set].append(op)
 

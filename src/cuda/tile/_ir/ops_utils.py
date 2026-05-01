@@ -160,8 +160,8 @@ def check_rd_and_ftz(fn: str, rounding_mode: Optional[RoundingMode], flush_to_ze
             if cur_version < min_version:
                 raise TileUnsupportedFeatureError(
                     f'{fn} rounding_mode={rounding_mode.value} requires tileiras '
-                    f'{min_version.major()}.{min_version.minor()} or later. '
-                    f'Current version is {cur_version.major()}.{cur_version.minor()}.')
+                    f'{min_version.as_string()} or later. '
+                    f'Current version is {cur_version.as_string()}.')
         if not datatype.is_unrestricted_float(dtype):
             raise TileTypeError(
                 f'Rounding mode can only be used for unrestricted float types, '
@@ -362,10 +362,21 @@ def validate_memory_order_and_scope(
             f"Invalid memory order for {opcode}. "
             f"Got {memory_order}, expected one of {formatted_expected}"
         )
+
+    if memory_scope not in operation_type.VALID_MEMORY_SCOPES:
+        formatted_expected = ", ".join(
+            str(scope) for scope in operation_type.VALID_MEMORY_SCOPES
+        )
+        raise TileTypeError(
+            f"Invalid memory scope for {opcode}. "
+            f"Got {memory_scope}, expected one of {formatted_expected}"
+        )
+
     if memory_order == MemoryOrder.WEAK and memory_scope != MemoryScope.NONE:
         raise TileTypeError(
             f"{opcode} with WEAK memory ordering cannot specify a memory scope"
         )
+
     if memory_order != MemoryOrder.WEAK and memory_scope == MemoryScope.NONE:
         raise TileTypeError(
             f"{opcode} with {memory_order.name} memory ordering requires a memory scope"

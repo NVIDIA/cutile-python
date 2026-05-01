@@ -451,15 +451,12 @@ class StridedViewTy(Type):
 
 # ============== TiledView Type ===============
 
-
+@dataclass(frozen=True)
 class TiledViewTy(Type):
-    def __init__(self, array_ty: ArrayTy, tile_shape: tuple[int, ...],
-                 padding_mode: PaddingMode,
-                 traversal_steps: Optional[tuple[int, ...]] = None):
-        self.array_ty = array_ty
-        self.tile_shape = tile_shape
-        self.padding_mode = padding_mode
-        self.traversal_steps = traversal_steps
+    array_ty: ArrayTy
+    tile_shape: tuple[int, ...]
+    padding_mode: PaddingMode
+    traversal_steps: Optional[tuple[int, ...]] = None
 
     def is_aggregate(self) -> bool:
         return True
@@ -479,17 +476,6 @@ class TiledViewTy(Type):
     @property
     def dtype(self):
         return self.array_ty.dtype
-
-    def __eq__(self, other: "Type"):
-        return (isinstance(other, TiledViewTy)
-                and self.array_ty == other.array_ty
-                and self.tile_shape == other.tile_shape
-                and self.padding_mode == other.padding_mode
-                and self.traversal_steps == other.traversal_steps)
-
-    def __hash__(self):
-        return hash(("TiledViewTy", self.array_ty, self.tile_shape,
-                     self.padding_mode, self.traversal_steps))
 
     def __str__(self):
         return (f"TiledView[{self.array_ty},tile_shape={self.tile_shape},"

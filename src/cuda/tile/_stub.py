@@ -707,6 +707,57 @@ class Tile:
 TileOrScalar = Union[Tile, Scalar]
 
 
+def _doc_tv_atomic_rmw_op(*, testoutput: int):
+    def decorator(f):
+        op_name = f.__name__
+        f.__doc__ += f"""\
+
+        This method does not return a value.
+
+        For each individual element, the operation is performed atomically,
+        but the operation as a whole is not atomic, and the order of individual
+        writes is unspecified.
+
+        `update`'s shape must be broadcastable to :attr:`tile_shape`.
+
+        For a tile that partially extends beyond the tiled view boundaries,
+        out-of-bound elements are ignored.
+        If the tile lies entirely outside the tiled view, the behavior is
+        undefined.
+
+        Use this operation instead of ct.{op_name} for better performance
+        when modified value is not needed.
+
+        Args:
+            index (tuple[int,...]): An index in the |tiled view|'s tile space.
+            update (Tile): The update values.
+
+        Returns:
+            None:
+
+        Examples:
+
+            .. testcode::
+                :template: setup_only.py
+
+                @ct.kernel
+                def kernel(x):
+                    tv = x.tiled_view(4)
+                    update = ct.full((4,), 1, dtype=ct.int32)
+                    tv.{op_name}(0, update)
+
+                x = torch.zeros(4, dtype=torch.int32, device='cuda')
+                ct.launch(stream, (1,), kernel, (x,))
+                print(x.tolist())
+
+            .. testoutput::
+
+                {[testoutput] * 4}
+    """
+        return f
+    return decorator
+
+
 class TiledView:
     """Class for |tiled view| objects."""
 
@@ -834,6 +885,62 @@ class TiledView:
             .. testoutput::
 
                 [99, 99, 99, 99, 0, 0, 0, 0]
+        """
+
+    @_doc_tv_atomic_rmw_op(testoutput=(0 + 1))
+    @stub
+    def atomic_add(self, index: Shape, update: Tile) -> None:
+        """Atomically adds `update` to the |tiled view| at the given tile `index`.
+
+        If `update`'s dtype differs from the view's dtype, an implicit cast is
+        performed.
+        """
+
+    @_doc_tv_atomic_rmw_op(testoutput=max(0, 1))
+    @stub
+    def atomic_max(self, index: Shape, update: Tile) -> None:
+        """Atomically applies element-wise maximum with update to the |tiled view|
+        at the given tile `index`.
+
+        If `update`'s dtype differs from the view's dtype, an implicit cast is
+        performed.
+        """
+
+    @_doc_tv_atomic_rmw_op(testoutput=min(0, 1))
+    @stub
+    def atomic_min(self, index: Shape, update: Tile) -> None:
+        """Atomically applies element-wise minimum with update to the |tiled view|
+        at the given tile `index`.
+
+        If `update`'s dtype differs from the view's dtype, an implicit cast is
+        performed.
+        """
+
+    @_doc_tv_atomic_rmw_op(testoutput=(0 & 1))
+    @stub
+    def atomic_and(self, index: Shape, update: Tile) -> None:
+        """Atomically applies bitwise AND of `update` to the |tiled view| at the given tile `index`.
+
+        `update`'s dtype must exactly match the view's dtype; no implicit cast is
+        performed.
+        """
+
+    @_doc_tv_atomic_rmw_op(testoutput=(0 | 1))
+    @stub
+    def atomic_or(self, index: Shape, update: Tile) -> None:
+        """Atomically applies bitwise OR of `update` to the |tiled view| at the given tile `index`.
+
+        `update`'s dtype must exactly match the view's dtype; no implicit cast is
+        performed.
+        """
+
+    @_doc_tv_atomic_rmw_op(testoutput=(0 ^ 1))
+    @stub
+    def atomic_xor(self, index: Shape, update: Tile) -> None:
+        """Atomically applies bitwise XOR of `update` to the |tiled view| at the given tile `index`.
+
+        `update`'s dtype must exactly match the view's dtype; no implicit cast is
+        performed.
         """
 
 

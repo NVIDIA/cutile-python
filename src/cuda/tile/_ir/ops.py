@@ -1817,6 +1817,12 @@ def getattr_tiled_view_traversal_steps_impl(object: Var, name: Var):
 @impl(getattr, overload=(TiledViewTy, "num_tiles"))
 @impl(getattr, overload=(TiledViewTy, "load"))
 @impl(getattr, overload=(TiledViewTy, "store"))
+@impl(getattr, overload=(TiledViewTy, "atomic_add"))
+@impl(getattr, overload=(TiledViewTy, "atomic_max"))
+@impl(getattr, overload=(TiledViewTy, "atomic_min"))
+@impl(getattr, overload=(TiledViewTy, "atomic_and"))
+@impl(getattr, overload=(TiledViewTy, "atomic_or"))
+@impl(getattr, overload=(TiledViewTy, "atomic_xor"))
 def getattr_tiled_view_method(object: Var, name: Var):
     name = require_constant_str(name)
     unbound_func = getattr(ct.TiledView, name)
@@ -2346,6 +2352,17 @@ def _use_strided_view(traversal_steps: Optional[Sequence[int]],
     return traversal_steps is not None and tuple(traversal_steps) != tuple(tile_shape)
 
 
+def _materialize_tiled_view(array: Var,
+                            tile_shape: Sequence[int],
+                            order: Sequence[int],
+                            padding_mode: PaddingMode,
+                            traversal_steps: Optional[Sequence[int]]) -> Var:
+    if _use_strided_view(traversal_steps, tile_shape):
+        return _make_strided_view(array, tile_shape, traversal_steps, order, padding_mode)
+
+    return _make_partition_view(array, tile_shape, order, padding_mode)
+
+
 @dataclass(eq=False)
 class TileLoad(Operation, opcode="tile_load", memory_effect=MemoryEffect.LOAD):
     latency: Optional[int] = attribute()
@@ -2359,6 +2376,8 @@ class TileLoad(Operation, opcode="tile_load", memory_effect=MemoryEffect.LOAD):
     VALID_MEMORY_ORDERS = (
         MemoryOrder.RELAXED, MemoryOrder.ACQUIRE, MemoryOrder.WEAK
     )
+
+    VALID_MEMORY_SCOPES = tuple(MemoryScope)
 
     @override
     def generate_bytecode(self, ctx: BytecodeContext) -> tuple[bc.Value, bc.Value]:
@@ -2397,11 +2416,8 @@ def _tile_load_impl_inner(array: Var, index_items: tuple[Var, ...], shape: Seque
     if array_ty.index_dtype.bitwidth > 32:
         index_items = tuple(astype(idx, array_ty.index_dtype) for idx in index_items)
 
-    if _use_strided_view(traversal_steps, broadcasted_shape):
-        view = _make_strided_view(array, broadcasted_shape, traversal_steps, order, padding_mode)
-    else:
-        view = _make_partition_view(array, broadcasted_shape, order, padding_mode)
-
+    view = _materialize_tiled_view(array, broadcasted_shape, order, padding_mode,
+                                   traversal_steps)
     res_ty = make_tile_ty(array_ty.dtype, broadcasted_shape)
     result, _token = add_operation(TileLoad, (res_ty, TokenTy()),
                                    view=view, index=index_items, latency=latency,
@@ -2522,6 +2538,8 @@ class TileStore(Operation, opcode="tile_store", memory_effect=MemoryEffect.STORE
         MemoryOrder.RELAXED, MemoryOrder.RELEASE, MemoryOrder.WEAK
     )
 
+    VALID_MEMORY_SCOPES = tuple(MemoryScope)
+
     @override
     def generate_bytecode(self, ctx: BytecodeContext) -> bc.Value:
         view_ty = self.view.get_type()
@@ -2569,11 +2587,8 @@ def _tile_store_impl_inner(array: Var, index_items: tuple[Var, ...], tile: Var,
         index_items = tuple(astype(idx, array_ty.index_dtype) for idx in index_items)
 
     tile = reshape(tile, broadcasted_shape)
-    if _use_strided_view(traversal_steps, broadcasted_shape):
-        view = _make_strided_view(array, broadcasted_shape, traversal_steps,
-                                  order, PaddingMode.UNDETERMINED)
-    else:
-        view = _make_partition_view(array, broadcasted_shape, order, PaddingMode.UNDETERMINED)
+    view = _materialize_tiled_view(array, broadcasted_shape, order, PaddingMode.UNDETERMINED,
+                                   traversal_steps)
     [_token] = add_operation(TileStore, (TokenTy(),), view=view, index=index_items, tile=tile,
                              latency=latency, allow_tma=allow_tma, memory_order=memory_order,
                              memory_scope=memory_scope)
@@ -2896,6 +2911,8 @@ class TileAtomicCAS(Operation, opcode="tile_atomic_cas",
         MemoryOrder.RELAXED, MemoryOrder.ACQUIRE, MemoryOrder.RELEASE, MemoryOrder.ACQ_REL
     )
 
+    VALID_MEMORY_SCOPES = tuple(MemoryScope)
+
     def generate_bytecode(self, ctx: BytecodeContext) -> tuple[bc.Value, bc.Value]:
         return bc.encode_AtomicCASTkoOp(
             ctx.builder,
@@ -2984,6 +3001,8 @@ class TileAtomicRMW(Operation, opcode="tile_atomic_rmw", memory_effect=MemoryEff
         MemoryOrder.RELAXED, MemoryOrder.ACQUIRE, MemoryOrder.RELEASE, MemoryOrder.ACQ_REL
     )
 
+    VALID_MEMORY_SCOPES = tuple(MemoryScope)
+
     @override
     def generate_bytecode(self, ctx: BytecodeContext) -> tuple[bc.Value, bc.Value]:
         return bc.encode_AtomicRMWTkoOp(
@@ -3004,6 +3023,33 @@ int_32_64_dtypes = (datatype.int32, datatype.int64, datatype.uint32, datatype.ui
 int_float_32_64_dtypes = (*int_32_64_dtypes, datatype.float32, datatype.float64)
 
 
+def _select_rmw_mode(int_mode: Optional[AtomicRMWMode],
+                     uint_mode: Optional[AtomicRMWMode],
+                     float_mode: Optional[AtomicRMWMode],
+                     dtype: DType):
+    if is_float(dtype):
+        mode = float_mode
+    elif is_integral(dtype):
+        mode = int_mode if is_signed(dtype) else uint_mode
+    else:
+        mode = None
+    assert mode is not None
+    return mode
+
+
+def _cast_rmw_update_dtype(update: Var, target_dtype: DType, bitwise: bool) -> Var:
+    update_dtype = require_tile_type(update).dtype
+    if bitwise:
+        if update_dtype != target_dtype:
+            raise TileTypeError(
+                "Bitwise atomic read-modify-write operations require the update "
+                f"dtype ({update_dtype}) to exactly match the target dtype "
+                f"({target_dtype})"
+            )
+        return update
+    return _implicit_cast(update, target_dtype, "Update is incompatible with the target dtype")
+
+
 def _atomic_rmw_core(int_mode: Optional[AtomicRMWMode],
                      uint_mode: Optional[AtomicRMWMode],
                      float_mode: Optional[AtomicRMWMode],
@@ -3016,22 +3062,10 @@ def _atomic_rmw_core(int_mode: Optional[AtomicRMWMode],
     if array_dtype not in supported_dtypes:
         raise TileTypeError(f"Unsupported array dtype: {array_dtype}")
 
-    if is_float(array_dtype):
-        mode = float_mode
-    elif is_integral(array_dtype):
-        mode = int_mode if is_signed(array_dtype) else uint_mode
-    else:
-        mode = None
-    assert mode is not None
-
     update = _get_scatter_value(update, pointer_shape, array_dtype, "Update",
-                                cast_dtype=not bitwise)
-    if bitwise:
-        update_dtype = update.get_type().dtype
-        if update_dtype != array_dtype:
-            raise TileTypeError("Bitwise atomic read-modify-write operations require"
-                                f" that the update dtype ({update_dtype}) exactly matches"
-                                f" the array dtype ({array_dtype})")
+                                cast_dtype=False)
+    update = _cast_rmw_update_dtype(update, array_dtype, bitwise)
+    mode = _select_rmw_mode(int_mode, uint_mode, float_mode, array_dtype)
 
     memory_order = require_constant_enum(memory_order, MemoryOrder)
     memory_scope = require_constant_enum(memory_scope, MemoryScope)
@@ -3045,27 +3079,62 @@ def _atomic_rmw_core(int_mode: Optional[AtomicRMWMode],
     return result
 
 
-@impl(ct.atomic_xchg, fixed_args=[
-    AtomicRMWMode.EXCHANGE, AtomicRMWMode.EXCHANGE, AtomicRMWMode.EXCHANGE,
-    False, int_float_32_64_dtypes])
-@impl(ct.atomic_add, fixed_args=[
-    AtomicRMWMode.ADD_INT, AtomicRMWMode.ADD_INT, AtomicRMWMode.ADD_FLOAT,
-    False, (*int_float_32_64_dtypes, datatype.float16)])
-@impl(ct.atomic_min, fixed_args=[
-    AtomicRMWMode.MIN_SIGNED_INT, AtomicRMWMode.MIN_UNSIGNED_INT, None,
-    False, int_32_64_dtypes])
-@impl(ct.atomic_max, fixed_args=[
-    AtomicRMWMode.MAX_SIGNED_INT, AtomicRMWMode.MAX_UNSIGNED_INT, None,
-    False, int_32_64_dtypes])
-@impl(ct.atomic_and, fixed_args=[
-    AtomicRMWMode.BITWISE_AND, AtomicRMWMode.BITWISE_AND, None,
-    True, int_32_64_dtypes])
-@impl(ct.atomic_or, fixed_args=[
-    AtomicRMWMode.BITWISE_OR, AtomicRMWMode.BITWISE_OR, None,
-    True, int_32_64_dtypes])
-@impl(ct.atomic_xor, fixed_args=[
-    AtomicRMWMode.BITWISE_XOR, AtomicRMWMode.BITWISE_XOR, None,
-    True, int_32_64_dtypes])
+@dataclass(frozen=True)
+class _AtomicRMWSpec:
+    int_mode: Optional[AtomicRMWMode]
+    uint_mode: Optional[AtomicRMWMode]
+    float_mode: Optional[AtomicRMWMode]
+    bitwise: bool
+    supported_dtypes: Sequence[DType]
+
+    def fixed_args(self) -> list:
+        return [self.int_mode, self.uint_mode, self.float_mode,
+                self.bitwise, self.supported_dtypes]
+
+
+_ATOMIC_RMW_SPECS: dict[str, _AtomicRMWSpec] = {
+    "xchg": _AtomicRMWSpec(
+        AtomicRMWMode.EXCHANGE, AtomicRMWMode.EXCHANGE, AtomicRMWMode.EXCHANGE,
+        False, int_float_32_64_dtypes),
+    "add": _AtomicRMWSpec(
+        AtomicRMWMode.ADD_INT, AtomicRMWMode.ADD_INT, AtomicRMWMode.ADD_FLOAT,
+        False, (*int_float_32_64_dtypes, datatype.float16, datatype.bfloat16)),
+    "min": _AtomicRMWSpec(
+        AtomicRMWMode.MIN_SIGNED_INT, AtomicRMWMode.MIN_UNSIGNED_INT, None,
+        False, int_32_64_dtypes),
+    "max": _AtomicRMWSpec(
+        AtomicRMWMode.MAX_SIGNED_INT, AtomicRMWMode.MAX_UNSIGNED_INT, None,
+        False, int_32_64_dtypes),
+    "and": _AtomicRMWSpec(
+        AtomicRMWMode.BITWISE_AND, AtomicRMWMode.BITWISE_AND, None,
+        True, int_32_64_dtypes),
+    "or": _AtomicRMWSpec(
+        AtomicRMWMode.BITWISE_OR, AtomicRMWMode.BITWISE_OR, None,
+        True, int_32_64_dtypes),
+    "xor": _AtomicRMWSpec(
+        AtomicRMWMode.BITWISE_XOR, AtomicRMWMode.BITWISE_XOR, None,
+        True, int_32_64_dtypes),
+}
+
+
+def _register_atomic_rmw_impls(stubs, **impl_kwargs):
+    def decorator(f):
+        for op, stub in stubs.items():
+            f = impl(stub,
+                     fixed_args=_ATOMIC_RMW_SPECS[op].fixed_args(),
+                     **impl_kwargs)(f)
+        return f
+    return decorator
+
+
+_SCATTER_ATOMIC_RMW_STUBS = {
+    "xchg": ct.atomic_xchg, "add": ct.atomic_add, "min": ct.atomic_min,
+    "max":  ct.atomic_max,  "and": ct.atomic_and, "or":  ct.atomic_or,
+    "xor":  ct.atomic_xor,
+}
+
+
+@_register_atomic_rmw_impls(_SCATTER_ATOMIC_RMW_STUBS)
 def atomic_rmw_impl(int_mode: Optional[AtomicRMWMode],
                     uint_mode: Optional[AtomicRMWMode],
                     float_mode: Optional[AtomicRMWMode],
@@ -3082,27 +3151,18 @@ def atomic_rmw_impl(int_mode: Optional[AtomicRMWMode],
                             update, memory_order, memory_scope)
 
 
-@impl(ct.RawArrayMemory.atomic_xchg_offset, fixed_args=[
-    AtomicRMWMode.EXCHANGE, AtomicRMWMode.EXCHANGE, AtomicRMWMode.EXCHANGE,
-    False, int_float_32_64_dtypes])
-@impl(ct.RawArrayMemory.atomic_add_offset, fixed_args=[
-    AtomicRMWMode.ADD_INT, AtomicRMWMode.ADD_INT, AtomicRMWMode.ADD_FLOAT,
-    False, (*int_float_32_64_dtypes, datatype.float16)])
-@impl(ct.RawArrayMemory.atomic_min_offset, fixed_args=[
-    AtomicRMWMode.MIN_SIGNED_INT, AtomicRMWMode.MIN_UNSIGNED_INT, None,
-    False, int_32_64_dtypes])
-@impl(ct.RawArrayMemory.atomic_max_offset, fixed_args=[
-    AtomicRMWMode.MAX_SIGNED_INT, AtomicRMWMode.MAX_UNSIGNED_INT, None,
-    False, int_32_64_dtypes])
-@impl(ct.RawArrayMemory.atomic_and_offset, fixed_args=[
-    AtomicRMWMode.BITWISE_AND, AtomicRMWMode.BITWISE_AND, None,
-    True, int_32_64_dtypes])
-@impl(ct.RawArrayMemory.atomic_or_offset, fixed_args=[
-    AtomicRMWMode.BITWISE_OR, AtomicRMWMode.BITWISE_OR, None,
-    True, int_32_64_dtypes])
-@impl(ct.RawArrayMemory.atomic_xor_offset, fixed_args=[
-    AtomicRMWMode.BITWISE_XOR, AtomicRMWMode.BITWISE_XOR, None,
-    True, int_32_64_dtypes])
+_RAW_MEM_ATOMIC_RMW_STUBS = {
+    "xchg": ct.RawArrayMemory.atomic_xchg_offset,
+    "add":  ct.RawArrayMemory.atomic_add_offset,
+    "min":  ct.RawArrayMemory.atomic_min_offset,
+    "max":  ct.RawArrayMemory.atomic_max_offset,
+    "and":  ct.RawArrayMemory.atomic_and_offset,
+    "or":   ct.RawArrayMemory.atomic_or_offset,
+    "xor":  ct.RawArrayMemory.atomic_xor_offset,
+}
+
+
+@_register_atomic_rmw_impls(_RAW_MEM_ATOMIC_RMW_STUBS)
 def raw_array_memory_atomic_rmw_impl(int_mode: Optional[AtomicRMWMode],
                                      uint_mode: Optional[AtomicRMWMode],
                                      float_mode: Optional[AtomicRMWMode],
@@ -3162,11 +3222,8 @@ def num_tiles(array: Var, shape: Sequence[int], order: Sequence[int],
               traversal_steps: Optional[Sequence[int]] = None) -> Tuple[Var, ...]:
     array_ty = require_array_type(array)
     broadcasted_shape = (1,) * array_ty.ndim if len(shape) == 0 else shape
-    if _use_strided_view(traversal_steps, broadcasted_shape):
-        view = _make_strided_view(array, broadcasted_shape, traversal_steps,
-                                  order, PaddingMode.UNDETERMINED)
-    else:
-        view = _make_partition_view(array, broadcasted_shape, order, PaddingMode.UNDETERMINED)
+    view = _materialize_tiled_view(array, broadcasted_shape, order, PaddingMode.UNDETERMINED,
+                                   traversal_steps)
     result_tys = tuple(make_tile_ty(datatype.default_int_type, ()) for _s in broadcasted_shape)
     return add_operation(NumTiles, result_tys, view=view)
 
@@ -4674,6 +4731,87 @@ def tiled_view_store_impl(self: Var, index: Var, tile: Var, latency: Var, allow_
     order = get_default_order(view_ty.ndim)
     _tile_store_impl_inner(array, index_items, tile, order, latency, allow_tma,
                            traversal_steps=view_ty.traversal_steps)
+
+
+@dataclass(eq=False)
+class TileAtomicRedView(Operation, opcode="tile_atomic_red_view", memory_effect=MemoryEffect.STORE):
+    mode: AtomicRMWMode = attribute()
+    memory_order: MemoryOrder = attribute()
+    memory_scope: MemoryScope = attribute()
+    view: Var = operand()
+    index: tuple[Var, ...] = operand()
+    update: Var = operand()
+    token: Optional[Var] = operand(default=None)
+
+    VALID_MEMORY_ORDERS = (MemoryOrder.RELAXED,)
+
+    VALID_MEMORY_SCOPES = (MemoryScope.BLOCK, MemoryScope.DEVICE)
+
+    @override
+    def generate_bytecode(self, ctx: BytecodeContext) -> bc.Value:
+        return bc.encode_AtomicRedViewTkoOp(
+            ctx.builder,
+            result_token_type=ctx.type_table.Token,
+            view=ctx.get_value(self.view),
+            index=ctx.index_tuple(self.index),
+            value=ctx.get_value(self.update),
+            token=None if self.token is None else ctx.get_value(self.token),
+            memory_ordering_semantics=memory_order_to_bytecode[self.memory_order],
+            memory_scope=memory_scope_to_bytecode[self.memory_scope],
+            mode=self.mode._value_
+        )
+
+
+_TILED_VIEW_ATOMIC_RMW_STUBS = {
+    "add": ct.TiledView.atomic_add,
+    "min": ct.TiledView.atomic_min,
+    "max": ct.TiledView.atomic_max,
+    "and": ct.TiledView.atomic_and,
+    "or":  ct.TiledView.atomic_or,
+    "xor": ct.TiledView.atomic_xor,
+}
+
+
+@_register_atomic_rmw_impls(_TILED_VIEW_ATOMIC_RMW_STUBS,
+                            min_version=BytecodeVersion.V_13_3)
+def tiled_view_atomic_rmw_impl(int_mode: Optional[AtomicRMWMode],
+                               uint_mode: Optional[AtomicRMWMode],
+                               float_mode: Optional[AtomicRMWMode],
+                               bitwise: bool,
+                               supported_dtypes: Sequence[DType],
+                               # --- end of fixed args ---
+                               self: Var, index: Var, update: Var):
+    view_ty = require_tiled_view_type(self)
+    if view_ty.dtype not in supported_dtypes:
+        raise TileTypeError(f"Unsupported tiled view dtype: {view_ty.dtype}")
+
+    index_ty = require_index_or_index_tuple_type(index)
+    index_items = index.get_aggregate().items if isinstance(index_ty, TupleTy) else (index,)
+    if view_ty.ndim != len(index_items):
+        raise TileTypeError(f"Index size {len(index_items)}"
+                            f" does not match the tiled view rank {view_ty.ndim}")
+
+    update_ty = require_tile_type(update)
+    if not is_shape_broadcastable_to(update_ty.shape, view_ty.tile_shape):
+        raise TileTypeError(f"Update shape {update_ty.shape} is not broadcastable"
+                            f" to the tiled view's tile shape {view_ty.tile_shape}")
+
+    broadcasted_shape = (1,) * view_ty.ndim if len(view_ty.tile_shape) == 0 else view_ty.tile_shape
+    update = broadcast_to(update, broadcasted_shape)
+    update = _cast_rmw_update_dtype(update, view_ty.dtype, bitwise)
+    mode = _select_rmw_mode(int_mode, uint_mode, float_mode, view_ty.dtype)
+
+    memory_order = MemoryOrder.RELAXED
+    memory_scope = MemoryScope.DEVICE
+    validate_memory_order_and_scope(memory_order, memory_scope, TileAtomicRedView)
+
+    [array] = self.get_aggregate().as_tuple()
+    order = get_default_order(view_ty.ndim)
+    view = _materialize_tiled_view(array, broadcasted_shape, order, PaddingMode.UNDETERMINED,
+                                   view_ty.traversal_steps)
+    add_operation(TileAtomicRedView, (TokenTy(),),
+                  mode=mode, memory_order=memory_order, memory_scope=memory_scope,
+                  view=view, index=index_items, update=update)
 
 
 def store_var(local_idx: int, value: Var, loc: Loc | None = None):

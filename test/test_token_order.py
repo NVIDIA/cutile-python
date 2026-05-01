@@ -1368,3 +1368,43 @@ class TestLoadStoreMemoryOrderErrors:
         X = torch.zeros(64, device="cuda", dtype=torch.int32)
         with pytest.raises(TileTypeError, match="Invalid memory order for tile_store"):
             ct.launch(torch.cuda.current_stream(), (1,), kernel, (X, 64))
+
+
+TVAtomicCheckDirective = """\
+// CHECK: %[[TOKEN0:.*]] = make_token
+// CHECK: %[[TY:.*]], %[[Y_TOKEN1:.*]] = load_view_tko acquire device {{.*}} token = %[[TOKEN0]]
+// CHECK: %[[Y_TOKEN2:.*]] = join_tokens %[[TOKEN0]], %[[Y_TOKEN1]]
+// CHECK: %[[X_TOKEN1:.*]] = join_tokens %[[TOKEN0]], %[[Y_TOKEN1]]
+// CHECK: %[[X_TOKEN2:.*]] = atomic_red_view_tko relaxed device {{.*}} token = %[[X_TOKEN1]]
+// CHECK: %[[Y_TOKEN3:.*]] = join_tokens %[[Y_TOKEN2]], %[[Y_TOKEN1]]
+// CHECK: %[[Y_TOKEN4:.*]] = atomic_red_view_tko relaxed device {{.*}} token = %[[Y_TOKEN3]]
+// CHECK: %[[Y_TOKEN5:.*]] = join_tokens %[[Y_TOKEN4]], %[[Y_TOKEN1]], %[[X_TOKEN2]]
+// CHECK: %[[Y_TOKEN6:.*]] = store_view_tko release device {{.*}} token = %[[Y_TOKEN5]]
+"""  # noqa: E501
+
+
+class TestTiledViewAtomicTokenOrderMLIR(MLIRTestBase):
+
+    def tv_atomic(X, Y, TILE: ct.Constant[int]):
+        ty = ct.load(Y, index=(0,), shape=(TILE,),
+                     memory_order=ct.MemoryOrder.ACQUIRE,
+                     memory_scope=ct.MemoryScope.DEVICE)
+        X.tiled_view((TILE,)).atomic_add(0, ty)
+        Y.tiled_view((TILE,)).atomic_add(0, ty)
+        ct.store(Y, index=(1,), tile=ty + 1,
+                 memory_order=ct.MemoryOrder.RELEASE,
+                 memory_scope=ct.MemoryScope.DEVICE)
+
+    @override
+    def compile_kernel(self, kernel):
+        tile_size = 1024
+        X = torch.arange(tile_size, device="cuda", dtype=torch.int32)
+        Y = torch.arange(tile_size, device="cuda", dtype=torch.int32)
+        return get_bytecode(kernel, (X, Y, tile_size))
+
+    @pytest.mark.parametrize("kernel, check_directive", make_cases(
+        (tv_atomic, TVAtomicCheckDirective),
+    ))
+    @override
+    def test_mlir(self, kernel, check_directive):
+        super().test_mlir(kernel, check_directive)

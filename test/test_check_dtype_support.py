@@ -99,3 +99,34 @@ def test_f4e2m1fn_rejects_nan(val):
     with pytest.raises(TileValueError,
                        match="NaN cannot be represented in float4_e2m1fn"):
         compile_with(kernel, (), "sm_100", "13.3")
+
+
+@requires_tileiras(BytecodeVersion.V_13_3)
+def test_atomic_red_view_add_bf16_requires_hopper():
+    def kernel(x, y):
+        tv_x = x.tiled_view((128,))
+        update = y.tiled_view((128,)).load(0)
+        tv_x.atomic_add(0, update)
+
+    x = make_tensor((128,), dtype=torch.bfloat16, device='cuda')
+    y = torch.zeros_like(x)
+    with pytest.raises(TileUnsupportedFeatureError,
+                       match="bfloat16 is not supported by atomic add on sm_80"):
+        compile_with(kernel, (x, y), "sm_80", "13.3")
+
+
+def test_atomic_add_bf16_requires_hopper_13_3():
+    def kernel(x, y):
+        indices = ct.arange(128, dtype=ct.int32)
+        update = ct.gather(y, indices)
+        ct.atomic_add(x, indices, update)
+
+    x = make_tensor((128,), dtype=torch.bfloat16, device='cuda')
+    y = torch.zeros_like(x)
+    with pytest.raises(TileUnsupportedFeatureError,
+                       match="bfloat16 is not supported by atomic add on sm_80"):
+        compile_with(kernel, (x, y), "sm_80", "13.3")
+
+    with pytest.raises(TileUnsupportedFeatureError,
+                       match=r"bfloat16 on atomic add requires tileiras 13\.3"):
+        compile_with(kernel, (x, y), "sm_90", "13.2")

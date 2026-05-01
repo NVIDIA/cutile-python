@@ -158,8 +158,8 @@ class ImplRegistry:
             if min_version is not None and cur_version < min_version:
                 raise TileUnsupportedFeatureError(
                     f"{stub.__name__} requires tileiras "
-                    f"{min_version.major()}.{min_version.minor()} or later. "
-                    f"Current version is {cur_version.major()}.{cur_version.minor()}."
+                    f"{min_version.as_string()} or later. "
+                    f"Current version is {cur_version.as_string()}."
                 )
 
         def decorate(func):
