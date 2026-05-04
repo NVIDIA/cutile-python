@@ -1,6 +1,8 @@
 # SPDX-FileCopyrightText: Copyright (c) <2026> NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 #
 # SPDX-License-Identifier: Apache-2.0
+import re
+
 import pytest
 
 import cuda.tile as ct
@@ -79,4 +81,57 @@ def test_tuple_setitem():
 
     with pytest.raises(TileTypeError,
                        match="Tuples are immutable: item assignment is not supported"):
+        ct.launch(torch.cuda.current_stream(), (1,), kernel, ())
+
+
+def test_build_tuple_starred():
+    @ct.kernel
+    def kernel(x):
+        a = (10, 20, 30)
+        b = ()
+        c = (40, 50)
+        t = (7, *a, 8, *b, 9, *c, 10)
+        for i, v in ct.static_iter(enumerate(t)):
+            ct.scatter(x, i, v)
+
+    x = torch.zeros(9, dtype=torch.int32, device="cuda")
+    ct.launch(torch.cuda.current_stream(), (1,), kernel, (x,))
+    assert x.tolist() == [7, 10, 20, 30, 8, 9, 40, 50, 10]
+
+
+def test_pass_tuple_starred_to_user_defined_helper():
+    def helper(arr, *items):
+        for i, v in ct.static_iter(enumerate(items)):
+            ct.scatter(arr, i, v)
+
+    @ct.kernel
+    def kernel(x):
+        helper(x, 123, *(10, 20), 456, *(30,))
+
+    x = torch.zeros(5, dtype=torch.int32, device="cuda")
+    ct.launch(torch.cuda.current_stream(), (1,), kernel, (x,))
+    assert x.tolist() == [123, 10, 20, 456, 30]
+
+
+def test_pass_tuple_starred_to_builtin():
+    @ct.kernel
+    def kernel(x):
+        args = (x, (), 1234)
+        ct.scatter(*args)
+
+    x = torch.zeros((), dtype=torch.int32, device="cuda")
+    ct.launch(torch.cuda.current_stream(), (1,), kernel, (x,))
+    assert x.item() == 1234
+
+
+def test_pass_non_tuple_starred():
+    def helper(*items):
+        pass
+
+    @ct.kernel
+    def kernel():
+        tile = ct.ones((4,), dtype=ct.int32)
+        helper(*tile)
+
+    with pytest.raises(TileTypeError, match=re.escape("Expected a tuple after *")):
         ct.launch(torch.cuda.current_stream(), (1,), kernel, ())

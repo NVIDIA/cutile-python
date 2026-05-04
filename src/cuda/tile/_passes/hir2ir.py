@@ -14,13 +14,13 @@ from .._coroutine_util import resume_after, run_coroutine
 from .._exception import Loc, TileSyntaxError, TileInternalError, TileError, TileRecursionError
 from .._execution import is_stub
 from .._ir import hir, ir
-from .._ir.ir import Var, IRContext, BoundMethodValue, ClosureValue
+from .._ir.ir import Var, IRContext, BoundMethodValue, ClosureValue, TupleValue
 from .._ir.op_impl import ImplRegistry
 from .._ir.ops import loosely_typed_const, end_branch, return_, continue_, \
-    break_, store_var, build_dataclass_instance
+    break_, store_var, build_dataclass_instance, build_tuple
 from .._ir.scope import Scope, LocalScope, IntMap
 from .._ir.type import FunctionTy, BoundMethodTy, DTypeConstructor, ClosureTy, \
-    ClosureDefaultPlaceholder, StringFormat, TypeTy
+    ClosureDefaultPlaceholder, StringFormat, TypeTy, TupleTy
 from .._ir.typing_support import get_signature, is_supported_builtin_func, \
     get_dataclass_info
 
@@ -125,20 +125,33 @@ def _wrap_exceptions(loc: Loc):
 
 async def _dispatch_call(hir_call: hir.Call, scope: Scope):
     callee_var = _resolve_operand(hir_call.callee, scope)
-    args = tuple(_resolve_operand(x, scope) for x in hir_call.args)
+    args = []
+    for x in hir_call.args:
+        if isinstance(x, hir.Starred):
+            tup_var = _resolve_operand(x.value, scope)
+            assert isinstance(tup_var, Var)
+            tup_ty = tup_var.get_type()
+            if not isinstance(tup_ty, TupleTy):
+                raise TileTypeError(f"Expected a tuple after *, got {tup_ty}")
+            tup_value = tup_var.get_aggregate()
+            assert isinstance(tup_value, TupleValue)
+            args.extend(tup_value.items)
+        else:
+            args.append(_resolve_operand(x, scope))
     kwargs = {k: _resolve_operand(v, scope) for k, v in hir_call.kwargs}
     retval = await call(callee_var, args, kwargs)
     if hir_call.result is not None and retval is not None:
         scope.hir2ir_varmap[hir_call.result.id] = retval
 
 
-async def _call_user_defined(callee_hir: hir.Function, arg_list: list[Var], builder: ir.Builder,
+async def _call_user_defined(callee_hir: hir.Function,
+                             arg_list: list[Var | tuple[Var, ...]],
+                             builder: ir.Builder,
                              parent_scopes: tuple[LocalScope, ...] = ()):
     _check_recursive_call(builder.loc)
     for param_name, param in callee_hir.signature.parameters.items():
-        if param.kind in (inspect.Parameter.VAR_POSITIONAL,
-                          inspect.Parameter.VAR_KEYWORD):
-            raise TileSyntaxError("Variadic parameters in user-defined"
+        if param.kind == inspect.Parameter.VAR_KEYWORD:
+            raise TileSyntaxError("Variadic keyword parameters in user-defined"
                                   " functions are not supported")
 
     # Activate a fresh Scope.
@@ -148,6 +161,9 @@ async def _call_user_defined(callee_hir: hir.Function, arg_list: list[Var], buil
         # Call store_var() to bind arguments to parameters.
         for arg, local_idx, param_loc in zip(arg_list, callee_hir.param_local_indices,
                                              callee_hir.param_locs, strict=True):
+            if isinstance(arg, tuple):
+                # Handle the *vararg parameter
+                arg = build_tuple(arg)
             store_var(local_idx, arg, param_loc)
 
         # Dispatch the function body. Use resume_after() to break the call stack
@@ -174,7 +190,7 @@ async def _call_function(callee: FunctionType | BuiltinFunctionType,
         return await _call_user_defined(callee_hir, arg_list, builder)
 
 
-async def _call_builtin(callee, arg_list: list[Var], builder: ir.Builder):
+async def _call_builtin(callee, arg_list: list[Var | tuple[Var, ...]], builder: ir.Builder):
     impl_registry = ImplRegistry.get_current()
     try:
         impl = impl_registry.op_implementations[callee]
@@ -340,7 +356,7 @@ def _resolve_operand(x: hir.Operand, scope: Scope) \
 
 
 def _bind_args(sig: inspect.Signature, func_name: str, args, kwargs,
-               closure_defaults: Sequence[Var] | None = None) -> list[Var]:
+               closure_defaults: Sequence[Var] | None = None) -> list[Var | tuple[Var, ...]]:
     try:
         bound_args = sig.bind(*args, **kwargs)
     except TypeError as e:

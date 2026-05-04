@@ -67,10 +67,15 @@ ModuleType = type(enum)
 
 
 @dataclass
+class Starred:
+    value: Value
+
+
+@dataclass
 class Call:
     result: Value | None
     callee: Operand
-    args: tuple[Operand, ...]
+    args: tuple[Operand | Starred, ...]
     kwargs: tuple[tuple[str, Operand], ...]
     loc: Loc
 
@@ -206,8 +211,11 @@ class Function:
 class _OperandFormatter:
     blocks: list["Block"]
 
-    def __call__(self, x: Operand) -> str:
-        if isinstance(x, Value):
+    def __call__(self, x: Operand | Starred) -> str:
+        if isinstance(x, Starred):
+            assert isinstance(x.value, Value)
+            return f"*{x}"
+        elif isinstance(x, Value):
             return str(x)
         elif isinstance(x, ModuleType):
             return str(f"<mod:{x.__name__}>")

@@ -281,7 +281,7 @@ def _call_expr(call: ast.Call, ctx: _Context) -> hir.Value:
             raise TileSyntaxError(f"{kwd_func} is not expected here")
     else:
         callee = _expr(call.func, ctx)
-        args = tuple(_expr(a, ctx) for a in call.args)
+        args = tuple(_starred_expr(a, ctx) for a in call.args)
         kwargs = tuple((a.arg, _expr(a.value, ctx)) for a in call.keywords)
         return ctx.call(callee, args, kwargs)
 
@@ -513,7 +513,7 @@ def _fstring_expr(node: ast.JoinedStr, ctx: _Context) -> hir.Value:
 
 @_register(_expr_handlers, ast.Tuple)
 def _tuple_expr(tup: ast.Tuple, ctx: _Context) -> hir.Value:
-    items = tuple(_expr(x, ctx) for x in tup.elts)
+    items = tuple(_starred_expr(x, ctx) for x in tup.elts)
     return ctx.call(hir_stubs.build_tuple, items)
 
 
@@ -541,11 +541,18 @@ def _unsupported_expr(expr: ast.AST, ctx: _Context):
     raise ctx.unsupported_syntax()
 
 
-def _expr(expr: ast.AST, ctx: _Context) -> hir.Operand:
+def _expr(expr: ast.expr, ctx: _Context) -> hir.Operand:
     """Dispatch expression node to appropriate handler"""
     handler = _expr_handlers.get(type(expr), _unsupported_expr)
     with ctx.change_loc(expr):
         return handler(expr, ctx)
+
+
+def _starred_expr(expr: ast.expr, ctx: _Context) -> hir.Operand | hir.Starred:
+    if isinstance(expr, ast.Starred):
+        return hir.Starred(_expr(expr.value, ctx))
+    else:
+        return _expr(expr, ctx)
 
 
 # ================================
@@ -950,15 +957,23 @@ def _stmt_list(statements: Sequence[ast.stmt], ctx: _Context):
 
 
 def _get_all_parameters(func_def: ast.FunctionDef | ast.Lambda, ctx: _Context) -> List[ast.arg]:
-    for a in (func_def.args.vararg, func_def.args.kwarg):
-        if a is not None:
+    if ctx.entry_point:
+        for a in (func_def.args.vararg, func_def.args.kwarg):
+            if a is not None:
+                raise ctx.syntax_error("Variadic kernel parameters are not supported", a)
+    else:
+        if func_def.args.kwarg is not None:
             raise ctx.syntax_error(
-                "Variadic parameters in user-defined functions are not supported", a)
+                "Variadic keyword parameters in user-defined functions are not supported",
+                func_def.args.kwarg)
+
     all_args = []
     for arg in func_def.args.posonlyargs:
         all_args.append(arg)
     for arg in func_def.args.args:
         all_args.append(arg)
+    if func_def.args.vararg is not None:
+        all_args.append(func_def.args.vararg)
     for arg in func_def.args.kwonlyargs:
         all_args.append(arg)
     return all_args
