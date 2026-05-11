@@ -25,10 +25,12 @@ cuTile Python requires the following:
 Installing cuTile Python
 -------------------------------------------------------------------------------
 
-cuTile Python depends on CUDA TileIR compiler ``tileiras``, which futher depends on ``ptxas`` and ``libnvvm``
-from the CUDA Toolkit.
+cuTile Python depends on CUDA TileIR compiler ``tileiras``,
+which futher depends on ``ptxas`` and ``libnvvm`` from the CUDA Toolkit. They can be installed
+as python packages per virtual environment or at system wide CTK locations.
 
-If your system does not have system-wide CUDA Toolkit (13.1+), you can install cuTile Python along with ``[tileiras]``,
+If your system does not have system-wide CUDA Toolkit (13.1+),
+you can install cuTile Python along with the optional ``[tileiras]``,
 which installs ``nvidia-cuda-tileiras``, ``nvidia-cuda-nvcc`` and
 ``nvidia-nvvm`` into your Python virtual environment.
 
@@ -39,9 +41,17 @@ which installs ``nvidia-cuda-tileiras``, ``nvidia-cuda-nvcc`` and
 Note: the package versions for ``nvidia-cuda-tileiras``, ``nvidia-cuda-nvcc`` and
 ``nvidia-nvvm`` must match up to the same major.minor version.
 
+cuTile python supports different versions of `tileiras`.
+To use a specific version of ``tileiras`` python pacakge, i.e. `13.3.0` run
 
-Alternatively if you already have system-wide CUDA Toolkit (13.1+) installed, you can install cuTile Python as a
-standalone package. cuTile automatically searches for ``tileiras`` from the location of CUDA Toolkit.
+.. code-block::  bash
+
+    pip install cuda-toolkit[tileiras,nvvm,nvcc]==13.3.0
+
+
+Alternatively if you already have system-wide CUDA Toolkit (13.1+) installed,
+you can install cuTile Python as a standalone package.
+cuTile automatically searches for ``tileiras`` from the location of CUDA Toolkit.
 
 .. code-block::  bash
 
