@@ -18,7 +18,7 @@ from cuda.tile._ir.ir import (
     attribute,
     add_operation,
     format_var,
-    TupleValue, AggregateValue,
+    AggregateValue,
 )
 
 
@@ -139,7 +139,6 @@ __all__ = (
     "Loc",
     "Operation",
     "Region",
-    "TupleValue",
     "Var",
     "add_operation",
     "attribute",

@@ -10,7 +10,7 @@ from types import ModuleType, FunctionType
 from typing import Any, Callable, Mapping, Union
 from cuda.tile import _datatype as datatype
 from cuda.tile._exception import TileTypeError, TileValueError
-from .ir import DataclassInfo
+from .type import DataclassInfo
 
 from .type import Type, TupleTy, DTypeConstructor, DTypeSpec, NONE, StringTy, \
     ELLIPSIS, SLICE, ModuleTy, FunctionTy, EnumTy, TypeTy, LooselyTypedScalar, \

@@ -21,7 +21,10 @@ from cuda.tile._ir.type import (
     EnumTy,
     make_tile_ty,
     ContextManagerTy,
-    ContextManagerState, MemorySpace,
+    ContextManagerState,
+    MemorySpace,
+    ArrayValue,
+    TupleValue
 )
 import cuda.tile._datatype as datatype
 from cuda.tile._datatype import DType
@@ -128,4 +131,6 @@ __all__ = (
     "make_vector_ty",
     "is_vector_ty",
     "MemorySpace",
+    "ArrayValue",
+    "TupleValue",
 )

@@ -7,7 +7,7 @@ from typing import Any
 from cuda.lang import _datatype as datatype
 from cuda.lang._execution import stub
 from cuda.lang._ir.type import TileTy, is_vector_ty
-from cuda.tile._symbolic import SymbolicTile
+from cuda.tile._ir.type import SymbolicTile
 
 
 def satisfies_scalar_integral_constraint(value):

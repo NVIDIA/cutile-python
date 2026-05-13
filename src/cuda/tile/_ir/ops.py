@@ -22,15 +22,15 @@ from cuda.tile._mutex import tile_mutex
 from cuda.tile._exception import TileTypeError, TileSyntaxError, TileError, \
     TileStaticAssertionError, TileStaticEvalError, TileValueError, TileUnsupportedFeatureError
 from cuda.tile._ir.ir import (
-    Operation, Var, Loc, Block,
-    add_operation, Builder,
-    enter_nested_block, nested_block, PhiState, LoopVarState,
-    TupleValue, make_aggregate, RangeValue, BoundMethodValue, ArrayValue, ConstantState,
-    ListValue, TiledViewValue, ClosureValue, MemoryEffect, attribute, operand,
-    BlockRestriction, FormattedStringValue, RawArrayMemoryValue, DataclassValue, DataclassInfo,
+    Operation, Var, Loc, Block, add_operation, Builder, enter_nested_block, nested_block,
+    PhiState, LoopVarState, make_aggregate, ConstantState, MemoryEffect, attribute, operand,
+    BlockRestriction,
+)
+from .type import (
+    var2sym, PointerTy, TupleValue, BoundMethodValue, ArrayValue, DataclassValue, DataclassInfo,
+    RangeValue, ListValue, TiledViewValue, ClosureValue, FormattedStringValue, RawArrayMemoryValue,
     IndexSliceValue
 )
-from .type import PointerTy
 from . import hir, hir_stubs
 from .hir import ResolvedName
 from .op_impl import (
@@ -66,7 +66,7 @@ from .type import (
     NONE, ModuleTy, TypeTy, LooselyTypedScalar, DTypeSpec, StringTy, InvalidType,
     ClosureTy, LiveCapturedScope, TokenTy, TiledViewTy, FormattedStringTy,
     StringFormat, FormattedPiece, RawArrayMemoryTy, DataclassTy, IndexSliceTy,
-    ContextManagerLifecycle, ContextManagerTy
+    ContextManagerLifecycle, ContextManagerTy, Symbol
 )
 from cuda.tile._datatype import (
     DType, is_integral, is_float, is_signed, is_boolean,
@@ -80,7 +80,6 @@ import cuda.tile._bytecode as bc
 from cuda.tile._bytecode.version import BytecodeVersion
 from .._debug import CUDA_TILE_TESTING_DISABLE_DIV
 from .._dispatch_mode import StaticEvalMode
-from .._symbolic import SymbolicTile, SymbolicArray, Symbol, SymbolicClosure
 
 
 tile_impl_registry = ImplRegistry()
@@ -5192,33 +5191,6 @@ async def static_foreach_impl(body: hir.Block, items: Var):
         scope.hir2ir_varmap[body.params[0].id] = item
         from .._passes.hir2ir import dispatch_hir_block
         await dispatch_hir_block(body)
-
-
-def var2sym(var: Var) -> Any:
-    if var.is_constant():
-        return var.get_constant()
-
-    ty = var.get_type()
-    if isinstance(ty, TileTy | DType):
-        return SymbolicTile(var)
-    elif isinstance(ty, ArrayTy):
-        return SymbolicArray(var)
-    elif isinstance(ty, TupleTy):
-        tup_val = var.get_aggregate()
-        assert isinstance(tup_val, TupleValue)
-        return tuple(var2sym(x) for x in tup_val.items)
-    elif isinstance(ty, DataclassTy):
-        dc_val = var.get_aggregate()
-        assert isinstance(dc_val, DataclassValue)
-        return ty.cls(**{f.name: var2sym(dc_val.get_field(f.name))
-                         for f in dataclasses.fields(ty.cls)})
-    elif isinstance(ty, ClosureTy):
-        return SymbolicClosure(var)
-    elif isinstance(ty, BoundMethodTy):
-        self_sym = var2sym(var.get_aggregate().bound_self)
-        return MethodType(ty.func, self_sym)
-    else:
-        raise TileTypeError(f"Objects of type {ty} are not supported at compile time")
 
 
 def sym2var(x: Any) -> Var:

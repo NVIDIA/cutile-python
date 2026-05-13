@@ -4,9 +4,8 @@
 
 from typing import Iterable
 
-from cuda.lang._ir.type import ArrayTy, MemorySpace, PointerTy, make_tile_ty
+from cuda.lang._ir.type import ArrayTy, MemorySpace, PointerTy, make_tile_ty, ArrayValue
 from cuda.lang._ir.ops import MakeTensorView, ReinterpretPointer
-from cuda.tile._ir.ir import ArrayValue
 
 
 def _rewrite_make_tensor_view(builder, op, array_parameter_names) -> Iterable:

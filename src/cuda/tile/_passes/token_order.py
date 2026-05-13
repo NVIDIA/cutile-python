@@ -8,10 +8,10 @@ from enum import Enum, auto
 from types import MappingProxyType
 from typing import Tuple, Dict, Set, Optional
 
-from cuda.tile._ir.type import PartitionViewTy, TokenTy
+from cuda.tile._ir.type import PartitionViewTy, TokenTy, ArrayValue
 from cuda.tile._memory_model import MemoryOrder
 from cuda.tile._exception import Loc, TileInternalError
-from cuda.tile._ir.ir import Block, IRContext, Var, Operation, MemoryEffect, ArrayValue
+from cuda.tile._ir.ir import Block, IRContext, Var, Operation, MemoryEffect
 from cuda.tile._ir.ops import (
     Break, Continue, EndBranch, IfElse,
     JoinTokens, Loop, MakeToken,

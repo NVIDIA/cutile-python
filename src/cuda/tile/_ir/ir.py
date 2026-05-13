@@ -6,7 +6,6 @@ from __future__ import annotations
 
 import dataclasses
 import enum
-import inspect
 import itertools
 import threading
 from collections import defaultdict
@@ -18,6 +17,7 @@ from typing import (
     List, Optional, Dict, Tuple, Any, TYPE_CHECKING, Sequence, Iterator, Callable
 )
 
+from cuda.tile._ir.aggregate_value import AggregateValue
 from cuda.tile._ir.type import Type, InvalidType
 from cuda.tile._exception import (
     TileTypeError, Loc, TileInternalError
@@ -156,11 +156,6 @@ class PhiState:
         dst.set_loose_type(self.loose_ty)
 
 
-class AggregateValue:
-    def as_tuple(self) -> tuple["Var", ...]:
-        raise NotImplementedError()
-
-
 class Var:
     def __init__(self, name: str, loc: Loc, ctx: IRContext):
         self.name = name
@@ -241,130 +236,6 @@ class Var:
 
     def __str__(self) -> str:
         return self.name
-
-
-@dataclass
-class TupleValue(AggregateValue):
-    items: tuple[Var, ...]
-
-    def as_tuple(self) -> tuple["Var", ...]:
-        return self.items
-
-
-@dataclass(frozen=True)
-class DataclassInfo:
-    cls: type
-    field_names: Sequence[str]
-    field_name_to_idx: Mapping[str, int]
-    init_signature: inspect.Signature
-
-
-@dataclass
-class DataclassValue(AggregateValue):
-    items: tuple[Var, ...]
-    info: DataclassInfo
-
-    def as_tuple(self) -> tuple["Var", ...]:
-        return self.items
-
-    def get_field(self, name: str):
-        return self.items[self.info.field_name_to_idx[name]]
-
-
-@dataclass
-class FormattedStringValue(AggregateValue):
-    format: "Any"  # StringFormat from type.py
-    values: tuple  # tuple of Var
-
-    def as_tuple(self) -> tuple:
-        return self.values
-
-
-@dataclass
-class RangeValue(AggregateValue):
-    start: Var
-    stop: Var
-    step: Var
-
-    def as_tuple(self) -> tuple[Var, ...]:
-        return self.start, self.stop, self.step
-
-
-@dataclass
-class BoundMethodValue(AggregateValue):
-    bound_self: Var
-
-    def as_tuple(self) -> tuple[Var, ...]:
-        return (self.bound_self,)
-
-
-@dataclass
-class ArrayValue(AggregateValue):
-    base_ptr: Var
-    shape: tuple[Var, ...]
-    strides: tuple[Var, ...]
-
-    def as_tuple(self) -> tuple[Var, ...]:
-        return self.base_ptr, *self.shape, *self.strides
-
-
-@dataclass
-class TiledViewValue(AggregateValue):
-    array: Var
-
-    def as_tuple(self) -> tuple["Var", ...]:
-        return (self.array,)
-
-
-@dataclass
-class IndexSliceValue(AggregateValue):
-    start: Var
-    length: Var
-
-    def as_tuple(self) -> tuple[Var, ...]:
-        return (self.start, self.length)
-
-
-@dataclass
-class RawArrayMemoryValue(AggregateValue):
-    base_ptr: Var
-
-    def as_tuple(self) -> tuple[Var, ...]:
-        return (self.base_ptr,)
-
-
-@dataclass
-class ListValue(AggregateValue):
-    base_ptr: Var
-    length: Var
-
-    def as_tuple(self) -> tuple[Var, ...]:
-        return self.base_ptr, self.length
-
-
-@dataclass
-class ClosureValue(AggregateValue):
-    # Default values of parameters. These need to be carried by the closure's value
-    # because default expressions are evaluated at definition time, not when the closure is called.
-    # Should have the same length as the corresponding `ClosureTy.default_value_types`.
-    default_values: tuple[Var, ...]
-
-    # Tuple of the same length as `ty.func_hir.enclosing_functions`
-    # and `ty.frozen_capture_types_by_depth`, where `ty` is the `ClosureTy` of this closure.
-    #
-    # For each depth `i`, `frozen_captures_by_depth[i]` is either:
-    #   - None: means the enclosing function's LocalScope is still live;
-    #   - tuple[Var, ...]: means the enclosing function's LocalScope is no longer live.
-    #       The tuple contains the final values of the variables captured from the enclosing
-    #       function's scope. Its length should be the same as `ty.func_hir.captures_by_depth`.
-    frozen_captures_by_depth: tuple[tuple[Var, ...] | None, ...]
-
-    def as_tuple(self) -> tuple["Var", ...]:
-        return (
-            *self.default_values,
-            *(v for values in self.frozen_captures_by_depth
-              if values is not None for v in values)
-        )
 
 
 class MemoryEffect(enum.IntEnum):
@@ -655,6 +526,7 @@ class Operation:
                 # All other aggregates should only exist in the HIR level.
                 # Also make an exception for the Assign op, until we find a better way to handle it.
                 agg_val = var.get_aggregate()
+                from .type import ArrayValue, ListValue
                 assert isinstance(agg_val, ArrayValue | ListValue)
 
         for nb in self.nested_blocks:

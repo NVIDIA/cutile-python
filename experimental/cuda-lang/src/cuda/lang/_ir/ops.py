@@ -26,7 +26,7 @@ from cuda.tile._ir.op_impl import (
 )
 from cuda.lang._ir.type import (
     OpaquePointerTy, LocalArrayContextManagerTy, ContextManagerState, TensorMapTy,
-    dtype_to_tensor_map_type
+    dtype_to_tensor_map_type, ArrayValue
 )
 from cuda.tile._ir.ops import (
     binary_arithmetic,
@@ -62,7 +62,7 @@ from cuda.tile._ir.ops import (
     printf_impl,
     Unary,
 )
-from cuda.tile._ir.ir import ArrayValue, MemoryEffect, make_aggregate
+from cuda.tile._ir.ir import MemoryEffect, make_aggregate
 from cuda.lang._exception import TileTypeError
 import cuda.lang._datatype as datatype
 import cuda.lang._mlir as mlir
@@ -79,6 +79,7 @@ from .type import (
     PointerTy,
     TileTy,
     TupleTy,
+    TupleValue
 )
 
 from .ir import (
@@ -89,7 +90,7 @@ from .ir import (
     Var,
     add_operation,
     format_var,
-    TupleValue, LocalArrayContextManagerValue,
+    LocalArrayContextManagerValue,
 )
 from .._stub import TensorMapSwizzle
 from cuda.tile._ir import hir_stubs

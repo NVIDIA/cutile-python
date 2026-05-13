@@ -19,10 +19,10 @@ from cuda.tile._exception import TileTypeError, TileUnsupportedFeatureError
 from cuda.tile._ir.ops_utils import get_dtype
 
 from .typing_support import datatype, get_signature
-from .ir import Var, TupleValue, Builder
+from .ir import Var, Builder
 from .type import TiledViewTy, TupleTy, TileTy, DTypeSpec, EnumTy, StringTy, ArrayTy, SliceType, \
     ListTy, LooselyTypedScalar, RangeIterType, FunctionTy, ClosureTy, BoundMethodTy, \
-    DTypeConstructor, Type, RawArrayMemoryTy, DataclassTy
+    DTypeConstructor, Type, RawArrayMemoryTy, DataclassTy, TupleValue
 
 
 def _verify_params_match(stub_sig: inspect.Signature, func_sig: inspect.Signature):

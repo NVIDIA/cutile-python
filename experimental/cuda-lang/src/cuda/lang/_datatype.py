@@ -13,9 +13,8 @@ from cuda.lang._ir.type import (
     is_vector_ty,
     make_vector_ty,
 )
-from cuda.tile._ir.type import PointerTy as TilePointerTy
+from cuda.tile._ir.type import PointerTy as TilePointerTy, SymbolicTile
 from cuda.tile._ir.typing_support import is_dtype, register_dtypes, to_dtype
-from cuda.tile._symbolic import SymbolicTile
 from cuda.tile._datatype import (
     DType,
     ArithmeticDType,

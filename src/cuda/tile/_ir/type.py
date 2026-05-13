@@ -4,21 +4,24 @@
 import enum
 import inspect
 import dataclasses
+import os
 from dataclasses import dataclass
 from enum import EnumMeta
-from types import ModuleType, FunctionType, BuiltinFunctionType
-from typing import Any, Callable, Optional, Sequence, Tuple, Iterator
+from types import ModuleType, FunctionType, BuiltinFunctionType, MethodType
+from typing import Any, Callable, Optional, Sequence, Tuple, Iterator, Mapping
 from functools import reduce
 import operator
 
 from typing import TYPE_CHECKING
 
-from cuda.tile._exception import Loc
+from cuda.tile._exception import Loc, TileTypeError, TileValueError
+from cuda.tile._stub import Tile, Array
 from cuda.tile._numeric_semantics import PaddingMode
+from .aggregate_value import AggregateValue
 
 if TYPE_CHECKING:
     from cuda.tile._datatype import DType
-    from cuda.tile._ir.ir import Var, AggregateValue
+    from cuda.tile._ir.ir import Var
     from cuda.tile._ir import hir
     from cuda.tile._ir.scope import LocalScope
 
@@ -27,6 +30,9 @@ import cuda.tile._bytecode as bc
 
 
 class Type:
+    def make_symbol(self, var: "Var") -> Any:
+        raise TileTypeError(f"Objects of type {self} are not supported at compile time")
+
     def is_aggregate(self) -> bool:
         return False
 
@@ -51,6 +57,17 @@ class Type:
 
     def __eq__(self, other: "Type"):
         raise NotImplementedError()
+
+
+class Symbol:
+    def __init__(self, var: "Var"):
+        self._var = var
+
+
+def var2sym(var: "Var") -> Any:
+    if var.is_constant():
+        return var.get_constant()
+    return var.get_type().make_symbol(var)
 
 
 @dataclass
@@ -172,6 +189,11 @@ class TupleTy(Type):
     def __init__(self, value_types: Sequence[Type]):
         self._value_types = tuple(value_types)
 
+    def make_symbol(self, var: "Var") -> Symbol:
+        tup_val = var.get_aggregate()
+        assert isinstance(tup_val, TupleValue)
+        return tuple(var2sym(x) for x in tup_val.items)
+
     def is_aggregate(self) -> bool:
         return True
 
@@ -179,7 +201,6 @@ class TupleTy(Type):
         return self._value_types
 
     def make_aggregate_value(self, items: tuple["Var", ...]) -> "AggregateValue":
-        from .ir import TupleValue
         return TupleValue(items)
 
     def len(self) -> int:
@@ -211,10 +232,27 @@ class TupleTy(Type):
         return tuple(unwrap(t) for t in self.value_types)
 
 
+@dataclass
+class TupleValue(AggregateValue):
+    items: tuple["Var", ...]
+
+    def as_tuple(self) -> tuple["Var", ...]:
+        return self.items
+
+
+# ============== Dataclass ===============
+
+
 @dataclass(frozen=True)
 class DataclassTy(Type):
     cls: type
     field_types: tuple[Type, ...]
+
+    def make_symbol(self, var: "Var") -> Symbol:
+        dc_val = var.get_aggregate()
+        assert isinstance(dc_val, DataclassValue)
+        return self.cls(**{f.name: var2sym(dc_val.get_field(f.name))
+                           for f in dataclasses.fields(self.cls)})
 
     def is_aggregate(self) -> bool:
         return True
@@ -223,7 +261,6 @@ class DataclassTy(Type):
         return self.field_types
 
     def make_aggregate_value(self, items: tuple["Var", ...]) -> "AggregateValue":
-        from .ir import DataclassValue
         from .typing_support import get_dataclass_info
         return DataclassValue(items, get_dataclass_info(self.cls))
 
@@ -235,6 +272,26 @@ class DataclassTy(Type):
                                          self.field_types, strict=True))
             + "]"
         )
+
+
+@dataclass(frozen=True)
+class DataclassInfo:
+    cls: type
+    field_names: Sequence[str]
+    field_name_to_idx: Mapping[str, int]
+    init_signature: inspect.Signature
+
+
+@dataclass
+class DataclassValue(AggregateValue):
+    items: tuple["Var", ...]
+    info: DataclassInfo
+
+    def as_tuple(self) -> tuple["Var", ...]:
+        return self.items
+
+    def get_field(self, name: str):
+        return self.items[self.info.field_name_to_idx[name]]
 
 
 # ============== Formatted String Type ===============
@@ -266,7 +323,6 @@ class FormattedStringTy(Type):
         return self.value_types
 
     def make_aggregate_value(self, items: tuple) -> "AggregateValue":
-        from .ir import FormattedStringValue
         return FormattedStringValue(self.format, items)
 
     def __str__(self):
@@ -285,6 +341,15 @@ class FormattedStringTy(Type):
 
 def size_to_bytecode(s: Optional[int]) -> int:
     return bc.DYNAMIC_SHAPE if s is None else s
+
+
+@dataclass
+class FormattedStringValue(AggregateValue):
+    format: "Any"  # StringFormat from type.py
+    values: tuple["Var"]
+
+    def as_tuple(self) -> tuple["Var"]:
+        return self.values
 
 
 # ============== Pointer Type ===============
@@ -320,6 +385,9 @@ class TileTy(Type):
         self.dtype = dtype
         self.shape = shape
 
+    def make_symbol(self, var: "Var") -> Symbol:
+        return SymbolicTile(var)
+
     @property
     def ndim(self):
         return len(self.shape)
@@ -348,6 +416,46 @@ def make_tile_ty(dtype, shape: Sequence[int]) -> TileTy:
     return TileTy(dtype, tuple(shape))
 
 
+class SymbolicTile(Symbol, Tile):
+    def __init__(self, var: "Var"):
+        Symbol.__init__(self, var)
+
+    @property
+    def dtype(self):
+        ty = self._var.get_type()
+        assert isinstance(ty, TileTy)
+        return ty.dtype
+
+    @property
+    def shape(self) -> tuple[int, ...]:
+        ty = self._var.get_type()
+        assert isinstance(ty, TileTy)
+        return ty.shape
+
+    @property
+    def ndim(self) -> int:
+        return len(self.shape)
+
+    def __bool__(self):
+        raise TileValueError("Symbolic tile has no concrete value and thus cannot be converted"
+                             " to boolean")
+
+    def __int__(self):
+        raise TileValueError("Symbolic tile has no concrete value and thus cannot be converted"
+                             " to an integer")
+
+    def __float__(self):
+        raise TileValueError("Symbolic tile has no concrete value and thus cannot be converted"
+                             " to a float")
+
+    def __index__(self):
+        raise TileValueError("Symbolic tile has no concrete value and thus cannot be converted"
+                             " to an integer")
+
+    def __repr__(self):
+        return f"<tile[{self.dtype}, {self.shape}]>"
+
+
 # ============== Array Type ===============
 
 
@@ -367,6 +475,9 @@ class ArrayTy(Type):
         self.index_dtype = int32 if index_dtype is None else index_dtype
         self.memory_space = memory_space
 
+    def make_symbol(self, var: "Var") -> Any:
+        return SymbolicArray(var)
+
     def is_aggregate(self) -> bool:
         # Even though arrays are actually represented with TensorViews, they can't be
         # propagated through control flow. So we need to be able to unpack the array
@@ -380,7 +491,6 @@ class ArrayTy(Type):
         return (base_ptr_tile_ty,) + (size_ty,) * (self.ndim * 2)
 
     def make_aggregate_value(self, items: tuple["Var", ...]) -> "AggregateValue":
-        from .ir import ArrayValue
         assert len(items) == 1 + 2 * self.ndim
         return ArrayValue(items[0], items[1:self.ndim + 1], items[self.ndim + 1:])
 
@@ -419,6 +529,53 @@ class ArrayTy(Type):
         indexty_str = "" if self.index_dtype == int32 else f",index_dtype={self.index_dtype}]"
         memspc = "" if self.memory_space == MemorySpace.GENERIC else f", {self.memory_space}"
         return f"Array[{type_str},{shape_str}:{strides_str}{indexty_str}{memspc}]"
+
+
+@dataclass
+class ArrayValue(AggregateValue):
+    base_ptr: "Var"
+    shape: tuple["Var", ...]
+    strides: tuple["Var", ...]
+
+    def as_tuple(self) -> tuple["Var", ...]:
+        return self.base_ptr, *self.shape, *self.strides
+
+
+class SymbolicArray(Symbol, Array):
+    def __init__(self, var: "Var"):
+        Symbol.__init__(self, var)
+
+    @property
+    def dtype(self):
+        ty = self._var.get_type()
+        assert isinstance(ty, ArrayTy)
+        return ty.dtype
+
+    @property
+    def shape(self):
+        agg = self._var.get_aggregate()
+        assert isinstance(agg, ArrayValue)
+        return tuple(var2sym(v) for v in agg.shape)
+
+    @property
+    def strides(self):
+        agg = self._var.get_aggregate()
+        assert isinstance(agg, ArrayValue)
+        return tuple(var2sym(v) for v in agg.strides)
+
+    @property
+    def ndim(self) -> int:
+        ty = self._var.get_type()
+        assert isinstance(ty, ArrayTy)
+        return ty.ndim
+
+    def __repr__(self):
+        ty = self._var.get_type()
+        assert isinstance(ty, ArrayTy)
+
+        shape_str = ", ".join("?" if s is None else str(s) for s in ty.shape)
+
+        return f"<array[{ty.dtype}, ({shape_str})]>"
 
 
 # ============== PartitionView Type ===============
@@ -510,12 +667,20 @@ class IndexSliceTy(Type):
         return (self.start_ty, self.length_ty)
 
     def make_aggregate_value(self, items: tuple["Var", ...]) -> "AggregateValue":
-        from .ir import IndexSliceValue
         assert len(items) == 2
         return IndexSliceValue(items[0], items[1])
 
     def __str__(self) -> str:
         return f"IndexSlice[start_ty={self.start_ty}, length_ty={self.length_ty}]"
+
+
+@dataclass
+class IndexSliceValue(AggregateValue):
+    start: "Var"
+    length: "Var"
+
+    def as_tuple(self) -> tuple["Var", ...]:
+        return (self.start, self.length)
 
 
 # ============== TiledView Type ===============
@@ -534,7 +699,6 @@ class TiledViewTy(Type):
         return (self.array_ty,)
 
     def make_aggregate_value(self, items: tuple["Var", ...]) -> "AggregateValue":
-        from .ir import TiledViewValue
         [array] = items
         return TiledViewValue(array)
 
@@ -549,6 +713,14 @@ class TiledViewTy(Type):
     def __str__(self):
         return (f"TiledView[{self.array_ty},tile_shape={self.tile_shape},"
                 f"padding_mode={self.padding_mode},traversal_steps={self.traversal_steps}]")
+
+
+@dataclass
+class TiledViewValue(AggregateValue):
+    array: "Var"
+
+    def as_tuple(self) -> tuple["Var", ...]:
+        return (self.array,)
 
 
 # ============== Raw Array Memory Type ===============
@@ -574,7 +746,6 @@ class RawArrayMemoryTy(Type):
         return (base_ptr_tile_ty,)
 
     def make_aggregate_value(self, items: tuple["Var", ...]) -> "AggregateValue":
-        from .ir import RawArrayMemoryValue
         assert len(items) == 1
         return RawArrayMemoryValue(items[0])
 
@@ -584,6 +755,14 @@ class RawArrayMemoryTy(Type):
         else:
             type_str = str(self.element_type)
         return f"RawArrayMemory[{type_str}]"
+
+
+@dataclass
+class RawArrayMemoryValue(AggregateValue):
+    base_ptr: "Var"
+
+    def as_tuple(self) -> tuple["Var", ...]:
+        return (self.base_ptr,)
 
 
 # ============== List Type ===============
@@ -604,9 +783,17 @@ class ListTy(Type):
         return ptr_tile_ty, len_ty
 
     def make_aggregate_value(self, items: tuple["Var", ...]) -> "AggregateValue":
-        from .ir import ListValue
         base, length = items
         return ListValue(base, length)
+
+
+@dataclass
+class ListValue(AggregateValue):
+    base_ptr: "Var"
+    length: "Var"
+
+    def as_tuple(self) -> tuple["Var", ...]:
+        return self.base_ptr, self.length
 
 
 # ============== Range Iter Type ===============
@@ -625,7 +812,6 @@ class RangeIterType(Type):
         return ty, ty, ty
 
     def make_aggregate_value(self, items: tuple["Var", ...]) -> "AggregateValue":
-        from .ir import RangeValue
         start, stop, step = items
         return RangeValue(start, stop, step)
 
@@ -634,6 +820,16 @@ class RangeIterType(Type):
 
     def __eq__(self, other: Type):
         return isinstance(other, RangeIterType) and other.dtype == self.dtype
+
+
+@dataclass
+class RangeValue(AggregateValue):
+    start: "Var"
+    stop: "Var"
+    step: "Var"
+
+    def as_tuple(self) -> tuple["Var", ...]:
+        return self.start, self.stop, self.step
 
 
 # =============== Token Type ================
@@ -671,6 +867,10 @@ class BoundMethodTy(Type):
     self_ty: Type
     func: FunctionType | BuiltinFunctionType
 
+    def make_symbol(self, var: "Var") -> Any:
+        self_sym = var2sym(var.get_aggregate().bound_self)
+        return MethodType(self.func, self_sym)
+
     def is_aggregate(self) -> bool:
         return True
 
@@ -678,9 +878,16 @@ class BoundMethodTy(Type):
         return (self.self_ty,)
 
     def make_aggregate_value(self, items: tuple["Var", ...]) -> "AggregateValue":
-        from .ir import BoundMethodValue
         [bound_self] = items
         return BoundMethodValue(bound_self)
+
+
+@dataclass
+class BoundMethodValue(AggregateValue):
+    bound_self: "Var"
+
+    def as_tuple(self) -> tuple["Var", ...]:
+        return (self.bound_self,)
 
 
 @dataclass(frozen=True)
@@ -732,6 +939,9 @@ class ClosureTy(Type):
 
     frozen_capture_types_by_depth: tuple[tuple[Type, ...] | None]
 
+    def make_symbol(self, var: "Var") -> Symbol:
+        return SymbolicClosure(var)
+
     def is_aggregate(self) -> bool:
         return True
 
@@ -743,7 +953,6 @@ class ClosureTy(Type):
         )
 
     def make_aggregate_value(self, items: tuple["Var", ...]) -> "AggregateValue":
-        from .ir import ClosureValue
         it = iter(items)
         default_values = tuple(next(it) for _ in self.default_value_types)
         frozen_captures_by_depth = tuple(None if types is None else tuple(next(it) for _ in types)
@@ -776,3 +985,42 @@ class ClosureTy(Type):
             ret += ", frozen_captures={" + ", ".join(capture_strings) + "}"
 
         return ret + "]"
+
+
+@dataclass
+class ClosureValue(AggregateValue):
+    # Default values of parameters. These need to be carried by the closure's value
+    # because default expressions are evaluated at definition time, not when the closure is called.
+    # Should have the same length as the corresponding `ClosureTy.default_value_types`.
+    default_values: tuple["Var", ...]
+
+    # Tuple of the same length as `ty.func_hir.enclosing_functions`
+    # and `ty.frozen_capture_types_by_depth`, where `ty` is the `ClosureTy` of this closure.
+    #
+    # For each depth `i`, `frozen_captures_by_depth[i]` is either:
+    #   - None: means the enclosing function's LocalScope is still live;
+    #   - tuple[Var, ...]: means the enclosing function's LocalScope is no longer live.
+    #       The tuple contains the final values of the variables captured from the enclosing
+    #       function's scope. Its length should be the same as `ty.func_hir.captures_by_depth`.
+    frozen_captures_by_depth: tuple[tuple["Var", ...] | None, ...]
+
+    def as_tuple(self) -> tuple["Var", ...]:
+        return (
+            *self.default_values,
+            *(v for values in self.frozen_captures_by_depth
+              if values is not None for v in values)
+        )
+
+
+class SymbolicClosure(Symbol):
+    def __repr__(self):
+        ty = self._var.get_type()
+        assert isinstance(ty, ClosureTy)
+        desc = ty.func_hir.desc
+        what = "lambda" if desc.name is None else f"function '{desc.name}'"
+        filename = os.path.basename(desc.filename)
+        return f"<{what} @{filename}:{desc.line}>"
+
+    def __call__(self, *args, **kwargs):
+        from cuda.tile._dispatch_mode import DispatchMode
+        return DispatchMode().get_current().call_tile_function_from_host(self, args, kwargs)

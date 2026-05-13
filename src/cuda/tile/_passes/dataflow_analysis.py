@@ -8,9 +8,9 @@ from math import gcd
 from typing import Dict, Sequence, TypeVar, Generic, Any
 
 from cuda.tile._ir.ops_utils import get_dtype
-from cuda.tile._ir.type import PointerTy
+from cuda.tile._ir.type import PointerTy, ListValue
 from cuda.tile._datatype import is_integral
-from cuda.tile._ir.ir import Var, Block, ListValue
+from cuda.tile._ir.ir import Var, Block
 from cuda.tile._ir.ops import Assign, GetArrayListItem, \
     Loop, IfElse, Continue, Break, EndBranch, PointerOffset, \
     TileBroadcast, TileReshape, AssumeDivBy, TileReduce, TileScan, \

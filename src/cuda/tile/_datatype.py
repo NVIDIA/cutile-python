@@ -8,7 +8,6 @@ from typing import Optional, Any, Callable, Tuple
 from enum import IntEnum
 
 from cuda.tile._exception import TileTypeError
-from cuda.tile._ir.type import Type
 from cuda.tile._execution import function
 import cuda.tile._bytecode as bc
 
@@ -71,7 +70,7 @@ class DType:
         """Construct a Scalar of this |data type| from a value."""
 
     @function(host=True, tile=True)
-    def __eq__(self, other: Type):
+    def __eq__(self, other):
         return isinstance(other, DType) and self._name == other._name
 
     @function(host=True, tile=False)

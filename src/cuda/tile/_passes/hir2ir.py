@@ -15,13 +15,14 @@ from .._exception import Loc, FunctionDesc, TileSyntaxError, TileInternalError, 
     TileRecursionError
 from .._execution import is_stub
 from .._ir import hir, ir
-from .._ir.ir import Var, IRContext, BoundMethodValue, ClosureValue, TupleValue
+from .._ir.ir import Var, IRContext
 from .._ir.op_impl import ImplRegistry
 from .._ir.ops import loosely_typed_const, end_branch, return_, continue_, \
     break_, store_var, build_dataclass_instance, build_tuple
 from .._ir.scope import Scope, LocalScope, IntMap
 from .._ir.type import FunctionTy, BoundMethodTy, DTypeConstructor, ClosureTy, \
-    ClosureDefaultPlaceholder, StringFormat, TypeTy, TupleTy
+    ClosureDefaultPlaceholder, StringFormat, TypeTy, TupleTy, BoundMethodValue, TupleValue, \
+    ClosureValue
 from .._ir.typing_support import get_signature, is_supported_builtin_func, \
     get_dataclass_info
 
