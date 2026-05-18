@@ -72,11 +72,13 @@ def bench_rms_norm(shape, dtype, algo, backend, benchmark):
 
     warmup_rounds, iterations, rounds = estimate_bench_iter(
         backend, (x, weight, eps, static_persistent, gather),
+        cudagraph=True
     )
 
     benchmark.pedantic(
         backend, (x, weight, eps, static_persistent, gather),
         rounds=rounds, warmup_rounds=warmup_rounds, iterations=iterations,
+        cudagraph=True
     )
 
     M, N = x.shape

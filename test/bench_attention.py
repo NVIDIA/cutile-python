@@ -67,11 +67,13 @@ def bench_fmha(qkv_shape, dtype, backend, benchmark):
 
     warmup_rounds, iterations, rounds = estimate_bench_iter(
         backend, (q, k, v, o, is_causal, enable_gqa),
+        cudagraph=True
     )
 
     benchmark.pedantic(
         backend, (q, k, v, o, is_causal, enable_gqa),
         rounds=rounds, warmup_rounds=warmup_rounds, iterations=iterations,
+        cudagraph=True
     )
 
     B, H, L, D = q.shape

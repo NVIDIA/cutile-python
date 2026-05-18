@@ -49,31 +49,37 @@ def bench_layer_norm(shape, dtype, mode, backend, benchmark):
         torch.bfloat16: (1e-2, 1e-2),
     }[dtype]
 
-    y = backend(x, weight, bias, eps)
-    y_ref = torch_layer_norm(x, weight, bias, eps)
-    if mode == "forward":
-        torch.testing.assert_close(y, y_ref, atol=atol, rtol=rtol)
-        bench_f, bench_args = backend, (x, weight, bias, eps)
-    else:
-        y.backward(dy, retain_graph=True)
-        dx, dw, db = [_.grad.clone() for _ in [x, weight, bias]]
-        x.grad, weight.grad, bias.grad = None, None, None
+    # Run in non default stream so backward graph can be captured without
+    # sync with default stream
+    s = torch.cuda.Stream()
+    s.wait_stream(torch.cuda.current_stream())
+    with torch.cuda.stream(s):
+        y = backend(x, weight, bias, eps)
+        y_ref = torch_layer_norm(x, weight, bias, eps)
+        if mode == "forward":
+            torch.testing.assert_close(y, y_ref, atol=atol, rtol=rtol)
+            bench_f, bench_args = backend, (x, weight, bias, eps)
+        else:
+            y.backward(dy, retain_graph=True)
+            dx, dw, db = [_.grad.clone() for _ in [x, weight, bias]]
+            x.grad, weight.grad, bias.grad = None, None, None
 
-        y_ref.backward(dy, retain_graph=True)
-        dx_ref, dw_ref, db_ref = [_.grad.clone() for _ in [x, weight, bias]]
+            y_ref.backward(dy, retain_graph=True)
+            dx_ref, dw_ref, db_ref = [_.grad.clone() for _ in [x, weight, bias]]
 
-        torch.testing.assert_close(dx, dx_ref, atol=atol, rtol=rtol)
-        torch.testing.assert_close(dw, dw_ref, atol=atol, rtol=rtol)
-        torch.testing.assert_close(db, db_ref, atol=atol, rtol=rtol)
+            torch.testing.assert_close(dx, dx_ref, atol=atol, rtol=rtol)
+            torch.testing.assert_close(dw, dw_ref, atol=atol, rtol=rtol)
+            torch.testing.assert_close(db, db_ref, atol=atol, rtol=rtol)
 
-        bench_f, bench_args = partial(y.backward, retain_graph=True), (dy,)
+            bench_f, bench_args = partial(y.backward, retain_graph=True), (dy,)
 
-    warmup_rounds, iterations, rounds = estimate_bench_iter(bench_f, bench_args)
+        warmup_rounds, iterations, rounds = estimate_bench_iter(bench_f, bench_args, cudagraph=True)
 
-    benchmark.pedantic(
-        bench_f, bench_args,
-        rounds=rounds, warmup_rounds=warmup_rounds, iterations=iterations,
-    )
+        benchmark.pedantic(
+            bench_f, bench_args,
+            rounds=rounds, warmup_rounds=warmup_rounds, iterations=iterations,
+            cudagraph=True
+        )
 
 
 class CuTileLayerNorm(torch.autograd.Function):

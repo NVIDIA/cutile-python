@@ -27,10 +27,11 @@ def _run_transpose_benchmark(shape, dtype, backend, benchmark, atol=1e-3, rtol=1
     backend(A, B)
     torch.testing.assert_close(B, A.T, atol=atol, rtol=rtol)
     torch.cuda.synchronize()
-    warmup_rounds, iterations, rounds = estimate_bench_iter(backend, (A, B))
+    warmup_rounds, iterations, rounds = estimate_bench_iter(backend, (A, B), cudagraph=True)
     benchmark.pedantic(
         backend, (A, B),
         rounds=rounds, warmup_rounds=warmup_rounds, iterations=iterations,
+        cudagraph=True,
     )
 
     flop_count = m * n

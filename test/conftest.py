@@ -4,12 +4,11 @@
 
 import torch
 import pytest
-import cuda_timer
 import subprocess
 import sys
 import math
 import tempfile
-from functools import cache
+from functools import cache, partial
 
 from cuda.tile._bytecode.version import BytecodeVersion
 from cuda.tile._compile import (
@@ -17,7 +16,8 @@ from cuda.tile._compile import (
         _SUPPORTED_VERSIONS,
         _find_compiler_bin)
 from cuda.tile._cext import dev_features_enabled
-from util import require_blackwell_or_newer, require_hopper_or_newer
+from util import (require_blackwell_or_newer, require_hopper_or_newer,
+                  benchmark_cudagraph_runner, benchmark_eager_runner)
 
 
 def pytest_addoption(parser):
@@ -160,11 +160,27 @@ def uint_dtype(request):
     return request.param
 
 
+def patch_benchmark_fixture(benchmark):
+    """Patch BenchmarkFixture to use custom runner: eager or cudagraph.
+    Extends the `pedantic` method to take additional `cudagraph` argument.
+    """
+
+    benchmark._make_runner = benchmark_eager_runner
+
+    def pedantic(original, *args, **kwargs):
+        if 'cudagraph' in kwargs:
+            cudagraph = kwargs.pop('cudagraph')
+            if cudagraph:
+                benchmark._make_runner = benchmark_cudagraph_runner
+        return original(*args, **kwargs)
+
+    benchmark.pedantic = partial(pedantic, benchmark.pedantic)
+
+
 # ----- For pytest benchmark
 @pytest.fixture
 def benchmark(benchmark):
-    # Patch benchmark fixture to use cuda timer
-    benchmark._timer = cuda_timer.time
+    patch_benchmark_fixture(benchmark)
     return benchmark
 
 

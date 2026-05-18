@@ -148,23 +148,69 @@ def raises_autocast_error(launch, from_ty, to_ty) -> bool:
         return False
 
 
-def estimate_bench_iter(f, tuple_of_args):
+def benchmark_cudagraph_runner(f, args, kwargs):
+    # For patching BenchmarkFixture._make_runner
+    def runner(loops_range, **unused) -> float:
+        # run the regular function a few times to ensure kernel and memory states are stable
+        # before graph capture
+        for _ in range(3):
+            f(*args, **kwargs)
+
+        # cuda graph capture must happen on non-default stream
+        if torch.cuda.current_stream() == torch.cuda.default_stream():
+            stream = torch.cuda.Stream()
+            stream.wait_stream(torch.cuda.current_stream())
+        else:
+            stream = torch.cuda.current_stream()
+
+        with torch.cuda.stream(stream):
+            g = torch.cuda.CUDAGraph()
+            ev_start = torch.cuda.Event(enable_timing=True, external=True)
+            ev_end = torch.cuda.Event(enable_timing=True, external=True)
+            l2_size = torch.cuda.get_device_properties(0).L2_cache_size
+            cache_flush_tensor = torch.empty(l2_size, dtype=torch.uint8, device="cuda")
+
+            with torch.cuda.graph(g):
+                cache_flush_tensor.zero_()
+                ev_start.record()
+                f(*args, **kwargs)
+                ev_end.record()
+
+            torch.cuda.synchronize()
+            assert loops_range is not None
+            ret = 0
+            for _ in loops_range:
+                g.replay()
+                ev_end.synchronize()
+                ret += ev_start.elapsed_time(ev_end)
+            return ret / 1000  # secs
+    return runner
+
+
+def benchmark_eager_runner(f, args, kwargs):
+    def runner(loops_range, **unused) -> float:
+        assert loops_range is not None
+        torch.cuda.synchronize()
+        ev_start = torch.cuda.Event(enable_timing=True)
+        ev_end = torch.cuda.Event(enable_timing=True)
+        ev_start.record()
+        for _ in loops_range:
+            f(*args, **kwargs)
+        ev_end.record()
+        ev_end.synchronize()
+        return ev_start.elapsed_time(ev_end) / 1000
+    return runner
+
+
+def estimate_bench_iter(f, tuple_of_args, cudagraph=False):
     warmup_iter_guess = 5
     min_round_time_ms = 100
     rounds = 5
     warmup_rounds = 1
-
-    start = torch.cuda.Event(enable_timing=True)
-    end = torch.cuda.Event(enable_timing=True)
-    start.record()
-    for _ in range(warmup_iter_guess):
-        f(*tuple_of_args)
-    end.record()
-    torch.cuda.synchronize()
-    elapsed = start.elapsed_time(end) / warmup_iter_guess
-
-    main_iter = ceil(min_round_time_ms / elapsed)
-
+    runner = (benchmark_cudagraph_runner(f, tuple_of_args, {}) if cudagraph else
+              benchmark_eager_runner(f, tuple_of_args, {}))
+    time_per_iter = runner(range(warmup_iter_guess)) / warmup_iter_guess
+    main_iter = max(min(ceil(min_round_time_ms / (time_per_iter * 1000)), 200), warmup_iter_guess)
     return warmup_rounds, main_iter, rounds
 
 

@@ -53,11 +53,13 @@ def bench_vec_add(shape, dtype, backend, use_gather, benchmark):
     torch.testing.assert_close(c, ref, atol=1e-3, rtol=1e-3)
     torch.cuda.synchronize()
 
-    warmup_rounds, iterations, rounds = estimate_bench_iter(backend, (a, b, use_gather))
+    warmup_rounds, iterations, rounds = estimate_bench_iter(backend, (a, b, use_gather),
+                                                            cudagraph=True)
 
     benchmark.pedantic(
         backend, (a, b, use_gather),
         rounds=rounds, warmup_rounds=warmup_rounds, iterations=iterations,
+        cudagraph=True
     )
 
     flop_count = 0

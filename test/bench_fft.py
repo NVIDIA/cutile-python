@@ -63,10 +63,11 @@ def bench_fft(shape, dtype, fft_backend, benchmark):
     y_ref = torch_fft(*args)
     l2error = (y_ref - y_test).norm() / (y_ref).norm()
     assert l2error < tolerance_map[dtype]
-    warmup_rounds, iterations, rounds = estimate_bench_iter(fft_backend, args)
+    warmup_rounds, iterations, rounds = estimate_bench_iter(fft_backend, args, cudagraph=True)
     benchmark.pedantic(
         fft_backend, args,
         rounds=rounds, warmup_rounds=warmup_rounds, iterations=iterations,
+        cudagraph=True
     )
 
     flop_count = 0  # TODO

@@ -21,7 +21,8 @@ def dtype(request):
     return request.param
 
 
-def _run_matmul_benchmark(shape, dtype, backend, benchmark, extra_args=(), atol=1e-3, rtol=1e-3):
+def _run_matmul_benchmark(shape, dtype, backend, benchmark,
+                          extra_args=(), atol=1e-3, rtol=1e-3):
     m, n, k = shape
     A = torch.rand((m, k), dtype=dtype, device="cuda")
     B = torch.rand((k, n), dtype=dtype, device="cuda")
@@ -34,10 +35,11 @@ def _run_matmul_benchmark(shape, dtype, backend, benchmark, extra_args=(), atol=
         torch.testing.assert_close(C, A @ B, atol=atol, rtol=rtol)
 
     torch.cuda.synchronize()
-    warmup_rounds, iterations, rounds = estimate_bench_iter(backend, args)
+    warmup_rounds, iterations, rounds = estimate_bench_iter(backend, args, cudagraph=True)
     benchmark.pedantic(
         backend, args,
         rounds=rounds, warmup_rounds=warmup_rounds, iterations=iterations,
+        cudagraph=True
     )
 
     flop_count = 2 * m * n * k
@@ -63,12 +65,12 @@ def _run_batch_matmul_benchmark(
             torch.testing.assert_close(C, ref, atol=atol, rtol=rtol)
 
     torch.cuda.synchronize()
-    warmup_rounds, iterations, rounds = estimate_bench_iter(backend, args)
+    warmup_rounds, iterations, rounds = estimate_bench_iter(backend, args, cudagraph=True)
     benchmark.pedantic(
         backend, args,
         rounds=rounds, warmup_rounds=warmup_rounds, iterations=iterations,
+        cudagraph=True,
     )
-
     flop_count = 2 * b * m * n * k
     bytes_rw = sum([t.numel() * t.dtype.itemsize for t in (A, B, C)])
     benchmark.extra_info['flop_count'] = flop_count
@@ -122,7 +124,8 @@ def bench_matmul_split_k(split_k_shape, dtype, backend, benchmark):
                         dtype=torch.int32, device="cuda")
     COUNTS = torch.zeros_like(LOCKS)
     extra_args = (LOCKS, COUNTS, tile_sizes)
-    _run_matmul_benchmark(split_k_shape, dtype, backend, benchmark, extra_args, rtol=2e-3)
+    _run_matmul_benchmark(split_k_shape, dtype, backend, benchmark,
+                          extra_args, rtol=2e-3)
 
 
 def cutile_matmul_split_k(A, B, C, LOCKS, COUNTS, tile_sizes):
@@ -172,8 +175,8 @@ def cutile_batch_matmul(bs, A, B, C):
 def torch_batch_matmul(bs, A, B, C):
     if A.dtype == torch.float8_e5m2:
         pytest.skip("float8_e5m2 matmul on torch is not supported")
-    inv_sa = torch.tensor(1.0, device=A.device, dtype=torch.float32)
-    inv_sb = torch.tensor(1.0, device=B.device, dtype=torch.float32)
+    inv_sa = torch.full((), 1.0, device=A.device, dtype=torch.float32)
+    inv_sb = torch.full((), 1.0, device=B.device, dtype=torch.float32)
     with torch_use_tf32_matmul():
         for i in range(bs):
             # Only multiplication of row-major and column-major matrices is supported by cuBLASLt
