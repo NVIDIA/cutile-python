@@ -10,7 +10,8 @@ Performance Tuning
 Several performance tuning techniques are available in cuTile:
 
 * architecture-specific configuration values, using :class:`ByTarget`;
-* load/store hints such as ``latency`` and ``allow_tma``.
+* load/store hints such as ``latency`` and ``allow_tma``;
+* divisibility hints via :func:`assume_divisible_by`.
 
 
 Architecture-specific configuration
@@ -51,6 +52,43 @@ Example
 .. literalinclude:: ../../test/test_load_store.py
     :start-after: example-begin
     :end-before: example-end
+
+
+.. _divisibility-hints:
+
+Divisibility hints
+------------------
+
+:func:`assume_divisible_by` is a compiler hint that declares an integer
+scalar to be divisible by a compile-time constant. No check is performed at
+runtime:
+
+.. code-block:: python
+
+    n = ct.assume_divisible_by(n, 16)
+
+The compiler propagates the divisibility metadata through arithmetic operations — so
+that derived indices and pointer offsets inherit the same fact. This matters
+most when a runtime scalar is used to compute a dynamic array slice:
+
+.. code-block:: python
+
+    @ct.kernel
+    def kernel(x, dim_offset: int, dim_size: int):
+        dim_offset = ct.assume_divisible_by(dim_offset, 16)
+        dim_size   = ct.assume_divisible_by(dim_size,   16)
+        start = ct.bid(0) * dim_offset
+        sub_x = x.slice(axis=0, start=start, stop=start + dim_size)
+        tile  = ct.load(sub_x, index=(0,), shape=(128,))
+        ct.store(sub_x, index=(0,), tile=tile)
+
+Without the hints, the compiler treats ``dim_offset`` and ``dim_size`` as
+fully unknown and cannot prove alignment for the derived view. With the
+hints, it can infer alignment all the way into the view's base address and
+shape, enabling wider memory operations.
+
+The hint is a programmer declaration, not an enforcement. Behavior is undefined
+if ``x`` is not actually divisible by ``divisor`` at runtime.
 
 
 .. _autotuning:

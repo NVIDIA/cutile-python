@@ -1184,6 +1184,36 @@ def num_tiles(array: Array, /,
 
 
 @stub
+def assume_divisible_by(x: Scalar, divisor: int) -> Scalar:
+    """Declares that ``x`` is divisible by ``divisor``.
+
+    The caller is responsible for the correctness of the claim;
+    behavior is undefined if ``x`` is not actually divisible by
+    ``divisor`` at runtime.
+
+    Args:
+        x: An integer scalar.
+        divisor (const int): The assumed divisor. Must be a positive integer constant.
+
+    Returns:
+        An integer scalar. ``x`` value unchanged.
+
+    Examples:
+
+        .. testcode::
+            :template: kernel_wrapper.py
+
+            n = ct.bid(0) + 128
+            n = ct.assume_divisible_by(n, 128)
+            print(n)
+
+        .. testoutput::
+
+            128
+    """
+
+
+@stub
 def load(array: Array, /,
          index: Shape,
          shape: Constant[Shape], *,

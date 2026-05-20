@@ -8,9 +8,11 @@ from cuda.tile._ir.ops import AssumeDivBy, StorePointer, MakeTensorView
 from cuda.tile._ir.ir import Block
 from cuda.tile._compile import compile_tile
 from cuda.tile.compilation import (
-        ParameterConstraint, ArrayConstraint, ListConstraint, ConstantConstraint, KernelSignature
+        ParameterConstraint, ArrayConstraint, ListConstraint,
+        ConstantConstraint, ScalarConstraint, KernelSignature
 )
 from cuda.tile._cext import CallingConvention
+from cuda.tile._exception import TileTypeError
 from typing import Sequence
 
 
@@ -102,6 +104,109 @@ def test_unconstarined_array():
 
     body = get_ir(kernel, (array_arg(),))
     assert get_op_divby(body, MakeTensorView) == [{}]
+
+
+# --- ct.assume_divisible_by ---
+
+def test_assume_divisible_by_emits_op():
+    def kernel(x, n: int):
+        n = ct.assume_divisible_by(n, 16)
+        ct.store(x, (n,), 0)
+
+    body = get_ir(kernel, (
+        array_arg(ndim=1, base_div=1, stride_const=(1,)),
+        ScalarConstraint(ct.int32),
+    ))
+    ops = [op.divisor for op in body.traverse() if isinstance(op, AssumeDivBy)]
+    assert ops == [16]
+
+
+def test_assume_divisible_by_propagates_to_dynamic_slice():
+    def kernel(x, start_factor: int, extent: int):
+        start_factor = ct.assume_divisible_by(start_factor, 32)
+        extent = ct.assume_divisible_by(extent, 32)
+        start = ct.bid(0) * start_factor
+        stop = start + extent
+        sub_x = x.slice(axis=0, start=start, stop=stop)
+        tile = ct.load(sub_x, index=(0,), shape=(1,))
+        ct.store(sub_x, index=(0,), tile=tile)
+
+    body = get_ir(kernel, (
+        array_arg(dtype=ct.bfloat16, base_div=16, stride_const=(1,)),
+        ScalarConstraint(ct.int32),
+        ScalarConstraint(ct.int32),
+    ))
+
+    divby = get_op_divby(body, MakeTensorView)[0]
+    assert divby.get('base_ptr') == 16 and divby.get('shape[0]') == 32
+
+
+def test_assume_divisible_by_divisor_one_is_noop():
+    def kernel(x, n: int):
+        n = ct.assume_divisible_by(n, 1)
+        ct.store(x, (n,), 0)
+
+    body = get_ir(kernel, (
+        array_arg(ndim=1, base_div=1, stride_const=(1,)),
+        ScalarConstraint(ct.int32),
+    ))
+    ops = [op for op in body.traverse() if isinstance(op, AssumeDivBy)]
+    assert ops == []
+
+
+def test_assume_divisible_by_non_power_of_two_divisor():
+    # divisor=12 has largest power-of-2 factor 4.
+    # The propagate_divby pass extracts that power-of-2 when inserting
+    # AssumeDivBy before MakeTensorView, so shape[0] ends up with divisor=4.
+    def kernel(x, extent: int):
+        extent = ct.assume_divisible_by(extent, 12)
+        sub_x = x.slice(axis=0, start=0, stop=extent)
+        tile = ct.load(sub_x, index=(0,), shape=(1,))
+        ct.store(sub_x, index=(0,), tile=tile)
+
+    body = get_ir(kernel, (
+        array_arg(ndim=1, base_div=1, stride_const=(1,)),
+        ScalarConstraint(ct.int32),
+    ))
+    divby = get_op_divby(body, MakeTensorView)[0]
+    assert divby.get('shape[0]') == 4
+
+
+def test_assume_divisible_by_type_error_on_float():
+    def kernel(x, f: float):
+        f = ct.assume_divisible_by(f, 16)
+        ct.store(x, (0,), 0)
+
+    with pytest.raises(TileTypeError, match="integer scalar"):
+        get_ir(kernel, (
+            array_arg(ndim=1, stride_const=(1,)),
+            ScalarConstraint(ct.float32),
+        ))
+
+
+def test_assume_divisible_by_error_on_nonconstant_divisor():
+    def kernel(x, n: int, d: int):
+        n = ct.assume_divisible_by(n, d)
+        ct.store(x, (n,), 0)
+
+    with pytest.raises(TileTypeError, match="integer constant"):
+        get_ir(kernel, (
+            array_arg(ndim=1, stride_const=(1,)),
+            ScalarConstraint(ct.int32),
+            ScalarConstraint(ct.int32),
+        ))
+
+
+def test_assume_divisible_by_error_on_nonpositive_divisor():
+    def kernel(x, n: int):
+        n = ct.assume_divisible_by(n, 0)
+        ct.store(x, (n,), 0)
+
+    with pytest.raises(TileTypeError, match="positive divisor"):
+        get_ir(kernel, (
+            array_arg(ndim=1, stride_const=(1,)),
+            ScalarConstraint(ct.int32),
+        ))
 
 
 # --- Control flow propagation ---

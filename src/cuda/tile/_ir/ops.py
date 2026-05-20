@@ -2132,6 +2132,19 @@ def assume_div_by(x: Var, divisor: int | None) -> Var:
     return add_operation(AssumeDivBy, x.get_type(), x=x, divisor=divisor)
 
 
+@impl(ct.assume_divisible_by)
+def assume_divisible_by_impl(x: Var, divisor: Var) -> Var:
+    ty = x.get_type()
+    if not is_0d_tile(ty, is_integral):
+        raise TileTypeError(
+            f"`assume_divisible_by` requires an integer scalar, got {ty}")
+    divisor_val = require_constant_int(divisor)
+    if divisor_val < 1:
+        raise TileTypeError(
+            f"`assume_divisible_by` requires a positive divisor, got {divisor_val}")
+    return assume_div_by(x, divisor_val)
+
+
 @dataclass(eq=False)
 class AssumeBounded(Operation, opcode="assume_bounded"):
     lower_bound: int | None = attribute()

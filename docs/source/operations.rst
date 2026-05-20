@@ -214,6 +214,7 @@ Utility
    printf
    print
    assert_
+   assume_divisible_by
 
 
 .. _operations-metaprogramming:
