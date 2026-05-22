@@ -297,6 +297,20 @@ def is_signed(t: DType) -> bool:
         case _: assert False, info.numeric_category
 
 
+def integer_dtype(bitwidth: int, *, signed: bool) -> DType:
+    match bitwidth, signed:
+        case 8, False: return uint8
+        case 16, False: return uint16
+        case 32, False: return uint32
+        case 64, False: return uint64
+        case 8, True: return int8
+        case 16, True: return int16
+        case 32, True: return int32
+        case 64, True: return int64
+        case _: raise ValueError(f"No such {'signed' if signed else 'unsigned'}"
+                                 f" integer dtype of bitwidth {bitwidth}")
+
+
 _signedness = (bc.Signedness.Unsigned, bc.Signedness.Signed)
 
 

@@ -6,7 +6,7 @@ from typing import Mapping
 from cuda.lang._ir import ir
 from cuda.lang._ir._host_program import HostProgram, host_program_to_ir
 from cuda.lang._ir.ops import AllocDynSharedMemory, GetDynSharedMemoryBasePtr, \
-    get_dyn_shared_memory_base_ptr, _pointer_with_offset, _reinterpret_pointer
+    get_dyn_shared_memory_base_ptr, _pointer_with_offset, reinterpret_pointer
 from cuda.lang._datatype import int32
 from cuda.lang._exception import TileTypeError
 from cuda.tile._datatype import PointerInfo
@@ -45,7 +45,7 @@ def handle_dynamic_shared_memory(kernel_body: ir.Block,
             array_pointers.append(ptr)
 
         for op, ptr in zip(alloc_ops, array_pointers, strict=True):
-            ptr = _reinterpret_pointer(ptr, op.result_var.get_type())
+            ptr = reinterpret_pointer(ptr, op.result_var.get_type().dtype)
             assign(ptr, op.result_var)
 
     # Remove AllocDynSharedMemory operations

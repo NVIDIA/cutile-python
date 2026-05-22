@@ -13,13 +13,13 @@ from cuda.tile import _datatype as datatype
 from cuda.tile._bytecode.version import BytecodeVersion
 from cuda.tile._numeric_semantics import RoundingMode, PaddingMode
 from cuda.tile._exception import Loc, TileTypeError, TileValueError, TileUnsupportedFeatureError
-from cuda.tile._memory_model import MemoryOrder, MemoryScope
+from cuda.tile._memory_model import MemoryOrder, MemoryScope, MemorySpace
 import cuda.tile._bytecode as bc
 
 from .ir import Operation, Builder
 from .type import TileTy, LooselyTypedScalar
 from .typing_support import typeof_pyval
-from .._datatype import DType, _DTypePromotionImpl, NumericDTypeCategory
+from .._datatype import DType, _DTypePromotionImpl, NumericDTypeCategory, PointerInfo
 
 
 class ComparisonPredicates(Enum):
@@ -296,15 +296,39 @@ def promote_types(t1: TileTy | LooselyTypedScalar,
 
 
 def _is_implicit_cast_ok(src_dtype: DType, target_dtype: DType) -> bool:
-    try:
-        common_dtype = _DTypePromotionImpl.promote_dtypes(src_dtype, target_dtype)
-    except TileTypeError:
+    if datatype.is_numeric(src_dtype) and datatype.is_numeric(target_dtype):
+        try:
+            common_dtype = _DTypePromotionImpl.promote_dtypes(src_dtype, target_dtype)
+        except TileTypeError:
+            return False
+        return common_dtype == target_dtype
+    elif datatype.is_pointer_dtype(src_dtype) and datatype.is_pointer_dtype(target_dtype):
+        src_info = PointerInfo(src_dtype)
+        target_info = PointerInfo(target_dtype)
+        if (src_info.memory_space != target_info.memory_space
+                and target_info.memory_space != MemorySpace.GENERIC):
+            # Only allow implicit cast to the GENERIC memory space
+            return False
+
+        if src_info.opaque:
+            # Disallow implicit opaque to concrete cast
+            if not target_info.opaque:
+                return False
+        elif not target_info.opaque and src_info.pointee_dtype != target_info.pointee_dtype:
+            # Disallow changing the pointee_dtype
+            return False
+
+        return True
+    else:
         return False
-    return common_dtype == target_dtype
 
 
 def check_implicit_cast(src_ty: TileTy | LooselyTypedScalar, target_dtype: DType):
     if isinstance(src_ty, LooselyTypedScalar):
+        if not datatype.is_numeric(target_dtype):
+            raise TileValueError(f"cannot implicitly cast {src_ty.value}"
+                                 f" to a non-numeric dtype {target_dtype}")
+
         cocnrete_ty = typeof_pyval(src_ty.value)
         src_cat = datatype.numeric_dtype_category(cocnrete_ty.dtype)
         dst_cat = datatype.numeric_dtype_category(target_dtype)

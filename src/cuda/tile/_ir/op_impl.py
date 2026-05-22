@@ -13,7 +13,7 @@ from typing import Optional, NamedTuple, Tuple, Sequence, Any, Union, Callable
 
 from cuda.tile._datatype import (
     is_integral, is_float,
-    is_boolean, is_signed, DType, PointerInfo)
+    is_boolean, is_signed, DType, PointerInfo, is_pointer_dtype)
 from cuda.tile._bytecode.version import BytecodeVersion
 from cuda.tile._exception import TileTypeError, TileUnsupportedFeatureError
 from cuda.tile._ir.ops_utils import get_dtype
@@ -471,10 +471,60 @@ def require_0d_tile_type(var: Var) -> TileTy:
     return ty
 
 
+def require_scalar_type(var: Var) -> TileTy:
+    ty = var.get_type()
+    if not isinstance(ty, TileTy) or ty.ndim != 0:
+        raise _make_type_error(f"Expected a scalar value, but given value has type {ty}", var)
+    return ty
+
+
+def require_any_vector_type(var: Var) -> TileTy:
+    ty = var.get_type()
+    if not isinstance(ty, TileTy) or ty.ndim != 1:
+        raise _make_type_error(f"Expected a vector but given value has type {ty}", var)
+    return ty
+
+
+def require_any_scalar_or_vector_type(var: Var) -> TileTy:
+    ty = var.get_type()
+    if not isinstance(ty, TileTy) or ty.ndim not in (0, 1):
+        raise _make_type_error(f"Expected a scalar or a vector but given value has type {ty}", var)
+    return ty
+
+
+def require_vector_type(var: Var, length: int) -> TileTy:
+    ty = var.get_type()
+    if not isinstance(ty, TileTy) or ty.shape != (length,):
+        raise _make_type_error(f"Expected a vector of length {length},"
+                               f" but given value has type {ty}", var)
+    return ty
+
+
+def require_integer_0d_tile_type(var: Var) -> TileTy:
+    ty = require_0d_tile_type(var)
+    if not datatype.is_integral(ty.dtype):
+        raise _make_type_error(f"Expected an integer scalar, but got {ty}", var)
+    return ty
+
+
 def require_signed_integer_0d_tile_type(var: Var) -> TileTy:
     ty = require_0d_tile_type(var)
     if not datatype.is_integral(ty.dtype) or not datatype.is_signed(ty.dtype):
         raise _make_type_error(f"Expected a signed integer scalar, but got {ty}", var)
+    return ty
+
+
+def require_pointer_tile_type(var: Var) -> TileTy:
+    ty = require_tile_type(var)
+    if not is_pointer_dtype(ty.dtype):
+        raise TileTypeError(f"Expected a pointer, got {ty}")
+    return ty
+
+
+def require_scalar_pointer_type(var: Var) -> TileTy:
+    ty = require_tile_type(var)
+    if ty.shape != () or not is_pointer_dtype(ty.dtype):
+        raise TileTypeError(f"Expected a pointer, got {ty}")
     return ty
 
 

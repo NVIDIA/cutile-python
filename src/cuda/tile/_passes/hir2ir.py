@@ -223,7 +223,10 @@ async def _call_builtin(callee, arg_list: list[Var | tuple[Var, ...]], builder: 
     try:
         impl = impl_registry.op_implementations[callee]
     except KeyError:
-        raise NotImplementedError(f"Missing implementation for {callee}")
+        impl = getattr(callee, "_cutile_custom_implementation_handler", None)
+        if impl is None:
+            raise NotImplementedError(f"Missing implementation for {callee}")
+        arg_list = [callee, *arg_list]
 
     result = impl(*arg_list)
     if impl._is_coroutine:
