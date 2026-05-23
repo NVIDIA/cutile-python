@@ -1893,12 +1893,15 @@ def atomic_xor(array, indices, update, /, *,
 
 
 @stub
-def arange(size, /, *, dtype) -> Tile:
-    """Creates a tile with value starting from 0 to `size - 1`.
+def arange(size, /, *, dtype, start=0, step=1) -> Tile:
+    """Creates a 1-D tile of length ``size`` with values
+    ``start, start + step, ..., start + (size - 1) * step``.
 
     Args:
-        size (const int): Size of the tile.
+        size (const int): Size of the tile. Must be a constant integer that is a power of two.
         dtype (DType): Datatype of the tile.
+        start: Value of the first element. Defaults to ``0``.
+        step: The gap between adjacent values. Defaults to ``1``.
 
     Returns:
         Tile:
@@ -1908,12 +1911,21 @@ def arange(size, /, *, dtype) -> Tile:
         .. testcode::
             :template: kernel_wrapper.py
 
-            tile = ct.arange(4, dtype=ct.int32)
-            print(tile)
+            tile_0 = ct.arange(4, dtype=ct.int32)
+            print(tile_0)
+            tile_1 = ct.arange(8, start=2, dtype=ct.int32)
+            print(tile_1)
+            tile_2 = ct.arange(4, start=2, step=2, dtype=ct.int32)
+            print(tile_2)
+            tile_3 = ct.arange(8, start=7, step=-1, dtype=ct.int32)
+            print(tile_3)
 
         .. testoutput::
 
             [0, 1, 2, 3]
+            [2, 3, 4, 5, 6, 7, 8, 9]
+            [2, 4, 6, 8]
+            [7, 6, 5, 4, 3, 2, 1, 0]
     """
 
 

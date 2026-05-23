@@ -2891,12 +2891,17 @@ def arange(size: int, dtype: DType) -> Var:
 
 
 @impl(ct.arange)
-def arange_impl(size: Var, dtype: Var) -> Var:
+def arange_impl(size: Var, dtype: Var, start: Var, step: Var) -> Var:
     size_val = require_constant_int(size)
     dtype_val = require_dtype_spec(dtype)
     if not _is_power_of_2(size_val):
         raise TileTypeError(f"Result tile shape must be power of 2, got {size_val}")
-    return arange(size_val, dtype_val)
+    result = arange(size_val, dtype_val)
+    if not (step.is_constant() and step.get_constant() == 1):
+        result = binary_arithmetic_tensorlike("mul", result, astype(step, dtype_val))
+    if not (start.is_constant() and start.get_constant() == 0):
+        result = binary_arithmetic_tensorlike("add", result, astype(start, dtype_val))
+    return result
 
 
 @impl(ct.reshape)

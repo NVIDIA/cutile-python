@@ -22,12 +22,12 @@ class TestMemoryBehavior:
         ct.store(X, index=(0,), tile=tx0)
         # reverse so that each SIMT thread is less likely to be assigned the same address
         X_ALIAS = X
-        reverse_offset = TILE - 1 - ct.arange(TILE, dtype=np.int32)
+        reverse_offset = ct.arange(TILE, start=TILE - 1, step=-1, dtype=np.int32)
         tx1 = ct.gather(X_ALIAS, reverse_offset)
         ct.store(X_ALIAS, index=(0,), tile=tx1)
 
     def store_buffer_alternative(X, TILE: ct.Constant[int]):
-        reverse_offset = TILE - 1 - ct.arange(TILE, dtype=np.int32)
+        reverse_offset = ct.arange(TILE, start=TILE - 1, step=-1, dtype=np.int32)
         tx2 = ct.arange(TILE, dtype=X.dtype)
         ct.scatter(X, reverse_offset, tx2)
         tx3 = ct.load(X, index=(0,), shape=(TILE,))
@@ -37,7 +37,7 @@ class TestMemoryBehavior:
         ct.store(X, index=(0,), tile=ct.arange(TILE, dtype=X.dtype))
         # flip the buffer 3 times
         for i in range(3):
-            reverse_offset = TILE - 1 - ct.arange(TILE, dtype=np.int32)
+            reverse_offset = ct.arange(TILE, start=TILE - 1, step=-1, dtype=np.int32)
             tx = ct.gather(X, reverse_offset)
             ct.store(X, index=(0,), tile=tx)
 
@@ -46,7 +46,7 @@ class TestMemoryBehavior:
         # flip the buffer 3 times
         i = 0
         while i < 3:
-            reverse_offset = TILE - 1 - ct.arange(TILE, dtype=np.int32)
+            reverse_offset = ct.arange(TILE, start=TILE - 1, step=-1, dtype=np.int32)
             tx = ct.gather(X, reverse_offset)
             ct.store(X, index=(0,), tile=tx)
             i += 1
