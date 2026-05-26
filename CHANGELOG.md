@@ -7,11 +7,12 @@ Release Notes
 1.4.0 (2026-05-26)
 ------------------
 
-This release highlights Hopper(sm_90) GPU support with block-scaled MMA new
-narrow float dtypes, atomic store operations, load and store with advanced indexing,
-tiled view with gapped or overlapped tile access, and support for large arrays and scalars.
-It also adds support for Python 3.14 including free-threading, star "\*" expression,
-and frozen dataclasses, as well as integration with JAX.
+This release highlights compatability with CTK 13.3 which introduces
+Hopper(sm_90) GPU support, block-scaled MMA, new float dtypes, pack/unpack
+operations, atomic store operations, load and store with advanced indexing,
+tiled view with gapped or overlapped tile access, and support for large arrays
+and scalars. It also adds support for Python 3.14 including free-threading,
+star "\*" expression, and frozen dataclasses, as well as integration with JAX.
 
 ### CTK 13.3 features
 - Support Hopper (sm_90 family) GPUs.
@@ -50,6 +51,11 @@ and frozen dataclasses, as well as integration with JAX.
   to enable fast accumulation mode for FP8 inputs (`float8_e4m3fn`,
   `float8_e5m2`) on Hopper GPUs.
 - Add a new kernel hint `num_worker_warps` to {py:class}`ct.kernel <cuda.tile.kernel>`.
+- {py:func}`ct.atomic_add() <cuda.tile.atomic_add>` now supports `bfloat16`
+  operands on Hopper (sm_90) and newer architectures.
+- Optional `rounding_mode` parameter for {py:func}`ct.exp() <cuda.tile.exp>`
+  (supports `RoundingMode.FULL` and `RoundingMode.APPROX` for f32).
+
 
 ### Python features
 - Add Python 3.14 and Python 3.14t (free-threading) support.
@@ -58,11 +64,6 @@ and frozen dataclasses, as well as integration with JAX.
 - Add support for variadic parameters in user-defined functions, e.g. `def foo(*args)`.
 
 ### Enhancements
-- {py:func}`ct.atomic_add() <cuda.tile.atomic_add>` now supports `bfloat16`
-  operands on Hopper (sm_90) and newer architectures.
-- Optional `rounding_mode` parameter for {py:func}`ct.exp() <cuda.tile.exp>`
-  (supports `RoundingMode.FULL` and
-  `RoundingMode.APPROX` for f32).
 - {py:func}`ct.extract() <cuda.tile.extract>` now raises a compile-time
   `TileTypeError` when a constant index is out of bounds for the tile grid.
   Dynamic indices are unaffected.
