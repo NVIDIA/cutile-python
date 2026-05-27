@@ -617,18 +617,6 @@ def return_(value: Var | None):
     add_operation_variadic(Return, ())
 
 
-def _check_value_numeric_type(value: Any, dtype: DType) -> None:
-    value_type = typeof_pyval(value)
-    if datatype.is_arithmetic(value_type):
-        if not datatype.is_arithmetic(dtype):
-            raise TileTypeError(f"Expect \"value\" to be a non-numeric dtype {dtype}, "
-                                f"got numeric dtype {value_type}")
-        # TODO: Both are numeric types, check the data range after ir dtype supports it.
-    else:
-        if value_type != dtype:
-            raise TileTypeError(f"Expect \"value\" to be a {dtype}, got {value_type}")
-
-
 @dataclass(eq=False)
 class TypedConst(Operation, opcode="typed_const"):
     value: Any = attribute()

@@ -139,28 +139,34 @@ def is_supported_builtin_func(x: Any) -> bool:
     return _safe_get(BUILTIN_FUNCS, x) is not None or getattr(x, '_cutile_is_builtin', False)
 
 
+def dtype_of_constant_scalar(val: bool | int | float) -> DType:
+    if isinstance(val, bool):
+        return datatype.bool_
+    elif isinstance(val, int):
+        if -2**31 <= val < 2**31:
+            return datatype.int32
+        elif -2**63 <= val < 2**63:
+            return datatype.int64
+        elif 0 <= val < 2**64:
+            return datatype.uint64
+        else:
+            # FIXME: delay the error and allow arbitrary-precision intermediate constant values
+            raise TileValueError(f"Constant {val} is out of range of any supported integer type")
+    elif isinstance(val, float):
+        return datatype.default_float_type
+    else:
+        raise TypeError(f'Python value {val} of type {type(val)} is not supported.')
+
+
 def typeof_pyval(val) -> Type:
     if val is None:
         return NONE
     if (t := _safe_get(_dtype_registry, type(val))):
         return TileTy(t.dtype)
-    if isinstance(val, bool):
-        return TileTy(datatype.bool_)
+    if isinstance(val, bool | int | float):
+        return TileTy(dtype_of_constant_scalar(val))
     if isinstance(val, Enum):
         return EnumTy(type(val))
-    if isinstance(val, int):
-        if -2**31 <= val < 2**31:
-            dtype = datatype.int32
-        elif -2**63 <= val < 2**63:
-            dtype = datatype.int64
-        elif 0 <= val < 2**64:
-            dtype = datatype.uint64
-        else:
-            # FIXME: delay the error and allow arbitrary-precision intermediate constant values
-            raise TileValueError(f"Constant {val} is out of range of any supported integer type")
-        return TileTy(dtype)
-    if isinstance(val, float):
-        return TileTy(datatype.default_float_type)
     if isinstance(val, str):
         return StringTy(val)
     if isinstance(val, tuple):

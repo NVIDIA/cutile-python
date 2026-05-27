@@ -18,7 +18,7 @@ import cuda.tile._bytecode as bc
 
 from .ir import Operation, Builder
 from .type import TileTy, LooselyTypedScalar
-from .typing_support import typeof_pyval
+from .typing_support import dtype_of_constant_scalar
 from .._datatype import DType, _DTypePromotionImpl, NumericDTypeCategory, PointerInfo
 
 
@@ -206,7 +206,7 @@ def memory_order_has_release(memory_order: MemoryOrder):
 
 def get_dtype(ty: TileTy | LooselyTypedScalar) -> datatype.DType:
     if isinstance(ty, LooselyTypedScalar):
-        ty = typeof_pyval(ty.value)
+        return dtype_of_constant_scalar(ty.value)
     assert isinstance(ty, TileTy)
     return ty.dtype
 
@@ -241,9 +241,7 @@ padding_mode_to_bytecode = {
 def _promote_dtype_and_loosely_typed_constant(dtype: DType,
                                               loose_const: Any,
                                               force_float: bool) -> DType:
-    loose_ty = typeof_pyval(loose_const)
-    assert isinstance(loose_ty, TileTy) and loose_ty.ndim == 0
-    loose_dtype = loose_ty.dtype
+    loose_dtype = dtype_of_constant_scalar(loose_const)
 
     cat = datatype.numeric_dtype_category(dtype)
     if cat == NumericDTypeCategory.RestrictedFloat:
@@ -272,11 +270,9 @@ def promote_dtypes(t1: DType | LooselyTypedScalar,
                    force_float: bool = False) -> DType:
     match t1, t2:
         case LooselyTypedScalar(val1), LooselyTypedScalar(val2):
-            type1 = typeof_pyval(val1)
-            assert isinstance(type1, TileTy)
-            type2 = typeof_pyval(val2)
-            assert isinstance(type2, TileTy)
-            return _DTypePromotionImpl.promote_dtypes(type1.dtype, type2.dtype, force_float)
+            dtype1 = dtype_of_constant_scalar(val1)
+            dtype2 = dtype_of_constant_scalar(val2)
+            return _DTypePromotionImpl.promote_dtypes(dtype1, dtype2, force_float)
         case LooselyTypedScalar(val), dtype:
             return _promote_dtype_and_loosely_typed_constant(dtype, val, force_float)
         case dtype, LooselyTypedScalar(val):
@@ -329,8 +325,8 @@ def check_implicit_cast(src_ty: TileTy | LooselyTypedScalar, target_dtype: DType
             raise TileValueError(f"cannot implicitly cast {src_ty.value}"
                                  f" to a non-numeric dtype {target_dtype}")
 
-        cocnrete_ty = typeof_pyval(src_ty.value)
-        src_cat = datatype.numeric_dtype_category(cocnrete_ty.dtype)
+        concrete_dtype = dtype_of_constant_scalar(src_ty.value)
+        src_cat = datatype.numeric_dtype_category(concrete_dtype)
         dst_cat = datatype.numeric_dtype_category(target_dtype)
         if dst_cat == NumericDTypeCategory.Boolean:
             if src_cat not in (NumericDTypeCategory.Boolean, NumericDTypeCategory.Integral) \
