@@ -33,6 +33,7 @@
     X(cuEventDestroy, 2000) \
     X(cuEventQuery, 2000) \
     X(cuEventRecord, 2000) \
+    X(cuEventSynchronize, 2000) \
     X(cuKernelGetFunction, 12000) \
     X(cuMemAlloc, 3020) \
     X(cuMemAllocHost, 3020) \
