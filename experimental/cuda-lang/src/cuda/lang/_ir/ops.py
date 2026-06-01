@@ -39,12 +39,9 @@ from cuda.tile._ir.arithmetic_ops import (
     RawWhereOperation,
 )
 from cuda.tile._ir.ops import (
-    loosely_typed_const,
     tile_impl_registry,
     bind_method,
     build_tuple,
-    strictly_typed_const,
-    astype,
     Return,
     return_,
     Assign,
@@ -60,8 +57,17 @@ from cuda.tile._ir.ops import (
     PointerOffset,
     TilePrintf,
     printf_impl,
-    Unary, implicit_cast, address_space_cast, reinterpret_pointer, AddrSpaceCast,
-    ReinterpretPointer,
+    Unary,
+)
+from cuda.tile._ir.arithmetic_ops import (
+    astype,
+)
+from cuda.tile._ir.core_ops import (
+    loosely_typed_const,
+    strictly_typed_const,
+)
+from cuda.tile._ir.cast_ops import (
+    implicit_cast, address_space_cast, reinterpret_pointer, AddrSpaceCast, ReinterpretPointer,
 )
 from cuda.tile._ir.ir import MemoryEffect, make_aggregate, add_operation_variadic
 from cuda.lang._exception import TileCompilerError, TileTypeError

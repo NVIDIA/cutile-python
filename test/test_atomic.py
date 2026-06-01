@@ -12,7 +12,7 @@ from torch.testing import make_tensor
 import cuda.tile as ct
 from cuda.tile._bytecode.version import BytecodeVersion
 from cuda.tile._exception import TileTypeError
-from cuda.tile._ir.ops_utils import _is_implicit_cast_ok
+from cuda.tile._ir.cast_ops import _is_implicit_cast_ok
 from cuda.tile._ir.typing_support import to_dtype
 from util import (
     assert_equal, filecheck, get_bytecode, int_32_64_dtypes,

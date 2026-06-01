@@ -13,7 +13,8 @@ from cuda.tile._ir.op_impl import require_integer_0d_tile_type, require_scalar_p
     require_scalar_type, require_vector_type, require_any_vector_type, \
     require_any_scalar_or_vector_type
 from cuda.tile._ir.ir import Var, add_operation_variadic
-from cuda.tile._ir.ops import implicit_cast, build_tuple
+from cuda.tile._ir.ops import build_tuple
+from cuda.tile._ir.cast_ops import implicit_cast
 from cuda.tile import _datatype as datatype
 from cuda.tile._ir.type import Type
 from cuda.tile._memory_model import MemorySpace

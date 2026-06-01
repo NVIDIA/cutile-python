@@ -31,6 +31,7 @@ from .arithmetic_ops import reshape, broadcast_to, astype, compare_tensorlike, \
     compare_tensorlike_raw, where, binary_bitwise_tensorlike_raw, where_raw, TileReshape, \
     mod_tensorlike, promote_and_broadcast_to, arithmetic_impl_registry, binop_propagate_constant, \
     comparison_operator_impl
+from .cast_ops import implicit_cast
 from .core_ops import loosely_typed_const, strictly_typed_const
 from .type import (
     var2sym, TupleValue, BoundMethodValue, ArrayValue, DataclassValue, DataclassInfo,
@@ -53,14 +54,14 @@ from .op_impl import (
     require_tile_or_tile_tuple_type, require_constant_scalar_tuple, require_constant_scalar,
     require_callable_type, require_raw_array_memory_type,
     OverloadNotFoundError, WILDCARD, require_dataclass_type,
-    require_scalar_pointer_type, ensure_tile)
+    ensure_tile)
 from .ops_utils import (
     UNARYOP_REGISTRY,
     check_rd_and_ftz, PaddingMode, get_default_order,
     rounding_mode_to_bytecode, get_default_rounding_mode, get_dtype,
-    change_dtype, memory_order_to_bytecode,
+    memory_order_to_bytecode,
     memory_scope_to_bytecode, broadcast_shapes2, is_shape_broadcastable_to, BroadcastError,
-    promote_dtypes, check_implicit_cast, validate_memory_order_and_scope, reraise_tile_exception,
+    promote_dtypes, validate_memory_order_and_scope, reraise_tile_exception,
 )
 from .scope import Scope, JumpInfo, ControlFlowInfo
 from .typing_support import (
@@ -77,7 +78,6 @@ from .type import (
 )
 from cuda.tile._datatype import (
     DType, is_integral, is_float, is_signed, is_boolean, is_pointer_dtype, PointerInfo,
-    opaque_pointer_dtype, pointer_dtype
 )
 from cuda.tile._ir2bytecode import (
     BytecodeContext, typeid,
@@ -88,7 +88,6 @@ import cuda.tile._bytecode as bc
 from cuda.tile._bytecode.version import BytecodeVersion
 from .._debug import CUDA_TILE_TESTING_DISABLE_DIV
 from .._dispatch_mode import StaticEvalMode
-from .._memory_model import MemorySpace
 
 tile_impl_registry = ImplRegistry()
 tile_impl_registry.update(arithmetic_impl_registry())
@@ -2269,70 +2268,6 @@ class TileStore(Operation, opcode="tile_store", memory_effect=MemoryEffect.STORE
             memory_scope=memory_scope_to_bytecode[self.memory_scope],
             optimization_hints=ctx.load_store_hints(self.latency, self.allow_tma),
         )
-
-
-@dataclass(eq=False)
-class ReinterpretPointer(Operation, opcode="reinterpret_pointer"):
-    pointer: Var = operand()
-
-
-def reinterpret_pointer(pointer: Var, target_ptr_dtype: DType) -> Var:
-    # TODO: can we do this for vectors as well?
-    src_ty = require_scalar_pointer_type(pointer)
-    if not is_pointer_dtype(target_ptr_dtype):
-        raise TileTypeError(f"Target dtype '{target_ptr_dtype}' is not a pointer dtype")
-
-    if src_ty.dtype == target_ptr_dtype:
-        return pointer
-
-    src_space = PointerInfo(src_ty.dtype).memory_space
-    target_space = PointerInfo(target_ptr_dtype).memory_space
-    if src_space != target_space:
-        raise TileTypeError(f"Source memory space '{src_space._name_}'"
-                            f" does not match target memory space '{target_space}'")
-
-    return add_operation(ReinterpretPointer,
-                         change_dtype(src_ty, target_ptr_dtype),
-                         pointer=pointer)
-
-
-@dataclass(eq=False)
-class AddrSpaceCast(Operation, opcode="address_space_cast"):
-    pointer: Var = operand()
-
-
-def address_space_cast(value: Var, memory_space: MemorySpace) -> Var:
-    # TODO: can we do this for vectors as well?
-    pointer_tile_ty = require_scalar_pointer_type(value)
-    if not is_pointer_dtype(pointer_tile_ty.dtype):
-        raise TileTypeError(f"Expected a pointer type, got {pointer_tile_ty}")
-
-    info = PointerInfo(pointer_tile_ty.dtype)
-    if info.memory_space == memory_space:
-        return value
-
-    if info.opaque:
-        new_dtype = opaque_pointer_dtype(memory_space)
-    else:
-        new_dtype = pointer_dtype(info.pointee_dtype, memory_space)
-    result_ty = change_dtype(pointer_tile_ty, new_dtype)
-    return add_operation(AddrSpaceCast, result_ty, pointer=value)
-
-
-def implicit_cast(src: Var, target_dtype: DType, error_context: str) -> Var:
-    ty = require_tile_maybe_loose_type(src)
-    try:
-        check_implicit_cast(ty, target_dtype)
-    except TileTypeError as e:
-        raise TileTypeError(f"{error_context}: {str(e)}")
-    except TileValueError as e:
-        raise TileValueError(f"{error_context}: {str(e)}")
-
-    if datatype.is_pointer_dtype(target_dtype):
-        p = address_space_cast(src, PointerInfo(target_dtype).memory_space)
-        return reinterpret_pointer(p, target_dtype)
-
-    return astype(src, target_dtype)
 
 
 def _tile_store_impl_inner(array: Var, index_items: tuple[Var, ...], tile: Var,

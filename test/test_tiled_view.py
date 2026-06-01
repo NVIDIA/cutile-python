@@ -14,7 +14,7 @@ from cuda.tile._bytecode.version import BytecodeVersion
 from cuda.tile._compile import compile_tile
 from cuda.tile._exception import TileTypeError, TileUnsupportedFeatureError
 from cuda.tile.compilation import CallingConvention, KernelSignature
-from cuda.tile._ir.ops_utils import _is_implicit_cast_ok
+from cuda.tile._ir.cast_ops import _is_implicit_cast_ok
 from cuda.tile._ir.typing_support import to_dtype
 from conftest import arithmetic_dtypes, dtype_id, requires_tileiras
 from util import (

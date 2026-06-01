@@ -13,7 +13,7 @@ import cuda.tile as ct
 from cuda.tile import TileValueError
 from cuda.tile._exception import TileTypeError
 from cuda.tile._ir.ops import LoadPointer, StorePointer
-from cuda.tile._ir.ops_utils import _is_implicit_cast_ok
+from cuda.tile._ir.cast_ops import _is_implicit_cast_ok
 from cuda.tile._ir.typing_support import to_dtype
 from cuda.tile._compile import compile_tile
 from util import assert_equal, raises_if

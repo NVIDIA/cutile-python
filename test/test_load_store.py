@@ -9,7 +9,7 @@ import pytest
 from math import ceil
 from conftest import float_dtypes, bool_dtypes, get_tileiras_version, int_dtypes, dtype_id
 from cuda.tile._bytecode.version import BytecodeVersion
-from cuda.tile._ir.ops_utils import _is_implicit_cast_ok
+from cuda.tile._ir.cast_ops import _is_implicit_cast_ok
 from cuda.tile._ir.typing_support import to_dtype
 from util import assert_close, assert_equal, filecheck, get_bytecode
 from torch.testing import make_tensor

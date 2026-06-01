@@ -23,8 +23,9 @@ from cuda.tile._datatype import (
     is_boolean, is_integral, is_float, is_unrestricted_float, is_restricted_float, is_signed,
     IntegerInfo, opaque_pointer_dtype, pointer_dtype, PointerInfo,
 )
-from cuda.tile._ir.ops_utils import promote_dtypes, check_implicit_cast
+from cuda.tile._ir.ops_utils import promote_dtypes
 from cuda.tile._ir.typing_support import to_dtype
+from cuda.tile._ir.cast_ops import check_implicit_cast
 import torch
 import numpy as np
 
