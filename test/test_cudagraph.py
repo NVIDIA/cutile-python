@@ -38,17 +38,16 @@ def test_simple():
     assert x.item() == 10
 
 
-def test_proxy_dlpack():
+def test_proxy_dlpack_unsupported():
     x = torch.zeros(1, device='cuda')
-    ct.launch(torch.cuda.current_stream(), (1,), add_one, (DlpackProxy(x),))
-    torch.cuda.synchronize()
-    assert x.item() == 1
+    with pytest.raises(RuntimeError, match=r"__dlpack__ array arguments aren't supported yet"):
+        ct.launch(torch.cuda.current_stream(), (1,), add_one, (DlpackProxy(x),))
 
 
-def test_proxy_dlpack_cudagraph():
+def test_proxy_dlpack_cudagraph_unsupported():
     x = torch.zeros(1, device='cuda')
     graph = torch.cuda.CUDAGraph()
-    with pytest.raises(RuntimeError, match=r"DLPack array argument in CUDAGraph isn't supported yet"):
+    with pytest.raises(RuntimeError, match=r"__dlpack__ array arguments aren't supported yet"):
         with torch.cuda.graph(graph):
             ct.launch(torch.cuda.current_stream(), (1,), add_one, (DlpackProxy(x),))
 
