@@ -423,6 +423,7 @@ def _binop_expr(binop: ast.BinOp, ctx: _Context) -> hir.Value:
 _cmp_map = {
     ast.Eq: operator.eq, ast.NotEq: operator.ne, ast.Lt: operator.lt, ast.LtE: operator.le,
     ast.Gt: operator.gt, ast.GtE: operator.ge, ast.Is: operator.is_, ast.IsNot: operator.is_not,
+    ast.In: hir_stubs.is_contained_in, ast.NotIn: hir_stubs.is_not_contained_in
 }
 
 
@@ -975,11 +976,6 @@ def _get_all_parameters(func_def: ast.FunctionDef | ast.Lambda, ctx: _Context) -
         for a in (func_def.args.vararg, func_def.args.kwarg):
             if a is not None:
                 raise ctx.syntax_error("Variadic kernel parameters are not supported", a)
-    else:
-        if func_def.args.kwarg is not None:
-            raise ctx.syntax_error(
-                "Variadic keyword parameters in user-defined functions are not supported",
-                func_def.args.kwarg)
 
     all_args = []
     for arg in func_def.args.posonlyargs:
@@ -990,6 +986,8 @@ def _get_all_parameters(func_def: ast.FunctionDef | ast.Lambda, ctx: _Context) -
         all_args.append(func_def.args.vararg)
     for arg in func_def.args.kwonlyargs:
         all_args.append(arg)
+    if func_def.args.kwarg is not None:
+        all_args.append(func_def.args.kwarg)
     return all_args
 
 

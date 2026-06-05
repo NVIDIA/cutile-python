@@ -76,7 +76,7 @@ class Call:
     result: Value | None
     callee: Operand
     args: tuple[Operand | Starred, ...]
-    kwargs: tuple[tuple[str, Operand], ...]
+    kwargs: tuple[tuple[str | None, Operand], ...]  # None means an **unpacked argument
     loc: Loc
 
     def __str__(self):

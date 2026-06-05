@@ -7,7 +7,7 @@ import dataclasses
 import os
 from dataclasses import dataclass
 from enum import EnumMeta
-from types import ModuleType, FunctionType, BuiltinFunctionType, MethodType
+from types import ModuleType, FunctionType, BuiltinFunctionType, MethodType, MappingProxyType
 from typing import Any, Callable, Optional, Sequence, Tuple, Iterator, Mapping
 from functools import reduce
 import operator
@@ -267,6 +267,43 @@ class TupleValue(AggregateValue):
 
     def as_tuple(self) -> tuple["Var", ...]:
         return self.items
+
+
+# ============== Dictionary (limited support for **kwargs) ==============
+
+@dataclass(frozen=True)
+class DictTy(Type):
+    keys: tuple[str, ...]
+    value_types: tuple[Type, ...]
+
+    def make_symbol(self, var: "Var"):
+        dict_val = var.get_aggregate()
+        assert isinstance(dict_val, DictValue)
+        items = [(k, var2sym(v)) for k, v in zip(self.keys, dict_val.values, strict=True)]
+        return MappingProxyType(dict(items))
+
+    def is_aggregate(self) -> bool:
+        return True
+
+    def aggregate_item_types(self) -> tuple["Type", ...]:
+        return self.value_types
+
+    def make_aggregate_value(self, values: tuple["Var", ...]) -> "AggregateValue":
+        assert len(values) == len(self.keys)
+        return DictValue(values)
+
+    def __str__(self):
+        return (
+                "dict["
+                + ", ".join(f"{k}: {ty}"
+                            for k, ty in zip(self.keys, self.value_types, strict=True))
+                + "]"
+        )
+
+
+@dataclass
+class DictValue(AggregateValue):
+    values: tuple["Var", ...]
 
 
 # ============== Dataclass ===============

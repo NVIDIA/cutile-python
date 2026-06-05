@@ -121,6 +121,7 @@ BUILTIN_FUNCS = {
     bool: lambda x=False, /: None,
     print: lambda *args, sep=' ', end='\n': None,
     dataclasses.replace: dataclasses.replace,
+    dict.get: dict.get,
 }
 
 

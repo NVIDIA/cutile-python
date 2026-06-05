@@ -5,7 +5,7 @@ import dataclasses
 import functools
 import operator
 from dataclasses import dataclass
-from types import MethodType, FunctionType, BuiltinFunctionType
+from types import MethodType, FunctionType, BuiltinFunctionType, MappingProxyType
 from typing import Any, Optional
 
 from typing_extensions import override
@@ -27,7 +27,7 @@ from cuda.tile._ir.type import Type, DTypeSpec, TensorLikeTy, TupleTy, TupleValu
     DataclassInfo, DataclassTy, DataclassValue, BoundMethodValue, BoundMethodTy, InvalidType, \
     ContextManagerTy, ContextManagerLifecycle, LiveCapturedScope, ClosureTy, ClosureValue, \
     RangeIterType, RangeValue, TypeTy, ModuleTy, NONE, SliceType, StringTy, FormattedStringTy, \
-    StringFormat, FormattedStringValue, FormattedPiece
+    StringFormat, FormattedStringValue, FormattedPiece, DictTy, DictValue
 from cuda.tile._ir.typing_support import type_of_constant_python_value, \
     loose_type_of_constant_python_value, get_dataclass_info, as_third_party_dtype_spec
 from cuda.tile._ir2bytecode import BytecodeContext
@@ -65,6 +65,7 @@ def core_impl_registry() -> ImplRegistry:
 @overload_dispatcher(operator.lshift, fixed_args=["<<"])
 @overload_dispatcher(operator.rshift, fixed_args=[">>"])
 @overload_dispatcher(operator.matmul, fixed_args=["@"])
+@overload_dispatcher(hir_stubs.is_contained_in, fixed_args=["'in'"])
 @overload_dispatcher(min, fixed_args=["min"])
 @overload_dispatcher(max, fixed_args=["max"])
 def binop_overload_dispatcher(name: str, x: Var, y: Var):
@@ -74,6 +75,13 @@ def binop_overload_dispatcher(name: str, x: Var, y: Var):
         yield type(x_ty), type(y_ty)
     except OverloadNotFoundError:
         raise TileTypeError(f"Unsupported operand types for {name}: {x_ty} and {y_ty}")
+
+
+@impl(hir_stubs.is_not_contained_in)
+async def is_not_contained_in_impl(x: Var, y: Var):
+    from .._passes.hir2ir import call_function
+    contained = await call_function(hir_stubs.is_contained_in, x, y)
+    return await call_function(operator.not_, contained)
 
 
 def comparison_operator_impl(registry: ImplRegistry, lhs_ty: type[Type], rhs_ty: type[Type]):
@@ -344,6 +352,71 @@ async def comparison_operator_tuple_impl(fn: str, x: Var[TupleTy], y: Var[TupleT
 @impl(len, overload=(TupleTy,))
 def len_tuple_impl(x: Var[TupleTy]) -> Var:
     return loosely_typed_const(len(x.get_type()))
+
+
+# ===========================================================================================
+# Dictionary
+# ===========================================================================================
+
+def build_dict(keys: tuple[str, ...], values: tuple[Var, ...]) -> Var:
+    keys = tuple(keys)
+    values = tuple(values)
+    assert len(keys) == len(values)
+
+    ty = DictTy(keys, tuple(x.get_type() for x in values))
+    loose_ty = DictTy(keys, tuple(x.get_loose_type() for x in values))
+    res = make_aggregate(DictValue(values), ty, loose_ty)
+    if all(x.is_constant() for x in values):
+        items = [(k, v.get_constant()) for k, v in zip(keys, values, strict=True)]
+        res.set_constant(MappingProxyType(dict(items)))
+    return res
+
+
+def _find_dict_key_index(key: Var, dict_ty: DictTy) -> int | None:
+    key_ty = key.get_type()
+    if not isinstance(key_ty, StringTy):
+        # Python would happily report that the key is not found when a "wrong" key type is passed,
+        # but we can add a stronger check here.
+        raise TileTypeError(f"Dictionary keys must be strings, not {key_ty}")
+
+    return dict_ty.keys.index(key_ty.value) if key_ty.value in dict_ty.keys else None
+
+
+@impl(hir_stubs.is_contained_in, overload=(WILDCARD, DictTy))
+async def is_contained_in_dict_impl(x: Var, y: Var[DictTy]):
+    return loosely_typed_const(_find_dict_key_index(x, y.get_type()) is not None)
+
+
+@impl(getattr, overload=(DictTy, "get"))
+def getattr_dict_method(object: Var, name: Var):
+    name = require_constant_str(name)
+    unbound_func = getattr(dict, name)
+    return bind_method(object, unbound_func)
+
+
+@impl(operator.getitem, overload=(DictTy, WILDCARD))
+def getitem_dict_impl(object: Var[DictTy], key: Var):
+    idx = _find_dict_key_index(key, object.get_type())
+    if idx is None:
+        raise TileTypeError(f"Key '{key.get_type().value}' not found in dictionary")
+    dict_value = object.get_aggregate()
+    assert isinstance(dict_value, DictValue)
+    return dict_value.values[idx]
+
+
+@impl(dict.get)
+def dict_get_impl(self: Var, key: Var, default: Var):
+    dict_ty = self.get_type()
+    if not isinstance(dict_ty, DictTy):
+        raise TileTypeError(f"dict.get() expects a dictionary as `self`, got {dict_ty}")
+
+    idx = _find_dict_key_index(key, dict_ty)
+    if idx is None:
+        return default
+
+    dict_value = self.get_aggregate()
+    assert isinstance(dict_value, DictValue)
+    return dict_value.values[idx]
 
 
 # ===========================================================================================

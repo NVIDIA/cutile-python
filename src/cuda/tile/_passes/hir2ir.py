@@ -11,21 +11,20 @@ from .ast2hir import get_function_hir
 from .. import TileTypeError
 from .._coroutine_util import resume_after, run_coroutine
 from .._datatype import PointerInfo
-from .._exception import Loc, FunctionDesc, TileSyntaxError, TileInternalError, TileError, \
-    TileRecursionError
+from .._exception import Loc, FunctionDesc, TileInternalError, TileError, TileRecursionError
 from .._execution import is_stub
 from .._ir import hir, ir
 from .._ir.ir import Var, IRContext
 from .._ir.op_impl import ImplRegistry
 from .._ir.control_flow_ops import end_branch, return_, continue_, break_
 from .._ir.core_ops import (
-    loosely_typed_const, build_dataclass_instance, build_tuple, sym2var, store_var
+    loosely_typed_const, build_dataclass_instance, build_tuple, sym2var, store_var, build_dict
 )
 from .._ir.arithmetic_ops import dtype_constructor
 from .._ir.scope import Scope, LocalScope, IntMap
 from .._ir.type import FunctionTy, BoundMethodTy, DTypeConstructor, ClosureTy, \
     ClosureDefaultPlaceholder, StringFormat, TypeTy, TupleTy, BoundMethodValue, TupleValue, \
-    ClosureValue
+    ClosureValue, DictTy, DictValue
 from .._ir.typing_support import get_signature, is_supported_builtin_func, \
     get_dataclass_info
 
@@ -167,7 +166,20 @@ async def _dispatch_call(hir_call: hir.Call, scope: Scope):
             args.extend(tup_value.items)
         else:
             args.append(_resolve_operand(x, scope))
-    kwargs = {k: _resolve_operand(v, scope) for k, v in hir_call.kwargs}
+    kwargs = {}
+    for k, v in hir_call.kwargs:
+        resolved_val = _resolve_operand(v, scope)
+        if k is None:
+            assert isinstance(resolved_val, Var)
+            dict_ty = resolved_val.get_type()
+            if not isinstance(dict_ty, DictTy):
+                raise TileTypeError(f"Expected a dictionary after **, got {dict_ty}")
+            dict_value = resolved_val.get_aggregate()
+            assert isinstance(dict_value, DictValue)
+            for item_key, item_value in zip(dict_ty.keys, dict_value.values, strict=True):
+                kwargs[item_key] = item_value
+        else:
+            kwargs[k] = resolved_val
     retval = await call(callee_var, args, kwargs)
     if hir_call.result is not None and retval is not None:
         scope.hir2ir_varmap[hir_call.result.id] = retval
@@ -178,10 +190,6 @@ async def _call_user_defined(callee_hir: hir.Function,
                              builder: ir.Builder,
                              parent_scopes: tuple[LocalScope, ...] = ()):
     _check_recursive_call(builder.loc)
-    for param_name, param in callee_hir.signature.parameters.items():
-        if param.kind == inspect.Parameter.VAR_KEYWORD:
-            raise TileSyntaxError("Variadic keyword parameters in user-defined"
-                                  " functions are not supported")
 
     # Activate a fresh Scope. Each inlining gets its own concretized
     # FunctionDesc so that DI never merges two specializations whose generated
@@ -197,6 +205,8 @@ async def _call_user_defined(callee_hir: hir.Function,
             if isinstance(arg, tuple):
                 # Handle the *vararg parameter
                 arg = build_tuple(arg)
+            elif isinstance(arg, dict):
+                arg = build_dict(tuple(arg.keys()), tuple(arg.values()))
             store_var(local_idx, arg, param_loc)
 
         # Dispatch the function body. Use resume_after() to break the call stack
@@ -411,6 +421,8 @@ def _bind_args(sig: inspect.Signature, func_name: str, args, kwargs,
             ret.append(bound_args.arguments[name])
         elif param.kind == param.VAR_POSITIONAL:
             ret.append(())
+        elif param.kind == param.VAR_KEYWORD:
+            ret.append({})
         else:
             assert param.default is not param.empty
             if isinstance(param.default, ClosureDefaultPlaceholder):

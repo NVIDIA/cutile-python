@@ -65,3 +65,11 @@ def enter_context(manager, /): ...
 
 @stub
 def pop_context(): ...
+
+
+@stub
+def is_contained_in(x, y, /): ...  # "return x in y"
+
+
+@stub
+def is_not_contained_in(x, y, /): ...  # return "x not in y"
