@@ -10,16 +10,16 @@ from enum import Enum
 from types import BuiltinFunctionType
 from typing import Sequence, Mapping, Callable
 
-from .ast2hir import get_function_hir
+from .ast2hir import get_function_hir, HirMode
 from .. import TileTypeError
 from .._coroutine_util import resume_after, run_coroutine
 from .._dispatch_mode import StaticEvalMode
 from .._exception import Loc, FunctionDesc, TileInternalError, TileError, TileRecursionError, \
     TileValueError, UnsupportedCallError, TypeCheckingError
 from .._execution import is_stub, is_static_def
-from .._ir import hir, ir
 from .._ir.hir import StaticEvalKind
-from .._ir.ir import Var, IRContext
+from .._ir import hir, ir, hir_stubs
+from .._ir.ir import Var, IRContext, Builder
 from .._ir.op_impl import ImplRegistry
 from .._ir.control_flow_ops import end_branch, return_, continue_, break_
 from .._ir.core_ops import (
@@ -71,6 +71,16 @@ def _create_scope(func_hir: hir.Function, ir_ctx: IRContext, call_site: Loc | No
                  concrete_func_desc=concrete_func_desc)
 
 
+def _create_scope_for_user_defined_helper(callee_hir: hir.Function, builder: ir.Builder,
+                                          parent_scopes: tuple[LocalScope, ...] = ()):
+    # Create a fresh Scope. Each inlining gets its own concretized
+    # FunctionDesc so that DI never merges two specializations whose generated
+    # IR might differ.
+    return _create_scope(callee_hir, builder.ir_ctx, call_site=builder.loc,
+                         parent_scopes=parent_scopes,
+                         concrete_func_desc=_concretize_func_desc(callee_hir, builder.ir_ctx))
+
+
 def _concretize_func_desc(func_hir: hir.Function, ir_ctx: IRContext) -> FunctionDesc:
     # Mint a fresh FunctionDesc whose `specialization_id` makes its synthesized
     # linkage name unique across every inlining.
@@ -97,11 +107,16 @@ async def dispatch_hir_block(block: hir.Block, cur_builder: ir.Builder | None = 
     await _dispatch_hir_block_inner(block, cur_builder)
 
 
-async def _dispatch_hir_block_inner(block: hir.Block, builder: ir.Builder):
-    cursor = 0  # Pre-initialize to guarantee it's defined in the `except` block
+async def _dispatch_hir_block_inner(block: hir.Block, builder: ir.Builder, *,
+                                    start: int = 0,
+                                    suspend_at: int = -1):
+    cursor = start  # Pre-initialize to guarantee it's defined in the `except` block
     try:
         scope = Scope.get_current()
-        for cursor, call in enumerate(block.calls):
+        for cursor in range(start, len(block.calls)):
+            call = block.calls[cursor]
+            if cursor == suspend_at:
+                return
             loc = retarget_loc(call.loc, scope)
             with _wrap_exceptions(loc), builder.change_loc(loc):
                 await _dispatch_call(call, scope)
@@ -113,7 +128,7 @@ async def _dispatch_hir_block_inner(block: hir.Block, builder: ir.Builder):
 
         loc = retarget_loc(block.jump_loc, scope)
         with _wrap_exceptions(loc), builder.change_loc(loc):
-            _dispatch_hir_jump(block, scope)
+            await _dispatch_hir_jump(block, scope)
     except Exception:
         if builder.ir_ctx.log_ir_on_error:
             hir_params = ", ".join(str(p) for p in block.params)
@@ -127,18 +142,18 @@ async def _dispatch_hir_block_inner(block: hir.Block, builder: ir.Builder):
         raise
 
 
-def _dispatch_hir_jump(block: hir.Block, scope: Scope):
+async def _dispatch_hir_jump(block: hir.Block, scope: Scope):
     match block.jump:
         case hir.Jump.END_BRANCH:
             end_branch(_resolve_operand(block.result, scope) if block.have_result else None)
         case hir.Jump.CONTINUE:
             assert not block.have_result
-            continue_()
+            await continue_()
         case hir.Jump.BREAK:
             assert not block.have_result
-            break_()
+            await break_()
         case hir.Jump.RETURN:
-            return_(_resolve_operand(block.result, scope) if block.have_result else None)
+            await return_(_resolve_operand(block.result, scope) if block.have_result else None)
         case None: pass
         case _: assert False
 
@@ -188,19 +203,44 @@ async def _dispatch_call(hir_call: hir.Call, scope: Scope):
         scope.hir2ir_varmap[hir_call.result.id] = retval
 
 
+async def enter_generator_context_manager(generator_hir: hir.Function,
+                                          args: tuple[Var, ...],
+                                          kwargs: dict[str, Var],
+                                          yield_idx: int) -> tuple[Var, Scope]:
+    arg_list = _bind_args(generator_hir.signature, generator_hir.desc.name, args, kwargs)
+    builder = Builder.get_current()
+    new_scope = _create_scope_for_user_defined_helper(generator_hir, builder)
+    await _call_user_defined(generator_hir, arg_list, Builder.get_current(),
+                             new_scope=new_scope, suspend_at=yield_idx)
+    yield_call = generator_hir.body.calls[yield_idx]
+    assert yield_call.callee == hir_stubs.generator_yield
+    [yielded_value] = yield_call.args
+    yielded_value = _resolve_operand(yielded_value, new_scope)
+    assert isinstance(yielded_value, Var)
+    return yielded_value, new_scope
+
+
+async def exit_generator_context_manager(generator_hir: hir.Function,
+                                         scope: Scope,
+                                         yield_idx: int):
+    builder = Builder.get_current()
+    assert generator_hir.body.jump is None
+    with scope.make_current():
+        await resume_after(_dispatch_hir_block_inner(generator_hir.body, builder,
+                                                     start=yield_idx + 1))
+
+
 async def _call_user_defined(callee_hir: hir.Function,
                              arg_list: list[Var | tuple[Var, ...]],
                              builder: ir.Builder,
-                             parent_scopes: tuple[LocalScope, ...] = ()):
+                             new_scope: Scope | None = None,
+                             parent_scopes: tuple[LocalScope, ...] = (),
+                             *,
+                             suspend_at: int = -1) -> Var | None:
     _check_recursive_call(builder.loc)
 
-    # Activate a fresh Scope. Each inlining gets its own concretized
-    # FunctionDesc so that DI never merges two specializations whose generated
-    # IR might differ.
-    new_scope = _create_scope(callee_hir, builder.ir_ctx, call_site=builder.loc,
-                              parent_scopes=parent_scopes,
-                              concrete_func_desc=_concretize_func_desc(callee_hir,
-                                                                       builder.ir_ctx))
+    if new_scope is None:
+        new_scope = _create_scope_for_user_defined_helper(callee_hir, builder, parent_scopes)
     with new_scope.make_current():
         # Call store_var() to bind arguments to parameters.
         for arg, local_idx, param_loc in zip(arg_list, callee_hir.param_local_indices,
@@ -214,10 +254,14 @@ async def _call_user_defined(callee_hir: hir.Function,
 
         # Dispatch the function body. Use resume_after() to break the call stack
         # and make sure we stay within the Python's recursion limit.
-        await resume_after(dispatch_hir_block(callee_hir.body, builder))
+        await resume_after(_dispatch_hir_block_inner(callee_hir.body, builder,
+                                                     suspend_at=suspend_at))
+
+    if suspend_at >= 0:
+        return None
 
     assert callee_hir.body.have_result
-    ret = _process_return_value(
+    ret = freeze_closures_on_scope_exit(
             new_scope.hir2ir_varmap[callee_hir.body.result.id], new_scope.local, builder)
     new_scope.local.mark_dead()
     return ret
@@ -239,7 +283,7 @@ async def _call_function(callee: Callable,
     elif is_static_def(callee):
         return _call_static_def_function(callee, args, kwargs)
     else:
-        callee_hir = get_function_hir(callee, entry_point=False)
+        callee_hir = get_function_hir(callee, mode=HirMode.HELPER_FUNCTION)
         sig = get_signature(callee)
         arg_list = _bind_args(sig, callee.__name__, args, kwargs)
         return await _call_user_defined(callee_hir, arg_list, builder)
@@ -320,7 +364,8 @@ async def call(callee_var: Var, args, kwargs) -> Var | None:
                               callee_var.get_aggregate().default_values)
         parent_scopes = _get_closure_parent_scopes(callee_ty, callee_var.get_aggregate(),
                                                    builder.ir_ctx)
-        return await _call_user_defined(callee_ty.func_hir, arg_list, builder, parent_scopes)
+        return await _call_user_defined(callee_ty.func_hir, arg_list, builder,
+                                        parent_scopes=parent_scopes)
     elif (isinstance(callee_ty, DataclassTy)
           and (call_dunder := find_method(callee_ty.cls, "__call__")) is not NotImplemented):
         return await _call_function(call_dunder, (callee_var, *args), kwargs, builder)
@@ -382,17 +427,17 @@ def _get_closure_parent_scopes(ty: ClosureTy, val: ClosureValue,
     return tuple(ret)
 
 
-def _process_return_value(retval: Var, callee_scope: LocalScope, builder: ir.Builder) -> Var:
+def freeze_closures_on_scope_exit(retval: Var, dead_scope: LocalScope, builder: ir.Builder) -> Var:
     ty = retval.get_type_allow_invalid()
     if not ty.is_aggregate():
         return retval
 
     if isinstance(ty, ClosureTy):
-        retval = _freeze_returned_closure(retval, callee_scope, builder)
+        retval = _freeze_closure(retval, dead_scope, builder)
         ty = retval.get_type()
 
     old_items = retval.get_aggregate().as_tuple()
-    new_items = tuple(_process_return_value(x, callee_scope, builder) for x in old_items)
+    new_items = tuple(freeze_closures_on_scope_exit(x, dead_scope, builder) for x in old_items)
     if any(old is not new for old, new in zip(old_items, new_items, strict=True)):
         new_agg_val = ty.make_aggregate_value(new_items)
         retval = builder.make_aggregate(new_agg_val, ty)
@@ -400,11 +445,11 @@ def _process_return_value(retval: Var, callee_scope: LocalScope, builder: ir.Bui
     return retval
 
 
-def _freeze_returned_closure(retval: Var, callee_scope: LocalScope, builder: ir.Builder) -> Var:
+def _freeze_closure(retval: Var, dead_scope: LocalScope, builder: ir.Builder) -> Var:
     ty = retval.get_type_allow_invalid()
     assert isinstance(ty, ClosureTy)
 
-    if len(ty.captured_scopes) == 0 or ty.captured_scopes[-1].local_scope is not callee_scope:
+    if len(ty.captured_scopes) == 0 or ty.captured_scopes[-1].local_scope is not dead_scope:
         # For example:
         #
         #    def kernel():
@@ -424,7 +469,7 @@ def _freeze_returned_closure(retval: Var, callee_scope: LocalScope, builder: ir.
 
     depth = ty.captured_scopes[-1].depth
     frozen_locals = ty.func_hir.captures_by_depth[depth]
-    frozen_captures = tuple(callee_scope.get(idx, builder.loc) for idx in frozen_locals)
+    frozen_captures = tuple(dead_scope.get(idx, builder.loc) for idx in frozen_locals)
     frozen_capture_types = tuple(v.get_type_allow_invalid() for v in frozen_captures)
 
     new_closure_val = ClosureValue(

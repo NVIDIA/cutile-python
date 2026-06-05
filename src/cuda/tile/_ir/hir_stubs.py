@@ -77,3 +77,7 @@ def is_contained_in(x, y, /): ...  # "return x in y"
 
 @stub
 def is_not_contained_in(x, y, /): ...  # return "x not in y"
+
+
+@stub
+def generator_yield(value, /): ...

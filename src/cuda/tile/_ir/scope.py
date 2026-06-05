@@ -7,7 +7,7 @@ import enum
 import threading
 from contextlib import contextmanager
 from dataclasses import dataclass
-from typing import TypeVar, Generic
+from typing import TypeVar, Generic, Callable
 
 from cuda.tile._exception import Loc, FunctionDesc, TileSyntaxError
 from cuda.tile._ir import hir
@@ -15,7 +15,7 @@ from cuda.tile._ir.ir import Operation, Var, IRContext
 from cuda.tile._ir.type import InvalidType, ContextManagerState
 
 
-@dataclass
+@dataclass(frozen=True)
 class JumpInfo:
     jump_op: Operation | None
     outputs: tuple[Var, ...]
@@ -81,6 +81,12 @@ class LocalScope:
             var.set_type(InvalidType(f"Use of potentially undefined variable `{name}`", loc=loc))
         return var
 
+    def map_all_vars(self, func: Callable[[Var], Var]):
+        for i in range(len(self._map)):
+            old = self._map[i]
+            if old is not None:
+                self._map[i] = func(old)
+
     @contextmanager
     def enter_branch(self):
         assert not self._dead
@@ -110,6 +116,17 @@ class IntMap(Generic[V]):
     def __init__(self):
         self._items = []
 
+    def clone(self) -> "IntMap":
+        ret = IntMap()
+        ret._items.extend(self._items)
+        return ret
+
+    def map_all_items(self, func: Callable[[V], V]):
+        for i in range(len(self._items)):
+            old = self._items[i]
+            if old is not _MissingItem.INSTANCE:
+                self._items[i] = func(old)
+
     def __getitem__(self, idx: int):
         assert isinstance(idx, int)
         assert idx >= 0
@@ -117,7 +134,7 @@ class IntMap(Generic[V]):
             val = self._items[idx]
         except IndexError:
             raise KeyError()
-        if val is _MissingItem:
+        if val is _MissingItem.INSTANCE:
             raise KeyError()
         return val
 
@@ -146,6 +163,30 @@ class Scope:
     concrete_func_desc: FunctionDesc
     context_stack: list[ContextManagerState] = dataclasses.field(default_factory=list)
     loop_context_stack_depth: int | None = None
+
+    @contextmanager
+    def checkpoint(self):
+        """
+        Save all state of this Scope upon entering the context, and restore upon exit.
+        """
+
+        old_loop_info = self.loop_info
+        old_if_else_info = self.if_else_info
+        old_loop_context_stack_depth = self.loop_context_stack_depth
+        old_hir2ir_varmap = self.hir2ir_varmap
+        old_context_stack = self.context_stack
+
+        self.context_stack = list(old_context_stack)
+        self.hir2ir_varmap = old_hir2ir_varmap.clone()
+        try:
+            with self.local.enter_branch():
+                yield
+        finally:
+            self.hir2ir_varmap = old_hir2ir_varmap
+            self.context_stack = old_context_stack
+            self.loop_info = old_loop_info
+            self.if_else_info = old_if_else_info
+            self.loop_context_stack_depth = old_loop_context_stack_depth
 
     @property
     def local(self) -> LocalScope:

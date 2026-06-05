@@ -6,11 +6,13 @@ import pytest
 
 import cuda.lang as cl  # noqa: F401
 from cuda.lang._ir.ir import IRContext, Region, Loc, Builder
-from cuda.lang._ir.ops import return_, branch, cond_branch
+from cuda.lang._ir.ops import branch, cond_branch
 
 # Importing this module registers cuda.lang's lowerings
 import cuda.lang._ir.ops as cl_ops  # noqa: F401
 
+from cuda.tile._ir.control_flow_ops import Return
+from cuda.tile._ir.ir import add_operation_variadic
 from .util import filecheck, get_source
 
 
@@ -60,7 +62,7 @@ def test_branch_ir_construction(builder):
     # CHECK: ^merge(phi):
     # CHECK:     return
     with builder.block_builder(merge):
-        return_(None)
+        add_operation_variadic(Return, ())
 
     filecheck(str(builder.region), get_source())
 

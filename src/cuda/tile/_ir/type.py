@@ -7,7 +7,8 @@ import dataclasses
 import os
 from dataclasses import dataclass
 from enum import EnumMeta
-from types import ModuleType, FunctionType, BuiltinFunctionType, MethodType, MappingProxyType
+from types import ModuleType, FunctionType, BuiltinFunctionType, MethodType, MappingProxyType, \
+    CoroutineType
 from typing import Any, Callable, Optional, Sequence, Tuple, Iterator, Mapping
 from functools import reduce
 import operator
@@ -956,13 +957,57 @@ class ContextManagerLifecycle(enum.IntEnum):
 
 @dataclass(eq=False)
 class ContextManagerState:
-    exit_callback: Callable[[], None] = lambda: None
+    exit_callback: Callable[[], None | CoroutineType] = lambda: None
     lifecycle: ContextManagerLifecycle = ContextManagerLifecycle.FRESH
+
+    async def call_exit_callback(self):
+        res = self.exit_callback()
+        if res is not None:
+            await res
 
 
 class ContextManagerTy(Type):
     def get_context_manager_state(self) -> ContextManagerState:
         raise NotImplementedError()
+
+
+@dataclass(frozen=True)
+class GeneratorContextManagerTy(ContextManagerTy):
+    func: FunctionType
+    arg_types: tuple[Type, ...]
+    kwargs_type: DictTy
+    state: ContextManagerState
+
+    def get_context_manager_state(self) -> ContextManagerState:
+        return self.state
+
+    def is_aggregate(self) -> bool:
+        return True
+
+    def aggregate_item_types(self) -> tuple[Type, ...]:
+        return *self.arg_types, *self.kwargs_type.value_types
+
+    def make_aggregate_value(self, items: tuple["Var", ...]) -> AggregateValue:
+        num_args = len(self.arg_types)
+        assert len(items) == num_args + len(self.kwargs_type.value_types)
+        return GeneratorContextManagerValue(items[:num_args], items[num_args:])
+
+    def __str__(self):
+        arg_types_str = ", ".join(str(ty) for ty in self.arg_types)
+        kwarg_types_str = ", ".join(f"{name}: {str(ty)}" for name, ty
+                                    in zip(self.kwargs_type.keys, self.kwargs_type.value_types,
+                                           strict=True))
+        return (f"GeneratorContextManager[{self.func},"
+                f" args=[{arg_types_str}], kwargs={{{kwarg_types_str}}}]")
+
+
+@dataclass(frozen=True)
+class GeneratorContextManagerValue(AggregateValue):
+    args: tuple["Var", ...]
+    kwarg_values: tuple["Var", ...]
+
+    def as_tuple(self) -> tuple["Var", ...]:
+        return self.args + self.kwarg_values
 
 
 # Placeholder object for use as an inspect.Parameter's default value inside

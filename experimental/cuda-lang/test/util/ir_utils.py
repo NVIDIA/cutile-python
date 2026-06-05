@@ -6,11 +6,12 @@ from cuda.lang._ir.ir import IRContext
 from cuda.lang._compile import get_function_hir, get_function_ir
 from cuda.lang.compilation import ArrayConstraint, KernelSignature, ScalarConstraint
 from cuda.lang import int32
+from cuda.tile._passes.ast2hir import HirMode
 
 
 def get_ir(func, constraints):
     ctx = IRContext(log_ir_on_error=False)
-    func_hir = get_function_hir(func, entry_point=True)
+    func_hir = get_function_hir(func, mode=HirMode.ENTRY_POINT)
     return get_function_ir(func_hir, KernelSignature(constraints), ctx)
 
 

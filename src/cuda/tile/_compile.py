@@ -41,7 +41,7 @@ from cuda.tile._ir.ir import TypingHooks
 from cuda.tile._ir.aggregate_support import flatten_block_parameters
 from cuda.tile._ir.ops import loosely_typed_const, tile_impl_registry, build_tuple
 from cuda.tile._ir.type import TileTy, ArrayTy, ListTy
-from cuda.tile._passes.ast2hir import get_function_hir
+from cuda.tile._passes.ast2hir import get_function_hir, HirMode
 from cuda.tile._passes.code_motion import hoist_loop_invariants
 from cuda.tile._passes.unhoist_partition_views import unhoist_partition_views
 from cuda.tile._passes.eliminate_assign_ops import eliminate_assign_ops
@@ -470,7 +470,7 @@ def compile_tile(ann_func: AnnotatedFunction | FunctionType,
         bytecode_version = _get_max_supported_bytecode_version(context.config.temp_dir,
                                                                allow_dev=dev_features_enabled())
 
-    func_hir = get_function_hir(ann_func.pyfunc, entry_point=True)
+    func_hir = get_function_hir(ann_func.pyfunc, mode=HirMode.ENTRY_POINT)
     func_desc = func_hir.desc
     ir_keeper = _IrKeeper(ann_func=ann_func,
                           func_hir=func_hir,

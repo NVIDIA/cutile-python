@@ -1,0 +1,1 @@
+- Added support for user-defined context managers (via `@contextlib.contextmanager`).

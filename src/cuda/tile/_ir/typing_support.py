@@ -4,6 +4,7 @@
 import inspect
 import operator
 import dataclasses
+from contextlib import _GeneratorContextManager
 from enum import Enum
 from functools import lru_cache
 from types import ModuleType, FunctionType, BuiltinFunctionType
@@ -122,6 +123,9 @@ BUILTIN_FUNC_SIGNATURES = {
     int: lambda x=0, /: None,
     bool: lambda x=False, /: None,
     print: lambda *args, sep=' ', end='\n': None,
+    dataclasses.replace: dataclasses.replace,
+    dict.get: dict.get,
+    _GeneratorContextManager: lambda func, args, kwargs: None,
 }
 
 

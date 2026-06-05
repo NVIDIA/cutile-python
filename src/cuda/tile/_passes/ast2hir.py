@@ -21,8 +21,14 @@ from cuda.tile._passes.ast_util import ast_get_all_local_names
 from cuda.tile._stub import static_eval, static_assert, static_iter
 
 
+class HirMode(Enum):
+    ENTRY_POINT = 0
+    HELPER_FUNCTION = 1
+    GENERATOR_CONTEXT_MANAGER = 2
+
+
 @lru_cache
-def get_function_hir(pyfunc: Callable, entry_point: bool) -> hir.Function:
+def get_function_hir(pyfunc: Callable, mode: HirMode) -> hir.Function:
     # Unwrap the @function decorator
     while is_function_wrapper(pyfunc):
         pyfunc = pyfunc.__wrapped__
@@ -70,9 +76,9 @@ def get_function_hir(pyfunc: Callable, entry_point: bool) -> hir.Function:
 
     filename = inspect.getfile(pyfunc)
     desc = FunctionDesc(func_def.name, filename, first_line, func_def.col_offset + 1,
-                        is_entry=entry_point)
+                        is_entry=mode == HirMode.ENTRY_POINT)
     local_names, _, _ = ast_get_all_local_names(func_def)
-    ctx = _Context(filename, first_line, desc, func_globals, local_names, entry_point,
+    ctx = _Context(filename, first_line, desc, func_globals, local_names, mode,
                    func_depth=0)
     signature = inspect.signature(pyfunc)
     ret = _get_function_hir_inner(func_def, signature, ctx)
@@ -158,7 +164,7 @@ class LoopKind(Enum):
 
 class _Context:
     def __init__(self, filename: str, first_line: int, function_desc: FunctionDesc,
-                 frozen_globals: Mapping[str, Any], local_names: set[str], entry_point: bool,
+                 frozen_globals: Mapping[str, Any], local_names: set[str], mode: HirMode,
                  func_depth: int = 0,
                  outer_rns: Dict[str, ResolvedName] | None = None,
                  own_locals: set[str] | None = None):
@@ -167,7 +173,7 @@ class _Context:
         self.function_desc = function_desc
         self.frozen_globals = frozen_globals
         self.local_names = local_names
-        self.entry_point = entry_point
+        self.mode = mode
         self.parent_loops: List[LoopKind] = []
         self.current_loc = Loc.unknown()
         self.current_block: Optional[hir.Block] = None
@@ -704,7 +710,7 @@ def _expr_stmt(expr: ast.Expr, ctx: _Context):
 
 
 def _propagate_return(ctx: _Context):
-    if ctx.entry_point:
+    if ctx.mode != HirMode.HELPER_FUNCTION:
         return
     # In order to propagate an early return, insert the following:
     #    if $returning:
@@ -1022,6 +1028,14 @@ def _ifexp_expr(ifexp: ast.IfExp, ctx: _Context) -> hir.Value:
     return ctx.call(hir_stubs.if_else, (cond, then_block, else_block))
 
 
+@_register(_expr_handlers, ast.Yield)
+def _yield_stmt(stmt: ast.Yield, ctx: _Context) -> None:
+    if ctx.mode != HirMode.GENERATOR_CONTEXT_MANAGER:
+        raise ctx.unsupported_syntax()
+    value = None if stmt.value is None else _expr(stmt.value, ctx)
+    ctx.call(hir_stubs.generator_yield, (value,))
+
+
 @_register(_stmt_handlers, ast.If)
 def _if_stmt(stmt: ast.If, ctx: _Context) -> None:
     cond = _bool_expr(stmt.test, ctx)
@@ -1059,8 +1073,10 @@ def _return_stmt(stmt: ast.Return, ctx: _Context) -> None:
         raise ctx.syntax_error("Returning from a for loop is not supported")
 
     return_val = None if stmt.value is None else _expr(stmt.value, ctx)
-    if ctx.entry_point:
+    if ctx.mode == HirMode.ENTRY_POINT:
         ctx.set_block_jump_with_result(hir.Jump.RETURN, return_val)
+    elif ctx.mode == HirMode.GENERATOR_CONTEXT_MANAGER:
+        raise ctx.syntax_error("Returning from a generator-based context manager is not supported")
     else:
         ctx.store("$retval", return_val)
         ctx.store("$returning", True)
@@ -1107,7 +1123,7 @@ def _make_closure(node: ast.FunctionDef | ast.Lambda, ctx: _Context) -> hir.Valu
             outer_rns[n] = rn
 
     new_ctx = _Context(ctx.filename, ctx.first_line, desc, ctx.frozen_globals,
-                       local_names, entry_point=False,
+                       local_names, mode=HirMode.HELPER_FUNCTION,
                        func_depth=ctx._func_depth + 1,
                        outer_rns=outer_rns,
                        own_locals=new_locals)
@@ -1194,7 +1210,7 @@ def _stmt_list(statements: Sequence[ast.stmt], ctx: _Context):
 
 
 def _get_all_parameters(func_def: ast.FunctionDef | ast.Lambda, ctx: _Context) -> List[ast.arg]:
-    if ctx.entry_point:
+    if ctx.mode == HirMode.ENTRY_POINT:
         for a in (func_def.args.vararg, func_def.args.kwarg):
             if a is not None:
                 raise ctx.syntax_error("Variadic kernel parameters are not supported", a)
@@ -1215,11 +1231,11 @@ def _get_all_parameters(func_def: ast.FunctionDef | ast.Lambda, ctx: _Context) -
 
 def _ast2hir(func_def: ast.FunctionDef | ast.Lambda, ctx: _Context) -> hir.Block:
     with ctx.change_loc(func_def), ctx.new_block() as root_block:
-        if ctx.entry_point:
+        if ctx.mode in (HirMode.ENTRY_POINT, HirMode.GENERATOR_CONTEXT_MANAGER):
             assert isinstance(func_def, ast.FunctionDef)
             _stmt_list(func_def.body, ctx)
             # Add a Return jump to the root block if it doesn't have one
-            if root_block.jump is None:
+            if root_block.jump is None and ctx.mode != HirMode.GENERATOR_CONTEXT_MANAGER:
                 with ctx.change_loc(Loc.unknown()):
                     ctx.set_block_jump(hir.Jump.RETURN)
         elif isinstance(func_def, ast.FunctionDef):

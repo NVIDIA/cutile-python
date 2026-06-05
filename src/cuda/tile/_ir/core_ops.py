@@ -4,6 +4,7 @@
 import dataclasses
 import functools
 import operator
+from contextlib import _GeneratorContextManager
 from dataclasses import dataclass
 from types import MethodType, FunctionType, BuiltinFunctionType, MappingProxyType
 from typing import Any, Optional, Sequence
@@ -29,12 +30,14 @@ from cuda.tile._ir.type import Type, DTypeSpec, TensorLikeTy, TupleTy, TupleValu
     DataclassInfo, DataclassTy, DataclassValue, BoundMethodValue, BoundMethodTy, InvalidType, \
     ContextManagerTy, ContextManagerLifecycle, LiveCapturedScope, ClosureTy, ClosureValue, \
     RangeIterType, RangeValue, TypeTy, ModuleTy, NONE, SliceType, StringTy, FormattedStringTy, \
-    StringFormat, FormattedStringValue, FormattedPiece, DictTy, DictValue, EnumTy, TokenTy
+    StringFormat, FormattedStringValue, FormattedPiece, DictTy, DictValue, EnumTy, TokenTy, \
+    FunctionTy, GeneratorContextManagerTy, ContextManagerState, GeneratorContextManagerValue
 from cuda.tile._ir.typing_support import type_of_constant_python_value, \
     loose_type_of_constant_python_value, get_dataclass_info, as_third_party_dtype_spec, \
     create_dataclass_instance, find_method, dataclass_has_default_repr
 from cuda.tile._ir2bytecode import BytecodeContext
 from cuda.tile._mutex import tile_mutex
+from cuda.tile._passes.ast2hir import HirMode
 
 _registry = ImplRegistry()
 impl = _registry.impl
@@ -822,10 +825,10 @@ def load_var_impl(rn, name: Var):
 
 
 @impl(hir_stubs.pop_context)
-def pop_context_impl():
+async def pop_context_impl():
     ctx_state = Scope.get_current().context_stack.pop()
     ctx_state.lifecycle = ContextManagerLifecycle.EXITED
-    ctx_state.exit_callback()
+    await ctx_state.call_exit_callback()
 
 
 @impl(hir_stubs.make_closure)
@@ -952,6 +955,7 @@ def unpack_impl(iterable: Var, expected_len: Var) -> Var:
     # Don't use the require_tuple_type() helper because we'd like to customize the error message
     if not isinstance(ty, TupleTy):
         raise TileTypeError("Expected a tuple", iterable.loc)
+
     expected_len = require_constant_int(expected_len)
     if len(ty.value_types) != expected_len:
         few_many = "few" if len(ty.value_types) < expected_len else "many"
@@ -1134,3 +1138,91 @@ async def build_formatted_string(format: StringFormat, values: tuple[Var, ...]) 
     return builder.build()
 
 # ===========================================================================================
+
+
+@impl(_GeneratorContextManager)
+def generator_context_manager_impl(func: Var, args: Var, kwargs: Var):
+    func_ty = func.get_type()
+    if not isinstance(func_ty, FunctionTy):
+        raise TileTypeError("@contextmanager() expects a function")
+
+    args_ty = args.get_type()
+    if not isinstance(args_ty, TupleTy):
+        raise TileTypeError("_GeneratorContextManager(): `args` must be a tuple")
+
+    kwargs_ty = kwargs.get_type()
+    if not isinstance(kwargs_ty, DictTy):
+        raise TileTypeError("_GeneratorContextManager(): `kwargs` must be a dictionary")
+
+    state = ContextManagerState()
+    result_ty = GeneratorContextManagerTy(func_ty.func, args_ty.value_types, kwargs_ty, state)
+    agg = GeneratorContextManagerValue(args.get_aggregate().items, kwargs.get_aggregate().values)
+    return make_aggregate(agg, result_ty)
+
+
+@impl(hir_stubs.enter_context, overload=(GeneratorContextManagerTy,))
+async def enter_context_generator_impl(manager: Var[GeneratorContextManagerTy]):
+    mgr_ty = manager.get_type()
+
+    from cuda.tile._passes.ast2hir import get_function_hir
+    generator_hir = get_function_hir(mgr_ty.func, mode=HirMode.GENERATOR_CONTEXT_MANAGER)
+
+    yield_idx = _find_generator_yield(generator_hir.body)
+
+    mgr_value = manager.get_aggregate()
+    assert isinstance(mgr_value, GeneratorContextManagerValue)
+    kwargs = dict(zip(mgr_ty.kwargs_type.keys, mgr_value.kwarg_values, strict=True))
+
+    from cuda.tile._passes.hir2ir import enter_generator_context_manager, \
+        exit_generator_context_manager
+    yielded_value, generator_scope = await enter_generator_context_manager(
+            generator_hir, mgr_value.args, kwargs, yield_idx)
+
+    async def exit_callback():
+        with generator_scope.checkpoint():
+            await exit_generator_context_manager(generator_hir, generator_scope, yield_idx)
+
+            # The context manager could have yielded a closure, which could be stored
+            # in one of the local variables. Since we are exiting the context manager,
+            # we need to make sure that such closure doesn't capture the exiting scope
+            # as a live scope. We approach this in a brute-force fashion by searching all locals.
+            cur_scope = Scope.get_current()
+            builder = Builder.get_current()
+            from cuda.tile._passes.hir2ir import freeze_closures_on_scope_exit
+            freeze = functools.partial(freeze_closures_on_scope_exit,
+                                       dead_scope=generator_scope.local, builder=builder)
+            cur_scope.local.map_all_vars(freeze)
+            cur_scope.hir2ir_varmap.map_all_items(freeze)
+
+    mgr_ty.state.exit_callback = exit_callback
+    return yielded_value
+
+
+def _find_generator_yield(block: hir.Block) -> int:
+    yields = list(_find_all_yield_statements(block))
+    if len(yields) == 0:
+        raise TileTypeError("Expected a generator function,"
+                            " but no reachable `yield` statement has been found")
+    if len(yields) > 1:
+        first_block, first_idx = yields[0]
+        second_block, second_idx = yields[1]
+        first_loc = first_block.calls[first_idx].loc
+        raise TileTypeError(f"Generator-based context manager must have one `yield` statement"
+                            f"(another `yield` found on line {first_loc.line})",
+                            second_block.calls[second_idx].loc)
+
+    [(yield_block, idx)] = yields
+    if yield_block is not block:
+        raise TileTypeError("`yield` statement of a generator-based context manager"
+                            " must be placed outside of loops and conditional statements")
+
+    return idx
+
+
+def _find_all_yield_statements(block: hir.Block):
+    for i, call in enumerate(block.calls):
+        if call.callee is hir_stubs.generator_yield:
+            yield block, i
+        for arg in call.args:
+            if isinstance(arg, hir.Block):
+                yield from _find_all_yield_statements(arg)

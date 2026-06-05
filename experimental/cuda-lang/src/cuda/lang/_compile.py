@@ -12,6 +12,7 @@ import os.path
 from types import FunctionType
 import subprocess
 
+from cuda.tile._passes.ast2hir import HirMode
 from cuda.tile._passes.hir2ir import hir2ir
 from cuda.tile._passes.dce import dead_code_elimination_pass
 from cuda.tile._passes.eliminate_assign_ops import eliminate_assign_ops
@@ -250,7 +251,7 @@ def compile_simt(
             file=sys.stderr,
         )
 
-    func_hir = get_function_hir(function.pyfunc, entry_point=True)
+    func_hir = get_function_hir(function.pyfunc, mode=HirMode.ENTRY_POINT)
     if log_flags.log_hir:
         _dump("HIR", func_hir.body)
 

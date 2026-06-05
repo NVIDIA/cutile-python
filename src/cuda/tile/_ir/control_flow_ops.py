@@ -445,20 +445,27 @@ class Continue(Operation, opcode="continue", terminator=True):
         return f"continue {', '.join([x.name for x in self.values])}"
 
 
-def continue_():
+async def continue_():
     scope = Scope.get_current()
     info = scope.loop_info
     assert info is not None
     assert not info.flatten
 
-    for ctx_state in scope.context_stack[scope.loop_context_stack_depth:]:
-        ctx_state.exit_callback()
+    # Why checkpoint? Exit callbacks of context managers may mess with the scope.
+    # In particular, the generator-based context manager may rewrite the locals to freeze
+    # any closures that reference the context manager's scope (see exit_callback() in
+    # enter_context_generator_impl()). So we need to restore the scope back to the original
+    # state.
+    with scope.checkpoint():
+        for ctx_state in reversed(scope.context_stack[scope.loop_context_stack_depth:]):
+            await ctx_state.call_exit_callback()
 
-    builder = Builder.get_current()
-    builder.add_operation_variadic(Continue, (), dict(values=()))
-    op = builder.ops[-1]
-    next_values = tuple(scope.local.get(local_idx, builder.loc) for local_idx in info.stored_locals)
-    info.jumps.append(JumpInfo(op, next_values))
+        builder = Builder.get_current()
+        builder.add_operation_variadic(Continue, (), dict(values=()))
+        op = builder.ops[-1]
+        next_values = tuple(scope.local.get(local_idx, builder.loc)
+                            for local_idx in info.stored_locals)
+        info.jumps.append(JumpInfo(op, next_values))
 
 
 # Maps to BreakOp
@@ -477,7 +484,7 @@ class Break(Operation, opcode="break", terminator=True):
         return f"break {', '.join([x.name for x in self.values])}"
 
 
-def break_():
+async def break_():
     scope = Scope.get_current()
     info = scope.loop_info
     assert info is not None
@@ -485,14 +492,16 @@ def break_():
     if info.flatten:
         return
 
-    for ctx_state in scope.context_stack[scope.loop_context_stack_depth:]:
-        ctx_state.exit_callback()
+    # See continue_() for the explanation of why checkpoint() is necessary.
+    with scope.checkpoint():
+        for ctx_state in reversed(scope.context_stack[scope.loop_context_stack_depth:]):
+            await ctx_state.call_exit_callback()
 
-    builder = Builder.get_current()
-    builder.add_operation_variadic(Break, (), dict(values=()))
-    op = builder.ops[-1]
-    outputs = tuple(scope.local.get(local_idx, builder.loc) for local_idx in info.stored_locals)
-    info.jumps.append(JumpInfo(op, outputs))
+        builder = Builder.get_current()
+        builder.add_operation_variadic(Break, (), dict(values=()))
+        op = builder.ops[-1]
+        outputs = tuple(scope.local.get(local_idx, builder.loc) for local_idx in info.stored_locals)
+        info.jumps.append(JumpInfo(op, outputs))
 
 
 # Maps to YieldOp
@@ -543,9 +552,16 @@ class Return(Operation, opcode="return", terminator=True):
         return True
 
 
-def return_(value: Var | None):
+async def return_(value: Var | None):
     if value is not None and value.get_type() is not NONE:
         raise TileTypeError("Tile kernels cannot return values")
+
+    scope = Scope.get_current()
+    # See continue_() for the explanation of why checkpoint() is necessary.
+    with scope.checkpoint():
+        for ctx_state in reversed(scope.context_stack):
+            await ctx_state.call_exit_callback()
+
     add_operation_variadic(Return, ())
 
 

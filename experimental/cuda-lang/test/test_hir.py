@@ -8,13 +8,13 @@ from cuda.lang._compile import get_function_ir
 from cuda.lang._ir.ir import IRContext
 from cuda.lang.compilation import KernelSignature
 from cuda.lang._exception import TypeCheckingError
-from cuda.tile._passes.ast2hir import get_function_hir
+from cuda.tile._passes.ast2hir import get_function_hir, HirMode
 
 from .util import filecheck
 
 
 def filecheck_hir(func_hir: cl.kernel, check_directives: str) -> None:
-    func_hir = get_function_hir(func_hir._pyfunc, entry_point=True)
+    func_hir = get_function_hir(func_hir._pyfunc, mode=HirMode.ENTRY_POINT)
     hir_string = str(func_hir.body)
     filecheck(hir_string, check_directives)
 
@@ -46,7 +46,7 @@ def test_hir_error_logging_preserves_original_error(capsys):
     def kernel():
         foo(range(1, 2, 3))
 
-    func_hir = get_function_hir(kernel._pyfunc, entry_point=True)
+    func_hir = get_function_hir(kernel._pyfunc, mode=HirMode.ENTRY_POINT)
     ctx = IRContext(log_ir_on_error=True)
     match = "Objects of type Range<int32> are not supported at compile time"
     with pytest.raises(TypeCheckingError, match=match):
