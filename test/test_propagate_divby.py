@@ -14,6 +14,7 @@ from cuda.tile.compilation import (
 from cuda.tile._cext import CallingConvention
 from cuda.tile._exception import TileTypeError
 from typing import Sequence
+import torch
 
 
 def get_ir(func, args: Sequence[ParameterConstraint]) -> Block:
@@ -437,3 +438,15 @@ def test_list_divby_through_loop():
         const_arg(5),
     ))
     assert get_op_divby(body, MakeTensorView) == [{'base_ptr': 8}]
+
+
+def test_use_assumed_var_after_block():
+    @ct.kernel
+    def kern(x):
+        c = 16
+        if ct.bid(0) == 0:
+            ct.scatter(x, 0, c)
+        ct.scatter(x, 0, c)
+
+    x = torch.zeros(8, dtype=torch.int32, device="cuda")
+    ct.launch(torch.cuda.current_stream(), (1,), kern, (x,))

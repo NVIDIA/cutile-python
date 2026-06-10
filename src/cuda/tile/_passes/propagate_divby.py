@@ -12,22 +12,37 @@ _OPS_NEED_ASSUME = (MakeTensorView, LoadPointer, StorePointer)
 
 
 def add_divby_pass(root_block: Block, df_result: DataflowResult):
+    candidates = set()
+    _scan_block(root_block, candidates)
     var_map = {}
-    _rewrite_block(root_block, df_result, var_map)
+    _rewrite_block(root_block, df_result, var_map, candidates)
 
 
-def _rewrite_block(block: Block, df_result: DataflowResult, var_map: dict[str, Var]):
+def _scan_block(block: Block, candidates: set[str]):
+    """Add var that needs divby to candidates"""
+    for op in block:
+        if isinstance(op, _OPS_NEED_ASSUME):
+            for var in op.all_inputs():
+                candidates.add(var.name)
+        for b in op.nested_blocks:
+            _scan_block(b, candidates)
+
+
+def _rewrite_block(block: Block,
+                   df_result: DataflowResult,
+                   var_map: dict[str, Var],
+                   candidates: set[str]):
     new_ops = []
     for param in block.params:
         _add_assume_divby(param, df_result, new_ops, var_map)
 
     for op in block:
-        if isinstance(op, _OPS_NEED_ASSUME):
-            for var in op.all_inputs():
-                _add_assume_divby(var, df_result, new_ops, var_map)
+        to_assume = tuple(var for var in op.result_vars if var.name in candidates)
         new_ops.append(_remap_operands(op, var_map))
+        for var in to_assume:
+            _add_assume_divby(var, df_result, new_ops, var_map)
         for b in op.nested_blocks:
-            _rewrite_block(b, df_result, var_map)
+            _rewrite_block(b, df_result, var_map, candidates)
 
     block[:] = new_ops
 
