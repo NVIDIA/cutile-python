@@ -8,6 +8,7 @@ import pytest
 
 from math import ceil
 from conftest import float_dtypes, bool_dtypes, get_tileiras_version, int_dtypes, dtype_id
+from cuda.tile import TileTypeError
 from cuda.tile._bytecode.version import BytecodeVersion
 from cuda.tile._ir.cast_ops import _is_implicit_cast_ok
 from cuda.tile._ir.typing_support import to_dtype
@@ -200,3 +201,16 @@ def test_load_store_scalar_or_0d(kernel):
     y = torch.zeros_like(x)
     ct.launch(torch.cuda.current_stream(), (1,), kernel, (x, y))
     assert_equal(y, x)
+
+
+def test_load_invalid_axis_order_with_repeating_axis():
+    @ct.kernel
+    def kern(x):
+        t = ct.load(x, index=(0, 1), shape=(16, 16), order=(1, 1))
+        t += 1
+        ct.store(x, index=(0, 1), tile=t)
+
+    with pytest.raises(TileTypeError,
+                       match="Axis order must be a permutation, but axis 1 is used at least twice"):
+        x = torch.zeros((64, 64), device="cuda")
+        ct.launch(torch.cuda.current_stream(), (1,), kern, (x,))

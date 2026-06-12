@@ -6,7 +6,7 @@ import functools
 import inspect
 import threading
 import re
-from collections import defaultdict
+from collections import defaultdict, Counter
 from contextlib import contextmanager
 from dataclasses import dataclass
 from enum import EnumMeta
@@ -456,7 +456,15 @@ def require_constant_axis_order(var: Var, rank: int) -> Tuple[int, ...]:
     if len(value) != rank:
         raise _make_type_error(f"Expected tuple of length {rank}, got {len(value)}", var)
 
-    return tuple(normalize_axis(x, rank, var) for x in value)
+    if len(value) == 0:
+        return value
+
+    ret = tuple(normalize_axis(x, rank, var) for x in value)
+    [(repeating_axis, repeat_count)] = Counter(ret).most_common(1)
+    if repeat_count > 1:
+        raise _make_type_error(f"Axis order must be a permutation, but axis {repeating_axis}"
+                               f" is used at least twice", var)
+    return ret
 
 
 def ensure_tile(var: Var) -> Var[TileTy]:
