@@ -27,7 +27,7 @@ from cuda.tile._ir.type import Type, DTypeSpec, TensorLikeTy, TupleTy, TupleValu
     DataclassInfo, DataclassTy, DataclassValue, BoundMethodValue, BoundMethodTy, InvalidType, \
     ContextManagerTy, ContextManagerLifecycle, LiveCapturedScope, ClosureTy, ClosureValue, \
     RangeIterType, RangeValue, TypeTy, ModuleTy, NONE, SliceType, StringTy, FormattedStringTy, \
-    StringFormat, FormattedStringValue, FormattedPiece, DictTy, DictValue, EnumTy
+    StringFormat, FormattedStringValue, FormattedPiece, DictTy, DictValue, EnumTy, TokenTy
 from cuda.tile._ir.typing_support import type_of_constant_python_value, \
     loose_type_of_constant_python_value, get_dataclass_info, as_third_party_dtype_spec
 from cuda.tile._ir2bytecode import BytecodeContext
@@ -731,18 +731,20 @@ def comparison_enum_impl(fn: str, x: Var, y: Var):
 class TilePrintf(Operation, opcode="tile_printf", memory_effect=MemoryEffect.STORE):
     format: str = attribute()
     args: tuple[Var, ...] = operand()
+    token: Optional[Var] = operand(default=None)
 
     @override
     def generate_bytecode(self, ctx: BytecodeContext):
         arg_vars = [ctx.get_value(arg) for arg in self.args]
+        token = None if self.token is None else ctx.get_value(self.token)
         if ctx.builder.version >= bc.BytecodeVersion.V_13_2:
             result_typeid = ctx.type_table.Token
-            bc.encode_PrintTkoOp(ctx.builder, result_typeid, arg_vars, None, self.format)
+            return bc.encode_PrintTkoOp(ctx.builder, result_typeid, arg_vars, token, self.format)
         else:
             with tile_mutex("print_mutex", ctx):
                 result_typeid = None
                 bc.encode_PrintTkoOp(ctx.builder, result_typeid, arg_vars, None, self.format)
-        return []
+        return [None]
 
 
 @impl(print)
@@ -816,7 +818,7 @@ def print_impl(args: tuple[Var, ...], sep: Var, end: Var) -> None:
     format_parts.append(PrintfValidator.escape_str(require_constant_str(end)))
 
     final_format = ''.join(format_parts)
-    add_operation_variadic(TilePrintf, (), format=final_format, args=tuple(leaf_vars))
+    add_operation_variadic(TilePrintf, (TokenTy(),), format=final_format, args=tuple(leaf_vars))
 
 
 @impl(hir_stubs.build_formatted_string)

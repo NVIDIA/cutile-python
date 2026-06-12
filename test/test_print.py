@@ -253,6 +253,37 @@ def kernel_print_enum(x, TILE: ct.Constant[int]):
     print(f"color = {_PrintColor.RED}")
 
 
+@ct.kernel(opt_level=_OPT_LEVEL)
+def kernel_print_ordering(x, TILE: ct.Constant[int]):
+    bid = ct.bid(0)
+    tx = ct.load(x, index=(bid,), shape=(TILE,)).reshape((2, 4))
+
+    print("original:", tx)
+    print("reduce over all axes:", ct.sum(tx, None))
+    print("reduce over axis 1:", ct.sum(tx, 1))
+    print("reduce over axis 0 and keep dims:", ct.sum(tx, 1, keepdims=True))
+
+    print(f"original: {tx}")
+    print(f"reduce over all axes: {ct.sum(tx, None)}")
+    print(f"reduce over axis 1: {ct.sum(tx, 1)}")
+    print(f"reduce over axis 0 and keep dims: {ct.sum(tx, 1, keepdims=True)}")
+
+    ct.print("original:", tx)
+    ct.print("reduce over all axes:", ct.sum(tx, None))
+    ct.print("reduce over axis 1:", ct.sum(tx, 1))
+    ct.print("reduce over axis 0 and keep dims:", ct.sum(tx, 1, keepdims=True))
+
+    ct.print(f"original: {tx}")
+    ct.print(f"reduce over all axes: {ct.sum(tx, None)}")
+    ct.print(f"reduce over axis 1: {ct.sum(tx, 1)}")
+    ct.print(f"reduce over axis 0 and keep dims: {ct.sum(tx, 1, keepdims=True)}")
+
+    ct.printf("original: %i\n", tx)
+    ct.printf("reduce over all axes: %i\n", ct.sum(tx, None))
+    ct.printf("reduce over axis 1: %i\n", ct.sum(tx, 1))
+    ct.printf("reduce over axis 0 and keep dims: %i\n", ct.sum(tx, 1, keepdims=True))
+
+
 _KERNELS_MAP_ = {
     "kernel_printf": kernel_printf,
     "kernel_print": kernel_print,
@@ -272,6 +303,7 @@ _KERNELS_MAP_ = {
     "kernel_print_tuple_tile_shape": kernel_print_tuple_tile_shape,
     "kernel_print_dtype": kernel_print_dtype,
     "kernel_print_enum": kernel_print_enum,
+    "kernel_print_ordering": kernel_print_ordering,
 }
 
 
@@ -492,6 +524,35 @@ def test_ct_print_enum():
     assert actual_outs[1] == "_PrintColor.GREEN"          # print(_PrintColor.GREEN)
     assert actual_outs[2] == "color = _PrintColor.RED"   # ct.print(f"color = {_PrintColor.RED}")
     assert actual_outs[3] == "color = _PrintColor.RED"   # print(f"color = {_PrintColor.RED}")
+
+
+def test_ct_print_ordering():
+    actual_outs = _run_kernel(kernel_print_ordering, (8,), "int32", 8)
+
+    assert actual_outs[0] == "original: [[0, 1, 2, 3], [4, 5, 6, 7]]"
+    assert actual_outs[1] == "reduce over all axes: 28"
+    assert actual_outs[2] == "reduce over axis 1: [6, 22]"
+    assert actual_outs[3] == "reduce over axis 0 and keep dims: [[6], [22]]"
+
+    assert actual_outs[4] == "original: [[0, 1, 2, 3], [4, 5, 6, 7]]"
+    assert actual_outs[5] == "reduce over all axes: 28"
+    assert actual_outs[6] == "reduce over axis 1: [6, 22]"
+    assert actual_outs[7] == "reduce over axis 0 and keep dims: [[6], [22]]"
+
+    assert actual_outs[8] == "original: [[0, 1, 2, 3], [4, 5, 6, 7]]"
+    assert actual_outs[9] == "reduce over all axes: 28"
+    assert actual_outs[10] == "reduce over axis 1: [6, 22]"
+    assert actual_outs[11] == "reduce over axis 0 and keep dims: [[6], [22]]"
+
+    assert actual_outs[12] == "original: [[0, 1, 2, 3], [4, 5, 6, 7]]"
+    assert actual_outs[13] == "reduce over all axes: 28"
+    assert actual_outs[14] == "reduce over axis 1: [6, 22]"
+    assert actual_outs[15] == "reduce over axis 0 and keep dims: [[6], [22]]"
+
+    assert actual_outs[16] == "original: [[0, 1, 2, 3], [4, 5, 6, 7]]"
+    assert actual_outs[17] == "reduce over all axes: 28"
+    assert actual_outs[18] == "reduce over axis 1: [6, 22]"
+    assert actual_outs[19] == "reduce over axis 0 and keep dims: [[6], [22]]"
 
 
 if __name__ == "__main__":

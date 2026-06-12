@@ -2692,7 +2692,7 @@ def printf_impl(format: Var, args: Tuple[Var, ...]) -> None:
     format_str = require_constant_str(format)
     arg_types = tuple(require_tile_type(x) for x in args)
     parsed_format = PrintfValidator.parse_format(format_str, arg_types)
-    add_operation_variadic(TilePrintf, (), format=parsed_format, args=args)
+    add_operation_variadic(TilePrintf, (TokenTy(),), format=parsed_format, args=args)
 
 
 @impl(ct.print)

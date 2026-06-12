@@ -721,7 +721,10 @@ class IR2MLIR:
     def lower_printf(self, operation: ops.TilePrintf) -> Sequence[mlir.Value]:
         args = tuple(self.get_var(arg) for arg in operation.args)
         mlir.gpu.add_PrintfOp(format=operation.format, args=args)
-        return []
+        # printOp returns a token, which is only used in cutile token order pass,
+        # to match the number of return vars, we return a dummy value None
+        # that will not get used.
+        return [None]
 
     @lower_operation.register
     def lower_pointer_offset(

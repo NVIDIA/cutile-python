@@ -128,8 +128,12 @@ def _get_block_memory_effects(block: Block,
 
     def get_memory_effects(cur_op):
         effect = cur_op.memory_effect
-        if effect == MemoryEffect.NONE or isinstance(cur_op, TileAssert | TilePrintf):
+        if effect == MemoryEffect.NONE or isinstance(cur_op, TileAssert):
             return EMPTY_MEMORY_EFFECTS
+
+        if isinstance(cur_op, TilePrintf):
+
+            return MemoryEffects(OrderedDict([(ALIAS_UNIVERSE, effect)]), False)
 
         has_acquire_order = False
         if isinstance(cur_op, (TileAtomicCAS, TileAtomicRMW, TileAtomicRedView,
@@ -352,6 +356,23 @@ def _to_token_order_in_block(block: Block,
             new_end_branch_op = dataclasses.replace(op, outputs=tuple(op.outputs) + tokens)
             operations.append(new_end_branch_op)
 
+        elif isinstance(op, TilePrintf):
+            # Use ALIAS_UNIVERSE here to order print. This is a conservative solution that will use
+            # the existing boop/branch token plumbing to preserve token order. Doing so could order
+            # unrelated memory chains, which is acceptable for now.
+            alias_set = ALIAS_UNIVERSE
+            last_op_key = _last_op_key(alias_set)
+            last_store_key = _last_store_key(alias_set)
+
+            input_tok, maybe_input_tok_join_op = _get_input_token(last_op_key, op, token_map,
+                                                                  None, block.ctx)
+            if maybe_input_tok_join_op:
+                operations.append(maybe_input_tok_join_op)
+
+            [result_tok] = op.result_vars
+            token_map[last_op_key] = result_tok
+            token_map[last_store_key] = result_tok
+            operations.append(dataclasses.replace(op, token=input_tok))
         else:
             operations.append(op)
 
