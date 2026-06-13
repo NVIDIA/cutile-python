@@ -21,14 +21,14 @@ void* do_get_proc_address(cuGetProcAddress_v2_t getter,
     if (res != CUDA_SUCCESS) {
         raise(PyExc_RuntimeError,
               "Failed to load '%s' from the CUDA library: cuGetProcAddress_v2 returned %d",
-              static_cast<int>(res));
+              name, static_cast<int>(res));
         return nullptr;
     }
 
     if (!ret) {
         raise(PyExc_RuntimeError,
               "Function '%s' is not available in the CUDA library",
-              static_cast<int>(res));
+              name);
         return nullptr;
     }
 
