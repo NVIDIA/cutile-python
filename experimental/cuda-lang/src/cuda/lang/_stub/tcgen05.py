@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 from dataclasses import dataclass
-from enum import Enum, IntEnum
+from enum import IntEnum
 from typing import Any, Literal
 
 from .._datatype import uint32, uint64
@@ -11,16 +11,7 @@ from cuda.lang._execution import stub
 from .._enums import CTAGroup
 from .bits import set_bit32, set_bit64, set_bits32, set_bits64
 from .nvvm import P3, P6
-
-
-class Tcgen05LdStShape(Enum):
-    """Load/store shapes supported by tcgen05 tensor memory operations."""
-
-    SHAPE_16X64B = "16x64b"
-    SHAPE_16X128B = "16x128b"
-    SHAPE_16X256B = "16x256b"
-    SHAPE_32X32B = "32x32b"
-    SHAPE_16X32BX2 = "16x32bx2"
+from .._enums import Tcgen05MMAKind, Tcgen05MMACollectorOp, Tcgen05LdStShape
 
 
 @stub
@@ -276,8 +267,40 @@ class Tcgen05SharedMemoryDescriptor:
         return desc
 
 
+@stub
+def tcgen05_mma(
+    kind,
+    cta_group,
+    matrix_d,
+    matrix_a,
+    matrix_b,
+    idesc,
+    enable_input_d,
+    scale_input_d=None,
+    disable_output_lane=None,
+    collector_op=Tcgen05MMACollectorOp.DISCARD,
+    a_shift=None,
+) -> None:
+    """
+    Args:
+        kind (Tcgen05MMAKind):
+        cta_group (CTAGroup):
+        matrix_d (P6):
+        matrix_a (P6 | int64):
+        matrix_b (int64):
+        idesc (int32):
+        enable_input_d (bool):
+        scale_input_d (int32 | None):
+        disable_output_lane (vector | None):
+        collector_op (Tcgen05MMACollectorOp):
+        a_shift (bool | None):
+    """
+
+
 __all__ = (
     "CTAGroup",
+    "Tcgen05MMAKind",
+    "Tcgen05MMACollectorOp",
     "Tcgen05LdStShape",
     "Tcgen05InstructionDescriptor",
     "Tcgen05Mxf8f6f4InstructionDescriptor",
@@ -287,4 +310,5 @@ __all__ = (
     "tcgen05_dealloc",
     "tcgen05_commit",
     "tcgen05_ld",
+    "tcgen05_mma",
 )

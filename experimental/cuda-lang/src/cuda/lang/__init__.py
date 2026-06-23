@@ -96,6 +96,8 @@ from cuda.lang._stub.tensor_map import (
 
 from cuda.lang._stub.tcgen05 import (
     CTAGroup,
+    Tcgen05MMAKind,
+    Tcgen05MMACollectorOp,
     Tcgen05LdStShape,
     Tcgen05InstructionDescriptor,
     Tcgen05Mxf8f6f4InstructionDescriptor,
@@ -105,6 +107,7 @@ from cuda.lang._stub.tcgen05 import (
     tcgen05_dealloc,
     tcgen05_commit,
     tcgen05_ld,
+    tcgen05_mma,
 )
 
 from cuda.lang._stub.mbarrier import (
@@ -225,6 +228,8 @@ __all__ = (
     "TensorMap",
     "tensor_map_tiled",
     "CTAGroup",
+    "Tcgen05MMAKind",
+    "Tcgen05MMACollectorOp",
     "Tcgen05LdStShape",
     "Tcgen05InstructionDescriptor",
     "Tcgen05Mxf8f6f4InstructionDescriptor",
@@ -234,6 +239,7 @@ __all__ = (
     "tcgen05_dealloc",
     "tcgen05_commit",
     "tcgen05_ld",
+    "tcgen05_mma",
     "TMALoadMode",
     "TMAStoreMode",
     "nanosleep",

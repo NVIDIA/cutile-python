@@ -40,6 +40,33 @@ class TMAStoreMode(enum.Enum):
     TILE_SCATTER4 = 2
 
 
+class Tcgen05MMAKind(enum.Enum):
+    F16 = 0
+    TF32 = 1
+    F8F6F4 = 2
+    I8 = 3
+    MXF8F6F4 = 4
+    MXF4 = 5
+    MXF4NVF4 = 6
+
+
+class Tcgen05MMACollectorOp(enum.Enum):
+    DISCARD = 0
+    LASTUSE = 1
+    FILL = 2
+    USE = 3
+
+
+class Tcgen05LdStShape(enum.Enum):
+    """Load/store shapes supported by tcgen05 tensor memory operations."""
+
+    SHAPE_16X64B = "16x64b"
+    SHAPE_16X128B = "16x128b"
+    SHAPE_16X256B = "16x256b"
+    SHAPE_32X32B = "32x32b"
+    SHAPE_16X32BX2 = "16x32bx2"
+
+
 class CTAGroup(enum.Enum):
     """CTA group selection for tcgen05 tensor memory operations."""
 
@@ -54,4 +81,7 @@ __all__ = (
     "TMALoadMode",
     "TMAStoreMode",
     "CTAGroup",
+    "Tcgen05MMAKind",
+    "Tcgen05MMACollectorOp",
+    "Tcgen05LdStShape",
 )

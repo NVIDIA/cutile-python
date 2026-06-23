@@ -108,10 +108,14 @@ def require_scalar_type(var: Var,
     return ty
 
 
-def require_integral_scalar_type(var: Var):
+def require_integral_scalar_type(var: Var, /, bitwidth: int | None = None):
     ty = require_scalar_type(var)
     if not is_integral(ty.dtype):
         raise make_type_checking_error(f"Expected scalar integral but got {ty}", var)
+    if bitwidth is not None and ty.dtype.bitwidth != bitwidth:
+        raise make_type_checking_error(
+            f"Expected {bitwidth}-bit scalar integral but got {ty}", var
+        )
 
 
 def require_boolean_scalar_type(var: Var):

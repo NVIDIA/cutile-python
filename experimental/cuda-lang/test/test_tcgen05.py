@@ -159,3 +159,108 @@ def test_ld(log_ptx, shape, count, pack, offset):
             do_compile()
     else:
         do_compile()
+
+
+@pytest.mark.parametrize("kind", cl.Tcgen05MMAKind._member_map_.values())
+@pytest.mark.parametrize("cta_group", cl.CTAGroup._member_map_.values())
+@pytest.mark.parametrize("collector_op", cl.Tcgen05MMACollectorOp._member_map_.values())
+def test_mma_valid_enum_combinations(kind, cta_group, collector_op):
+    if kind in (
+        cl.Tcgen05MMAKind.I8,
+        cl.Tcgen05MMAKind.MXF8F6F4,
+        cl.Tcgen05MMAKind.MXF4,
+        cl.Tcgen05MMAKind.MXF4NVF4,
+    ):
+        pytest.skip("needs updated mlir bindings")
+
+    @cl.kernel
+    def kernel():
+        tmem_dtype = cl.pointer_dtype(cl.int8, cl.MemorySpace.TENSOR)
+        tmem_smem = cl.shared_array(1, tmem_dtype, alignment=4)
+        cl.tcgen05_mma(
+            kind,
+            cta_group,
+            tmem_smem[0],
+            cl.int64(0),
+            cl.int64(0),
+            cl.int32(0),
+            False,
+            collector_op=collector_op,
+        )
+
+    compiled = cl.compile_simt(kernel, [KernelSignature([])], log_ptx=True)
+    ptx = compiled.ptx
+    assert ptx is not None
+    assert "tcgen05.mma" in ptx, ptx
+
+
+@pytest.mark.parametrize("cta_group", cl.CTAGroup._member_map_.values())
+@pytest.mark.parametrize("scale_input_d", (None, 0, 15))
+@pytest.mark.parametrize("disable_output_lane", (False, True))
+def test_mma_optional_operands(cta_group, scale_input_d, disable_output_lane):
+
+    @cl.kernel
+    def kernel():
+        tmem_dtype = cl.pointer_dtype(cl.int8, cl.MemorySpace.TENSOR)
+        tmem_smem = cl.shared_array(1, tmem_dtype, alignment=4)
+        if disable_output_lane:
+            if cta_group == cl.CTAGroup.CTA_1:
+                disable_output_lane_value = cl.Vector(
+                    cl.int32(0), cl.int32(0), cl.int32(0), cl.int32(0)
+                )
+            else:
+                disable_output_lane_value = cl.Vector(
+                    cl.int32(0),
+                    cl.int32(0),
+                    cl.int32(0),
+                    cl.int32(0),
+                    cl.int32(0),
+                    cl.int32(0),
+                    cl.int32(0),
+                    cl.int32(0),
+                )
+        else:
+            disable_output_lane_value = None
+
+        cl.tcgen05_mma(
+            cl.Tcgen05MMAKind.F16,
+            cta_group,
+            tmem_smem[0],
+            cl.int64(0),
+            cl.int64(0),
+            cl.int32(0),
+            False,
+            collector_op=cl.Tcgen05MMACollectorOp.DISCARD,
+            disable_output_lane=disable_output_lane_value,
+            scale_input_d=cl.int64(scale_input_d)
+            if scale_input_d is not None
+            else None,
+        )
+
+    compiled = cl.compile_simt(kernel, [KernelSignature([])], log_ptx=True)
+    ptx = compiled.ptx
+    assert ptx is not None
+    assert "tcgen05.mma" in ptx, ptx
+
+
+def test_mma_matrix_a_validation():
+    @cl.kernel
+    def kernel():
+        tmem_dtype = cl.pointer_dtype(cl.int8, cl.MemorySpace.TENSOR)
+        tmem_smem = cl.shared_array(1, tmem_dtype, alignment=4)
+        cl.tcgen05_mma(
+            cl.Tcgen05MMAKind.F16,
+            cl.CTAGroup.CTA_1,
+            tmem_smem[0],
+            cl.int32(0),  # wrong type!
+            cl.int64(0),
+            cl.int32(0),
+            False,
+        )
+
+    match = (
+        "Expected a tensor memory pointer or a shared memory descriptor "
+        "encoded as a 64 bit integer but got int32"
+    )
+    with pytest.raises(TileTypeError, match=match):
+        cl.compile_simt(kernel, [KernelSignature([])], log_ptx=True)
