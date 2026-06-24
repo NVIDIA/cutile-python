@@ -19,7 +19,6 @@ import inspect
 import threading
 from dataclasses import dataclass
 from textwrap import indent
-from types import CodeType
 from typing import Any, Set, Callable
 
 from cuda.tile._exception import Loc, FunctionDesc
@@ -191,10 +190,6 @@ class Function:
     # Sequence of enclosing function definitions, outermost first.
     # Empty when this is a top-level function.
     enclosing_funcs: "tuple[Function, ...]"
-
-    # Code object compiled for evaluation inside static_eval context.
-    # Only set for nested functions & lambdas.
-    code_object: CodeType | None
 
     def __repr__(self):
         return f"<HIR for function {self.desc}>"

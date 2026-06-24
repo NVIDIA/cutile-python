@@ -7,6 +7,23 @@ import torch
 import cuda.tile as ct
 
 
+int_alias = int
+
+
+def test_nested_function_with_annotation():
+    @ct.kernel
+    def kernel(x):
+        def foo(t: int_alias) -> int_alias:
+            return t + 20
+        val = ct.gather(x, ())
+        val2 = foo(val)
+        ct.scatter(x, (), val2)
+
+    x = torch.ones((), dtype=torch.int32, device="cuda")
+    ct.launch(torch.cuda.current_stream(), (1,), kernel, (x,))
+    assert x.item() == 21
+
+
 def test_pure_nested_function():
     @ct.kernel
     def kernel(x):

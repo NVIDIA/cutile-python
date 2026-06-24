@@ -147,7 +147,6 @@ def _get_function_hir_inner(func_def: ast.FunctionDef | ast.Lambda, signature: i
         nested_functions=tuple(ctx.nested_functions),
         captures_by_depth=(),  # to be filled later
         enclosing_funcs=(),  # to be filled later
-        code_object=None,  # to be maybe filled later
     )
 
 
@@ -1101,44 +1100,9 @@ def _make_closure(node: ast.FunctionDef | ast.Lambda, ctx: _Context) -> hir.Valu
                        own_locals=new_locals)
 
     func_hir = _get_function_hir_inner(node, signature, new_ctx)
-    func_hir.code_object = (_compile_lambda(node, ctx.filename) if isinstance(node, ast.Lambda)
-                            else _compile_nested_function_def(node, ctx.filename)).__code__
 
     ctx.nested_functions.append(func_hir)
     return ctx.call(hir_stubs.make_closure, (func_hir, *default_values))
-
-
-def _compile_lambda(node: ast.Lambda, filename: str):
-    node = ast.Lambda(args=_flatten_parameters(node.args), body=node.body,
-                      lineno=node.lineno, col_offset=node.col_offset,
-                      end_lineno=node.end_lineno, end_col_offset=node.end_col_offset)
-    container = ast.Expression(node)
-    code = compile(container, filename, "eval")
-    return eval(code, {}, {})
-
-
-def _compile_nested_function_def(node: ast.FunctionDef, filename: str):
-    node = ast.FunctionDef(name=node.name, args=_flatten_parameters(node.args),
-                           body=node.body, decorator_list=[],
-                           returns=None, type_comment=None,
-                           lineno=node.lineno, col_offset=node.col_offset,
-                           end_lineno=node.end_lineno, end_col_offset=node.end_col_offset)
-    container = ast.Module(body=[node], type_ignores=[])
-    code = compile(container, filename, "exec")
-    locals_dict = {}
-    exec(code, {}, locals_dict)
-    return locals_dict[node.name]
-
-
-def _flatten_parameters(args: ast.arguments) -> ast.arguments:
-    all_args = args.posonlyargs + args.args
-    if args.vararg is not None:
-        all_args.append(args.vararg)
-    all_args += args.kwonlyargs
-    if args.kwarg is not None:
-        all_args.append(args.kwarg)
-    return ast.arguments(posonlyargs=[], args=all_args, vararg=None, kwonlyargs=[], kw_defaults=[],
-                         kwarg=None, defaults=[])
 
 
 @_register(_stmt_handlers, ast.FunctionDef)
