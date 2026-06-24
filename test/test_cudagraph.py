@@ -7,6 +7,17 @@ import torch
 import pytest
 
 
+class DlpackProxy:
+    def __init__(self, tensor):
+        self.tensor = tensor
+
+    def __dlpack__(self, stream=None):
+        return self.tensor.__dlpack__(stream=stream)
+
+    def __dlpack_device__(self):
+        return self.tensor.__dlpack_device__()
+
+
 @ct.kernel
 def add_one(x):
     xi = ct.load(x, 0, ())
@@ -25,6 +36,20 @@ def test_simple():
     for _ in range(10):
         graph.replay()
     assert x.item() == 10
+
+
+def test_proxy_dlpack_unsupported():
+    x = torch.zeros(1, device='cuda')
+    with pytest.raises(RuntimeError, match=r"__dlpack__ array arguments aren't supported yet"):
+        ct.launch(torch.cuda.current_stream(), (1,), add_one, (DlpackProxy(x),))
+
+
+def test_proxy_dlpack_cudagraph_unsupported():
+    x = torch.zeros(1, device='cuda')
+    graph = torch.cuda.CUDAGraph()
+    with pytest.raises(RuntimeError, match=r"__dlpack__ array arguments aren't supported yet"):
+        with torch.cuda.graph(graph):
+            ct.launch(torch.cuda.current_stream(), (1,), add_one, (DlpackProxy(x),))
 
 
 @ct.kernel
