@@ -74,6 +74,11 @@ class CTAGroup(enum.Enum):
     CTA_2 = "cg2"
 
 
+class Tcgen05WaitKind(enum.Enum):
+    LOAD = 0
+    STORE = 1
+
+
 __all__ = (
     "MemorySpace",
     "TensorMapSwizzle",
@@ -84,4 +89,5 @@ __all__ = (
     "Tcgen05MMAKind",
     "Tcgen05MMACollectorOp",
     "Tcgen05LdStShape",
+    "Tcgen05WaitKind",
 )

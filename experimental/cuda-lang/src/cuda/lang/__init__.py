@@ -96,6 +96,7 @@ from cuda.lang._stub.tensor_map import (
 
 from cuda.lang._stub.tcgen05 import (
     CTAGroup,
+    Tcgen05WaitKind,
     Tcgen05MMAKind,
     Tcgen05MMACollectorOp,
     Tcgen05LdStShape,
@@ -108,6 +109,9 @@ from cuda.lang._stub.tcgen05 import (
     tcgen05_commit,
     tcgen05_ld,
     tcgen05_mma,
+    tcgen05_wait,
+    tcgen05_shift_down,
+    tcgen05_relinquish_allocation_permit,
 )
 
 from cuda.lang._stub.mbarrier import (
@@ -229,6 +233,7 @@ __all__ = (
     "tensor_map_tiled",
     "CTAGroup",
     "Tcgen05MMAKind",
+    "Tcgen05WaitKind",
     "Tcgen05MMACollectorOp",
     "Tcgen05LdStShape",
     "Tcgen05InstructionDescriptor",
@@ -240,6 +245,9 @@ __all__ = (
     "tcgen05_commit",
     "tcgen05_ld",
     "tcgen05_mma",
+    "tcgen05_wait",
+    "tcgen05_shift_down",
+    "tcgen05_relinquish_allocation_permit",
     "TMALoadMode",
     "TMAStoreMode",
     "nanosleep",

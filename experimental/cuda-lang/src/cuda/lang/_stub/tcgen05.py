@@ -7,11 +7,52 @@ from enum import IntEnum
 from typing import Any, Literal
 
 from .._datatype import uint32, uint64
-from cuda.lang._execution import stub
+from cuda.lang._execution import stub, function
 from .._enums import CTAGroup
 from .bits import set_bit32, set_bit64, set_bits32, set_bits64
 from .nvvm import P3, P6
-from .._enums import Tcgen05MMAKind, Tcgen05MMACollectorOp, Tcgen05LdStShape
+from . import nvvm as _nvvm
+from .._enums import (
+    Tcgen05MMAKind,
+    Tcgen05MMACollectorOp,
+    Tcgen05LdStShape,
+    Tcgen05WaitKind,
+)
+from cuda.tile import static_assert
+
+
+@function
+def tcgen05_wait(for_operation_kind: Tcgen05WaitKind) -> None:
+    static_assert(for_operation_kind in (Tcgen05WaitKind.LOAD, Tcgen05WaitKind.STORE))
+    if for_operation_kind == Tcgen05WaitKind.LOAD:
+        _nvvm.tcgen05_wait_ld()
+    else:
+        _nvvm.tcgen05_wait_st()
+
+
+@function
+def tcgen05_relinquish_allocation_permit(group: CTAGroup = CTAGroup.CTA_1) -> None:
+    static_assert(group in (CTAGroup.CTA_1, CTAGroup.CTA_2))
+    if group == CTAGroup.CTA_1:
+        _nvvm.tcgen05_relinq_alloc_permit_cg1()
+    else:
+        _nvvm.tcgen05_relinq_alloc_permit_cg2()
+
+
+@function
+def tcgen05_shift_down(address, group: CTAGroup = CTAGroup.CTA_1) -> None:
+    """
+    Asynchronously shift down the rows of the matrix in the Tensor Memory for a warp.
+
+    Args:
+        address: pointer in address space 6
+        group: cta group 1 or 2
+    """
+    static_assert(group in (CTAGroup.CTA_1, CTAGroup.CTA_2))
+    if group == CTAGroup.CTA_1:
+        _nvvm.tcgen05_shift_down_cg1(address)
+    else:
+        _nvvm.tcgen05_shift_down_cg2(address)
 
 
 @stub
@@ -300,6 +341,7 @@ def tcgen05_mma(
 __all__ = (
     "CTAGroup",
     "Tcgen05MMAKind",
+    "Tcgen05WaitKind",
     "Tcgen05MMACollectorOp",
     "Tcgen05LdStShape",
     "Tcgen05InstructionDescriptor",
@@ -311,4 +353,7 @@ __all__ = (
     "tcgen05_commit",
     "tcgen05_ld",
     "tcgen05_mma",
+    "tcgen05_wait",
+    "tcgen05_shift_down",
+    "tcgen05_relinquish_allocation_permit",
 )

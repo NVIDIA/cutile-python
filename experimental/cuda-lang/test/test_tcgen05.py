@@ -7,6 +7,7 @@ import pytest
 import cuda.lang as cl
 from cuda.lang._compile import KernelSignature, get_compute_capability
 from cuda.lang._exception import TileTypeError, TileValueError
+from test.util import make_symbolic_tensor
 
 
 cc = get_compute_capability()
@@ -264,3 +265,125 @@ def test_mma_matrix_a_validation():
     )
     with pytest.raises(TileTypeError, match=match):
         cl.compile_simt(kernel, [KernelSignature([])], log_ptx=True)
+
+
+@pytest.mark.parametrize(
+    "kind,expect",
+    (
+        (cl.Tcgen05WaitKind.LOAD, "tcgen05.wait::ld.sync.aligned"),
+        (cl.Tcgen05WaitKind.STORE, "tcgen05.wait::st.sync.aligned"),
+    ),
+)
+def test_wait(kind, expect):
+    @cl.kernel
+    def kernel():
+        cl.tcgen05_wait(kind)
+
+    compiled = cl.compile_simt(kernel, [KernelSignature([])], log_ptx=True)
+    assert expect in compiled.ptx, compiled.ptx
+
+
+def test_wait_bad_kind():
+    @cl.kernel
+    def kernel():
+        cl.tcgen05_wait(0xDEADBEEF)
+
+    with pytest.raises(Exception):
+        cl.compile_simt(kernel, [KernelSignature([])], log_ptx=True)
+
+
+@pytest.mark.parametrize(
+    "group,expect",
+    (
+        (
+            cl.CTAGroup.CTA_1,
+            "tcgen05.relinquish_alloc_permit.cta_group::1.sync.aligned",
+        ),
+        (
+            cl.CTAGroup.CTA_2,
+            "tcgen05.relinquish_alloc_permit.cta_group::2.sync.aligned",
+        ),
+    ),
+)
+def test_relinquish(group, expect):
+    @cl.kernel
+    def kernel():
+        cl.tcgen05_relinquish_allocation_permit(group)
+
+    compiled = cl.compile_simt(kernel, [KernelSignature([])], log_ptx=True)
+    assert expect in compiled.ptx, compiled.ptx
+
+
+def test_relinquish_bad_group():
+    @cl.kernel
+    def kernel():
+        cl.tcgen05_relinquish_allocation_permit(0xDEADBEEF)
+
+    with pytest.raises(Exception):
+        cl.compile_simt(kernel, [KernelSignature([])], log_ptx=True)
+
+
+@pytest.mark.parametrize(
+    "group,expect",
+    (
+        (cl.CTAGroup.CTA_1, "tcgen05.shift.cta_group::1.down"),
+        (cl.CTAGroup.CTA_2, "tcgen05.shift.cta_group::2.down"),
+    ),
+)
+def test_shift(group, expect):
+    @cl.kernel
+    def kernel():
+        tmem_dtype = cl.pointer_dtype(cl.int8, cl.MemorySpace.TENSOR)
+        tmem_smem = cl.shared_array(1, tmem_dtype, alignment=4)
+        cl.tcgen05_shift_down(tmem_smem[0], group)
+
+    compiled = cl.compile_simt(kernel, [KernelSignature([])], log_ptx=True)
+    assert expect in compiled.ptx, compiled.ptx
+
+
+def test_shift_bad_group():
+    @cl.kernel
+    def kernel():
+        tmem_dtype = cl.pointer_dtype(cl.int8, cl.MemorySpace.TENSOR)
+        tmem_smem = cl.shared_array(1, tmem_dtype, alignment=4)
+        cl.tcgen05_shift_down(tmem_smem[0], 0xDEADBEEF)
+
+    with pytest.raises(Exception):
+        cl.compile_simt(kernel, [KernelSignature([])], log_ptx=True)
+
+
+def test_shift_bad_address_space(subtests):
+    with subtests.test("shared"):
+
+        @cl.kernel
+        def kernel():
+            ptr = cl.shared_array(1, cl.int8).get_base_pointer()
+            cl.tcgen05_shift_down(ptr, 0xDEADBEEF)
+
+        with pytest.raises(Exception):
+            cl.compile_simt(kernel, [KernelSignature([])], log_ptx=True)
+
+    with subtests.test("local"):
+
+        @cl.kernel
+        def kernel():
+            with cl.local_array(1, cl.int8) as arr:
+                ptr = arr.get_base_pointer()
+                cl.tcgen05_shift_down(ptr, 0xDEADBEEF)
+
+        with pytest.raises(Exception):
+            cl.compile_simt(kernel, [KernelSignature([])], log_ptx=True)
+
+    with subtests.test("global"):
+
+        @cl.kernel
+        def kernel(arr):
+            ptr = arr.get_base_pointer()
+            cl.tcgen05_shift_down(ptr, 0xDEADBEEF)
+
+        with pytest.raises(Exception):
+            cl.compile_simt(
+                kernel,
+                [KernelSignature([make_symbolic_tensor(1, cl.int8)])],
+                log_ptx=True,
+            )
