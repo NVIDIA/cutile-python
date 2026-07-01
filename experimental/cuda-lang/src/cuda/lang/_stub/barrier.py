@@ -33,6 +33,16 @@ def barrier_sync_block(
     *,
     aligned: bool = True,
 ) -> None:
+    """
+    Args:
+        number_of_threads: Specifies the number of threads participating in the
+           barrier. When specified, the value must be a multiple of the warp size.
+           If not specified, all threads in the CTA participate in the barrier.
+        barrier_id: Specifies a logical barrier resource with value 0 through
+            15. Each CTA instance has sixteen barriers numbered 0..15.
+        aligned: Requires every thread in the block to reach this same barrier
+             instruction, otherwise the behavior is undefined.
+    """
     _require_constant_bool(aligned)
     if number_of_threads is None:
         if aligned:
@@ -53,6 +63,16 @@ def barrier_arrive_block(
     *,
     aligned: bool = True,
 ) -> None:
+    """
+    Args:
+        number_of_threads: Specifies the number of threads participating in the
+           barrier. When specified, the value must be a multiple of the warp size.
+           If not specified, all threads in the CTA participate in the barrier.
+        barrier_id: Specifies a logical barrier resource with value 0 through
+            15. Each CTA instance has sixteen barriers numbered 0..15.
+        aligned: Requires every thread in the block to reach this same barrier
+             instruction, otherwise the behavior is undefined.
+    """
     _require_constant_bool(aligned)
     if aligned:
         _nvvm.barrier_cta_arrive_aligned_count(barrier_id, number_of_threads)
@@ -68,10 +88,21 @@ def barrier_reduce_block(
     barrier_id: int = 0,
     *,
     aligned: bool = True,
-) -> int | bool: ...
+) -> int | bool:
+    """
+    Args:
+        op: The operation used to perform the reduction
+        predicate: The per-thread predicate fed into the reduction.
+        number_of_threads: Specifies the number of threads participating in the
+           barrier. When specified, the value must be a multiple of the warp size.
+           If not specified, all threads in the CTA participate in the barrier.
+        barrier_id: Specifies a logical barrier resource with value 0 through
+            15. Each CTA instance has sixteen barriers numbered 0..15.
+        aligned: Requires every thread in the block to reach this same barrier
+             instruction, otherwise the behavior is undefined.
+    """
 
 
-@function
 def barrier_arrive_cluster(
     *,
     aligned: bool = True,
@@ -79,6 +110,12 @@ def barrier_arrive_cluster(
         MemoryOrder.RELEASE, MemoryOrder.RELAXED
     ] = MemoryOrder.RELEASE,
 ) -> None:
+    """
+    Args:
+        aligned: Requires every thread in the block to reach this same barrier
+            instruction, otherwise the behavior is undefined.
+        memory_order:
+    """
     _require_constant_bool(aligned)
     _require_constant_enum(memory_order, MemoryOrder)
     if memory_order == MemoryOrder.RELAXED:
@@ -95,6 +132,11 @@ def barrier_arrive_cluster(
 
 @function
 def barrier_wait_cluster(*, aligned: bool = True) -> None:
+    """
+    Args:
+        aligned: Requires every thread in the block to reach this same barrier
+            instruction, otherwise the behavior is undefined.
+    """
     _require_constant_bool(aligned)
     if aligned:
         _nvvm.barrier_cluster_wait_aligned()
@@ -104,15 +146,20 @@ def barrier_wait_cluster(*, aligned: bool = True) -> None:
 
 @function
 def barrier_sync_cluster(*, aligned: bool = True) -> None:
+    """
+    Args:
+        aligned: Requires every thread in the block to reach this same barrier
+            instruction, otherwise the behavior is undefined.
+    """
     barrier_arrive_cluster(aligned=aligned)
     barrier_wait_cluster(aligned=aligned)
 
 
 @function
 def barrier_sync_warp(mask: int = FULL_MASK) -> None:
-    '''
+    """
     Synchronize warp lanes selected by ``mask``.
-    '''
+    """
     _nvvm.bar_warp_sync(mask)
 
 
