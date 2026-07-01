@@ -19,7 +19,7 @@ from .util import (
 
 
 def test_arch_specific_kernel_failure():
-    @cl.kernel(arch='compute_80', gpu_name='sm_80')
+    @cl.kernel(arch="compute_80", gpu_name="sm_80")
     def kernel():
         cl.elect_sync()
 
@@ -167,7 +167,7 @@ def test_invalid_cluster_config():
     with pytest.raises(
         ValueError,
         match="Keyword argument preferred_block_in_cluster_count"
-              " requires that block_in_cluster_count is also passed",
+        " requires that block_in_cluster_count is also passed",
     ):
         cl.launch(
             torch.cuda.current_stream(),
@@ -237,7 +237,11 @@ def test_thread_count():
     def kernel(out):
         tidx = cl.thread_index(0)
         if tidx == 0:
-            out[0], out[1], out[2] = cl.thread_count(0), cl.thread_count(1), cl.thread_count(2)
+            out[0], out[1], out[2] = (
+                cl.thread_count(0),
+                cl.thread_count(1),
+                cl.thread_count(2),
+            )
 
     out = torch.zeros(3, dtype=torch.int32, device="cuda")
     cl.launch(torch.cuda.current_stream(), (1,), (4, 3, 2), kernel, (out,))
@@ -249,7 +253,11 @@ def test_grid_dim():
     def kernel(out):
         tidx = cl.thread_index(0)
         if tidx == 0:
-            out[0], out[1], out[2] = cl.block_count(0), cl.block_count(1), cl.block_count(2)
+            out[0], out[1], out[2] = (
+                cl.block_count(0),
+                cl.block_count(1),
+                cl.block_count(2),
+            )
 
     out = torch.zeros(3, dtype=torch.int32, device="cuda")
     cl.launch(torch.cuda.current_stream(), (5, 6, 7), (1,), kernel, (out,))
@@ -263,13 +271,14 @@ def test_elect_sync(capsys):
         tx, ty, tz = cl.thread_index(0), cl.thread_index(1), cl.thread_index(2)
         if cl.elect_sync():
             out[tx, ty, tz] = 1
+
     out = torch.zeros(3, 3, 3, dtype=torch.int32).cuda()
     cl.launch(torch.cuda.current_stream(), (1,), (3, 3, 3), kernel, (out,))
     assert sum(out.cpu().ravel().tolist()) == 1
 
 
 def test_lane_count_full_mask_and_ptx_comment(log_ptx):
-    ptx_comment = 'FOOBARBAZ'
+    ptx_comment = "FOOBARBAZ"
 
     @cl.kernel
     def kernel(out):
@@ -287,6 +296,31 @@ def test_lane_count_full_mask_and_ptx_comment(log_ptx):
     out = torch.zeros(2, dtype=torch.int32, device="cuda")
     cl.launch(torch.cuda.current_stream(), (1,), (32,), kernel, (out,))
     assert (out.cpu() == torch.tensor([32, 7], dtype=torch.int32)).all()
+
+
+def test_full_mask_is_unsigned():
+    @cl.kernel
+    def kernel(out):
+        out[0] = cl.uint64(cl.full_mask())
+        out[1] = cl.uint64(cl.int32(0xFFFFFFFF))
+
+    out = torch.zeros(2, dtype=torch.uint64, device="cuda")
+    cl.launch(torch.cuda.current_stream(), (1,), (1,), kernel, (out,))
+    expect = [
+        0xFFFFFFFF,
+        0xFFFFFFFFFFFFFFFF,
+    ]
+    assert out.cpu().tolist() == expect
+
+
+def test_full_mask_i32_shift():
+    @cl.kernel
+    def kernel(out):
+        out[0] = cl.full_mask() >> cl.int64(32)
+
+    out = torch.zeros(1, dtype=torch.int64, device="cuda")
+    cl.launch(torch.cuda.current_stream(), (1,), (1,), kernel, (out,))
+    assert out.cpu().item() == (cl.full_mask() >> 32)
 
 
 def test_lane_index():
@@ -314,7 +348,7 @@ def test_warp_index():
 
 
 def test_saxpy():
-    '''
+    """
     Taken from https://developer.nvidia.com/blog/six-ways-saxpy/
 
     __global__
@@ -323,7 +357,7 @@ def test_saxpy():
         int i = blockIdx.x*blockDim.x + threadIdx.x;
         if (i < n) y[i] = a*x[i] + y[i];
     }
-    '''
+    """
 
     @cl.kernel
     def kernel(N: cl.Constant[int], a: cl.Constant[float], X, Y):
@@ -344,16 +378,17 @@ def test_saxpy():
 
 
 class TestSyncwarp:
-    '''
+    """
     _CUDA C++ Programming Guide 10.6 Synchronization Functions_ describes
     these functions and _20.6.2. Independent Thread Scheduling_ has example programs
     using them. These tests are based on those examples.
-    '''
+    """
 
     def test_syncwarp(self):
         """
         __syncwarp(mask) waits until all named lanes execute the same warp barrier.
         """
+
         @cl.kernel
         def kernel(out):
             shmem = cl.shared_array(shape=(32,), dtype=cl.int32)
@@ -430,8 +465,25 @@ class TestSyncwarp:
         out = torch.zeros(32, dtype=torch.int32, device="cuda")
         cl.launch(torch.cuda.current_stream(), (1,), (32,), kernel, (out,))
         expected = torch.tensor(
-            [101, 100, 103, 102, 105, 104, 107, 106,
-             109, 108, 111, 110, 113, 112, 115, 114] + [-1] * 16,
+            [
+                101,
+                100,
+                103,
+                102,
+                105,
+                104,
+                107,
+                106,
+                109,
+                108,
+                111,
+                110,
+                113,
+                112,
+                115,
+                114,
+            ]
+            + [-1] * 16,
             dtype=torch.int32,
         )
         assert (out.cpu() == expected).all()
@@ -554,8 +606,8 @@ class TestBarrierSync:
         out = torch.zeros(32, dtype=torch.int32, device="cuda")
         cl.launch(torch.cuda.current_stream(), (1,), (32,), kernel, (out,))
         expected = torch.tensor(
-            [2 * (lane + 16) for lane in range(16)] +
-            [2 * (lane - 16) for lane in range(16, 32)],
+            [2 * (lane + 16) for lane in range(16)]
+            + [2 * (lane - 16) for lane in range(16, 32)],
             dtype=torch.int32,
         )
         assert (out.cpu() == expected).all()
@@ -576,10 +628,41 @@ class TestBarrierSync:
         out = torch.zeros(64, dtype=torch.int32, device="cuda")
         cl.launch(torch.cuda.current_stream(), (1,), (64,), kernel, (out,))
         expected = torch.tensor(
-            [101, 100, 103, 102, 105, 104, 107, 106,
-             109, 108, 111, 110, 113, 112, 115, 114,
-             117, 116, 119, 118, 121, 120, 123, 122,
-             125, 124, 127, 126, 129, 128, 131, 130] + [-1] * 32,
+            [
+                101,
+                100,
+                103,
+                102,
+                105,
+                104,
+                107,
+                106,
+                109,
+                108,
+                111,
+                110,
+                113,
+                112,
+                115,
+                114,
+                117,
+                116,
+                119,
+                118,
+                121,
+                120,
+                123,
+                122,
+                125,
+                124,
+                127,
+                126,
+                129,
+                128,
+                131,
+                130,
+            ]
+            + [-1] * 32,
             dtype=torch.int32,
         )
         assert (out.cpu() == expected).all()

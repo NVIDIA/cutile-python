@@ -125,10 +125,10 @@ def dtype_of(value, /) -> DType:
 FULL_MASK = 0xFFFFFFFF
 
 
-@function
-def full_mask() -> int32:
+@function(host=True)
+def full_mask() -> int:
     """Return a warp mask with all lanes selected."""
-    return int32(FULL_MASK)
+    return FULL_MASK
 
 
 @stub
