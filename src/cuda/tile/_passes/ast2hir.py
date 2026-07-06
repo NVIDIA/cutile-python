@@ -8,7 +8,7 @@ import itertools
 import operator
 from contextlib import contextmanager
 from enum import Enum, auto
-from functools import lru_cache
+from functools import lru_cache, cache
 from typing import List, NamedTuple, Sequence, Optional, Any, Dict, Type, Callable, Mapping
 
 from cuda.tile import _datatype as datatype
@@ -424,21 +424,34 @@ def _parse_keyword_like_func(expr: ast.expr, ctx: _Context) -> str | None:
             idx = _KEYWORD_LIKE_FUNCS.index(ctx.frozen_globals.get(expr.id))
             return _KEYWORD_LIKE_FUNC_NAMES[idx]
     elif isinstance(expr, ast.Attribute):
-        if expr.attr in _KEYWORD_LIKE_FUNC_NAMES and _is_cuda_tile_module(expr.value, ctx):
+        if expr.attr in _KEYWORD_LIKE_FUNC_NAMES and _is_cuda_tile_or_lang_module(expr.value, ctx):
             return expr.attr
     return None
 
 
-def _is_cuda_tile_module(value: ast.expr, ctx: _Context) -> bool:
+def _is_cuda_tile_or_lang_module(value: ast.expr, ctx: _Context) -> bool:
     if isinstance(value, ast.Name):
         if value.id in ctx.local_names:
             return False
         import cuda.tile
-        return ctx.frozen_globals.get(value.id) is cuda.tile
+        global_val = ctx.frozen_globals.get(value.id)
+        if global_val is cuda.tile:
+            return True
+        cuda_lang_module = _try_get_cuda_lang_module()
+        return cuda_lang_module is not None and global_val is cuda_lang_module
     elif isinstance(value, ast.Attribute):
-        return value.attr == "tile" and _is_cuda_module(value.value, ctx)
+        return value.attr in ("tile", "lang") and _is_cuda_module(value.value, ctx)
     else:
         return False
+
+
+@cache
+def _try_get_cuda_lang_module():
+    try:
+        import cuda.lang
+    except ImportError:
+        return None
+    return cuda.lang
 
 
 def _is_cuda_module(value: ast.expr, ctx: _Context) -> bool:

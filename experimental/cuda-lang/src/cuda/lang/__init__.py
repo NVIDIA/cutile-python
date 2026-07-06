@@ -130,6 +130,9 @@ from ._stub.core_api import (
 from cuda.tile._stub import (
     Constant,
     cdiv,
+    static_eval,
+    static_assert,
+    static_iter
 )
 
 from cuda.lang._stub import libdevice as _libdevice  # noqa: F401
@@ -408,4 +411,7 @@ __all__ = (
     "maximum",
     "minimum",
     "assert_",
+    "static_assert",
+    "static_eval",
+    "static_iter",
 )
