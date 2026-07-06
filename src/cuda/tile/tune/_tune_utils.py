@@ -30,8 +30,6 @@ class TileLaunchTimeoutError(RuntimeError):
 _WORKER_BENCHMARK = "BENCHMARK"
 _WORKER_STOP = "STOP"
 _WORKER_START_TIMEOUT_SEC = 5.0
-_DISABLE_SUBPROCESS_ENV_NAME = "CUDA_TILE_BENCHMARK_DISABLE_SUBPROCESS"
-_DISABLE_SUBPROCESS_ENV_TRUE_VALUES = {"true", "1", "t", "yes", "y", "on"}
 
 
 @dataclass
@@ -211,25 +209,13 @@ def _benchmark_worker_main(conn):
             conn.send((task_id, True, elapsed_us, None))
 
 
-def _benchmark_subprocess_disabled() -> bool:
-    value = os.environ.get(_DISABLE_SUBPROCESS_ENV_NAME, "false").lower()
-    return value in _DISABLE_SUBPROCESS_ENV_TRUE_VALUES
-
-
 def benchmark_with_timeout(
-        stream, grid, kernel, pyargs, dynamic_launch_timeout_sec: float,
-        inactive_runner_timeout_sec: float) -> tuple[float, float | None]:
-    if _benchmark_subprocess_disabled():
-        return _benchmark(stream, grid, kernel, pyargs), None
-
+        stream, grid, kernel, pyargs,
+        timeout_sec: float) -> tuple[float, float | None]:
     serialized_payload = _export_ipc_benchmark_payload(stream, grid, kernel, pyargs)
     if serialized_payload is None:
         return _benchmark(stream, grid, kernel, pyargs), None
 
     with _timed_benchmark_lock:
         runner = _get_timed_benchmark_runner()
-
-        # Use default timeout for inactive runner, since first run is expected to be slower.
-        timeout_sec = (dynamic_launch_timeout_sec if runner.is_running()
-                       else inactive_runner_timeout_sec)
         return runner.run(serialized_payload, timeout_sec)

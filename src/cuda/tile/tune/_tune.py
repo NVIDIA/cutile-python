@@ -136,7 +136,8 @@ def exhaustive_search(
     args_fn: Callable[[T], tuple[Any, ...]],
     hints_fn: Callable[[T], dict[str, Any]] | None = None,
     *,
-    quiet: bool = False
+    quiet: bool = False,
+    single_run_timeout_sec: float | None = None,
 ) -> TuningResult[T]:
     """Searches the entire search space and return the best configuration.
 
@@ -148,6 +149,10 @@ def exhaustive_search(
         args_fn: Maps a config to kernel arguments for timing.
         hints_fn: Maps a config to compiler hints. Default: no hints.
         quiet: If true, avoid printing any progress or result.
+        single_run_timeout_sec: Wall-time timeout (in seconds) per kernel launch,
+            enforced by running benchmarks in a subprocess. When None (the
+            default), timeouts are disabled and kernels run directly without a
+            subprocess.
 
 
     Returns:
@@ -230,8 +235,6 @@ def exhaustive_search(
 
     total = len(search_space)
     isatty = _in_terminal()
-    dynamic_launch_timeout_sec = _MAX_DYNAMIC_LAUNCH_TIMEOUT_SEC
-    slowest_wall_time_sec = _MIN_DYNAMIC_LAUNCH_TIMEOUT_SEC / 2
 
     if total == 0:
         raise ValueError("Search space is empty.")
@@ -258,15 +261,8 @@ def exhaustive_search(
         )
 
         try:
-            wall_time_sec = candidate.warmup(
-                stream, _WARM_UP_REPEATS, dynamic_launch_timeout_sec)
+            candidate.warmup(stream, _WARM_UP_REPEATS, single_run_timeout_sec)
             candidate.run_benchmark(stream, _BATCH_REPEATS)
-            if wall_time_sec is not None:
-                # Update dynamic launch timeout to 2x of the slowest successful launch
-                # wall time, capped at _MAX_DYNAMIC_LAUNCH_TIMEOUT_SEC.
-                slowest_wall_time_sec = max(slowest_wall_time_sec, wall_time_sec)
-                dynamic_launch_timeout_sec = min(
-                    slowest_wall_time_sec * 2, _MAX_DYNAMIC_LAUNCH_TIMEOUT_SEC)
         except Exception as e:
             errors.append((cfg, type(e).__name__, str(e)))
             continue
@@ -336,8 +332,6 @@ def exhaustive_search(
     return result
 
 
-_MAX_DYNAMIC_LAUNCH_TIMEOUT_SEC = 5.0
-_MIN_DYNAMIC_LAUNCH_TIMEOUT_SEC = 1.0
 _MAX_MEASURE_TIME_US = 5_000_000  # 5s
 _MAX_REPEATS = 1000
 _MIN_REPEATS = 5
@@ -357,16 +351,16 @@ class _TimingCandidate(Generic[T]):
     m2: float = 0.0
     error_margin_us: float = 0.0
 
-    def warmup(self, stream, num_times, launch_timeout_sec) -> float | None:
+    def warmup(self, stream, num_times, launch_timeout_sec):
         assert num_times > 0
 
-        # First warmup is timed to ensure it doesn't deadlock.
-        _, wall_time_sec = benchmark_with_timeout(
-            stream, self.grid, self.kernel, self.get_args(), launch_timeout_sec,
-            _MAX_DYNAMIC_LAUNCH_TIMEOUT_SEC)
-        for _ in range(num_times - 1):
-            _benchmark(stream, self.grid, self.kernel, self.get_args())
-        return wall_time_sec
+        for i in range(num_times):
+            if i == 0 and launch_timeout_sec is not None:
+                # First warmup is timed to ensure it doesn't deadlock.
+                benchmark_with_timeout(
+                    stream, self.grid, self.kernel, self.get_args(), launch_timeout_sec)
+            else:
+                _benchmark(stream, self.grid, self.kernel, self.get_args())
 
     def run_benchmark(self, stream, num_times):
         for _ in range(min(num_times, _MAX_REPEATS - self.num_samples)):

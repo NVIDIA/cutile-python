@@ -2,7 +2,6 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-import re
 import torch
 import pytest
 import cuda.tile as ct
@@ -44,12 +43,6 @@ def test_exhaustive_search_returns_best(monkeypatch):
         cfg = pyargs[1]
         return times[cfg]
 
-    def fake_benchmark_with_timeout(stream, grid, kernel, pyargs, timeout_sec,
-                                    inactive_runner_timeout_sec):
-        return fake_benchmark(stream, grid, kernel, pyargs), None
-
-    monkeypatch.setattr(tune_mod, "benchmark_with_timeout",
-                        fake_benchmark_with_timeout, raising=True)
     monkeypatch.setattr(tune_mod, "_benchmark", fake_benchmark, raising=True)
 
     result = exhaustive_search(
@@ -81,8 +74,8 @@ def test_exhaustive_search_skips_slow_configs(monkeypatch):
         3: [3.0],
         4: [4.0],
         5: [5.0],
-        6: [1.1, 9.0, 1.1, 9.0, 1.1, 20.0, 20.0, 20.0, 20.0, 20.0],
-        7: [20.0, 20.5, 20.0, 20.5, 20.0],
+        6: [1.1, 1.1, 9.0, 1.1, 9.0, 1.1, 20.0, 20.0, 20.0, 20.0, 20.0],
+        7: [20, 20.0, 20.5, 20.0, 20.5, 20.0],
     }
     sample_counts = {cfg: 0 for cfg in search_space}
 
@@ -92,17 +85,10 @@ def test_exhaustive_search_skips_slow_configs(monkeypatch):
         sample_counts[cfg] += 1
         return times[cfg][sample_index]
 
-    def fake_benchmark_with_timeout(stream, grid, kernel, pyargs, timeout_sec,
-                                    inactive_runner_timeout_sec):
-        cfg = pyargs[1]
-        return times[cfg][0], None
-
     monkeypatch.setattr(tune_mod, "_TOP_K", 5, raising=True)
     monkeypatch.setattr(tune_mod, "_WARM_UP_REPEATS", 1, raising=True)
     monkeypatch.setattr(tune_mod, "_MIN_REPEATS", 2, raising=True)
     monkeypatch.setattr(tune_mod, "_BATCH_REPEATS", 1, raising=True)
-    monkeypatch.setattr(tune_mod, "benchmark_with_timeout",
-                        fake_benchmark_with_timeout, raising=True)
     monkeypatch.setattr(tune_mod, "_benchmark", fake_benchmark, raising=True)
 
     result = exhaustive_search(
@@ -152,12 +138,6 @@ def test_skips_failed_configs(monkeypatch):
             raise failures[cfg]
         return 2.0
 
-    def fake_benchmark_with_timeout(stream, grid, kernel, pyargs, timeout_sec,
-                                    inactive_runner_timeout_sec):
-        return fake_benchmark(stream, grid, kernel, pyargs), None
-
-    monkeypatch.setattr(tune_mod, "benchmark_with_timeout",
-                        fake_benchmark_with_timeout, raising=True)
     monkeypatch.setattr(tune_mod, "_benchmark", fake_benchmark, raising=True)
 
     result = exhaustive_search(
@@ -273,7 +253,7 @@ def test_tune_list_of_arrays_ipc(monkeypatch):
         raising=True)
 
     elapsed_us, wall_time_sec = tune_utils.benchmark_with_timeout(
-        torch.cuda.current_stream(), (1,), add_arrays, (arrays, out), 5.0, 5.0)
+        torch.cuda.current_stream(), (1,), add_arrays, (arrays, out), 5.0)
 
     assert elapsed_us >= 0
     assert wall_time_sec is not None
@@ -293,9 +273,7 @@ def conditional_dead_loop_kernel(x, out, TILE_SIZE: ct.Constant[int]):
 
 
 def test_ipc_tune_handles_launch_timeout(monkeypatch):
-    monkeypatch.setattr(tune_mod, "_MAX_DYNAMIC_LAUNCH_TIMEOUT_SEC", 6.0, raising=True)
-    monkeypatch.setattr(tune_mod, "_MIN_DYNAMIC_LAUNCH_TIMEOUT_SEC", 1.0, raising=True)
-
+    single_run_timeout_sec = 4.0
     tile_size = 16
     result = exhaustive_search(
         [0, 1, 0],
@@ -306,6 +284,7 @@ def test_ipc_tune_handles_launch_timeout(monkeypatch):
             torch.full((tile_size,), cfg, dtype=torch.int32, device="cuda"),
             torch.zeros((tile_size,), dtype=torch.int32, device="cuda"),
             tile_size),
+        single_run_timeout_sec=single_run_timeout_sec,
     )
 
     assert len(result.failures) == 1
@@ -313,11 +292,31 @@ def test_ipc_tune_handles_launch_timeout(monkeypatch):
 
     err_cfg, err_type, err_msg = result.failures[0]
     assert (err_cfg, err_type) == (1, "TileLaunchTimeoutError")
-    # dynamic launch timeout should be reduced after the first successful launch,
-    # so it ends up below the configured max of 6.0 sec
-    match = re.search(r"CUDA kernel launch exceeded timeout ([\d.]+) sec", err_msg)
-    assert match is not None, err_msg
-    assert float(match.group(1)) < 6.0
+    assert "CUDA kernel launch exceeded timeout" in err_msg
+
+
+def test_timeout_disabled_runs_without_subprocess(monkeypatch):
+    x = torch.empty((1,), device="cuda")
+    search_space = [1, 2, 3]
+
+    monkeypatch.setattr(
+        tune_mod, "benchmark_with_timeout",
+        lambda *args, **kwargs: pytest.fail(
+            "benchmark_with_timeout should be skipped when timeout is disabled"),
+        raising=True)
+    monkeypatch.setattr(tune_mod, "_benchmark", lambda *args: 1.0, raising=True)
+
+    result = exhaustive_search(
+        search_space,
+        torch.cuda.current_stream(),
+        grid_fn=partial(grid_fn_on_x, x),
+        kernel=dummy_kernel,
+        args_fn=lambda cfg: (x, cfg),
+        quiet=True,
+    )
+
+    assert len(result.successes) == len(search_space)
+    assert len(result.failures) == 0
 
 
 # ========== Test edge cases ==========
@@ -326,33 +325,7 @@ def test_ipc_export_none_falls_back(monkeypatch):
         tune_utils, "_export_ipc_benchmark_payload", lambda *args: None, raising=True)
     monkeypatch.setattr(tune_utils, "_benchmark", lambda *args: 123, raising=True)
 
-    assert tune_utils.benchmark_with_timeout(None, (1,), None, (), 5.0, 5.0) == (123, None)
-
-
-def test_benchmark_subprocess_disabled_parser(monkeypatch):
-    monkeypatch.delenv("CUDA_TILE_BENCHMARK_DISABLE_SUBPROCESS", raising=False)
-    assert not tune_utils._benchmark_subprocess_disabled()
-
-    for value in ("true", "1", "t", "yes", "y", "on"):
-        monkeypatch.setenv("CUDA_TILE_BENCHMARK_DISABLE_SUBPROCESS", value)
-        assert tune_utils._benchmark_subprocess_disabled()
-
-    for value in ("", "false", "0", "f", "no"):
-        monkeypatch.setenv("CUDA_TILE_BENCHMARK_DISABLE_SUBPROCESS", value)
-        assert not tune_utils._benchmark_subprocess_disabled()
-
-
-def test_disable_subprocess_env_skips_ipc_export(monkeypatch):
-    monkeypatch.setenv("CUDA_TILE_BENCHMARK_DISABLE_SUBPROCESS", "1")
-    monkeypatch.setattr(
-        tune_utils,
-        "_export_ipc_benchmark_payload",
-        lambda *args: pytest.fail("IPC export should be skipped"),
-        raising=True,
-    )
-    monkeypatch.setattr(tune_utils, "_benchmark", lambda *args: 456, raising=True)
-
-    assert tune_utils.benchmark_with_timeout(None, (1,), None, (), 5.0, 5.0) == (456, None)
+    assert tune_utils.benchmark_with_timeout(None, (1,), None, (), 5.0) == (123, None)
 
 
 def test_ipc_skip_cache_and_recompile_kernel(monkeypatch):
@@ -369,7 +342,7 @@ def test_ipc_skip_cache_and_recompile_kernel(monkeypatch):
         lambda *args: pytest.fail("Should use IPC payload call"),
         raising=True)
     tune_utils.benchmark_with_timeout(
-        stream, (1,), copy_kernel, (x, out, 16), 5.0, 5.0)
+        stream, (1,), copy_kernel, (x, out, 16), 5.0)
     assert_equal(out, x)
 
     out.zero_()
@@ -389,5 +362,5 @@ def test_tune_scalar_only_ipc(monkeypatch):
         lambda *args: pytest.fail("Should use IPC payload call"),
         raising=True)
     elapsed_us, _ = tune_utils.benchmark_with_timeout(
-        torch.cuda.current_stream(), (1,), scalar_only_kernel, (7,), 5.0, 5.0)
+        torch.cuda.current_stream(), (1,), scalar_only_kernel, (7,), 5.0)
     assert elapsed_us >= 0
