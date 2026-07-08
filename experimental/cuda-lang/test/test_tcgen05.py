@@ -141,7 +141,7 @@ def test_tmem_offset_requires_tensor_pointer():
     compile_kernel(
         kernel,
         raises=pytest.raises(
-            TileTypeError,
+            TypeCheckingError,
             match="Expected pointer memory space to be MemorySpace.TENSOR",
         ),
     )
