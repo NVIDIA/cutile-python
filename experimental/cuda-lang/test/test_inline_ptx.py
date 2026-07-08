@@ -7,7 +7,7 @@ import cuda.lang as cl
 from cuda.lang._exception import TypeCheckingError
 import torch
 
-from .util import compile_for_arguments
+from .util import compile_kernel
 
 
 def test_inline_ptx_multiple_outputs_runtime():
@@ -75,8 +75,12 @@ class TestInlinePTXErrors:
         def kernel():
             cl._inline_ptx("add.u32 %0, %1, %1;", ("=x", cl.int32), ("r", 2))
 
-        with pytest.raises(TypeCheckingError, match="Unknown constraint dtype 'x'"):
-            compile_for_arguments(kernel, [])
+        compile_kernel(
+            kernel,
+            raises=pytest.raises(
+                TypeCheckingError, match="Unknown constraint dtype 'x'"
+            ),
+        )
 
     def test_invalid_rmw_constraint(self):
         def kernel():
@@ -86,5 +90,9 @@ class TestInlinePTXErrors:
                 ("r", 2),
             )
 
-        with pytest.raises(TypeCheckingError, match="Unknown constraint rmw modifier '@'"):
-            compile_for_arguments(kernel, [])
+        compile_kernel(
+            kernel,
+            raises=pytest.raises(
+                TypeCheckingError, match="Unknown constraint rmw modifier '@'"
+            ),
+        )

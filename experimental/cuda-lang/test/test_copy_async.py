@@ -31,13 +31,6 @@ class CopyAsyncPtxTestBase:
             ]
         )
 
-    def check_ptx_source(self, kernel, *expect: str):
-        compiled = cl.compile_simt(kernel, [self.signature()], log_ptx=True)
-        ptx = compiled.ptx
-        assert ptx is not None
-        for expected in expect:
-            assert expected in ptx, ptx
-
 
 @require_hopper_or_newer()
 class TestG2S(CopyAsyncPtxTestBase):
@@ -59,7 +52,9 @@ class TestG2S(CopyAsyncPtxTestBase):
             f"cp.async.bulk.tensor.2d.shared::{shared_mode}"
             ".global.tile.mbarrier::complete_tx::bytes"
         )
-        self.check_ptx_source(kernel, expect)
+        compile_kernel(
+            kernel, signature=self.signature(), assert_in_ptx=expect
+        )
 
     @require_blackwell_cc100()
     @pytest.mark.parametrize(
@@ -85,10 +80,13 @@ class TestG2S(CopyAsyncPtxTestBase):
                 cta_group=cta_group,
             )
 
-        self.check_ptx_source(
+        compile_kernel(
             kernel,
-            "cp.async.bulk.tensor.2d.shared::cluster.global",
-            expect_group,
+            signature=self.signature(),
+            assert_in_ptx=(
+                "cp.async.bulk.tensor.2d.shared::cluster.global",
+                expect_group,
+            ),
         )
 
     @require_blackwell_cc100()
@@ -110,10 +108,13 @@ class TestG2S(CopyAsyncPtxTestBase):
                 predicate=pred,
             )
 
-        self.check_ptx_source(
+        compile_kernel(
             kernel,
-            "cp.async.bulk.tensor.2d.shared::cluster.global",
-            "multicast::cluster",
+            signature=self.signature(),
+            assert_in_ptx=(
+                "cp.async.bulk.tensor.2d.shared::cluster.global",
+                "multicast::cluster",
+            ),
         )
 
     @require_blackwell_cc100()
@@ -139,71 +140,65 @@ class TestG2S(CopyAsyncPtxTestBase):
             "Expected pointer memory space to be MemorySpace.SHARED "
             "but got MemorySpace.SHARED_CLUSTER"
         )
-        with pytest.raises(TypeCheckingError, match=match):
-            self.check_ptx_source(kernel)
+        compile_kernel(
+            kernel,
+            signature=self.signature(),
+            raises=pytest.raises(TypeCheckingError, match=match),
+        )
 
-    def test_unsupported_kwargs_for_cta_mode(self, subtests):
-        @cl.kernel
-        def k1(x, pred, i, j, H: cl.Constant[int], W: cl.Constant[int]):
-            tensor_map = cl.tensor_map_tiled(x, (H, W)).as_opaque_ptr()
-            smem = cl.shared_array(shape=(H * W,), dtype=cl.int32, alignment=512)
-            mbar = cl.shared_array(1, cl.mbarrier, alignment=8).get_base_pointer()
+    def k1(x, pred, i, j, H: cl.Constant[int], W: cl.Constant[int]):
+        tensor_map = cl.tensor_map_tiled(x, (H, W)).as_opaque_ptr()
+        smem = cl.shared_array(shape=(H * W,), dtype=cl.int32, alignment=512)
+        mbar = cl.shared_array(1, cl.mbarrier, alignment=8).get_base_pointer()
 
-            cl.copy_async_bulk_tensor_global_to_shared(
-                tensor_map,
-                (i, j),
-                smem.get_base_pointer(),
-                mbar,
-                predicate=pred,
-            )
+        cl.copy_async_bulk_tensor_global_to_shared(
+            tensor_map,
+            (i, j),
+            smem.get_base_pointer(),
+            mbar,
+            predicate=pred,
+        )
 
-        @cl.kernel
-        def k2(x, pred, i, j, H: cl.Constant[int], W: cl.Constant[int]):
-            tensor_map = cl.tensor_map_tiled(x, (H, W)).as_opaque_ptr()
-            smem = cl.shared_array(shape=(H * W,), dtype=cl.int32, alignment=512)
-            mbar = cl.shared_array(1, cl.mbarrier, alignment=8).get_base_pointer()
+    def k2(x, pred, i, j, H: cl.Constant[int], W: cl.Constant[int]):
+        tensor_map = cl.tensor_map_tiled(x, (H, W)).as_opaque_ptr()
+        smem = cl.shared_array(shape=(H * W,), dtype=cl.int32, alignment=512)
+        mbar = cl.shared_array(1, cl.mbarrier, alignment=8).get_base_pointer()
 
-            cl.copy_async_bulk_tensor_global_to_shared(
-                tensor_map,
-                (i, j),
-                smem.get_base_pointer(),
-                mbar,
-                multicast_mask=0xFF,
-            )
+        cl.copy_async_bulk_tensor_global_to_shared(
+            tensor_map,
+            (i, j),
+            smem.get_base_pointer(),
+            mbar,
+            multicast_mask=0xFF,
+        )
 
-        @cl.kernel
-        def k3(x, pred, i, j, H: cl.Constant[int], W: cl.Constant[int]):
-            tensor_map = cl.tensor_map_tiled(x, (H, W)).as_opaque_ptr()
-            smem = cl.shared_array(shape=(H * W,), dtype=cl.int32, alignment=512)
-            mbar = cl.shared_array(1, cl.mbarrier, alignment=8).get_base_pointer()
+    def k3(x, pred, i, j, H: cl.Constant[int], W: cl.Constant[int]):
+        tensor_map = cl.tensor_map_tiled(x, (H, W)).as_opaque_ptr()
+        smem = cl.shared_array(shape=(H * W,), dtype=cl.int32, alignment=512)
+        mbar = cl.shared_array(1, cl.mbarrier, alignment=8).get_base_pointer()
 
-            cl.copy_async_bulk_tensor_global_to_shared(
-                tensor_map,
-                (i, j),
-                smem.get_base_pointer(),
-                mbar,
-                cta_group=cl.CTAGroup.CTA_1,
-            )
+        cl.copy_async_bulk_tensor_global_to_shared(
+            tensor_map,
+            (i, j),
+            smem.get_base_pointer(),
+            mbar,
+            cta_group=cl.CTAGroup.CTA_1,
+        )
 
-        def compile(kernel):
-            match = (
-                "When the destination memory is in shared memory, the "
-                "predicate, multicast mask, and cta_group arguments are invalid."
-            )
-            with pytest.raises(
+    @pytest.mark.parametrize("kernel", (k1, k2, k3))
+    def test_unsupported_kwargs_for_cta_mode(self, kernel):
+        match = (
+            "When the destination memory is in shared memory, the "
+            "predicate, multicast mask, and cta_group arguments are invalid."
+        )
+        compile_kernel(
+            kernel,
+            signature=self.signature(),
+            raises=pytest.raises(
                 TypeCheckingError,
                 match=match,
-            ):
-                self.check_ptx_source(kernel)
-
-        with subtests.test("predicate"):
-            compile(k1)
-
-        with subtests.test("multicast mask"):
-            compile(k2)
-
-        with subtests.test("cta_group"):
-            compile(k3)
+            ),
+        )
 
     @pytest.mark.parametrize("cluster", (True, False))
     def test_im2col_offsets_without_required_load_mode(self, cluster):
@@ -220,10 +215,13 @@ class TestG2S(CopyAsyncPtxTestBase):
                 tensor_map, (i, j), smem, mbar, im2col_offsets=(0, 1)
             )
 
-        with pytest.raises(
-            TypeCheckingError, match="TILE mode does not accept im2col_offsets"
-        ):
-            self.check_ptx_source(kernel)
+        compile_kernel(
+            kernel,
+            signature=self.signature(),
+            raises=pytest.raises(
+                TypeCheckingError, match="TILE mode does not accept im2col_offsets"
+            ),
+        )
 
     @require_blackwell_cc100()
     @pytest.mark.parametrize("cluster", (True, False))
@@ -250,7 +248,9 @@ class TestG2S(CopyAsyncPtxTestBase):
             f"cp.async.bulk.tensor.2d.shared::{shared_mode}"
             ".global.tile::gather4.mbarrier::complete_tx::bytes"
         )
-        self.check_ptx_source(kernel, expect)
+        compile_kernel(
+            kernel, signature=self.signature(), assert_in_ptx=expect
+        )
 
     @pytest.mark.parametrize(
         "mode",
@@ -271,10 +271,14 @@ class TestG2S(CopyAsyncPtxTestBase):
                 mode=mode,
             )
 
-        with pytest.raises(
-            TypeCheckingError, match=f"{mode.name} mode requires im2col_offsets"
-        ):
-            self.check_ptx_source(kernel)
+        compile_kernel(
+            kernel,
+            signature=self.signature(),
+            raises=pytest.raises(
+                TypeCheckingError,
+                match=f"{mode.name} mode requires im2col_offsets",
+            ),
+        )
 
     def test_im2col_load_mode_rank3(self):
         @cl.kernel
@@ -301,26 +305,22 @@ class TestG2S(CopyAsyncPtxTestBase):
                 mode=cl.TMALoadMode.IM2COL,
             )
 
-        compiled = cl.compile_simt(
+        compile_kernel(
             kernel,
-            [
-                KernelSignature(
-                    [
-                        make_symbolic_tensor((1, 1, 1), cl.int32),
-                        make_symbolic_scalar(cl.bool_),
-                        make_symbolic_scalar(cl.int32),
-                        make_symbolic_scalar(cl.int32),
-                        make_symbolic_scalar(cl.int32),
-                        4,
-                        32,
-                        8,
-                    ]
-                )
-            ],
-            log_ptx=True,
+            signature=KernelSignature(
+                [
+                    make_symbolic_tensor((1, 1, 1), cl.int32),
+                    make_symbolic_scalar(cl.bool_),
+                    make_symbolic_scalar(cl.int32),
+                    make_symbolic_scalar(cl.int32),
+                    make_symbolic_scalar(cl.int32),
+                    4,
+                    32,
+                    8,
+                ]
+            ),
+            assert_in_ptx="cp.async.bulk.tensor.3d.shared::cta.global.im2col",
         )
-        assert compiled.ptx is not None
-        assert "cp.async.bulk.tensor.3d.shared::cta.global.im2col" in compiled.ptx
 
     def test_tile_gather4_rejects_im2col_offsets(self):
         @cl.kernel
@@ -338,10 +338,14 @@ class TestG2S(CopyAsyncPtxTestBase):
                 mode=cl.TMALoadMode.TILE_GATHER4,
             )
 
-        with pytest.raises(
-            TypeCheckingError, match="TILE_GATHER4 mode does not accept im2col_offsets"
-        ):
-            self.check_ptx_source(kernel)
+        compile_kernel(
+            kernel,
+            signature=self.signature(),
+            raises=pytest.raises(
+                TypeCheckingError,
+                match="TILE_GATHER4 mode does not accept im2col_offsets",
+            ),
+        )
 
     def test_invalid_tensor_map_pointer(self):
         @cl.kernel
@@ -356,11 +360,14 @@ class TestG2S(CopyAsyncPtxTestBase):
                 mbar,
             )
 
-        with pytest.raises(
-            TypeCheckingError,
-            match="Expected tensor map or opaque tensor map pointer",
-        ):
-            self.check_ptx_source(kernel)
+        compile_kernel(
+            kernel,
+            signature=self.signature(),
+            raises=pytest.raises(
+                TypeCheckingError,
+                match="Expected tensor map or opaque tensor map pointer",
+            ),
+        )
 
 
 @require_hopper_or_newer()
@@ -377,7 +384,11 @@ class TestS2G(CopyAsyncPtxTestBase):
                 (i, j),
             )
 
-        self.check_ptx_source(kernel, "cp.async.bulk.tensor.2d.global.shared::cta")
+        compile_kernel(
+            kernel,
+            signature=self.signature(),
+            assert_in_ptx="cp.async.bulk.tensor.2d.global.shared::cta",
+        )
 
     def test_predicate(self):
         @cl.kernel
@@ -392,7 +403,11 @@ class TestS2G(CopyAsyncPtxTestBase):
                 predicate=pred,
             )
 
-        self.check_ptx_source(kernel, "cp.async.bulk.tensor.2d.global.shared::cta")
+        compile_kernel(
+            kernel,
+            signature=self.signature(),
+            assert_in_ptx="cp.async.bulk.tensor.2d.global.shared::cta",
+        )
 
     @require_blackwell_cc100()
     def test_tile_scatter4_store_mode(self):
@@ -408,8 +423,12 @@ class TestS2G(CopyAsyncPtxTestBase):
                 mode=cl.TMAStoreMode.TILE_SCATTER4,
             )
 
-        self.check_ptx_source(
-            kernel, "cp.async.bulk.tensor.2d.global.shared::cta.tile::scatter4"
+        compile_kernel(
+            kernel,
+            signature=self.signature(),
+            assert_in_ptx=(
+                "cp.async.bulk.tensor.2d.global.shared::cta.tile::scatter4"
+            ),
         )
 
     def test_im2col_store_mode_rank2_is_rejected(self):
@@ -425,8 +444,11 @@ class TestS2G(CopyAsyncPtxTestBase):
                 mode=cl.TMAStoreMode.IM2COL,
             )
 
-        with pytest.raises(Exception, match="im2col|IM2COL|expected"):
-            self.check_ptx_source(kernel)
+        compile_kernel(
+            kernel,
+            signature=self.signature(),
+            raises=pytest.raises(Exception, match="im2col|IM2COL|expected"),
+        )
 
     def test_im2col_store_mode_rank3(self):
         @cl.kernel
@@ -450,26 +472,22 @@ class TestS2G(CopyAsyncPtxTestBase):
                 mode=cl.TMAStoreMode.IM2COL,
             )
 
-        compiled = cl.compile_simt(
+        compile_kernel(
             kernel,
-            [
-                KernelSignature(
-                    [
-                        make_symbolic_tensor((1, 1, 1), cl.int32),
-                        make_symbolic_scalar(cl.bool_),
-                        make_symbolic_scalar(cl.int32),
-                        make_symbolic_scalar(cl.int32),
-                        make_symbolic_scalar(cl.int32),
-                        4,
-                        32,
-                        8,
-                    ]
-                )
-            ],
-            log_ptx=True,
+            signature=KernelSignature(
+                [
+                    make_symbolic_tensor((1, 1, 1), cl.int32),
+                    make_symbolic_scalar(cl.bool_),
+                    make_symbolic_scalar(cl.int32),
+                    make_symbolic_scalar(cl.int32),
+                    make_symbolic_scalar(cl.int32),
+                    4,
+                    32,
+                    8,
+                ]
+            ),
+            assert_in_ptx="cp.async.bulk.tensor.3d.global.shared::cta.im2col",
         )
-        assert compiled.ptx is not None
-        assert "cp.async.bulk.tensor.3d.global.shared::cta.im2col" in compiled.ptx
 
 
 @require_hopper_or_newer()

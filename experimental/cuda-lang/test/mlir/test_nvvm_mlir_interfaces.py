@@ -5,12 +5,15 @@
 
 import pytest
 import cuda.lang as cl
-from cuda.lang._exception import CompilerExecutionError, TypeCheckingError, InvalidValueError
-from cuda.lang._compile import compile_simt, KernelSignature
+from cuda.lang._exception import (
+    CompilerExecutionError,
+    TypeCheckingError,
+    InvalidValueError,
+)
 import cuda.lang._stub.nvvm_mlir_interfaces as nvvm
 import torch
 
-from ..util import require_hopper_or_newer, filecheck
+from ..util import require_hopper_or_newer, compile_kernel
 
 
 @require_hopper_or_newer()
@@ -147,27 +150,29 @@ def test_memory_scope_enum_mappings(enum, expect):
         cl.memory_barrier(scope=enum)
 
     if expect is None:
-        with pytest.raises(
-            InvalidValueError,
-            match=(
-                "Expected one of MemoryScope.BLOCK, MemoryScope.CLUSTER, "
-                "MemoryScope.DEVICE, MemoryScope.SYS, got MemoryScope.NONE"
+        compile_kernel(
+            kernel,
+            raises=pytest.raises(
+                InvalidValueError,
+                match=(
+                    "Expected one of MemoryScope.BLOCK, MemoryScope.CLUSTER, "
+                    "MemoryScope.DEVICE, MemoryScope.SYS, got MemoryScope.NONE"
+                ),
             ),
-        ):
-            compile_simt(kernel, [KernelSignature(())])
+        )
     else:
         compile_kwargs = (
             {"gpu_name": "sm_90", "arch": "compute_90"}
             if enum is cl.MemoryScope.CLUSTER
             else {}
         )
-        result = compile_simt(kernel, [KernelSignature(())], **compile_kwargs)
-        filecheck(
-            result.mlir,
-            f"""
+        compile_kernel(
+            kernel,
+            filecheck_mlir=f"""
             CHECK: nvvm.memory.barrier
             CHECK-SAME: scope = #nvvm<mem_scope <{expect}>>
             """,
+            **compile_kwargs,
         )
 
 
@@ -187,16 +192,17 @@ def test_memory_space_enum_mappings(enum, expect):
         nvvm.fence_sync_restrict(order=enum)
 
     if expect is None:
-        with pytest.raises(
-            CompilerExecutionError,
-            match=r"acquire.*release",
-        ):
-            compile_simt(kernel, [KernelSignature(())])
+        compile_kernel(
+            kernel,
+            raises=pytest.raises(
+                CompilerExecutionError,
+                match=r"acquire.*release",
+            ),
+        )
     else:
-        result = compile_simt(kernel, [KernelSignature(())])
-        filecheck(
-            result.mlir,
-            f"""
+        compile_kernel(
+            kernel,
+            filecheck_mlir=f"""
             CHECK: nvvm.fence.sync_restrict
             CHECK-SAME: order = #nvvm<mem_order <{expect}>>
             """,

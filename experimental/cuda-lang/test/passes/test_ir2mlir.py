@@ -29,7 +29,7 @@ def test_ir2mlir():
     def kernel():
         pass
 
-    result = compile_simt(kernel, [KernelSignature(())])
+    result = compile_simt(kernel, [KernelSignature(())], keep_mlir=True)
     filecheck(result.mlir, get_source())
 
 

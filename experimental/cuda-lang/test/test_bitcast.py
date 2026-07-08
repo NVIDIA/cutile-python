@@ -45,7 +45,9 @@ def test_bitcast_scalars(inp_dtype, out_dtype, check):
         out[0] = cl.bitcast(x, out_dtype)
 
     cres = cl.compile_simt(
-        kernel, [KernelSignature([make_symbolic_tensor(1, out_dtype)])]
+        kernel,
+        [KernelSignature([make_symbolic_tensor(1, out_dtype)])],
+        keep_mlir=True,
     )
     filecheck(cres.mlir, "CHECK: llvm.bitcast{{.+}}" + check)
 

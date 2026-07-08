@@ -84,6 +84,7 @@ def test_dynamic_shared_alignment_size_program():
         [KernelSignature((ScalarConstraint(dtype=cl.int32),))],
         gpu_name="sm_80",
         arch="compute_80",
+        keep_mlir=True,
     )
 
     assert result.dyn_smem_size_program is not None

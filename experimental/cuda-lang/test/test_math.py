@@ -314,7 +314,9 @@ def test_pow_libdevice_entrypoints(lhs_dt, rhs_dt, entrypoint):
     lhs = make_symbolic_tensor([1], lhs_dt)
     rhs = make_symbolic_tensor([1], rhs_dt)
     out = make_symbolic_tensor([1], lhs_dt)
-    cres = cl.compile_simt(kernel, [KernelSignature([lhs, rhs, out])])
+    cres = cl.compile_simt(
+        kernel, [KernelSignature([lhs, rhs, out])], keep_mlir=True
+    )
     filecheck(cres.mlir, "CHECK: llvm.call{{.+}}callee = @" + entrypoint)
 
 
@@ -712,7 +714,7 @@ def test_math_abs_unsigned_int():
     def kernel():
         device_math.abs(cl.uint32(5.0))
 
-    result = compile_simt(kernel, [KernelSignature([])])
+    result = compile_simt(kernel, [KernelSignature([])], keep_mlir=True)
     assert "math.abs" not in result.mlir
 
 

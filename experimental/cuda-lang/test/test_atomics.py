@@ -6,10 +6,11 @@ import pytest
 import torch
 
 import cuda.lang as cl
+from cuda.lang.compilation import KernelSignature
 from cuda.lang._exception import TypeCheckingError
 from cuda.lang._ir.ops import AtomicCAS, AtomicExchange, AtomicRMW
 
-from .util import compile_for_arguments, get_ir, make_symbolic_tensor
+from .util import compile_kernel, get_ir, make_symbolic_tensor
 
 
 ALL_INT_DTYPES = ["int32", "int64"]
@@ -191,8 +192,15 @@ def test_atomic_unsupported_dtypes(op, dtype):
         else:
             atomic(ptr, A[0])
 
-    with pytest.raises(TypeCheckingError, match=f"{op} does not support dtype {dtype}"):
-        compile_for_arguments(kernel, (make_symbolic_tensor(shape=(1,), dtype=cl_dtype),))
+    compile_kernel(
+        kernel,
+        signature=KernelSignature(
+            (make_symbolic_tensor(shape=(1,), dtype=cl_dtype),)
+        ),
+        raises=pytest.raises(
+            TypeCheckingError, match=f"{op} does not support dtype {dtype}"
+        ),
+    )
 
 
 @pytest.mark.parametrize("order,scope,msg",

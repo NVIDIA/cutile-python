@@ -14,7 +14,6 @@ from cuda.lang.compilation import KernelSignature
 from .util import (
     make_symbolic_tensor,
     make_symbolic_scalar,
-    compile_for_arguments,
     compile_kernel,
     require_blackwell_cc100,
 )
@@ -279,6 +278,7 @@ def test_device_allocation_alignment_lowering():
         [KernelSignature(())],
         gpu_name="sm_80",
         arch="compute_80",
+        keep_mlir=True,
     )
 
     assert "alignment = 16 : i64" in result.mlir
@@ -301,8 +301,7 @@ def test_device_allocation_invalid_alignment(allocator, alignment):
         if isinstance(alignment, bool)
         else "alignment must be a positive power of two"
     )
-    with pytest.raises(TypeCheckingError, match=match):
-        compile_for_arguments(kernel, ())
+    compile_kernel(kernel, raises=pytest.raises(TypeCheckingError, match=match))
 
 
 @pytest.mark.parametrize("allocator", [make_local_array, cl.shared_array])
@@ -310,8 +309,11 @@ def test_device_allocation_alignment_must_be_constant(allocator):
     def kernel(alignment):
         allocator(shape=(1,), dtype=cl.int32, alignment=alignment)
 
-    with pytest.raises(TypeCheckingError, match="Expected an integer constant"):
-        compile_for_arguments(kernel, (make_symbolic_scalar(cl.int32),))
+    compile_kernel(
+        kernel,
+        signature=KernelSignature((make_symbolic_scalar(cl.int32),)),
+        raises=pytest.raises(TypeCheckingError, match="Expected an integer constant"),
+    )
 
 
 def test_allocate_shmem_in_runtime_conditional():
@@ -320,8 +322,13 @@ def test_allocate_shmem_in_runtime_conditional():
             cl.shared_array(shape=(1,), dtype=cl.int32)
 
     tensor_constraint = make_symbolic_tensor(shape=(2,), dtype=cl.float32)
-    with pytest.raises(UnsupportedFeatureError, match="Memory allocated in dynamic control flow"):
-        compile_for_arguments(kernel, (tensor_constraint,))
+    compile_kernel(
+        kernel,
+        signature=KernelSignature((tensor_constraint,)),
+        raises=pytest.raises(
+            UnsupportedFeatureError, match="Memory allocated in dynamic control flow"
+        ),
+    )
 
 
 def test_allocate_shmem_in_runtime_loop():
@@ -330,8 +337,13 @@ def test_allocate_shmem_in_runtime_loop():
             cl.shared_array(shape=(1,), dtype=cl.int32)
 
     tensor_constraint = make_symbolic_tensor(shape=(2,), dtype=cl.float32)
-    with pytest.raises(UnsupportedFeatureError, match="Memory allocated in dynamic control flow"):
-        compile_for_arguments(kernel, (tensor_constraint,))
+    compile_kernel(
+        kernel,
+        signature=KernelSignature((tensor_constraint,)),
+        raises=pytest.raises(
+            UnsupportedFeatureError, match="Memory allocated in dynamic control flow"
+        ),
+    )
 
 
 def test_pointer_getitem():

@@ -11,7 +11,7 @@ import pytest
 from cuda.lang.compilation import KernelSignature
 
 from .util import (
-    compile_for_arguments,
+    compile_kernel,
     filecheck,
     make_symbolic_tensor,
     require_blackwell_or_newer,
@@ -278,7 +278,7 @@ def test_elect_sync(capsys):
     assert sum(out.cpu().ravel().tolist()) == 1
 
 
-def test_lane_count_full_mask_and_ptx_comment(log_ptx):
+def test_lane_count_full_mask_and_ptx_comment():
     ptx_comment = "FOOBARBAZ"
 
     @cl.kernel
@@ -290,9 +290,11 @@ def test_lane_count_full_mask_and_ptx_comment(log_ptx):
             out[0] = cl.lane_count()
             out[1] = value
 
-    compiled = compile_for_arguments(kernel, [make_symbolic_tensor((2,), cl.int32)])
-    assert compiled.ptx is not None
-    assert ptx_comment in compiled.ptx
+    compile_kernel(
+        kernel,
+        signature=KernelSignature([make_symbolic_tensor((2,), cl.int32)]),
+        assert_in_ptx=ptx_comment,
+    )
 
     out = torch.zeros(2, dtype=torch.int32, device="cuda")
     cl.launch(torch.cuda.current_stream(), (1,), (32,), kernel, (out,))
@@ -587,7 +589,9 @@ class TestShuffle:
             tensor[0] = i1 + i2
 
         cres = cl.compile_simt(
-            kernel, [KernelSignature([make_symbolic_tensor(1, cl.int32)])]
+            kernel,
+            [KernelSignature([make_symbolic_tensor(1, cl.int32)])],
+            keep_mlir=True,
         )
 
         filecheck(

@@ -37,7 +37,7 @@ if cc.major != 10:
         ],
     ],
 )
-def test_commit(log_ptx, mc_mask, cta_group, expect):
+def test_commit(mc_mask, cta_group, expect):
     @cl.kernel
     def kernel():
         mbar = cl.shared_array(1, cl.mbarrier).get_base_pointer()
@@ -59,13 +59,13 @@ def test_commit(log_ptx, mc_mask, cta_group, expect):
         ],
     ],
 )
-def test_alloc(log_ptx, cta_group, expect):
+def test_alloc(cta_group, expect):
     @cl.kernel
     def kernel():
         p3 = cl.shared_array(1, cl.uint32).get_base_pointer()
         cl.tcgen05_allocate(p3, 5, cta_group=cta_group)
 
-    compiled = cl.compile_simt(kernel, [KernelSignature([])])
+    compiled = cl.compile_simt(kernel, [KernelSignature([])], keep_ptx=True)
     ptx = compiled.ptx
     assert ptx is not None
     assert expect in ptx, ptx
@@ -98,7 +98,7 @@ def test_dealloc_requires_tensor_pointer():
         ],
     ],
 )
-def test_dealloc(log_ptx, cta_group, expect):
+def test_dealloc(cta_group, expect):
     @cl.kernel
     def kernel():
         tmem_dtype = cl.pointer_dtype(cl.int8, cl.MemorySpace.TENSOR)
@@ -107,7 +107,7 @@ def test_dealloc(log_ptx, cta_group, expect):
         tmem_ptr = smem[0]
         cl.tcgen05_deallocate(tmem_ptr, 128, cta_group=cta_group)
 
-    compiled = cl.compile_simt(kernel, [KernelSignature([])])
+    compiled = cl.compile_simt(kernel, [KernelSignature([])], keep_ptx=True)
     ptx = compiled.ptx
     assert ptx is not None
     assert expect in ptx, ptx
@@ -652,7 +652,7 @@ def test_shift_bad_group():
         cl.tcgen05_shift_down(tmem_smem[0], 0xDEADBEEF)
 
     with pytest.raises(Exception):
-        cl.compile_simt(kernel, [KernelSignature([])], log_ptx=True)
+        cl.compile_simt(kernel, [KernelSignature([])])
 
 
 def test_shift_bad_address_space_shared():

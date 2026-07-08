@@ -7,8 +7,9 @@ import pytest
 
 import cuda.lang as cl
 from cuda.lang._ir.ops import RawNVVMIntrinsic
+from cuda.lang.compilation import KernelSignature
 
-from .util import compile_for_arguments, require_hopper_or_newer
+from .util import compile_kernel, require_hopper_or_newer
 
 
 @require_hopper_or_newer()
@@ -66,7 +67,9 @@ SCOPES = [cl.MbarrierScope.BLOCK, cl.MbarrierScope.CLUSTER]
 
 
 def _get_intrinsics(kernel):
-    result = compile_for_arguments(kernel, ())
+    result = compile_kernel(
+        kernel, signature=KernelSignature(()), keep_final_ir=True
+    )
     return [
         op.intrinsic
         for block in result.final_ir.blocks

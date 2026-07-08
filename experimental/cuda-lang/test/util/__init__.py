@@ -6,7 +6,6 @@ import pytest
 
 import cuda.lang as cl
 from cuda.lang._compile import get_compute_capability
-from cuda.lang._logging import get_log_flags
 from cuda.lang.compilation import KernelSignature
 
 from .filecheck_utils import filecheck, get_source
@@ -14,7 +13,6 @@ from .ir_utils import (
     get_ir,
     make_symbolic_scalar,
     make_symbolic_tensor,
-    compile_for_arguments,
 )
 
 
@@ -40,28 +38,6 @@ def require_hopper_or_newer():
     )
 
 
-@pytest.fixture
-def log_ptx():
-    log_flags = get_log_flags()
-    old_log_ptx = log_flags.log_ptx
-    log_flags.log_ptx = True
-    try:
-        yield
-    finally:
-        log_flags.log_ptx = old_log_ptx
-
-
-@pytest.fixture
-def no_log_ptx():
-    log_flags = get_log_flags()
-    old_log_ptx = log_flags.log_ptx
-    log_flags.log_ptx = False
-    try:
-        yield
-    finally:
-        log_flags.log_ptx = old_log_ptx
-
-
 def compile_kernel(
     kernel,
     signature=KernelSignature([]),
@@ -70,17 +46,29 @@ def compile_kernel(
     assert_in_mlir=None,
     assert_not_in_mlir=None,
     filecheck_ptx=None,
+    filecheck_mlir=None,
     raises=None,
+    **compile_simt_kwargs,
 ):
     if raises is not None:
         assert assert_in_ptx is None
+        assert assert_not_in_ptx is None
         assert assert_in_mlir is None
+        assert assert_not_in_mlir is None
         assert filecheck_ptx is None
+        assert filecheck_mlir is None
         with raises:
-            cl.compile_simt(kernel, [signature], log_ptx=True)
+            cl.compile_simt(kernel, [signature], **compile_simt_kwargs)
         return
 
-    compiled = cl.compile_simt(kernel, [signature], log_ptx=True)
+    compiled = cl.compile_simt(
+        kernel,
+        [signature],
+        keep_ptx=True,
+        keep_mlir=True,
+        **compile_simt_kwargs,
+    )
+    assert compiled.mlir
     assert compiled.ptx
 
     def tuple_or_str_check(check, scrutinee, predicate=lambda x, y: x in y):
@@ -108,6 +96,12 @@ def compile_kernel(
         assert isinstance(filecheck_ptx, str)
         filecheck(compiled.ptx, filecheck_ptx)
 
+    if filecheck_mlir is not None:
+        assert isinstance(filecheck_mlir, str)
+        filecheck(compiled.mlir, filecheck_mlir)
+
+    return compiled
+
 
 __all__ = (
     "filecheck",
@@ -115,8 +109,7 @@ __all__ = (
     "get_ir",
     "make_symbolic_scalar",
     "make_symbolic_tensor",
-    "compile_for_arguments",
-    "log_ptx",
+    "compile_kernel",
     "require_hopper_or_newer",
     "require_blackwell_or_newer",
 )

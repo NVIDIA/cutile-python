@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 from cuda.lang._ir.ir import IRContext
-from cuda.lang._compile import get_function_hir, get_function_ir, compile_simt
+from cuda.lang._compile import get_function_hir, get_function_ir
 from cuda.lang.compilation import ArrayConstraint, KernelSignature, ScalarConstraint
 from cuda.lang import int32
 
@@ -29,7 +29,3 @@ def make_symbolic_tensor(shape, dtype):
         alias_groups=(),
         may_alias_internally=False,
     )
-
-
-def compile_for_arguments(kernel, args):
-    return compile_simt(kernel, [KernelSignature(args)])
