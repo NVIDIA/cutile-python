@@ -24,7 +24,7 @@ from .._enums import (
     Tcgen05CopyShape,
     Tcgen05CopySourceFormat,
 )
-from cuda.tile import static_assert
+import cuda.lang as cl
 
 
 @function()
@@ -57,7 +57,7 @@ def tcgen05_fence_after_thread_sync() -> None:
 
 @function()
 def tcgen05_relinquish_allocation_permit(cta_group: CTAGroup = CTAGroup.CTA_1) -> None:
-    static_assert(cta_group in (CTAGroup.CTA_1, CTAGroup.CTA_2))
+    cl.static_assert(cta_group in (CTAGroup.CTA_1, CTAGroup.CTA_2))
     if cta_group == CTAGroup.CTA_1:
         _nvvm.tcgen05_relinq_alloc_permit_cg1()
     else:
@@ -73,7 +73,7 @@ def tcgen05_shift_down(address, cta_group: CTAGroup = CTAGroup.CTA_1) -> None:
         address: pointer in tensor memory
         cta_group: cta group 1 or 2
     """
-    static_assert(cta_group in (CTAGroup.CTA_1, CTAGroup.CTA_2))
+    cl.static_assert(cta_group in (CTAGroup.CTA_1, CTAGroup.CTA_2))
     if cta_group == CTAGroup.CTA_1:
         _nvvm.tcgen05_shift_down_cg1(address)
     else:

@@ -11,7 +11,6 @@ import cuda.lang as cl
 from cuda.lang._datatype import to_torch_dtype
 from cuda.lang._exception import TypeCheckingError, InvalidValueError
 from cuda.lang.compilation import KernelSignature
-from cuda.tile import static_iter
 
 
 @pytest.mark.parametrize("volatile", [True, False])
@@ -37,7 +36,7 @@ def test_pointer_vector_ldst(volatile, element_count, dtype):
     @cl.kernel
     def kernel(A):
         with cl.local_array(element_count, dtype, alignment=alignment) as larr:
-            for i, value in static_iter(enumerate(values)):
+            for i, value in cl.static_iter(enumerate(values)):
                 larr[i] = dtype(value)
             v = larr.get_base_pointer().load(
                 count=element_count,
@@ -179,9 +178,9 @@ def test_pointer_vector_arithmetic(operation, dtype, lhs_values, rhs_values):
             cl.local_array(4, dtype, alignment=alignment) as lhs,
             cl.local_array(4, dtype, alignment=alignment) as rhs,
         ):
-            for i, value in static_iter(enumerate(lhs_values)):
+            for i, value in cl.static_iter(enumerate(lhs_values)):
                 lhs[i] = dtype(value)
-            for i, value in static_iter(enumerate(rhs_values)):
+            for i, value in cl.static_iter(enumerate(rhs_values)):
                 rhs[i] = dtype(value)
             lhs_vec = lhs.get_base_pointer().load(count=4, alignment=alignment)
             rhs_vec = rhs.get_base_pointer().load(count=4, alignment=alignment)
@@ -211,9 +210,9 @@ def test_pointer_vector_arithmetic_floordiv(dtype, lhs_values, rhs_values):
             cl.local_array(4, dtype, alignment=alignment) as lhs,
             cl.local_array(4, dtype, alignment=alignment) as rhs,
         ):
-            for i, value in static_iter(enumerate(lhs_values)):
+            for i, value in cl.static_iter(enumerate(lhs_values)):
                 lhs[i] = dtype(value)
-            for i, value in static_iter(enumerate(rhs_values)):
+            for i, value in cl.static_iter(enumerate(rhs_values)):
                 rhs[i] = dtype(value)
             lhs_vec = lhs.get_base_pointer().load(count=4, alignment=alignment)
             rhs_vec = rhs.get_base_pointer().load(count=4, alignment=alignment)
@@ -259,9 +258,9 @@ def test_pointer_vector_arithmetic_bitwise(operation, dtype, lhs_values, rhs_val
             cl.local_array(4, dtype, alignment=alignment) as lhs,
             cl.local_array(4, dtype, alignment=alignment) as rhs,
         ):
-            for i, value in static_iter(enumerate(lhs_values)):
+            for i, value in cl.static_iter(enumerate(lhs_values)):
                 lhs[i] = dtype(value)
-            for i, value in static_iter(enumerate(rhs_values)):
+            for i, value in cl.static_iter(enumerate(rhs_values)):
                 rhs[i] = dtype(value)
             lhs_vec = lhs.get_base_pointer().load(count=4, alignment=alignment)
             rhs_vec = rhs.get_base_pointer().load(count=4, alignment=alignment)
@@ -299,9 +298,9 @@ def test_pointer_vector_arithmetic_comparison(operation, dtype, lhs_values, rhs_
             cl.local_array(4, dtype, alignment=alignment) as lhs,
             cl.local_array(4, dtype, alignment=alignment) as rhs,
         ):
-            for i, value in static_iter(enumerate(lhs_values)):
+            for i, value in cl.static_iter(enumerate(lhs_values)):
                 lhs[i] = dtype(value)
-            for i, value in static_iter(enumerate(rhs_values)):
+            for i, value in cl.static_iter(enumerate(rhs_values)):
                 rhs[i] = dtype(value)
             lhs_vec = lhs.get_base_pointer().load(count=4, alignment=alignment)
             rhs_vec = rhs.get_base_pointer().load(count=4, alignment=alignment)
@@ -335,9 +334,9 @@ def test_pointer_vector_arithmetic_shift(operation, dtype, lhs_values, rhs_value
             cl.local_array(4, dtype, alignment=alignment) as lhs,
             cl.local_array(4, dtype, alignment=alignment) as rhs,
         ):
-            for i, value in static_iter(enumerate(lhs_values)):
+            for i, value in cl.static_iter(enumerate(lhs_values)):
                 lhs[i] = dtype(value)
-            for i, value in static_iter(enumerate(rhs_values)):
+            for i, value in cl.static_iter(enumerate(rhs_values)):
                 rhs[i] = dtype(value)
             lhs_vec = lhs.get_base_pointer().load(count=4, alignment=alignment)
             rhs_vec = rhs.get_base_pointer().load(count=4, alignment=alignment)
@@ -365,7 +364,7 @@ def test_pointer_vector_arithmetic_unary(operation, dtype, values):
     @cl.kernel
     def kernel(out):
         with cl.local_array(4, dtype, alignment=alignment) as value:
-            for i, item in static_iter(enumerate(values)):
+            for i, item in cl.static_iter(enumerate(values)):
                 value[i] = dtype(item)
             vec = value.get_base_pointer().load(count=4, alignment=alignment)
             new = operation(vec)
@@ -415,7 +414,7 @@ def test_vector_setitem():
 def test_vector_from_tuple():
     @cl.kernel
     def kernel(tensor):
-        v4 = cl.Vector(*tuple(i for i in static_iter(range(4))))
+        v4 = cl.Vector(*tuple(i for i in cl.static_iter(range(4))))
         tensor.get_base_pointer().store(v4, alignment=16)
 
     tensor = torch.zeros(4, dtype=torch.int32, device='cuda')

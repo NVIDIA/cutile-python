@@ -3,7 +3,6 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import cuda.lang as cl
-import cuda.tile as ct
 import torch
 
 
@@ -62,7 +61,7 @@ def histogram64_kernel(d_PartialHistograms, d_Data, dataCount):
         1,
     )
 
-    for i in ct.static_iter(range(HISTOGRAM64_BIN_COUNT)):
+    for i in cl.static_iter(range(HISTOGRAM64_BIN_COUNT)):
         s_Hist[tx + i * HISTOGRAM64_THREADBLOCK_SIZE] = cl.uint8(0)
 
     cl.barrier_sync_block()
@@ -85,7 +84,7 @@ def histogram64_kernel(d_PartialHistograms, d_Data, dataCount):
         sum = cl.uint32(0)
         pos = 4 * (tx & (SHARED_MEMORY_BANKS - 1))
 
-        for _ in ct.static_iter(range(HISTOGRAM64_THREADBLOCK_SIZE // 4)):
+        for _ in cl.static_iter(range(HISTOGRAM64_THREADBLOCK_SIZE // 4)):
             sum = (
                 sum
                 + cl.uint32(s_HistBase[pos + 0])
@@ -111,7 +110,7 @@ def merge_histogram64_kernel(d_Histogram, d_PartialHistograms, histogramCount):
 
     data[tx] = sum
 
-    for stride in ct.static_iter([128, 64, 32, 16, 8, 4, 2, 1]):
+    for stride in cl.static_iter([128, 64, 32, 16, 8, 4, 2, 1]):
         cl.barrier_sync_block()
         if tx < stride:
             data[tx] = data[tx] + data[tx + stride]

@@ -11,7 +11,6 @@ import torch
 
 from cuda.lang.compilation import KernelSignature, ScalarConstraint
 from cuda.lang._exception import TypeCheckingError
-from cuda.tile import static_assert
 from cuda.tile._cext import _spy_on_cuLaunchKernel_begin, _spy_on_cuLaunchKernel_end
 
 
@@ -309,9 +308,9 @@ def test_single_2d_array_static_second_dim():
     @cl.kernel
     def kern(x, n):
         smem = cl.shared_array(shape=(n, 11), dtype=cl.int32, dynamic=True)
-        static_assert(smem.shape[1] == 11)
-        static_assert(smem.strides[0] == 11)
-        static_assert(smem.strides[1] == 1)
+        cl.static_assert(smem.shape[1] == 11)
+        cl.static_assert(smem.strides[0] == 11)
+        cl.static_assert(smem.strides[1] == 1)
 
         i, j = cl.thread_index(0), cl.thread_index(1)
         smem[i, j] = x[i, j]

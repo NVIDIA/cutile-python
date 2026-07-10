@@ -6,7 +6,6 @@ from cuda.lang.compilation import KernelSignature
 from cuda.lang._exception import StaticEvalError
 from test.util import compile_kernel, make_symbolic_scalar
 import cuda.lang as cl
-from cuda.tile import static_eval
 
 import pytest
 
@@ -23,7 +22,7 @@ def test_symbolic_pointer():
     def k():
         with cl.local_array(1, cl.int32) as arr:
             ptr = arr.get_base_pointer()
-            static_eval(checks(ptr))
+            cl.static_eval(checks(ptr))
 
     compile_kernel(k)
 
@@ -38,7 +37,7 @@ def test_symbolic_array():
 
     def k():
         with cl.local_array(4, cl.int32) as arr:
-            static_eval(checks(arr))
+            cl.static_eval(checks(arr))
 
     compile_kernel(k)
 
@@ -52,7 +51,7 @@ def test_symbolic_vector():
     def k():
         with cl.local_array(4, cl.int32) as arr:
             vector = arr.load_element(0, count=4)
-            static_eval(checks(vector))
+            cl.static_eval(checks(vector))
 
     compile_kernel(k)
 
@@ -63,7 +62,7 @@ def test_symbolic_scalar():
         assert str(sym) == "<scalar[int32]>"
 
     def k(dynamic_value):
-        static_eval(checks(dynamic_value))
+        cl.static_eval(checks(dynamic_value))
 
     compile_kernel(k, signature=KernelSignature([make_symbolic_scalar(cl.int32)]))
 
@@ -73,7 +72,7 @@ def test_symbolic_scalar_getitem():
         sym[0]
 
     def k(dynamic_value):
-        static_eval(checks(dynamic_value))
+        cl.static_eval(checks(dynamic_value))
 
     compile_kernel(
         k,
@@ -91,7 +90,7 @@ def test_static_assertion():
         assert sym.dtype is cl.int32, message
 
     def k(dynamic_value):
-        static_eval(checks(dynamic_value))
+        cl.static_eval(checks(dynamic_value))
 
     compile_kernel(
         k,

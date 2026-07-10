@@ -6,7 +6,6 @@ import pytest
 import torch
 
 import cuda.lang as cl
-import cuda.tile as ct
 from cuda.lang._compile import get_compute_capability
 
 
@@ -58,7 +57,7 @@ def make_tcgen05_mma_kernel(entrypoint, is_sparse):
 
         # Four copies of E4M3(1.0), or two copies of BF16(1.0).
         input_word = cl.uint32(0x38383838 if is_block_scale else 0x3F803F80)
-        for i in ct.static_iter(range((INPUT_WORDS + THREADS - 1) // THREADS)):
+        for i in cl.static_iter(range((INPUT_WORDS + THREADS - 1) // THREADS)):
             index = tid + i * THREADS
             if index < INPUT_WORDS:
                 matrix_a[index] = input_word
@@ -78,7 +77,7 @@ def make_tcgen05_mma_kernel(entrypoint, is_sparse):
         tmem = tmem_storage[0]
         if warp < OUTPUT_WARPS and (is_block_scale or is_sparse):
             # UE8M0(1.0) is 0x7f. Fill every byte used by either scale tensor.
-            for column in ct.static_iter(range(SCALE_A_COLUMN, SPARSE_METADATA_COLUMN)):
+            for column in cl.static_iter(range(SCALE_A_COLUMN, SPARSE_METADATA_COLUMN)):
                 scale_ptr = cl.tcgen05_tmem_offset(
                     tmem,
                     lane_offset=warp * WARP_SIZE,
@@ -92,7 +91,7 @@ def make_tcgen05_mma_kernel(entrypoint, is_sparse):
 
             # Metadata value zero selects a valid 2:4 pattern. B is all ones, so
             # every valid metadata selection has the same numerical result.
-            for column in ct.static_iter(
+            for column in cl.static_iter(
                 range(SPARSE_METADATA_COLUMN, AUXILIARY_END_COLUMN)
             ):
                 metadata_ptr = cl.tcgen05_tmem_offset(
@@ -192,7 +191,7 @@ def make_tcgen05_mma_kernel(entrypoint, is_sparse):
                 count=OUTPUT_COLUMNS,
             )
             cl.tcgen05_wait_load()
-            for column in ct.static_iter(range(OUTPUT_COLUMNS)):
+            for column in cl.static_iter(range(OUTPUT_COLUMNS)):
                 output[tid * OUTPUT_COLUMNS + column] = cl.bitcast(
                     registers[column], cl.float32
                 )

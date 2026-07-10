@@ -2,14 +2,14 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-from cuda.tile import static_assert
+import cuda.lang as cl
 
 from cuda.lang._execution import function
 
 
 @function()
 def require_constant_bool(var):
-    static_assert(
+    cl.static_assert(
         var in (True, False),
         f"Expected constant of type bool but got {var}",
     )
@@ -17,7 +17,7 @@ def require_constant_bool(var):
 
 @function()
 def require_constant_enum(var, enum):
-    static_assert(
+    cl.static_assert(
         var in tuple(enum),
         f"Expected enum constant of type {enum.__name__} but got {var}",
     )
@@ -25,7 +25,7 @@ def require_constant_enum(var, enum):
 
 @function()
 def require_constant_int(var):
-    static_assert(
+    cl.static_assert(
         isinstance(var, int),
         f"Expected constant of type int but got {var}",
     )

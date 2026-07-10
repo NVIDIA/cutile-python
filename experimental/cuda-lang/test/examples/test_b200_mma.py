@@ -3,7 +3,6 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import cuda.lang as cl
-import cuda.tile as ct
 from cuda.lang._compile import get_compute_capability
 import torch
 import pytest
@@ -40,7 +39,7 @@ def epilogue_store_tile(c_ptr, tmem_base, warp, base_col, g_row, g_col, n):
     regs = cl.tcgen05_load(cl.Tcgen05LoadStoreShape.SHAPE_32X32B, tmem_ptr, count=16)
     cl.tcgen05_wait_load()
 
-    for pair_idx in ct.static_iter(range(8)):
+    for pair_idx in cl.static_iter(range(8)):
         lo = cl.bitcast(regs[pair_idx * 2], cl.float32)
         hi = cl.bitcast(regs[pair_idx * 2 + 1], cl.float32)
         packed = cl._nvvm.ff2bf16x2_rn(hi, lo)
@@ -103,11 +102,11 @@ def make_mma_kernel(
         )
 
         if warp_id == 0 and cl.elect_sync():
-            for stage in ct.static_iter(range(num_stages)):
+            for stage in cl.static_iter(range(num_stages)):
                 cl.mbarrier_initialize(tma_mbars.get_element_pointer(stage), cta_group)
                 cl.mbarrier_initialize(mma_mbars.get_element_pointer(stage), 1)
 
-            for stage in ct.static_iter(range(2)):
+            for stage in cl.static_iter(range(2)):
                 cl.mbarrier_initialize(mainloop_mbars.get_element_pointer(stage), 1)
                 cl.mbarrier_initialize(
                     epilogue_mbars.get_element_pointer(stage),
@@ -259,7 +258,7 @@ def make_mma_kernel(
                             accumulate=iter_k != 0,
                             cta_group=cta_group_kind,
                         )
-                        for kk in ct.static_iter(range(1, BLOCK_K // MMA_K)):
+                        for kk in cl.static_iter(range(1, BLOCK_K // MMA_K)):
                             cl.tcgen05_mma(
                                 cl.Tcgen05MMAKind.F16,
                                 tmem_ptr + tensor_memory_address,
@@ -322,7 +321,7 @@ def make_mma_kernel(
                 cl.barrier_sync_block(barrier_id=1, number_of_threads=4 * WARP_SIZE)
                 cl.tcgen05_fence_after_thread_sync()
 
-                for tile_n in ct.static_iter(range(block_n // 16)):
+                for tile_n in cl.static_iter(range(block_n // 16)):
                     t_row = cta_rank * 128 + warp_id * 32
                     t_col = mainloop_stage * block_n + tile_n * 16
                     g_row = bid_m * BLOCK_M + tid

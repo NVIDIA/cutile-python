@@ -6,7 +6,6 @@ import pytest
 import cuda.lang as cl
 import torch
 from typing import Any
-from cuda.tile import static_assert
 from cuda.lang._compile import compile_simt
 from cuda.lang._exception import UnsupportedFeatureError, TypeCheckingError
 from cuda.lang.compilation import KernelSignature
@@ -394,7 +393,7 @@ def test_map_shared_to_leader_block(cluster):
         if cluster:
             pointer = cl.map_shared_to_cluster(pointer, 0)
         mapped = cl.map_shared_to_leader_block(pointer)
-        static_assert(cl.dtype_of(mapped) == cl.pointer_dtype(cl.int32, expected_space))
+        cl.static_assert(cl.dtype_of(mapped) == cl.pointer_dtype(cl.int32, expected_space))
         out[0] = cl.bitcast(mapped, cl.uint32)
 
     constant = "-16777217" if cluster else "-16777220"

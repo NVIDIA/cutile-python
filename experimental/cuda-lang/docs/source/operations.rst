@@ -278,9 +278,21 @@ TensorCore (Gen5)
    :nosignatures:
    :template: autosummary/class_no_init.rst
 
-    Tcgen05LoadStoreShape
     Tcgen05SharedMemoryDescriptor
+    Tcgen05InstructionDescriptor
+    Tcgen05Mxf8f6f4InstructionDescriptor
+    Tcgen05Mxf4InstructionDescriptor
     CTAGroup
+    SwizzleMode
+    Tcgen05MMAKind
+    Tcgen05MMABlockScaleKind
+    Tcgen05MMAScaleVectorSize
+    Tcgen05MMACollectorBBuffer
+    Tcgen05MMACollectorOp
+    Tcgen05LoadStoreShape
+    Tcgen05CopyMulticast
+    Tcgen05CopyShape
+    Tcgen05CopySourceFormat
 
 
 Cluster Launch Control
@@ -296,7 +308,7 @@ Cluster Launch Control
 Programmatic Dependent Launch
 -----------------------------
 To use Programmatic Dependent Launch (PDL), launch the dependent kernel with
-the ``pdl=True`` keyword argument to :func:`launch`.
+the ``programmatic_dependent_launch=True`` keyword argument to :func:`launch`.
 
 .. autosummary::
    :toctree: generated

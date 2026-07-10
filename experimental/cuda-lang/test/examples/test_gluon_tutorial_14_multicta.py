@@ -4,7 +4,6 @@
 
 from cuda.lang._compile import get_compute_capability
 import cuda.lang as cl
-import cuda.tile as ct
 import torch
 import pytest
 
@@ -32,13 +31,13 @@ MMA_K = 16
 
 
 def warp_reduce_max(value):
-    for offset in ct.static_iter((16, 8, 4, 2, 1)):
+    for offset in cl.static_iter((16, 8, 4, 2, 1)):
         value = cl._libdevice.fmaxf(value, cl.shfl_down_sync(value, offset))
     return value
 
 
 def warp_reduce_sum(value):
-    for offset in ct.static_iter((16, 8, 4, 2, 1)):
+    for offset in cl.static_iter((16, 8, 4, 2, 1)):
         value += cl.shfl_down_sync(value, offset)
     return value
 
@@ -53,7 +52,7 @@ def block_reduce_max(value, warp_values, num_warps):
     cl.barrier_sync_block()
     if tid == 0:
         value = warp_values[0]
-        for index in ct.static_iter(range(1, num_warps)):
+        for index in cl.static_iter(range(1, num_warps)):
             value = cl._libdevice.fmaxf(value, warp_values[index])
         warp_values[0] = value
     cl.barrier_sync_block()
@@ -70,7 +69,7 @@ def block_reduce_sum(value, warp_values, num_warps):
     cl.barrier_sync_block()
     if tid == 0:
         value = warp_values[0]
-        for index in ct.static_iter(range(1, num_warps)):
+        for index in cl.static_iter(range(1, num_warps)):
             value += warp_values[index]
         warp_values[0] = value
     cl.barrier_sync_block()
@@ -106,7 +105,7 @@ def multicta_softmax_kernel(
 
     if rank == 0 and tid == 0:
         row_max = cl.float32(-float("inf"))
-        for peer in ct.static_iter(range(num_ctas)):
+        for peer in cl.static_iter(range(num_ctas)):
             peer_values = cl.map_shared_to_cluster(
                 cluster_values.get_base_pointer(), peer
             )
@@ -132,7 +131,7 @@ def multicta_softmax_kernel(
 
     if rank == 0 and tid == 0:
         row_sum = cl.float32(0.0)
-        for peer in ct.static_iter(range(num_ctas)):
+        for peer in cl.static_iter(range(num_ctas)):
             peer_values = cl.map_shared_to_cluster(
                 cluster_values.get_base_pointer(), peer
             )
@@ -263,7 +262,7 @@ def store_fp16_tmem_tile(dst, tmem_base, warp, column, row, output_column, n):
     tmem = tensor_memory_pointer(tmem_base, warp * WARP_SIZE, column)
     regs = cl.tcgen05_load(cl.Tcgen05LoadStoreShape.SHAPE_32X32B, tmem, count=16)
     cl.tcgen05_wait_load()
-    for pair in ct.static_iter(range(8)):
+    for pair in cl.static_iter(range(8)):
         lo = cl.bitcast(regs[pair * 2], cl.float32)
         hi = cl.bitcast(regs[pair * 2 + 1], cl.float32)
         packed = cl._nvvm.ff2f16x2_rn(hi, lo)
@@ -357,7 +356,7 @@ def two_cta_tcgen05_kernel(a, b, c):
                 n=tile_n,
                 m=2 * cta_m,
             ).encode()
-            for kk in ct.static_iter(range(tile_k // MMA_K)):
+            for kk in cl.static_iter(range(tile_k // MMA_K)):
                 cl.tcgen05_mma(
                     cl.Tcgen05MMAKind.F16,
                     tmem_storage[0],
@@ -376,7 +375,7 @@ def two_cta_tcgen05_kernel(a, b, c):
     wait_mbarrier(mma_bar, 0)
     cl.barrier_sync_block()
     cl.tcgen05_fence_after_thread_sync()
-    for column in ct.static_iter(range(0, tile_n, 16)):
+    for column in cl.static_iter(range(0, tile_n, 16)):
         store_fp16_tmem_tile(
             c_smem.get_base_pointer(),
             tmem_storage[0],
@@ -480,7 +479,7 @@ def tma_tcgen05_kernel(a, b, c):
         m=2 * cta_m,
     ).encode()
 
-    for k_tile in ct.static_iter(range(num_k_tiles)):
+    for k_tile in cl.static_iter(range(num_k_tiles)):
         phase = k_tile & 1
         if tid == 0:
             cl.mbarrier_arrive_expect_transaction(a_bar, cta_m * tile_k * 2)
@@ -510,7 +509,7 @@ def tma_tcgen05_kernel(a, b, c):
 
         if pair_rank == 0 and warp == 0 and cl.elect_sync():
             cl.tcgen05_fence_after_thread_sync()
-            for kk in ct.static_iter(range(tile_k // MMA_K)):
+            for kk in cl.static_iter(range(tile_k // MMA_K)):
                 cl.tcgen05_mma(
                     cl.Tcgen05MMAKind.F16,
                     tmem_storage[0],
@@ -530,7 +529,7 @@ def tma_tcgen05_kernel(a, b, c):
         cl.barrier_sync_block()
 
     cl.tcgen05_fence_after_thread_sync()
-    for column in ct.static_iter(range(0, tile_n, 16)):
+    for column in cl.static_iter(range(0, tile_n, 16)):
         store_fp16_tmem_tile(
             c_smem.get_base_pointer(),
             tmem_storage[0],
@@ -643,7 +642,7 @@ def store_matmul_partition(
     cl.tcgen05_fence_after_thread_sync()
     valid_tile = pid_m < m // tile_m and pid_n < n // tile_n
     row = warp * WARP_SIZE + lane
-    for subtile in ct.static_iter(range(tile_n // subtile_n)):
+    for subtile in cl.static_iter(range(tile_n // subtile_n)):
         stage = subtile % subtile_stages
         stage_smem = c_smem.get_element_pointer((stage, 0))
         if warp == 0 and cl.elect_sync():
@@ -651,7 +650,7 @@ def store_matmul_partition(
         cl.barrier_sync_block()
 
         if valid_tile:
-            for column in ct.static_iter(range(0, subtile_n, 16)):
+            for column in cl.static_iter(range(0, subtile_n, 16)):
                 store_fp16_tmem_tile(
                     stage_smem,
                     tmem_base,
@@ -737,10 +736,10 @@ def matmul_multicta_kernel(
     )
 
     if warp == 0 and cl.elect_sync():
-        for stage in ct.static_iter(range(stages)):
+        for stage in cl.static_iter(range(stages)):
             cl.mbarrier_initialize(load_ready.get_element_pointer(stage), 2)
             cl.mbarrier_initialize(load_empty.get_element_pointer(stage), 1)
-        for stage in ct.static_iter(range(acc_stages)):
+        for stage in cl.static_iter(range(acc_stages)):
             cl.mbarrier_initialize(acc_ready.get_element_pointer(stage), 1)
             cl.mbarrier_initialize(acc_empty.get_element_pointer(stage), 8)
             cl.mbarrier_initialize(scheduler_ready.get_element_pointer(stage), 1)
@@ -920,7 +919,7 @@ def matmul_multicta_kernel(
                         stride_dimension_byte_offset=8 * 128,
                         swizzle_mode=cl.SwizzleMode.SWIZZLE_128B,
                     ).encode()
-                    for kk in ct.static_iter(range(tile_k // MMA_K)):
+                    for kk in cl.static_iter(range(tile_k // MMA_K)):
                         cl.tcgen05_mma(
                             cl.Tcgen05MMAKind.F16,
                             acc_tmem,
@@ -967,7 +966,7 @@ def matmul_multicta_kernel(
                 acc_phase,
             )
         if rank == 0 and cl.elect_sync():
-            for stage in ct.static_iter(range(acc_stages)):
+            for stage in cl.static_iter(range(acc_stages)):
                 if acc_index > stage:
                     last_use = acc_index - 1
                     if last_use % acc_stages != stage:

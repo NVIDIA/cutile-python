@@ -11,7 +11,6 @@ from typing import Any
 
 import cuda.lang as cl
 import torch
-from cuda.tile import static_assert, static_eval
 from cuda.lang._datatype import DType, is_integral
 
 
@@ -220,38 +219,38 @@ def _to_tuple(v):
 
 @cl.function
 def load_matrix_sync(spec, ptr, ldm, layout=Layout.NO_LAYOUT):
-    fn = static_eval(_find_load_intrinsic(spec, layout))
+    fn = cl.static_eval(_find_load_intrinsic(spec, layout))
     regs = fn(ptr, ldm)
-    regs = static_eval(_to_tuple(regs))
+    regs = cl.static_eval(_to_tuple(regs))
     return Fragment(spec, regs)
 
 
 @cl.function
 def mma_sync(a, b, c, satf=False):
-    fn, reg_counts = static_eval(_find_mma_intrinsic(a.spec, b.spec, c.spec, satf))
+    fn, reg_counts = cl.static_eval(_find_mma_intrinsic(a.spec, b.spec, c.spec, satf))
     regs = (*a.regs, *b.regs, *c.regs)
-    expected_regs = static_eval(sum(reg_counts))
-    static_assert(len(regs) == expected_regs, "mma_sync register count mismatch")
+    expected_regs = cl.static_eval(sum(reg_counts))
+    cl.static_assert(len(regs) == expected_regs, "mma_sync register count mismatch")
     results = fn(*regs)
     return dataclasses.replace(c, regs=results)
 
 
 @cl.function
 def store_matrix_sync(ptr, frag, ldm, layout):
-    static_assert(
+    cl.static_assert(
         frag.spec.use == FragmentUse.ACCUMULATOR,
         "store_matrix_sync expects an accumulator fragment",
     )
 
-    op = static_eval(_find_fragment_descriptor(frag.spec))
-    dtype_name = static_eval(_dtype_name(frag.spec.dtype))
-    layout_name = static_eval(layout.value)
-    fn = static_eval(
+    op = cl.static_eval(_find_fragment_descriptor(frag.spec))
+    dtype_name = cl.static_eval(_dtype_name(frag.spec.dtype))
+    layout_name = cl.static_eval(layout.value)
+    fn = cl.static_eval(
         getattr(
             cl._nvvm, f"wmma_{op.shape_name}_store_d_{layout_name}_stride_{dtype_name}"
         )
     )
-    static_assert(
+    cl.static_assert(
         len(frag.regs) == op.c_regs,
         f"store_matrix_sync expected {op.c_regs} registers",
     )
@@ -298,7 +297,7 @@ class WmmaConfig:
 def wmma_gemm_kernel(cfg: WmmaConfig) -> cl.kernel:
     @cl.kernel
     def kernel(a, b, c, d):
-        config = static_eval(cfg)
+        config = cl.static_eval(cfg)
         wmma_m, wmma_n, wmma_k = config.shape
         global_m, global_n, global_k = config.global_shape
 

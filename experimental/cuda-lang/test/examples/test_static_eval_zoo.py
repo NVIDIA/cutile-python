@@ -8,7 +8,6 @@ from cuda.lang.compilation import KernelSignature
 from cuda.lang._exception import CompilerExecutionError
 from test.util import compile_kernel
 import cuda.lang as cl
-from cuda.tile import static_eval, static_iter, static_assert
 from cuda.lang._stub.foreign_function import _call_foreign_function as ffi
 from cuda.lang._ir.type import (
     SymbolicArray,
@@ -28,7 +27,7 @@ def static_define(function):
 
     @functools.wraps(function)
     def wrapper(*args, **kwargs):
-        return static_eval(function(*args, **kwargs))
+        return cl.static_eval(function(*args, **kwargs))
 
     return wrapper
 
@@ -82,7 +81,7 @@ def test_loop_unroller(unroll_factor, problem_size):
         count_per_unrolled = count // unroll_factor
 
         for i in range(count_per_unrolled):
-            for c in static_iter(range(unroll_factor)):
+            for c in cl.static_iter(range(unroll_factor)):
                 iv = i * unroll_factor + c
                 if iv < count:
                     function(iv)
@@ -123,7 +122,7 @@ def static_overload(function):
 
     @functools.wraps(function)
     def wrapper(*args, **kwargs):
-        resolved = static_eval(function(*args, **kwargs))
+        resolved = cl.static_eval(function(*args, **kwargs))
         return resolved(*args, **kwargs)
 
     return wrapper
@@ -244,10 +243,10 @@ def bitonic_schedule(width):
 @cl.kernel
 def bitonic_sort_kernel(inp, out, SORT_WIDTH: cl.Constant[int]):
     with cl.local_array(SORT_WIDTH, cl.int32) as values:
-        for index in static_iter(range(SORT_WIDTH)):
+        for index in cl.static_iter(range(SORT_WIDTH)):
             values[index] = inp[index]
 
-        for lhs, rhs, ascending in static_iter(bitonic_schedule(SORT_WIDTH)):
+        for lhs, rhs, ascending in cl.static_iter(bitonic_schedule(SORT_WIDTH)):
             lhs_value = values[lhs]
             rhs_value = values[rhs]
             low = cl.minimum(lhs_value, rhs_value)
@@ -259,7 +258,7 @@ def bitonic_sort_kernel(inp, out, SORT_WIDTH: cl.Constant[int]):
                 values[lhs] = high
                 values[rhs] = low
 
-        for index in static_iter(range(SORT_WIDTH)):
+        for index in cl.static_iter(range(SORT_WIDTH)):
             out[index] = values[index]
 
 
@@ -319,7 +318,7 @@ def test_epilogue_operation_tuple():
         fn: Callable[[Any], Any]
 
         def run(self, tensor: cl.Array):
-            static_assert(tensor.ndim == 1)
+            cl.static_assert(tensor.ndim == 1)
             for i in range(tensor.shape[0]):
                 print(i, tensor[i])
                 tensor[i] = self.fn(tensor[i])
@@ -349,7 +348,7 @@ def test_epilogue_operation_tuple():
             ElementWiseApply(clamp(minval=-2, maxval=8)),
             ElementWiseApply(plus(3)),
         )
-        for operation in static_iter(operations):
+        for operation in cl.static_iter(operations):
             operation.run(out)
 
     out = torch.tensor(range(16), dtype=torch.int32).cuda()

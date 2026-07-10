@@ -2,7 +2,6 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-import cuda.tile as ct
 import cuda.lang as cl
 import torch
 
@@ -28,12 +27,12 @@ def test_matmul_sharedmem():
         col = bx * tile_width + tx
         p_value = cl.float32(0.0)
 
-        for tile_idx in ct.static_iter(range(wA // tile_width)):
+        for tile_idx in cl.static_iter(range(wA // tile_width)):
             ds_A[ty, tx] = A[row * wA + (tile_idx * tile_width + tx)]
             ds_B[ty, tx] = B[(tile_idx * tile_width + ty) * wB + col]
             cl.barrier_sync_block()
 
-            for kk in ct.static_iter(range(tile_width)):
+            for kk in cl.static_iter(range(tile_width)):
                 p_value = p_value + ds_A[ty, kk] * ds_B[kk, tx]
 
             cl.barrier_sync_block()

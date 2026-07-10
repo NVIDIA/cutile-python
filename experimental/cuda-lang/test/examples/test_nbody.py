@@ -7,7 +7,6 @@ import pytest
 import torch
 
 import cuda.lang as cl
-import cuda.tile as ct
 
 
 __doc__ = """
@@ -40,7 +39,7 @@ def calculate_forces(
     n: cl.Constant[int],
     tile_size: cl.Constant[int],
 ):
-    ct.static_assert(n % tile_size == 0, "n must be a multiple of tile_size")
+    cl.static_assert(n % tile_size == 0, "n must be a multiple of tile_size")
 
     sh_positions = cl.shared_array(shape=(tile_size, 2), dtype=cl.float32)
     sh_weights = cl.shared_array(shape=(tile_size,), dtype=cl.float32)

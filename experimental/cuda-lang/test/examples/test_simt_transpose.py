@@ -3,7 +3,6 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import cuda.lang as cl
-import cuda.tile as ct
 import pytest
 import torch
 
@@ -46,7 +45,7 @@ def copy(odata, idata, width: cl.Constant[int], height: cl.Constant[int]):
     xIndex = bx * TILE_DIM + tx
     yIndex = by * TILE_DIM + ty
     index = xIndex + width * yIndex
-    for i in ct.static_iter(range(0, TILE_DIM, BLOCK_ROWS)):
+    for i in cl.static_iter(range(0, TILE_DIM, BLOCK_ROWS)):
         odata[index + i * width] = idata[index + i * width]
 
 
@@ -58,12 +57,12 @@ def copySharedMem(odata, idata, width: cl.Constant[int], height: cl.Constant[int
     xIndex = bx * TILE_DIM + tx
     yIndex = by * TILE_DIM + ty
     index = xIndex + width * yIndex
-    for i in ct.static_iter(range(0, TILE_DIM, BLOCK_ROWS)):
+    for i in cl.static_iter(range(0, TILE_DIM, BLOCK_ROWS)):
         if xIndex < width and yIndex < height:
             tile[ty + i, tx] = idata[index + i * width]
             tile[ty + i, tx] = idata[index + i * width]
     cl.barrier_sync_block()
-    for i in ct.static_iter(range(0, TILE_DIM, BLOCK_ROWS)):
+    for i in cl.static_iter(range(0, TILE_DIM, BLOCK_ROWS)):
         if xIndex < height and yIndex < width:
             odata[index + i * width] = tile[ty + i, tx]
             odata[index + i * width] = tile[ty + i, tx]
@@ -77,7 +76,7 @@ def transposeNaive(odata, idata, width: cl.Constant[int], height: cl.Constant[in
     yIndex = by * TILE_DIM + ty
     index_in = xIndex + width * yIndex
     index_out = yIndex + height * xIndex
-    for i in ct.static_iter(range(0, TILE_DIM, BLOCK_ROWS)):
+    for i in cl.static_iter(range(0, TILE_DIM, BLOCK_ROWS)):
         odata[index_out + i] = idata[index_in + i * width]
 
 
@@ -92,10 +91,10 @@ def transposeCoalesced(odata, idata, width: cl.Constant[int], height: cl.Constan
     xIndex = by * TILE_DIM + tx
     yIndex = bx * TILE_DIM + ty
     index_out = xIndex + yIndex * height
-    for i in ct.static_iter(range(0, TILE_DIM, BLOCK_ROWS)):
+    for i in cl.static_iter(range(0, TILE_DIM, BLOCK_ROWS)):
         tile[ty + i, tx] = idata[index_in + i * width]
     cl.barrier_sync_block()
-    for i in ct.static_iter(range(0, TILE_DIM, BLOCK_ROWS)):
+    for i in cl.static_iter(range(0, TILE_DIM, BLOCK_ROWS)):
         odata[index_out + i * height] = tile[tx, ty + i]
 
 
@@ -112,10 +111,10 @@ def transposeNoBankConflicts(
     xIndex = by * TILE_DIM + tx
     yIndex = bx * TILE_DIM + ty
     index_out = xIndex + yIndex * height
-    for i in ct.static_iter(range(0, TILE_DIM, BLOCK_ROWS)):
+    for i in cl.static_iter(range(0, TILE_DIM, BLOCK_ROWS)):
         tile[ty + i, tx] = idata[index_in + i * width]
     cl.barrier_sync_block()
-    for i in ct.static_iter(range(0, TILE_DIM, BLOCK_ROWS)):
+    for i in cl.static_iter(range(0, TILE_DIM, BLOCK_ROWS)):
         odata[index_out + i * height] = tile[tx, ty + i]
 
 
@@ -138,10 +137,10 @@ def transposeDiagonal(odata, idata, width: cl.Constant[int], height: cl.Constant
     xIndex = blockIdx_y * TILE_DIM + tx
     yIndex = blockIdx_x * TILE_DIM + ty
     index_out = xIndex + yIndex * height
-    for i in ct.static_iter(range(0, TILE_DIM, BLOCK_ROWS)):
+    for i in cl.static_iter(range(0, TILE_DIM, BLOCK_ROWS)):
         tile[ty + i, tx] = idata[index_in + i * width]
     cl.barrier_sync_block()
-    for i in ct.static_iter(range(0, TILE_DIM, BLOCK_ROWS)):
+    for i in cl.static_iter(range(0, TILE_DIM, BLOCK_ROWS)):
         odata[index_out + i * height] = tile[tx, ty + i]
 
 
@@ -155,10 +154,10 @@ def transposeFineGrained(
     xIndex = bx * TILE_DIM + tx
     yIndex = by * TILE_DIM + ty
     index = xIndex + yIndex * width
-    for i in ct.static_iter(range(0, TILE_DIM, BLOCK_ROWS)):
+    for i in cl.static_iter(range(0, TILE_DIM, BLOCK_ROWS)):
         block[ty + i, tx] = idata[index + i * width]
     cl.barrier_sync_block()
-    for i in ct.static_iter(range(0, TILE_DIM, BLOCK_ROWS)):
+    for i in cl.static_iter(range(0, TILE_DIM, BLOCK_ROWS)):
         odata[index + i * height] = block[tx, ty + i]
 
 
@@ -175,10 +174,10 @@ def transposeCoarseGrained(
     xIndex = by * TILE_DIM + tx
     yIndex = bx * TILE_DIM + ty
     index_out = xIndex + yIndex * height
-    for i in ct.static_iter(range(0, TILE_DIM, BLOCK_ROWS)):
+    for i in cl.static_iter(range(0, TILE_DIM, BLOCK_ROWS)):
         block[ty + i, tx] = idata[index_in + i * width]
     cl.barrier_sync_block()
-    for i in ct.static_iter(range(0, TILE_DIM, BLOCK_ROWS)):
+    for i in cl.static_iter(range(0, TILE_DIM, BLOCK_ROWS)):
         odata[index_out + i * height] = block[ty + i, tx]
 
 

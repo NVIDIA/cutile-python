@@ -4,12 +4,10 @@
 
 from typing import TypeVar, Generic, Literal
 
+import cuda.lang as cl
 from cuda.lang._execution import stub, function
 from cuda.lang._exception import TypeCheckingError
-from cuda.tile._stub import (
-    Array as TileArray,
-    static_eval,
-)
+from cuda.tile._stub import Array as TileArray
 from cuda.tile._memory_model import MemoryOrder, MemoryScope, MemorySpace
 from cuda.lang._datatype import DType, int32
 from .types import Pointer, Scalar, Vector
@@ -473,7 +471,7 @@ def _inline_ptx(ptx_code: str, *constraint_pairs: tuple) -> tuple:
 
 @function()
 def ptx_comment(comment: str):
-    _inline_ptx(static_eval("// " + comment))
+    _inline_ptx(cl.static_eval("// " + comment))
 
 
 @stub

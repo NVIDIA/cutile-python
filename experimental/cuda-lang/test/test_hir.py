@@ -8,7 +8,6 @@ from cuda.lang._compile import get_function_ir
 from cuda.lang._ir.ir import IRContext
 from cuda.lang.compilation import KernelSignature
 from cuda.lang._exception import TypeCheckingError
-from cuda.tile import static_eval
 from cuda.tile._passes.ast2hir import get_function_hir
 
 from .util import filecheck
@@ -41,7 +40,7 @@ def test_load_store_in_hir():
 
 def test_hir_error_logging_preserves_original_error(capsys):
     def foo(r):
-        static_eval(r)
+        cl.static_eval(r)
 
     @cl.kernel
     def kernel():

@@ -4,7 +4,6 @@
 
 import pytest
 import cuda.lang as cl
-from cuda.tile import static_assert, static_eval
 from cuda.lang._exception import TypeCheckingError
 import torch
 
@@ -78,10 +77,10 @@ def test_negative_stride():
 def test_static_eval_return_with_static_assert_else_makedummy():
     @cl.function
     def choose(flag: cl.Constant[int]):
-        if static_eval(flag == 0):
+        if cl.static_eval(flag == 0):
             return cl.int32(7)
         else:
-            static_assert(False, "unsupported flag")
+            cl.static_assert(False, "unsupported flag")
 
     @cl.kernel
     def kernel(flag: cl.Constant[int], out):

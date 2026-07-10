@@ -7,7 +7,6 @@ import torch
 
 import cuda.lang as cl
 from cuda.lang._exception import TypeCheckingError
-from cuda.tile import static_assert
 from .util import require_blackwell_or_newer
 
 
@@ -16,7 +15,7 @@ def test_float_intrinsic(src_dtype):
     @cl.kernel
     def kern(x, y):
         res = cl._nvvm.add_rz_f(x[0], x[1])
-        static_assert(cl.dtype_of(res) == cl.float32)
+        cl.static_assert(cl.dtype_of(res) == cl.float32)
         y[()] = res
 
     x = torch.tensor([3.0, 5.0], dtype=src_dtype, device="cuda")
@@ -29,7 +28,7 @@ def test_float_intrinsic_invalid_implicit_cast():
     @cl.kernel
     def kern(x, y):
         res = cl._nvvm.add_rz_f(x[0], x[1])
-        static_assert(res.dtype == cl.float32)
+        cl.static_assert(res.dtype == cl.float32)
         y[()] = res
 
     x = torch.tensor([3.0, 5.0], dtype=torch.float64, device="cuda")

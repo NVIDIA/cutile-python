@@ -6,7 +6,6 @@ from dataclasses import dataclass
 import operator
 
 import cuda.lang as cl
-from cuda.tile import static_iter
 import pytest
 import torch
 
@@ -23,7 +22,7 @@ C = 50257
 
 
 def warp_reduce(val: cl.float32, op) -> cl.float32:
-    for offset in static_iter([16, 8, 4, 2, 1]):
+    for offset in cl.static_iter([16, 8, 4, 2, 1]):
         shuffled = cl.shfl_down_sync(val, offset)
         val = op(val, shuffled)
     return val
@@ -103,7 +102,7 @@ class SoftmaxForwardKernel7:
 
         maxval = cl.float32(-float("inf"))
         for i in range(0, c, block_size * unroll_factor):
-            for u in static_iter(range(unroll_factor)):
+            for u in cl.static_iter(range(unroll_factor)):
                 col = i + u * block_size + tid
                 if col < c:
                     maxval = cl._libdevice.fmaxf(maxval, inp[row_base + col])
@@ -115,7 +114,7 @@ class SoftmaxForwardKernel7:
 
         if tid == 0:
             block_max = maxvals[0]
-            for i in static_iter(range(1, warps_per_block)):
+            for i in cl.static_iter(range(1, warps_per_block)):
                 block_max = cl._libdevice.fmaxf(block_max, maxvals[i])
             maxvals[0] = block_max
         cl.barrier_sync_block()
@@ -124,7 +123,7 @@ class SoftmaxForwardKernel7:
 
         sumval = cl.float32(0.0)
         for i in range(0, c, block_size * unroll_factor):
-            for u in static_iter(range(unroll_factor)):
+            for u in cl.static_iter(range(unroll_factor)):
                 col = i + u * block_size + tid
                 if col < c:
                     output = cl._libdevice.expf(inp[row_base + col] - offset)
@@ -138,7 +137,7 @@ class SoftmaxForwardKernel7:
 
         if tid == 0:
             block_sum = sumvals[0]
-            for i in static_iter(range(1, warps_per_block)):
+            for i in cl.static_iter(range(1, warps_per_block)):
                 block_sum = block_sum + sumvals[i]
             sumvals[0] = block_sum
         cl.barrier_sync_block()
@@ -146,7 +145,7 @@ class SoftmaxForwardKernel7:
         denom = sumvals[0]
 
         for i in range(0, c, block_size * unroll_factor):
-            for u in static_iter(range(unroll_factor)):
+            for u in cl.static_iter(range(unroll_factor)):
                 col = i + u * block_size + tid
                 if col < c:
                     out[row_base + col] = out[row_base + col] / denom

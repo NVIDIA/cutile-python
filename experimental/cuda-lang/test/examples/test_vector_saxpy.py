@@ -4,7 +4,6 @@
 
 import pytest
 import cuda.lang as cl
-from cuda.tile import static_assert, static_eval
 import torch
 
 
@@ -12,18 +11,18 @@ import torch
 def test_vector_saxpy(vector_length):
 
     def load_vector_aligned(array, index):
-        align = vector_length * static_eval(array.dtype.bitwidth) // 8
+        align = vector_length * cl.static_eval(array.dtype.bitwidth) // 8
         ep = array.get_element_pointer(index)
         return ep.load(count=vector_length, alignment=align)
 
     def store_vector_aligned(array, index, value):
-        align = vector_length * static_eval(array.dtype.bitwidth) // 8
+        align = vector_length * cl.static_eval(array.dtype.bitwidth) // 8
         ep = array.get_element_pointer(index)
         ep.store(value, alignment=align)
 
     @cl.kernel
     def saxpy(A, X, Y, out):
-        static_assert(A.dtype == X.dtype == Y.dtype)
+        cl.static_assert(A.dtype == X.dtype == Y.dtype)
         offset = cl.block_index(0) * vector_length
         a = load_vector_aligned(A, offset)
         x = load_vector_aligned(X, offset)

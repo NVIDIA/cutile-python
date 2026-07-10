@@ -3,7 +3,6 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import cuda.lang as cl
-from cuda.tile import static_eval
 from cuda.lang._stub.foreign_function import _call_foreign_function as ffi
 import torch
 import pytest
@@ -25,7 +24,7 @@ def get_device_function(symbolic_value):
 
 
 def statically_choose_ffi_entrypoint(x):
-    return static_eval(get_device_function(x))(x)
+    return cl.static_eval(get_device_function(x))(x)
 
 
 @cl.kernel
