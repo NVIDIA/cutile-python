@@ -115,6 +115,7 @@ Selection
 
    where
    extract
+   insert
 
 
 .. _operations-math:

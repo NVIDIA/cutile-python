@@ -589,6 +589,10 @@ class Tile:
         """See :py:func:`extract`."""
         return extract(self, index, shape)
 
+    def insert(self, index, value) -> "Tile":
+        """See :py:func:`insert`."""
+        return insert(self, index, value)
+
     def reshape(self, shape) -> "Tile":
         """See :py:func:`reshape`."""
         return reshape(self, shape)
@@ -4143,6 +4147,65 @@ def extract(x, /, index, shape) -> Tile:
 
             (0, 0): [[0, 1], [4, 5]]
             (0, 1): [[2, 3], [6, 7]]
+    """
+
+
+@stub
+def insert(x, /, index, value) -> Tile:
+    """Stores a smaller tile into a bigger tile.
+
+    Returns a new tile whose elements match ``x``, except in the subtile at
+    the given grid ``index``, whose elements match ``value``. This is the
+    inverse of :py:func:`extract`: the shape of the inserted subtile is taken
+    from ``value``, and ``extract(insert(x, index, value), index,
+    value.shape)`` reproduces ``value``.
+
+    Like all tile operations, this does not mutate ``x`` in place; it returns
+    a new tile.
+
+    Args:
+        x (Tile): destination tile.
+        index (Shape): Index into the grid of subtiles, not element index.
+            Each dimension ``i`` has ``x.shape[i] // value.shape[i]`` subtiles;
+            valid values are ``[0, x.shape[i] // value.shape[i])``.
+        value (Tile): subtile to store. Its shape must evenly divide
+            ``x.shape`` in every dimension. A 0-d ``value`` is treated as a
+            unit subtile.
+
+    Returns:
+        Tile:
+
+    Examples:
+
+        1D tile.
+
+        .. testcode::
+            :template: kernel_wrapper.py
+
+            tile = ct.arange(8, dtype=ct.int32)
+            sub = ct.full((4,), 99, dtype=ct.int32)
+            print(f'(0,): {ct.insert(tile, (0,), sub)}')
+            print(f'(1,): {ct.insert(tile, (1,), sub)}')
+
+        .. testoutput::
+
+            (0,): [99, 99, 99, 99, 4, 5, 6, 7]
+            (1,): [0, 1, 2, 3, 99, 99, 99, 99]
+
+        2D tile.
+
+        .. testcode::
+            :template: kernel_wrapper.py
+
+            tile = ct.arange(16, dtype=ct.int32).reshape((4, 4))
+            sub = ct.full((2, 2), 99, dtype=ct.int32)
+            print(f'(0, 0): {ct.insert(tile, (0, 0), sub)}')
+            print(f'(0, 1): {ct.insert(tile, (0, 1), sub)}')
+
+        .. testoutput::
+
+            (0, 0): [[99, 99, 2, 3], [99, 99, 6, 7], [8, 9, 10, 11], [12, 13, 14, 15]]
+            (0, 1): [[0, 1, 99, 99], [4, 5, 99, 99], [8, 9, 10, 11], [12, 13, 14, 15]]
     """
 
 

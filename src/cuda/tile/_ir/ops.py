@@ -486,6 +486,7 @@ def getattr_tile_ndim_impl(object: Var, name: Var):
 
 
 @impl(getattr, overload=(TileTy, "extract"))
+@impl(getattr, overload=(TileTy, "insert"))
 @impl(getattr, overload=(TileTy, "reshape"))
 @impl(getattr, overload=(TileTy, "astype"))
 @impl(getattr, overload=(TileTy, "permute"))
@@ -3025,15 +3026,7 @@ def extract(x: Var, index: tuple[Var, ...], shape: Sequence[int]) -> Var:
     return add_operation(TileExtract, res_ty, x=x, index=index, shape=tuple(shape))
 
 
-@impl(ct.extract)
-def extract_impl(x: Var, index: Var, shape: Var) -> Var:
-    x_ty = require_tile_type(x)
-    shape = require_constant_shape(shape, expected_rank=x_ty.ndim, allow_single_int=True,
-                                   allow_0d_shape=True)
-    orig_shape = shape
-    if len(shape) == 0:
-        shape = (1,) * x_ty.ndim
-
+def _resolve_subtile_index(x_ty, shape, index, *, sub_noun):
     index_ty = require_index_or_index_tuple_type(index)
     index_items = index.get_aggregate().items if isinstance(index_ty, TupleTy) else (index,)
     if x_ty.ndim != len(index_items):
@@ -3045,7 +3038,7 @@ def extract_impl(x: Var, index: Var, shape: Var) -> Var:
             raise TileTypeError(f"Zero shape at dimension #{i}: {shape}")
         if s1 % s2 != 0:
             raise TileTypeError(f"Input shape {x_ty.shape} is not divisible by"
-                                f" result shape {shape} at dimension #{i}")
+                                f" {sub_noun} shape {shape} at dimension #{i}")
         n_tiles = s1 // s2
         if idx_var.is_constant():
             idx_val = idx_var.get_constant()
@@ -3053,10 +3046,66 @@ def extract_impl(x: Var, index: Var, shape: Var) -> Var:
                 raise TileTypeError(
                     f"Index {idx_val} out of bounds at dimension #{i}: "
                     f"valid range is [0, {n_tiles}) in tile space "
-                    f"(input shape {x_ty.shape}, extract shape {shape})"
+                    f"(input shape {x_ty.shape}, {sub_noun} shape {shape})"
                 )
+    return index_items
+
+
+@impl(ct.extract)
+def extract_impl(x: Var, index: Var, shape: Var) -> Var:
+    x_ty = require_tile_type(x)
+    shape = require_constant_shape(shape, expected_rank=x_ty.ndim, allow_single_int=True,
+                                   allow_0d_shape=True)
+    orig_shape = shape
+    if len(shape) == 0:
+        shape = (1,) * x_ty.ndim
+
+    index_items = _resolve_subtile_index(x_ty, shape, index, sub_noun="result")
     result = extract(x, index_items, shape)
     return reshape(result, orig_shape)
+
+
+@dataclass(eq=False)
+class TileInsert(Operation, opcode="tile_insert"):
+    x: Var = operand()
+    value: Var = operand()
+    index: tuple[Var, ...] = operand()
+
+    @override
+    def generate_bytecode(self, ctx: BytecodeContext) -> bc.Value:
+        x_value = ctx.get_value(self.x)
+        value = ctx.get_value(self.value)
+        index = tuple(ctx.get_value(idx) for idx in self.index)
+        res_type_id = ctx.typeid_of(self.result_var)
+        return bc.encode_InsertOp(ctx.builder, res_type_id, value, x_value, index)
+
+
+def insert(x: Var, index: tuple[Var, ...], value: Var) -> Var:
+    return add_operation(TileInsert, x.get_type(), x=x, value=value, index=index)
+
+
+@impl(ct.insert, min_version=BytecodeVersion.V_13_4)
+def insert_impl(x: Var, index: Var, value: Var) -> Var:
+    x_ty = require_tile_type(x)
+    value_ty = require_tile_type(value)
+
+    if x_ty.dtype != value_ty.dtype:
+        raise TileTypeError(
+            f"Cannot insert a tile of dtype {value_ty.dtype} into a tile"
+            f" of dtype {x_ty.dtype}"
+        )
+
+    if value_ty.ndim == 0:
+        shape = (1,) * x_ty.ndim
+        value = reshape(value, shape)
+    else:
+        shape = value_ty.shape
+        if value_ty.ndim != x_ty.ndim:
+            raise TileTypeError(f"Value rank {value_ty.ndim}"
+                                f" does not match the tile rank {x_ty.ndim}")
+
+    index_items = _resolve_subtile_index(x_ty, shape, index, sub_noun="value")
+    return insert(x, index_items, value)
 
 
 @impl(ct.Tile.item)
