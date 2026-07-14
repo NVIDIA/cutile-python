@@ -2,6 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+from cuda.lang._compiler_options import CompilerOptions
 import sys
 from functools import partial
 from typing import Callable
@@ -22,7 +23,8 @@ from cuda.lang._exception import InternalError, TypeCheckingError
 from .type_conversion import (
     ir_type_to_mlir_type,
     mlir_constant_of_type,
-    convert_dtype, dtype_to_mlir_type,
+    convert_dtype,
+    dtype_to_mlir_type,
 )
 
 
@@ -50,7 +52,7 @@ def _get_llvm_memory_ordering(mo: None | MemoryOrder):
         case MemoryOrder.RELEASE:
             return mlir.llvm.AtomicOrdering.release
 
-    raise NotImplementedError(f'Unhandled {mo=}')
+    raise NotImplementedError(f"Unhandled {mo=}")
 
 
 def _get_llvm_syncscope(memory_scope: MemoryScope) -> str | None:
@@ -217,7 +219,7 @@ def _get_mlir_unary_op_for_op_and_type(
 ) -> Callable[[mlir.Value], mlir.Value] | None:
     dtype = typ.tensor_dtype()
     match fn:
-        case 'pos':
+        case "pos":
             return lambda operand: operand
         case "invert" if datatype.is_boolean(dtype):
 
@@ -231,9 +233,9 @@ def _get_mlir_unary_op_for_op_and_type(
                 return cmp
 
             return invert
-        case 'neg' if datatype.is_float(dtype):
+        case "neg" if datatype.is_float(dtype):
             return mlir.arith.add_NegFOp
-        case 'neg' if datatype.is_integral(dtype):
+        case "neg" if datatype.is_integral(dtype):
             mlir_type = ir_type_to_mlir_type(typ)
             zero = mlir_constant_of_type(mlir_type, 0)
             return lambda operand: mlir.arith.add_SubIOp(lhs=zero, rhs=operand)
@@ -322,11 +324,16 @@ _NOOP_LOWERINGS = frozenset([
 
 class IR2MLIR:
     def __init__(
-        self, signature: KernelSignature, region: ir.Region, ctx: ir.IRContext
+        self,
+        signature: KernelSignature,
+        region: ir.Region,
+        ctx: ir.IRContext,
+        compiler_options: CompilerOptions,
     ):
         self.ctx = ctx
         self.region = region
         self.signature = signature
+        self.compiler_options = compiler_options
         self.var_map: dict[str, mlir.Value] = {}
         self.block_map: dict[int, mlir.Block] = {}
         self._module_op: mlir.Operation | None = None
@@ -466,23 +473,67 @@ class IR2MLIR:
                 for param in self.region.blocks[0].params
             )
             function_type = mlir.llvm.LLVMFunctionType(
-                returnType=mlir.llvm.LLVMVoidType(),
-                params=input_types,
-                varArg=False
+                returnType=mlir.llvm.LLVMVoidType(), params=input_types, varArg=False
             )
-            arg_attrs = [self._get_arg_attributes(param.get_type())
-                         for param in self.region.blocks[0].params]
+            arg_attrs = [
+                self._get_arg_attributes(param.get_type())
+                for param in self.region.blocks[0].params
+            ]
 
             mlir.llvm.add_LLVMFuncOp(
                 sym_name=self.signature.symbol,
                 function_type=function_type,
                 arg_attrs=mlir.ArrayAttr(value=arg_attrs),
                 body=body_region,
-                extra_attributes=[
-                    ("nvvm.kernel", mlir.UnitAttr()),
-                ],
+                extra_attributes=self._get_nvvm_function_attributes(),
             )
             self._func_op = gpu_module_region.blocks[0].operations[-1]
+
+    def _get_nvvm_function_attributes(self):
+        attributes = [
+            ("nvvm.kernel", mlir.UnitAttr()),
+        ]
+        if self.compiler_options.max_threads_per_block is not None:
+            attributes.append(
+                (
+                    "nvvm.maxntid",
+                    mlir.DenseI32ArrayAttr(self.compiler_options.max_threads_per_block),
+                )
+            )
+
+        if self.compiler_options.max_blocks_per_cluster is not None:
+            attributes.append(
+                (
+                    "nvvm.cluster_max_blocks",
+                    mlir.IntegerAttr(
+                        type=mlir.IntegerType.signless(32),
+                        value=self.compiler_options.max_blocks_per_cluster,
+                    ),
+                )
+            )
+
+        if self.compiler_options.min_blocks_per_sm is not None:
+            attributes.append(
+                (
+                    "nvvm.minctasm",
+                    mlir.IntegerAttr(
+                        type=mlir.IntegerType.signless(32),
+                        value=self.compiler_options.min_blocks_per_sm,
+                    ),
+                )
+            )
+
+        if self.compiler_options.max_registers_per_thread is not None:
+            attributes.append(
+                (
+                    "nvvm.maxnreg",
+                    mlir.IntegerAttr(
+                        type=mlir.IntegerType.signless(32),
+                        value=self.compiler_options.max_registers_per_thread,
+                    ),
+                )
+            )
+        return attributes
 
     def _get_arg_attributes(self, ty: ir_type.Type) -> mlir.DictionaryAttr:
         named_attrs = []
@@ -1247,9 +1298,12 @@ class IR2MLIR:
 
 
 def ir2mlir(
-    signature: KernelSignature, body: ir.Region, ctx: ir.IRContext
+    signature: KernelSignature,
+    body: ir.Region,
+    ctx: ir.IRContext,
+    compiler_options: CompilerOptions,
 ) -> mlir.Operation:
-    lower = IR2MLIR(signature, body, ctx)
+    lower = IR2MLIR(signature, body, ctx, compiler_options)
     op = lower()
     return op
 

@@ -8,6 +8,7 @@ from types import FunctionType
 from typing import TYPE_CHECKING
 
 from cuda.lang._ir import ir
+from ._compiler_options import CompilerOptions
 from cuda.tile import _cext
 from cuda.tile._cext import launch_extended
 from cuda.tile._execution import function, stub
@@ -129,21 +130,44 @@ class kernel(_cext.TileDispatcher):
         function=None,
         /,
         *,
-        opt_level: None | int = 3,
+        opt_level: int | None = 3,
         arch: str | None = None,
         gpu_name: str | None = None,
+        max_threads_per_block: Dim3 | None = None,
+        max_blocks_per_cluster: int | None = None,
+        max_registers_per_thread: int | None = None,
+        min_blocks_per_sm: int | None = None,
     ):
+        """
+        Args:
+            function: Python function to be compiled.
+            opt_level (int | None): Optimization level applied to the kernel.
+            arch (str): GPU architecture this kernel should be compiled for.
+                ``None`` selects an appropriate value for the current device.
+            gpu_name (str): GPU name this kernel should be compiled for.
+                ``None`` selects an appropriate value for the current device.
+            max_threads_per_block (tuple[int, int, int] | None):
+            max_blocks_per_cluster (int | None):
+            max_registers_per_thread (int | None):
+            min_blocks_per_sm (int | None):
+        """
         if not isinstance(function, FunctionType):
             raise TypeError("`kernel` decorator must be applied to a Python function")
 
-        from cuda.tile._compiler_options import CompilerOptions
         from cuda.tile._annotated_function import get_annotated_function
+        if isinstance(max_threads_per_block, tuple) and len(max_threads_per_block) < 3:
+            max_threads_per_block = (*max_threads_per_block, *(1, 1, 1))[:3]
 
         ann_func = get_annotated_function(function)
-        compiler_options = CompilerOptions(opt_level=opt_level)
         super().__init__(ann_func.parameter_annotations)
         self._annotated_function = ann_func
-        self._compiler_options = compiler_options
+        self._compiler_options = CompilerOptions(
+            opt_level=opt_level,
+            max_threads_per_block=max_threads_per_block,
+            max_blocks_per_cluster=max_blocks_per_cluster,
+            max_registers_per_thread=max_registers_per_thread,
+            min_blocks_per_sm=min_blocks_per_sm,
+        )
         self._arch = arch
         self._gpu_name = gpu_name
 

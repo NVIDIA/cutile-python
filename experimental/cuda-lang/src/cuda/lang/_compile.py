@@ -23,7 +23,7 @@ from cuda.tile._annotated_function import (
     get_annotated_function,
 )
 from cuda.tile._cext import get_compute_capability as _get_compute_capability
-from cuda.tile._compiler_options import CompilerOptions
+from ._compiler_options import CompilerOptions
 from cuda.lang._logging import get_log_flags
 from cuda.lang._ir import hir as hir_ir
 from cuda.lang._ir import ir
@@ -253,7 +253,7 @@ def compile_simt(
     if log_flags.log_flattened_ir:
         _dump("Flattened IR", flattened_ir)
 
-    mlir_module = ir2mlir(signature, flattened_ir, ctx)
+    mlir_module = ir2mlir(signature, flattened_ir, ctx, compiler_options)
     mlir_text = str(mlir_module)
 
     if log_flags.log_mlir:
