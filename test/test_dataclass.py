@@ -3,6 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import dataclasses
+import re
 from dataclasses import dataclass
 from typing import Any
 
@@ -12,6 +13,7 @@ import cuda.tile as ct
 import torch
 
 from cuda.tile import TileTypeError
+from cuda.tile._execution import static_def
 
 
 @dataclass(frozen=True)
@@ -241,7 +243,11 @@ def test_reject_no_init():
     def kern():
         Initless(2)
 
-    with pytest.raises(TileTypeError, match="Dataclasses with init=False are not supported"):
+    expected_message = re.escape(
+        "Dataclass instance creation is only supported for dataclasses with a default generated"
+        " __init__() method"
+    )
+    with pytest.raises(TileTypeError, match=expected_message):
         ct.launch(torch.cuda.current_stream(), (1,), kern, ())
 
 
@@ -257,8 +263,11 @@ def test_reject_custom_init():
     def kern():
         CustomizedInit()
 
-    with pytest.raises(TileTypeError,
-                       match="Dataclasses with custom __init__ are not supported"):
+    expected_message = re.escape(
+        "Dataclass instance creation is only supported for dataclasses with a default generated"
+        " __init__() method"
+    )
+    with pytest.raises(TileTypeError, match=expected_message):
         ct.launch(torch.cuda.current_stream(), (1,), kern, ())
 
 
@@ -296,6 +305,26 @@ def test_reject_custom_new():
         ct.launch(torch.cuda.current_stream(), (1,), kern, ())
 
 
+def test_dataclass_with_base():
+    @dataclass(frozen=True)
+    class Base:
+        x: int
+
+    @dataclass(frozen=True)
+    class Derived(Base):
+        y: int
+
+    @ct.kernel
+    def kern(x):
+        d = Derived(3, 5)
+        ct.scatter(x, 0, d.x)
+        ct.scatter(x, 1, d.y)
+
+    x = torch.zeros((2,), dtype=torch.int32, device="cuda")
+    ct.launch(torch.cuda.current_stream(), (1,), kern, (x,))
+    assert x.tolist() == [3, 5]
+
+
 def test_reject_nondataclass_base():
     class Base:
         pass
@@ -309,7 +338,27 @@ def test_reject_nondataclass_base():
         Derived(3)
 
     with pytest.raises(TileTypeError,
-                       match="Only dataclasses without a base class are supported"):
+                       match="Dataclasses with non-dataclass base are not supported"):
+        ct.launch(torch.cuda.current_stream(), (1,), kern, ())
+
+
+def test_reject_base_with_custom_new():
+    @dataclass(frozen=True)
+    class Base:
+        bar: int
+
+        def __new__(cls):
+            pass
+
+    @dataclass(frozen=True)
+    class Derived(Base):
+        foo: int
+
+    @ct.kernel
+    def kern():
+        Derived(3)
+
+    with pytest.raises(TileTypeError, match="Dataclasses with custom __new__ are not supported"):
         ct.launch(torch.cuda.current_stream(), (1,), kern, ())
 
 
@@ -326,7 +375,7 @@ def test_reject_dataclass_base_nondataclass_derived():
         Derived(3)
 
     with pytest.raises(TileTypeError,
-                       match="Only dataclasses without a base class are supported"):
+                       match="Non-dataclass subclasses of a dataclass are not supported"):
         ct.launch(torch.cuda.current_stream(), (1,), kern, ())
 
 
@@ -357,3 +406,25 @@ def test_reject_default_factory_field():
     with pytest.raises(TileTypeError,
                        match="Dataclasses with default_factory fields are not supported"):
         ct.launch(torch.cuda.current_stream(), (1,), kern, ())
+
+
+def test_init_static_def():
+    @dataclass(frozen=True)
+    class MetaInit:
+        x: int
+        y: int
+
+        @static_def
+        def __init__(self, n):
+            object.__setattr__(self, "x", n * 5)
+            object.__setattr__(self, "y", n * 7)
+
+    @ct.kernel
+    def kern(x):
+        d = MetaInit(10)
+        ct.scatter(x, 0, d.x)
+        ct.scatter(x, 1, d.y)
+
+    x = torch.zeros(2, dtype=torch.int32, device="cuda")
+    ct.launch(torch.cuda.current_stream(), (1,), kern, (x,))
+    assert x.tolist() == [50, 70]

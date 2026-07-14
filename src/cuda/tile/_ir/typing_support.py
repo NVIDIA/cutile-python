@@ -7,10 +7,10 @@ import dataclasses
 from enum import Enum
 from functools import lru_cache
 from types import ModuleType, FunctionType, BuiltinFunctionType
-from typing import Any, Callable, Mapping, Union
+from typing import Any, Callable, Mapping, Union, Sequence
 
 from cuda.tile import _datatype as datatype, DType
-from cuda.tile._exception import TileTypeError, TileValueError
+from cuda.tile._exception import TileTypeError, TileValueError, TypeCheckingError
 from .ir import TypingHooks
 from .type import DataclassInfo, PointerInfoTy
 
@@ -204,17 +204,13 @@ def get_dataclass_info(cls) -> DataclassInfo:
     if not params.frozen:
         raise TileTypeError("Only frozen dataclasses are supported")
 
-    if not params.init:
-        raise TileTypeError("Dataclasses with init=False are not supported")
+    if "__dataclass_params__" not in cls.__dict__:
+        raise TileTypeError("Non-dataclass subclasses of a dataclass are not supported")
 
-    # HACK: There seems to be no clean way to detect whether a dataclass has a user-defined
-    #       __init__() method. This is the best I could come up with.
-    #       Explanation: for a frozen dataclass (which we check above), the generated __init__()
-    #       method needs to call `object.__setattr__()` to set the initial values of frozen fields.
-    #       Since the builtin `object` name may be shadowed, the dataclass implementation stores
-    #       the `object` class in a captured variable named "__dataclass_builtins_object__".
-    if "__dataclass_builtins_object__" not in cls.__init__.__code__.co_freevars:
-        raise TileTypeError("Dataclasses with custom __init__ are not supported")
+    if _dataclass_has_default_init(cls):
+        init_signature = inspect.signature(cls.__init__)
+    else:
+        init_signature = None
 
     if hasattr(cls, "__post_init__"):
         raise TileTypeError("Dataclasses with __post_init__ are not supported")
@@ -222,10 +218,12 @@ def get_dataclass_info(cls) -> DataclassInfo:
     if "__new__" in cls.__dict__:
         raise TileTypeError("Dataclasses with custom __new__ are not supported")
 
-    if len(cls.__bases__) != 1 or cls.__bases__[0] is not object:
-        # TODO: This is something we could partially relax,
-        #       e.g. dataclass inheriting from another dataclass.
-        raise TileTypeError("Only dataclasses without a base class are supported")
+    # Only allow supported frozen dataclasses as bases
+    for base in cls.__bases__:
+        if base is not object:
+            if not dataclasses.is_dataclass(base):
+                raise TypeCheckingError("Dataclasses with non-dataclass base are not supported")
+            get_dataclass_info(base)
 
     field_name_to_idx = {}
     field_names = []
@@ -241,8 +239,37 @@ def get_dataclass_info(cls) -> DataclassInfo:
         field_names.append(f.name)
         field_name_to_idx[f.name] = i
 
-    init_signature = inspect.signature(cls.__init__)
     return DataclassInfo(cls, field_names, field_name_to_idx, init_signature)
+
+
+def create_dataclass_instance(cls, field_values: Sequence[Any]):
+    info = get_dataclass_info(cls)
+    if info.init_signature is None:
+        # Custom __init__() could do arbitrary nonsense with the arguments.
+        # So we construct the object with __new__() and set the fields manually.
+        ret = cls.__new__(cls)
+        for name, val in zip(info.field_names, field_values, strict=True):
+            object.__setattr__(ret, name, val)
+    else:
+        ret = cls(**{name: val
+                     for name, val in zip(info.field_names, field_values, strict=True)})
+    return ret
+
+
+def _dataclass_has_default_init(cls) -> bool:
+    if not cls.__dataclass_params__.init:
+        return False
+
+    # HACK: There seems to be no clean way to detect whether a dataclass has a user-defined
+    #       __init__() method. This is the best I could come up with.
+    #       Explanation: for a frozen dataclass (which we check above), the generated __init__()
+    #       method needs to call `object.__setattr__()` to set the initial values of frozen fields.
+    #       Since the builtin `object` name may be shadowed, the dataclass implementation stores
+    #       the `object` class in a captured variable named "__dataclass_builtins_object__".
+    if "__dataclass_builtins_object__" not in cls.__init__.__code__.co_freevars:
+        return False
+
+    return True
 
 
 def dataclass_has_default_formatter(cls) -> bool:

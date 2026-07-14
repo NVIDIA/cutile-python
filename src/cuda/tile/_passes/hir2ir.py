@@ -15,7 +15,7 @@ from .. import TileTypeError
 from .._coroutine_util import resume_after, run_coroutine
 from .._dispatch_mode import StaticEvalMode
 from .._exception import Loc, FunctionDesc, TileInternalError, TileError, TileRecursionError, \
-    TileValueError, UnsupportedCallError
+    TileValueError, UnsupportedCallError, TypeCheckingError
 from .._execution import is_stub, is_static_def
 from .._ir import hir, ir
 from .._ir.hir import StaticEvalKind
@@ -238,16 +238,20 @@ async def _call_function(callee: Callable,
             raise UnsupportedCallError(f"{callee.__name__}() is not supported in device code")
         return await _call_builtin(callee, impl, args, kwargs, builder)
     elif is_static_def(callee):
-        with StaticEvalMode(StaticEvalKind.STATIC_DEF).as_current():
-            args_sym = tuple(var2sym(x) for x in args)
-            kwargs_sym = {k: var2sym(v) for k, v in kwargs.items()}
-            res_sym = callee(*args_sym, **kwargs_sym)
-            return sym2var(res_sym)
+        return _call_static_def_function(callee, args, kwargs)
     else:
         callee_hir = get_function_hir(callee, entry_point=False)
         sig = get_signature(callee)
         arg_list = _bind_args(sig, callee.__name__, args, kwargs)
         return await _call_user_defined(callee_hir, arg_list, builder)
+
+
+def _call_static_def_function(callee, args, kwargs):
+    with StaticEvalMode(StaticEvalKind.STATIC_DEF).as_current():
+        args_sym = tuple(var2sym(x) for x in args)
+        kwargs_sym = {k: var2sym(v) for k, v in kwargs.items()}
+        res_sym = callee(*args_sym, **kwargs_sym)
+        return sym2var(res_sym)
 
 
 async def _call_builtin(callee, impl, args, kwargs, builder: ir.Builder):
@@ -325,6 +329,13 @@ async def call(callee_var: Var, args, kwargs) -> Var | None:
 async def _call_constructor(ty, args, kwargs, builder):
     if dataclasses.is_dataclass(ty):
         dataclass_info = get_dataclass_info(ty)
+        if dataclass_info.init_signature is None:
+            if is_static_def(ty.__init__):
+                return _call_static_def_function(ty, args, kwargs)
+
+            raise TypeCheckingError("Dataclass instance creation is only supported for dataclasses"
+                                    " with a default generated __init__() method.")
+
         param_names = tuple(dataclass_info.init_signature.parameters)
         # Add an extra `None` to args for the `self` parameter
         arg_list = _bind_args(dataclass_info.init_signature, ty.__name__, (None, *args), kwargs)

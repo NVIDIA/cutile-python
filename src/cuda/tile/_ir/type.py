@@ -320,8 +320,10 @@ class DataclassTy(Type):
     def make_symbol(self, var: "Var") -> Symbol:
         dc_val = var.get_aggregate()
         assert isinstance(dc_val, DataclassValue)
-        return self.cls(**{f.name: var2sym(dc_val.get_field(f.name))
-                           for f in dataclasses.fields(self.cls)})
+        from cuda.tile._ir.typing_support import create_dataclass_instance
+        return create_dataclass_instance(self.cls,
+                                         [var2sym(dc_val.get_field(f.name))
+                                          for f in dataclasses.fields(self.cls)])
 
     def is_aggregate(self) -> bool:
         return True
@@ -348,7 +350,7 @@ class DataclassInfo:
     cls: type
     field_names: Sequence[str]
     field_name_to_idx: Mapping[str, int]
-    init_signature: inspect.Signature
+    init_signature: inspect.Signature | None
 
 
 @dataclass

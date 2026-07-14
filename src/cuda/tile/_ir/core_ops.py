@@ -16,7 +16,7 @@ import cuda.tile._datatype as datatype
 from cuda.tile._bytecode import float_to_bits
 from cuda.tile._bytecode.float import float_from_bits
 from cuda.tile._datatype import numeric_dtype_category, is_integral
-from cuda.tile._exception import Loc, TileSyntaxError, TileValueError
+from cuda.tile._exception import Loc, TileSyntaxError, TileValueError, TypeCheckingError
 from cuda.tile._ir import hir_stubs, hir
 from cuda.tile._ir.hir import ResolvedName
 from cuda.tile._ir.ir import Operation, attribute, Var, Builder, make_aggregate, operand, \
@@ -32,7 +32,7 @@ from cuda.tile._ir.type import Type, DTypeSpec, TensorLikeTy, TupleTy, TupleValu
     StringFormat, FormattedStringValue, FormattedPiece, DictTy, DictValue, EnumTy, TokenTy
 from cuda.tile._ir.typing_support import type_of_constant_python_value, \
     loose_type_of_constant_python_value, get_dataclass_info, as_third_party_dtype_spec, \
-    dataclass_has_default_formatter
+    dataclass_has_default_formatter, create_dataclass_instance
 from cuda.tile._ir2bytecode import BytecodeContext
 from cuda.tile._mutex import tile_mutex
 
@@ -500,8 +500,8 @@ def build_dataclass_instance(items: tuple[Var, ...], info: DataclassInfo) -> Var
     loose_ty = DataclassTy(cls, tuple(x.get_loose_type() for x in items))
     res = make_aggregate(DataclassValue(items, info), ty, loose_ty)
     if all(x.is_constant() for x in items):
-        const_val = cls(**{name: x.get_constant()
-                           for name, x in zip(info.field_names, items, strict=True)})
+        items_values = [x.get_constant() for x in items]
+        const_val = create_dataclass_instance(cls, items_values)
         res.set_constant(const_val)
     return res
 
@@ -509,6 +509,9 @@ def build_dataclass_instance(items: tuple[Var, ...], info: DataclassInfo) -> Var
 @impl(dataclasses.replace)
 def dataclasses_replace_impl(obj: Var, changes: dict[str, Var]):
     dataclass_ty = require_dataclass_type(obj)
+    if get_dataclass_info(dataclass_ty.cls).init_signature is None:
+        raise TypeCheckingError("dataclasses.replace() is only allowed for dataclasses with"
+                                " a default generated __init__() method")
     dataclass_val = obj.get_aggregate()
     assert isinstance(dataclass_val, DataclassValue)
     name2idx = dataclass_val.info.field_name_to_idx
