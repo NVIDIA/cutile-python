@@ -272,17 +272,22 @@ def _dataclass_has_default_init(cls) -> bool:
     return True
 
 
-def dataclass_has_default_formatter(cls) -> bool:
+def dataclass_has_default_repr(cls) -> bool:
     return (
             cls.__dataclass_params__.repr
-            and cls.__str__ is object.__str__
-            and cls.__format__ is object.__format__
             and (
                     # HACK HACK HACK!
                     (wrapped := getattr(cls.__repr__, "__wrapped__", None)) is not None
                     and getattr(wrapped, "__qualname__", "") == "__create_fn__.<locals>.__repr__"
             )
     )
+
+
+def find_method(cls, name: str):
+    for b in cls.__mro__:
+        if name in b.__dict__:
+            return b.__dict__[name]
+    return NotImplemented
 
 
 # ========= Numpy support ===========

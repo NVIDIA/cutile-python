@@ -30,8 +30,7 @@ from .._ir.scope import Scope, LocalScope, IntMap
 from .._ir.type import FunctionTy, BoundMethodTy, DTypeConstructor, ClosureTy, \
     ClosureDefaultPlaceholder, StringFormat, TypeTy, TupleTy, BoundMethodValue, TupleValue, \
     ClosureValue, DictTy, DictValue, var2sym, DataclassTy
-from .._ir.typing_support import get_signature, get_dataclass_info
-
+from .._ir.typing_support import get_signature, get_dataclass_info, find_method
 
 MAX_RECURSION_DEPTH = 1000
 
@@ -323,17 +322,10 @@ async def call(callee_var: Var, args, kwargs) -> Var | None:
                                                    builder.ir_ctx)
         return await _call_user_defined(callee_ty.func_hir, arg_list, builder, parent_scopes)
     elif (isinstance(callee_ty, DataclassTy)
-          and (call_dunder := _find_method(callee_ty.cls, "__call__")) is not NotImplemented):
+          and (call_dunder := find_method(callee_ty.cls, "__call__")) is not NotImplemented):
         return await _call_function(call_dunder, (callee_var, *args), kwargs, builder)
     else:
         raise TileTypeError(f"Cannot call an object of type {callee_ty}")
-
-
-def _find_method(cls, name: str):
-    for b in cls.__mro__:
-        if name in b.__dict__:
-            return b.__dict__[name]
-    return NotImplemented
 
 
 async def _call_constructor(ty, args, kwargs, builder):

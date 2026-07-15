@@ -2776,8 +2776,8 @@ def printf_impl(format: Var, args: Tuple[Var, ...]) -> None:
 
 
 @impl(ct.print)
-def _tile_print_impl(args: tuple[Var, ...], sep: Var, end: Var) -> None:
-    return print_impl(args, sep, end)
+async def _tile_print_impl(args: tuple[Var, ...], sep: Var, end: Var) -> None:
+    return await print_impl(args, sep, end)
 
 
 @dataclass(eq=False)

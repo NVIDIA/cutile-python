@@ -32,7 +32,7 @@ from cuda.tile._ir.type import Type, DTypeSpec, TensorLikeTy, TupleTy, TupleValu
     StringFormat, FormattedStringValue, FormattedPiece, DictTy, DictValue, EnumTy, TokenTy
 from cuda.tile._ir.typing_support import type_of_constant_python_value, \
     loose_type_of_constant_python_value, get_dataclass_info, as_third_party_dtype_spec, \
-    dataclass_has_default_formatter, create_dataclass_instance
+    create_dataclass_instance, find_method, dataclass_has_default_repr
 from cuda.tile._ir2bytecode import BytecodeContext
 from cuda.tile._mutex import tile_mutex
 
@@ -820,19 +820,19 @@ class TilePrintf(Operation, opcode="tile_printf", memory_effect=MemoryEffect.STO
 
 
 @impl(print)
-def print_impl(args: tuple[Var, ...], sep: Var, end: Var) -> None:
+async def print_impl(args: tuple[Var, ...], sep: Var, end: Var) -> None:
     format_parts = []
     leaf_vars = []
 
     def _get_string_quotes(has_single_quote: bool, has_double_quote: bool) -> str:
         return "'" if not has_single_quote or has_double_quote else '"'
 
-    def _expand_var(var: Var | str, format_spec: str | None = None,
-                    is_tuple_element: bool = False, escape_in_str: str | None = None):
+    async def _expand_var(var: Var | str, format_spec: str | None = None,
+                          use_repr: bool = False, escape_in_str: str | None = None):
         if isinstance(var, str) or isinstance(ty := var.get_type(), StringTy):
             str_val = var if isinstance(var, str) else ty.value
             escaped = PrintfValidator.escape_str(str_val)
-            if is_tuple_element:
+            if use_repr:
                 string_quote = _get_string_quotes("'" in escaped, '"' in escaped)
                 escaped = escaped.replace(string_quote, f"\\{string_quote}")
                 format_parts.append(f"{string_quote}{escaped}{string_quote}")
@@ -841,7 +841,7 @@ def print_impl(args: tuple[Var, ...], sep: Var, end: Var) -> None:
                     escaped = escaped.replace(escape_in_str, f"\\{escape_in_str}")
                 format_parts.append(escaped)
         elif isinstance(ty, FormattedStringTy):
-            if is_tuple_element:
+            if use_repr:
                 string_quote = _get_string_quotes(ty.has_single_quote, ty.has_double_quote)
                 format_parts.append(string_quote)
             else:
@@ -849,11 +849,11 @@ def print_impl(args: tuple[Var, ...], sep: Var, end: Var) -> None:
             val = var.get_aggregate()
             for piece in ty.format.pieces:
                 if isinstance(piece, str):
-                    _expand_var(piece, escape_in_str=string_quote)
+                    await _expand_var(piece, escape_in_str=string_quote)
                 else:
-                    _expand_var(val.values[piece.value_idx], piece.format_spec,
-                                escape_in_str=string_quote)
-            if is_tuple_element:
+                    await _expand_var(val.values[piece.value_idx], piece.format_spec,
+                                      escape_in_str=string_quote)
+            if use_repr:
                 format_parts.append(string_quote)
         elif isinstance(ty, TupleTy):
             if format_spec is not None:
@@ -864,7 +864,7 @@ def print_impl(args: tuple[Var, ...], sep: Var, end: Var) -> None:
             agg = var.get_aggregate()
             format_parts.append('(')
             for i, item in enumerate(agg.items):
-                _expand_var(item, is_tuple_element=True)
+                await _expand_var(item, use_repr=True)
                 if i < len(agg.items) - 1:
                     format_parts.append(', ')
             format_parts.append(',)' if len(agg.items) == 1 else ')')
@@ -873,22 +873,58 @@ def print_impl(args: tuple[Var, ...], sep: Var, end: Var) -> None:
                 raise TileTypeError("f-string: cannot apply format spec to a dataclass instance",
                                     var.loc)
 
-            if not dataclass_has_default_formatter(ty.cls):
-                raise TileTypeError("Printing dataclasses with custom __repr__/__str__/__format__"
-                                    " is not supported")
+            custom_format_dunder = find_method(ty.cls, "__format__")
+            if (custom_format_dunder is not NotImplemented
+                    and custom_format_dunder is not object.__format__):
+                raise TypeCheckingError("Printing dataclasses with custom __format__()"
+                                        " is not supported")
 
-            agg = var.get_aggregate()
-            assert isinstance(agg, DataclassValue)
-            format_parts.append(PrintfValidator.escape_str(f"{ty.cls.__qualname__}("))
-            comma = ""
-            for f, item in zip(dataclasses.fields(ty.cls), agg.items, strict=True):
-                if not f.repr:
-                    continue
+            custom_method = NotImplemented
 
-                format_parts.append(PrintfValidator.escape_str(f"{comma}{f.name}="))
-                _expand_var(item, is_tuple_element=True)
-                comma = ", "
-            format_parts.append(")")
+            # Try a custom "__str__" first, if applicable
+            if not use_repr:
+                custom_method = find_method(ty.cls, "__str__")
+                if custom_method is object.__str__:
+                    custom_method = NotImplemented
+
+            # Try a "__repr__" next
+            if custom_method is NotImplemented:
+                # If __repr__ is the default generated implementation, emulate it
+                if dataclass_has_default_repr(ty.cls):
+                    agg = var.get_aggregate()
+                    assert isinstance(agg, DataclassValue)
+                    format_parts.append(PrintfValidator.escape_str(f"{ty.cls.__qualname__}("))
+                    comma = ""
+                    for f, item in zip(dataclasses.fields(ty.cls), agg.items, strict=True):
+                        if not f.repr:
+                            continue
+
+                        format_parts.append(PrintfValidator.escape_str(f"{comma}{f.name}="))
+                        await _expand_var(item, use_repr=True)
+                        comma = ", "
+                    format_parts.append(")")
+                    return
+
+                # Else look for a custom __repr__().
+                custom_method = find_method(ty.cls, "__repr__")
+                if custom_method is object.__repr__:
+                    custom_method = NotImplemented
+
+            if custom_method is NotImplemented:
+                # Disabled str/repr -- resort to the Python object-like default,
+                # but without an object ID.
+                format_parts.append(PrintfValidator.escape_str(
+                        f"<{ty.cls.__qualname__} object>"))
+                return
+
+            # Call the custom __str__()/__repr__()
+            from cuda.tile._passes.hir2ir import call_function
+            res = await call_function(custom_method, var)
+            if not isinstance(res.get_type(), StringTy | FormattedStringTy):
+                method_name = "__repr__" if use_repr else "__str__"
+                raise TypeCheckingError(f"Expected {ty.cls.__name__}.{method_name}()"
+                                        f" to return a string, got {res.get_type()}")
+            await _expand_var(res)
         elif isinstance(ty, TensorLikeTy):
             if format_spec is not None:
                 format_parts.append(PrintfValidator.apply_python_spec(
@@ -907,7 +943,7 @@ def print_impl(args: tuple[Var, ...], sep: Var, end: Var) -> None:
     for i, arg_var in enumerate(args):
         if i > 0:
             format_parts.append(PrintfValidator.escape_str(require_constant_str(sep)))
-        _expand_var(arg_var)
+        await _expand_var(arg_var)
     format_parts.append(PrintfValidator.escape_str(require_constant_str(end)))
 
     final_format = ''.join(format_parts)

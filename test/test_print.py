@@ -4,6 +4,7 @@
 import dataclasses
 import math
 import ctypes
+import re
 import sys
 import traceback
 from dataclasses import dataclass
@@ -62,7 +63,7 @@ def _kernel_runner_main():
         try:
             FdCaptureRunner.write_begin_marker()
             kernel_name, shape_str, dtype_str, tile_str = args
-            kernel = _KERNELS_MAP_[kernel_name]
+            kernel = globals()[kernel_name]
             shape = tuple(int(d) for d in shape_str.split(","))
             dtype = getattr(torch, dtype_str)
             tile = int(tile_str)
@@ -219,6 +220,128 @@ def kernel_print_dataclass(x, TILE: ct.Constant[int]):
     print(foo)
 
 
+@dataclass(frozen=True)
+class DataclassCustomStr:
+    x: Any
+    y: Any
+
+    def __str__(self):
+        return f"CUSTOM{{{self.x}|{self.y}}}"
+
+
+@ct.kernel(opt_level=_OPT_LEVEL)
+def kernel_print_dataclass_custom_str(x, TILE: ct.Constant[int]):
+    t = ct.load(x, 0, (TILE,))
+    foo = DataclassCustomStr(t, t + 1)
+    ct.print(foo)
+    print(foo)
+
+
+@ct.kernel(opt_level=_OPT_LEVEL)
+def kernel_print_dataclass_repr_ignores_custom_str(x, TILE: ct.Constant[int]):
+    t = ct.load(x, 0, (TILE,))
+    foo = DataclassCustomStr(t, t + 1)
+    ct.print((foo,))
+    print((foo,))
+
+
+@dataclass(frozen=True)
+class DataclassCustomRepr:
+    x: Any
+    y: Any
+
+    def __repr__(self):
+        return f"CUSTOMREPR({self.x}|{self.y})"
+
+
+@ct.kernel(opt_level=_OPT_LEVEL)
+def kernel_print_dataclass_custom_repr(x, TILE: ct.Constant[int]):
+    t = ct.load(x, 0, (TILE,))
+    foo = DataclassCustomRepr(t, t + 1)
+    ct.print(foo)
+    print(foo)
+
+
+@dataclass(frozen=True)
+class DataclassCustomStrAndRepr:
+    x: Any
+
+    def __str__(self):
+        return f"CUSTOM_STR({self.x})"
+
+    def __repr__(self):
+        return f"CUSTOM_REPR({self.x})"
+
+
+@ct.kernel(opt_level=_OPT_LEVEL)
+def kernel_print_dataclass_custom_str_and_repr_pick_str(x, TILE: ct.Constant[int]):
+    t = ct.load(x, 0, (TILE,))
+    foo = DataclassCustomStrAndRepr(t)
+    ct.print(foo)
+    print(foo)
+
+
+@ct.kernel(opt_level=_OPT_LEVEL)
+def kernel_print_dataclass_custom_str_and_repr_pick_repr(x, TILE: ct.Constant[int]):
+    t = ct.load(x, 0, (TILE,))
+    foo = DataclassCustomStrAndRepr(t)
+    ct.print((foo,))
+    print((foo,))
+
+
+@dataclass(frozen=True, repr=False)
+class DataclassDisabledRepr:
+    x: Any
+
+
+@ct.kernel(opt_level=_OPT_LEVEL)
+def kernel_print_dataclass_disabled_repr(x, TILE: ct.Constant[int]):
+    t = ct.load(x, 0, (TILE,))
+    foo = DataclassDisabledRepr(t)
+    ct.print(foo)
+    print(foo)
+
+
+@dataclass(frozen=True, repr=False)
+class DataclassDisabledReprCustomStr:
+    x: Any
+
+    def __str__(self):
+        return f"NO_REPR_BUT_CUSTOM_STR({self.x})"
+
+
+@ct.kernel(opt_level=_OPT_LEVEL)
+def kernel_print_dataclass_disabled_repr_but_custom_str(x, TILE: ct.Constant[int]):
+    t = ct.load(x, 0, (TILE,))
+    foo = DataclassDisabledReprCustomStr(t)
+    ct.print(foo)
+    print(foo)
+
+
+@ct.kernel(opt_level=_OPT_LEVEL)
+def kernel_print_dataclass_disabled_repr_ignore_custom_str(x, TILE: ct.Constant[int]):
+    t = ct.load(x, 0, (TILE,))
+    foo = DataclassDisabledReprCustomStr(t)
+    ct.print((foo,))
+    print((foo,))
+
+
+@dataclass(frozen=True, repr=False)
+class DataclassNoDefaultButCustomRepr:
+    x: Any
+
+    def __repr__(self):
+        return f"NO_DEFAULT_BUT_CUSTOM_REPR({self.x})"
+
+
+@ct.kernel(opt_level=_OPT_LEVEL)
+def kernel_print_dataclass_no_default_but_custom_repr(x, TILE: ct.Constant[int]):
+    t = ct.load(x, 0, (TILE,))
+    foo = DataclassNoDefaultButCustomRepr(t)
+    ct.print(foo)
+    print(foo)
+
+
 @ct.kernel(opt_level=_OPT_LEVEL)
 def kernel_print_empty_tuple(x, TILE: ct.Constant[int]):
     ct.print(f"empty tuple: {()}")
@@ -300,30 +423,6 @@ def kernel_print_ordering(x, TILE: ct.Constant[int]):
     ct.printf("reduce over all axes: %i\n", ct.sum(tx, None))
     ct.printf("reduce over axis 1: %i\n", ct.sum(tx, 1))
     ct.printf("reduce over axis 0 and keep dims: %i\n", ct.sum(tx, 1, keepdims=True))
-
-
-_KERNELS_MAP_ = {
-    "kernel_printf": kernel_printf,
-    "kernel_print": kernel_print,
-    "kernel_print_sep": kernel_print_sep,
-    "kernel_print_two_vars_with_expr": kernel_print_two_vars_with_expr,
-    "kernel_print_no_end": kernel_print_no_end,
-    "kernel_builtin_print": kernel_builtin_print,
-    "kernel_fstring_nested": kernel_fstring_nested,
-    "kernel_print_aliases": kernel_print_aliases,
-    "kernel_print_tuple": kernel_print_tuple,
-    "kernel_print_nested_tuple": kernel_print_nested_tuple,
-    "kernel_print_tuple_escaped_str": kernel_print_tuple_escaped_str,
-    "kernel_print_tuple_fstring": kernel_print_tuple_fstring,
-    "kernel_print_empty_tuple": kernel_print_empty_tuple,
-    "kernel_print_single_tuple": kernel_print_single_tuple,
-    "kernel_print_tuple_w_tile": kernel_print_tuple_w_tile,
-    "kernel_print_tuple_tile_shape": kernel_print_tuple_tile_shape,
-    "kernel_print_dataclass": kernel_print_dataclass,
-    "kernel_print_dtype": kernel_print_dtype,
-    "kernel_print_enum": kernel_print_enum,
-    "kernel_print_ordering": kernel_print_ordering,
-}
 
 
 def _test_print_1d(shape, tile, kernel, dtype):
@@ -534,40 +633,59 @@ def test_ct_print_dataclass():
     assert actual_ct == actual_builtin == "Foo(x=[0, 1, 2, 3, 4, 5, 6, 7], z='hello')"
 
 
-def test_ct_print_reject_dataclass_with_custom_str():
-    @dataclass(frozen=True)
-    class CustomStr:
-        x: int
-
-        def __str__(self):
-            return "Custom!"
-
-    @ct.kernel
-    def kern():
-        print(CustomStr(123))
-
-    with pytest.raises(ct.TileTypeError,
-                       match="Printing dataclasses"
-                             " with custom __repr__/__str__/__format__ is not supported"):
-        ct.launch(torch.cuda.current_stream(), (1,), kern, ())
+def test_ct_print_dataclass_custom_str():
+    [actual_ct, actual_builtin] = _run_kernel(kernel_print_dataclass_custom_str, (8,), "int32", 8)
+    assert (actual_ct == actual_builtin
+            == "CUSTOM{[0, 1, 2, 3, 4, 5, 6, 7]|[1, 2, 3, 4, 5, 6, 7, 8]}")
 
 
-def test_ct_print_reject_dataclass_with_custom_repr():
-    @dataclass(frozen=True)
-    class CustomRepr:
-        x: int
+def test_ct_print_dataclass_repr_ignores_custom_str():
+    [actual_ct, actual_builtin] = _run_kernel(kernel_print_dataclass_repr_ignores_custom_str,
+                                              (8,), "int32", 8)
+    assert actual_ct == actual_builtin == ("(DataclassCustomStr(x=[0, 1, 2, 3, 4, 5, 6, 7],"
+                                           " y=[1, 2, 3, 4, 5, 6, 7, 8]),)")
 
-        def __repr__(self):
-            return "Custom!"
 
-    @ct.kernel
-    def kern():
-        print(CustomRepr(123))
+def test_ct_print_dataclass_custom_repr():
+    [actual_ct, actual_builtin] = _run_kernel(kernel_print_dataclass_custom_repr, (8,), "int32", 8)
+    assert (actual_ct == actual_builtin
+            == "CUSTOMREPR([0, 1, 2, 3, 4, 5, 6, 7]|[1, 2, 3, 4, 5, 6, 7, 8])")
 
-    with pytest.raises(ct.TileTypeError,
-                       match="Printing dataclasses"
-                             " with custom __repr__/__str__/__format__ is not supported"):
-        ct.launch(torch.cuda.current_stream(), (1,), kern, ())
+
+def test_ct_print_dataclass_custom_str_and_repr_pick_str():
+    [actual_ct, actual_builtin] = _run_kernel(kernel_print_dataclass_custom_str_and_repr_pick_str,
+                                              (8,), "int32", 8)
+    assert actual_ct == actual_builtin == "CUSTOM_STR([0, 1, 2, 3, 4, 5, 6, 7])"
+
+
+def test_ct_print_dataclass_custom_str_and_repr_pick_repr():
+    [actual_ct, actual_builtin] = _run_kernel(kernel_print_dataclass_custom_str_and_repr_pick_repr,
+                                              (8,), "int32", 8)
+    assert actual_ct == actual_builtin == "(CUSTOM_REPR([0, 1, 2, 3, 4, 5, 6, 7]),)"
+
+
+def test_ct_print_dataclass_disabled_repr():
+    [actual_ct, actual_builtin] = _run_kernel(kernel_print_dataclass_disabled_repr,
+                                              (8,), "int32", 8)
+    assert actual_ct == actual_builtin == "<DataclassDisabledRepr object>"
+
+
+def test_ct_print_dataclass_disabled_repr_but_custom_str():
+    [actual_ct, actual_builtin] = _run_kernel(kernel_print_dataclass_disabled_repr_but_custom_str,
+                                              (8,), "int32", 8)
+    assert actual_ct == actual_builtin == "NO_REPR_BUT_CUSTOM_STR([0, 1, 2, 3, 4, 5, 6, 7])"
+
+
+def test_ct_print_dataclass_disabled_repr_ignore_custom_str():
+    [actual_ct, actual_builtin] = _run_kernel(
+            kernel_print_dataclass_disabled_repr_ignore_custom_str, (8,), "int32", 8)
+    assert actual_ct == actual_builtin == "(<DataclassDisabledReprCustomStr object>,)"
+
+
+def test_ct_print_dataclass_no_default_but_custom_repr():
+    [actual_ct, actual_builtin] = _run_kernel(
+        kernel_print_dataclass_no_default_but_custom_repr, (8,), "int32", 8)
+    assert actual_ct == actual_builtin == "NO_DEFAULT_BUT_CUSTOM_REPR([0, 1, 2, 3, 4, 5, 6, 7])"
 
 
 def test_ct_print_reject_dataclass_with_custom_format():
@@ -583,8 +701,8 @@ def test_ct_print_reject_dataclass_with_custom_format():
         print(CustomFormat(123))
 
     with pytest.raises(ct.TileTypeError,
-                       match="Printing dataclasses"
-                             " with custom __repr__/__str__/__format__ is not supported"):
+                       match=re.escape("Printing dataclasses"
+                                       " with custom __format__() is not supported")):
         ct.launch(torch.cuda.current_stream(), (1,), kern, ())
 
 
