@@ -3,12 +3,6 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """CTA2 FP8 GEMM port of ThunderKittens' ``fp8_b200_gemm.cu``.
-
-The persistent kernel mirrors the source's producer/consumer warpgroup split,
-CLC work stealing, configurable TMA input ring, one- or two-slot tensor-memory
-accumulator ring, double-buffered BF16 epilogue, register redistribution, and
-programmatic dependent launch protocol. ``THUNDERKITTENS_BENCHMARKS`` contains
-the five configurations instantiated by the original ``main``.
 """
 
 from dataclasses import dataclass
