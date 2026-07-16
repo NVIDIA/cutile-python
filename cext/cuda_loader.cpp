@@ -92,3 +92,88 @@ Result<const DriverApi*> get_driver_api() {
     }
     return &instance;
 }
+
+
+CudaLibrary::CudaLibrary(const DriverApi* driver, CUlibrary lib)
+    : driver_(driver), lib_(lib) {}
+
+
+CudaLibrary::CudaLibrary(CudaLibrary&& other)
+    : driver_(other.driver_), lib_(other.lib_) {
+    other.lib_ = nullptr;
+}
+
+
+CudaLibrary::~CudaLibrary() {
+    if (lib_) {
+        CUresult res = driver_->cuLibraryUnload(lib_);
+        CHECK(res == CUDA_SUCCESS);
+    }
+}
+
+
+const CUlibrary& CudaLibrary::get() const {
+    return lib_;
+}
+
+
+static Result<CudaLibrary> load_cuda_library(const DriverApi* driver, const void* code) {
+    CUlibrary lib;
+    CUresult res = driver->cuLibraryLoadData(&lib, code, nullptr, nullptr, 0,
+                                             nullptr, nullptr, 0);
+    if (res == CUDA_SUCCESS)
+        return CudaLibrary(driver, lib);
+
+    return raise(PyExc_RuntimeError, "Failed to load CUDA library: %s",
+                 get_cuda_error(driver, res));
+}
+
+
+Result<CudaKernel> load_cuda_kernel(
+        const DriverApi* driver,
+        const char* cubin_data,
+        size_t cubin_size,
+        const char* func_name) {
+    (void) cubin_size;
+
+    Result<CudaLibrary> lib = load_cuda_library(driver, cubin_data);
+    if (!lib.is_ok()) return ErrorRaised;
+
+    CUkernel kernel;
+    CUresult res = driver->cuLibraryGetKernel(&kernel, lib->get(), func_name);
+    if (res == CUDA_SUCCESS)
+        return CudaKernel{std::move(*lib), kernel};
+
+    return raise(PyExc_RuntimeError, "Failed to get kernel %s from library: %s",
+                 func_name, get_cuda_error(driver, res));
+}
+
+
+Status CudaContextGuard::switch_to(CUcontext target) {
+    if (!target) return OK;
+
+    CUcontext current;
+    CUresult res = driver->cuCtxGetCurrent(&current);
+    if (res != CUDA_SUCCESS) {
+        return raise(PyExc_RuntimeError, "Failed to get current CUDA context: %s",
+                     get_cuda_error(driver, res));
+    }
+    if (current == target) return OK;
+
+    res = driver->cuCtxPushCurrent(target);
+    if (res != CUDA_SUCCESS) {
+        return raise(PyExc_RuntimeError, "Failed to switch CUDA context: %s",
+                     get_cuda_error(driver, res));
+    }
+    need_to_pop = true;
+    return OK;
+}
+
+
+CudaContextGuard::~CudaContextGuard() {
+    if (need_to_pop) {
+        CUcontext old;
+        CUresult res = driver->cuCtxPopCurrent(&old);
+        CHECK(res == CUDA_SUCCESS);
+    }
+}

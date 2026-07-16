@@ -77,6 +77,51 @@ struct DriverApi {
 Result<const DriverApi*> get_driver_api();
 
 
+class CudaContextGuard {
+    const DriverApi* driver;
+    bool need_to_pop = false;
+public:
+    CudaContextGuard(const CudaContextGuard&) = delete;
+    void operator=(const CudaContextGuard&) = delete;
+
+    explicit CudaContextGuard(const DriverApi* driver) : driver(driver) {}
+
+    Status switch_to(CUcontext target);
+
+    ~CudaContextGuard();
+};
+
+
+// RAII wrapper around a CUDA library loaded into a context.
+class CudaLibrary {
+public:
+    explicit CudaLibrary(const DriverApi* driver, CUlibrary lib);
+    CudaLibrary(CudaLibrary&& other);
+    CudaLibrary(const CudaLibrary&) = delete;
+    void operator=(const CudaLibrary&) = delete;
+    ~CudaLibrary();
+
+    const CUlibrary& get() const;
+
+private:
+    const DriverApi* driver_;
+    CUlibrary lib_;
+};
+
+
+struct CudaKernel {
+    CudaLibrary lib;
+    CUkernel kernel;
+};
+
+
+Result<CudaKernel> load_cuda_kernel(
+        const DriverApi* driver,
+        const char* cubin_data,
+        size_t cubin_size,
+        const char* func_name);
+
+
 class CudaGraph {
     const DriverApi* d;
     CUgraph graph;

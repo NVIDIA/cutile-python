@@ -236,50 +236,6 @@ PyTypeObject CallingConvention::pytype = {
 };
 
 
-// RAII wrapper around CUlibrary
-namespace { class CudaLibrary {
-public:
-    explicit CudaLibrary(const DriverApi* driver, CUlibrary lib) : driver_(driver), lib_(lib) {}
-
-    CudaLibrary(CudaLibrary&& other) : driver_(other.driver_), lib_(other.lib_) {
-        other.lib_ = nullptr;
-    }
-
-    CudaLibrary(const CudaLibrary&) = delete;
-    void operator=(const CudaLibrary&) = delete;
-
-    ~CudaLibrary() {
-        if (lib_) {
-            CUresult res = driver_->cuLibraryUnload(lib_);
-            CHECK(res == CUDA_SUCCESS);
-        }
-    }
-
-    const CUlibrary& get() const {
-        return lib_;
-    }
-
-private:
-    const DriverApi* driver_;
-    CUlibrary lib_;
-}; }
-
-static Result<CudaLibrary> load_cuda_library(const DriverApi* driver, const void* code) {
-    CUlibrary lib;
-    CUresult res = driver->cuLibraryLoadData(&lib, code, nullptr, nullptr, 0,
-                                             nullptr, nullptr, 0);
-    if (res == CUDA_SUCCESS)
-        return CudaLibrary(driver, lib);
-
-    return raise(PyExc_RuntimeError, "Failed to load CUDA library: %s",
-                 get_cuda_error(driver, res));
-}
-
-struct CudaKernel {
-    CudaLibrary lib;
-    CUkernel kernel;
-};
-
 static Status enable_maximum_dynamic_shared_memory(const DriverApi *driver,
                                                    const CUkernel kernel,
                                                    const char *func_name) {
@@ -339,26 +295,6 @@ static Status enable_maximum_dynamic_shared_memory(const DriverApi *driver,
 
     return OK;
 }
-
-static Result<CudaKernel> load_cuda_kernel(const DriverApi* driver,
-                                           const char* cubin_data,
-                                           size_t cubin_size,
-                                           const char* func_name) {
-    (void) cubin_size;
-
-    Result<CudaLibrary> lib = load_cuda_library(driver, cubin_data);
-    if (!lib.is_ok()) return ErrorRaised;
-
-    CUkernel kernel;
-    CUresult res = driver->cuLibraryGetKernel(&kernel, lib->get(), func_name);
-    if (res != CUDA_SUCCESS) {
-        return raise(PyExc_RuntimeError, "Failed to get kernel %s from library: %s",
-                     func_name, get_cuda_error(driver, res));
-    }
-
-    return CudaKernel{std::move(*lib), kernel};
-}
-
 
 // X(Name, #Attrs, MinStack, StackEffect)
 #define FOREACH_SIZE_OPCODE(X) \
@@ -2308,6 +2244,7 @@ static Result<CUstream> parse_stream(PyObject* py_stream) {
     return stream;
 }
 
+
 using StreamBufferPoolMap = HashMap<unsigned long long, StreamBufferPool*>;
 
 // Protected by GIL or g_launch_mutex.
@@ -2338,47 +2275,6 @@ static Result<StreamBufferPool*> get_stream_buffer_pool(const DriverApi* driver,
         g_stream_buffer_pool_by_ctx_id->insert(ctx_id, pool);
         return pool;
     }
-}
-
-namespace { struct ContextGuard {
-    bool need_to_pop;
-    const DriverApi* driver_;
-
-    ContextGuard(const DriverApi* driver) : need_to_pop(false), driver_(driver) {}
-
-    ContextGuard() = delete;
-    ContextGuard(const ContextGuard&) = delete;
-    void operator=(const ContextGuard&) = delete;
-
-    ~ContextGuard() {
-        if (need_to_pop) {
-            CUcontext old;
-            CUresult res = driver_->cuCtxPopCurrent(&old);
-            CHECK(res == CUDA_SUCCESS);
-        }
-    }
-}; }
-
-static Status maybe_switch_context(const DriverApi* driver, CUcontext target, ContextGuard& guard) {
-    if (!target) return OK;
-
-    CUcontext current;
-    CUresult res = driver->cuCtxGetCurrent(&current);
-    if (res != CUDA_SUCCESS) {
-        return raise(PyExc_RuntimeError, "Failed to get current CUDA context: %s",
-                     get_cuda_error(driver, res));
-    }
-
-    if (current == target) return OK;
-
-    res = driver->cuCtxPushCurrent(target);
-    if (res != CUDA_SUCCESS) {
-        return raise(PyExc_RuntimeError, "Failed to switch CUDA context: %s",
-                     get_cuda_error(driver, res));
-    }
-
-    guard.need_to_pop = true;
-    return OK;
 }
 
 struct Grid {
@@ -2541,7 +2437,7 @@ static Result<PreparedLaunch> prepare_launch(
         bool capture_kernel_image,
         bool stage_list_args,
         StreamBufferTransaction& tx,
-        ContextGuard& ctx_guard) {
+        CudaContextGuard& ctx_guard) {
 
     LaunchHelperPtr helper = launch_helper_get();
 
@@ -2623,7 +2519,7 @@ static Result<PreparedLaunch> prepare_launch(
             kernel_item = kernel_map.insert(std::move(helper->constants), std::move(*res));
     }
 
-    if (!maybe_switch_context(driver, helper->cuda_context, ctx_guard))
+    if (!ctx_guard.switch_to(helper->cuda_context))
         return ErrorRaised;
 
     if (stage_list_args
@@ -2661,7 +2557,7 @@ static Status launch(const DriverApi* driver,
                      PyObject* const* pyargs,
                      Py_ssize_t num_pyargs
                      ) {
-    ContextGuard ctx_guard(driver);
+    CudaContextGuard ctx_guard(driver);
     StreamBufferTransaction tx;
     Result<PreparedLaunch> prep = prepare_launch(
             driver, dispatcher_pyobj, launch_stream, pyargs, num_pyargs,
@@ -2973,6 +2869,9 @@ parse_parameter_annotation_nodes_seq(PyObject* nodes_seq) {
     }
     return result;
 }
+
+
+
 
 static int TileContext_init(PyObject* self, PyObject* args, PyObject* kwargs) {
     const char* keywords[] = {"config", nullptr};
@@ -3330,7 +3229,7 @@ static PyObject* cuda_tile_benchmark(PyObject* mod, PyObject* const* args, Py_ss
     Result<const DriverApi*> driver = get_driver_api();
     if (!driver.is_ok()) return nullptr;
 
-    ContextGuard ctx_guard(*driver);
+    CudaContextGuard ctx_guard(*driver);
     StreamBufferTransaction tx;
     Result<PreparedLaunch> prep = prepare_launch(
             *driver, launch_args.dispatcher, launch_args.stream,
@@ -3363,7 +3262,7 @@ static PyObject* cuda_tile_export_ipc_benchmark_payload(PyObject*, PyObject* con
     Result<const DriverApi*> driver = get_driver_api();
     if (!driver.is_ok()) return nullptr;
 
-    ContextGuard ctx_guard(*driver);
+    CudaContextGuard ctx_guard(*driver);
     StreamBufferTransaction tx;
     Result<PreparedLaunch> prep = prepare_launch(
             *driver, launch_args.dispatcher, launch_args.stream,
@@ -3389,6 +3288,7 @@ static PyObject* cuda_tile_export_ipc_benchmark_payload(PyObject*, PyObject* con
     Py_ssize_t symbol_size;
     const char* symbol = PyUnicode_AsUTF8AndSize(kernel_image.symbol.get(), &symbol_size);
     if (!symbol) return nullptr;
+
 
     CUdevice device;
     CUresult res = (*driver)->cuCtxGetDevice(&device);
@@ -3512,8 +3412,8 @@ static PyObject* cuda_tile_benchmark_with_ipc_payload(PyObject*, PyObject* const
         return nullptr;
     }
 
-    ContextGuard ctx_guard(*driver);
-    if (!maybe_switch_context(*driver, ctx, ctx_guard))
+    CudaContextGuard ctx_guard(*driver);
+    if (!ctx_guard.switch_to(ctx))
         return nullptr;
 
     IpcHandleCreator ipc_mem_handle(*driver);
@@ -3797,4 +3697,3 @@ Status tile_kernel_init(PyObject* m) {
 
     return OK;
 }
-
