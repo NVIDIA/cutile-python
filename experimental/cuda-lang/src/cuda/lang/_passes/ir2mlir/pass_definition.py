@@ -4,10 +4,8 @@
 
 import sys
 from functools import partial
-from typing import Callable
-from dataclasses import dataclass
-from functools import singledispatchmethod
-from typing import Sequence
+from dataclasses import dataclass, field
+from typing import Callable, ClassVar, Literal, Sequence, get_type_hints
 
 from cuda.lang._compiler_options import CompilerOptions
 from cuda.lang._ir import ir, ops
@@ -332,95 +330,34 @@ _NOOP_LOWERINGS = frozenset([
 ])
 
 
-class IR2MLIR:
-    def __init__(
-        self,
-        signature: KernelSignature,
-        region: ir.Region,
-        ctx: ir.IRContext,
-        compiler_options: CompilerOptions,
-    ):
-        self.ctx = ctx
-        self.region = region
-        self.signature = signature
-        self.compiler_options = compiler_options
-        self.var_map: dict[str, mlir.Value] = {}
-        self.block_map: dict[int, mlir.Block] = {}
-        self._module_op: mlir.Operation | None = None
-        self._gpu_module_op: mlir.Block | None = None
-        self._func_op: mlir.Operation | None = None
-        self._current_op: ir.Operation | None = None
-        self._seen_foreign_functions: dict[str, mlir.llvm.LLVMFunctionType] = {}
+@dataclass(kw_only=True)
+class MLIRLoweringContext:
+    """Mutable data shared by host and device MLIR operation lowering."""
 
-    def __call__(self) -> mlir.Operation:
-        self.setup_func_op()
-        self.setup_blocks()
-
-        try:
-            self.lower_region()
-        except Exception:
-            if self.ctx.log_ir_on_error:
-                highlight_loc = (
-                    self._current_op.loc if self._current_op is not None else None
-                )
-                ir_str = self.region.to_string(highlight_loc=highlight_loc)
-                print(
-                    f"==== Encountered error converting IR to MLIR: ====\n\n{ir_str}\n\n",
-                    file=sys.stderr,
-                )
-            raise
-
-        return self.module_op
-
-    def lower_region(self):
-        for ir_block in self.region.blocks:
-            mlir_block = self.block_map[ir_block]
-            assert len(mlir_block.args) == len(ir_block.params), (
-                f"MLIR block parameters do not match IR block parameters: {ir_block._name}"
-            )
-            for mlir_arg, ir_arg in zip(mlir_block.args, ir_block.params):
-                assert mlir_arg.type == ir_type_to_mlir_type(ir_arg.get_type()), (
-                    f"MLIR argument type does not match IR argument type: {ir_arg.name}"
-                )
-                self.def_var(ir_arg, mlir_arg)
-
-            self.lower_block(ir_block)
-
-    @property
-    def module_op(self) -> mlir.Operation:
-        assert self._module_op is not None, "MLIR module not initialized"
-        return self._module_op
-
-    @property
-    def gpu_module_op(self) -> mlir.Block:
-        assert self._gpu_module_op is not None, "MLIR GPU module not initialized"
-        return self._gpu_module_op
-
-    @property
-    def func_op(self) -> mlir.Operation:
-        assert self._func_op is not None, "MLIR GPU function not initialized"
-        return self._func_op
-
-    @property
-    def func_region(self) -> mlir.Region:
-        return self.func_op.regions[0]
+    execution_space: ClassVar[Literal["host", "device"]]
+    region: ir.Region
+    ir_context: ir.IRContext
+    var_map: dict[str, mlir.Value] = field(default_factory=dict)
+    block_map: dict[ir.Block, mlir.Block] = field(default_factory=dict)
+    module_op: mlir.Operation | None = None
+    func_op: mlir.Operation | None = None
+    current_op: ir.Operation | None = None
 
     def get_var(self, var: ir.Var) -> mlir.Value:
-        if self.defined(var):
+        try:
             return self.var_map[var.name]
+        except KeyError:
+            raise InternalError(f"Variable {var.name} not found") from None
 
-        raise InternalError(f"Variable {var.name} not found")
-
-    def def_var(self, var: ir.Var, value: mlir.Value):
-        if self.defined(var):
-            raise InternalError(f"Variable {var.name} is already defined")
-
-        self.var_map[var.name] = value
-
-    def defined(self, var: ir.Var) -> bool:
+    def is_defined(self, var: ir.Var) -> bool:
         return var.name in self.var_map
 
-    def lower_aggregate_assign(self, dst: ir.Var, src: ir.Var) -> None:
+    def def_var(self, var: ir.Var, value: mlir.Value) -> None:
+        if self.is_defined(var):
+            raise InternalError(f"Variable {var.name} is already defined")
+        self.var_map[var.name] = value
+
+    def bind_aggregate(self, dst: ir.Var, src: ir.Var) -> None:
         assert dst.is_aggregate() == src.is_aggregate()
         assert dst.is_aggregate(), (
             f"Expected aggregate operands, got dst={dst.get_type()}, src={src.get_type()}"
@@ -436,15 +373,345 @@ class IR2MLIR:
         for dst_item, src_item in zip(dst_items, src_items, strict=True):
             assert dst_item.is_aggregate() is src_item.is_aggregate()
             if dst_item.is_aggregate():
-                self.lower_aggregate_assign(dst_item, src_item)
-            elif not self.defined(dst_item):
+                self.bind_aggregate(dst_item, src_item)
+            elif not self.is_defined(dst_item):
                 self.def_var(dst_item, self.get_var(src_item))
 
-        if self.defined(src) and not self.defined(dst):
+        if self.is_defined(src) and not self.is_defined(dst):
             self.def_var(dst, self.get_var(src))
 
+    @property
+    def function_region(self) -> mlir.Region:
+        assert self.func_op is not None, "MLIR function not initialized"
+        return self.func_op.regions[0]
+
+
+@dataclass(kw_only=True)
+class DeviceLoweringContext(MLIRLoweringContext):
+    """Data required while lowering a CUDA Lang device function."""
+
+    execution_space = "device"
+    signature: KernelSignature
+    gpu_module_op: mlir.Operation | None = None
+    seen_foreign_functions: dict[
+        str, mlir.llvm.LLVMFunctionType
+    ] = field(default_factory=dict)
+
+    @property
+    def gpu_module(self) -> mlir.Operation:
+        assert self.gpu_module_op is not None, "MLIR GPU module not initialized"
+        return self.gpu_module_op
+
+
+class _MLIROperationLoweringRegistry:
+    """Mapping from an IR operation and execution space to its MLIR lowering."""
+
+    def __init__(self):
+        self._handlers = {"host": {}, "device": {}}
+
+    def register(self, *, host: bool = True, device: bool = True):
+        if not host and not device:
+            raise ValueError("an MLIR lowering must support host, device, or both")
+
+        def decorator(handler):
+            try:
+                operation_type = get_type_hints(handler)["operation"]
+            except KeyError:
+                raise InternalError(
+                    "an MLIR lowering must annotate its operation parameter"
+                )
+            for exec_space, active in (("host", host), ("device", device)):
+                if not active:
+                    continue
+                registry = self._handlers[exec_space]
+                if operation_type in registry:
+                    raise InternalError(f"{operation_type} already "
+                                        f"has lowering for {exec_space} context")
+                registry[operation_type] = handler
+            return handler
+
+        return decorator
+
+    def lower(
+        self, context: MLIRLoweringContext, operation: ir.Operation
+    ) -> Sequence[mlir.Value] | None:
+        try:
+            handler = self._handlers[context.execution_space][type(operation)]
+        except KeyError:
+            raise NotImplementedError(f"Unable to lower {operation=} to MLIR") from None
+        return handler(context, operation)
+
+
+_MLIR_OP_LOWERING = _MLIROperationLoweringRegistry()
+
+
+def mlir_op_lowering(handler=None, *, host: bool = True, device: bool = True):
+    decorator = _MLIR_OP_LOWERING.register(host=host, device=device)
+    return decorator if handler is None else decorator(handler)
+
+
+@mlir_op_lowering
+def lower_comparison(
+    context: MLIRLoweringContext, operation: ops.RawComparisonOperation
+) -> Sequence[mlir.Value]:
+    lhs_type = operation.lhs.get_type()
+    rhs_type = operation.lhs.get_type()
+    assert lhs_type == rhs_type
+
+    dtype = _expect_arith_type(lhs_type).tensor_dtype()
+    res_type = _expect_arith_type(operation.result_var.get_type())
+    mlir_op = _get_mlir_comparison_op(operation.fn, dtype)
+    if mlir_op is None:
+        raise NotImplementedError(
+            f"Comparison operation {operation.fn} not supported for {dtype}"
+        )
+
+    result = mlir_op(
+        lhs=context.get_var(operation.lhs),
+        rhs=context.get_var(operation.rhs),
+    )
+    result = mlir.arith.add_ExtUIOp(
+        out_type=ir_type_to_mlir_type(res_type),
+        in_=result,
+    )
+    return [result]
+
+
+@mlir_op_lowering
+def lower_raw_unary_arith(
+    context: MLIRLoweringContext, operation: ops.Unary
+) -> Sequence[mlir.Value]:
+    res_type = _expect_arith_type(operation.result_var.get_type())
+    mlir_op = _get_mlir_unary_op_for_op_and_type(operation.fn, res_type)
+    if mlir_op is None:
+        raise NotImplementedError(
+            f"Arithmetic operation '{operation.fn}' not supported for {res_type=}"
+        )
+    return [mlir_op(operand=context.get_var(operation.operand))]
+
+
+def _lower_raw_binary_arith(
+    context: MLIRLoweringContext,
+    operation: ops.RawBinaryArithmeticOperation | ops.RawBinaryBitwiseOperation,
+) -> Sequence[mlir.Value]:
+    lhs_type = _expect_arith_type(operation.lhs.get_type())
+    rhs_type = _expect_arith_type(operation.rhs.get_type())
+    res_type = _expect_arith_type(operation.result_var.get_type())
+    assert lhs_type == rhs_type == res_type
+
+    res_dtype = res_type.tensor_dtype()
+    mlir_op = _get_mlir_op_for_op_and_dtype(operation.fn, res_dtype)
+    if mlir_op is None:
+        raise NotImplementedError(
+            f"Arithmetic operation {operation.fn} not supported for {res_dtype=}"
+        )
+    return [
+        mlir_op(
+            lhs=context.get_var(operation.lhs),
+            rhs=context.get_var(operation.rhs),
+        )
+    ]
+
+
+@mlir_op_lowering
+def lower_raw_binary_arith(
+    context: MLIRLoweringContext, operation: ops.RawBinaryArithmeticOperation
+) -> Sequence[mlir.Value]:
+    return _lower_raw_binary_arith(context, operation)
+
+
+@mlir_op_lowering
+def lower_raw_binary_bitwise_arith(
+    context: MLIRLoweringContext, operation: ops.RawBinaryBitwiseOperation
+) -> Sequence[mlir.Value]:
+    return _lower_raw_binary_arith(context, operation)
+
+
+@mlir_op_lowering
+def lower_typed_const(
+    context: MLIRLoweringContext, operation: ops.TypedConst
+) -> Sequence[mlir.Value]:
+    del context
+    target_type = operation.result_var.get_type()
+    value = operation.value
+    match target_type:
+        case (
+            ir_type.FunctionTy()
+            | ir_type.ModuleTy()
+            | ir_type.StringTy()
+            | ir_type.DTypeConstructor()
+            | ir_type.NoneType()
+            | ir_type.TypeTy()
+            | ir_type.EnumTy()
+        ):
+            return [value]
+        case ir_type.ScalarTy() | ir_type.VectorTy():
+            mlir_type = ir_type_to_mlir_type(target_type)
+            return [mlir_constant_of_type(mlir_type, value)]
+        case _:
+            raise NotImplementedError(
+                f"Unable to convert {value=} to MLIR constant of type {target_type=}"
+            )
+
+
+@mlir_op_lowering
+def lower_branch(
+    context: MLIRLoweringContext, operation: ops.Branch
+) -> Sequence[mlir.Value]:
+    mlir_block = context.block_map[operation.target]
+    mlir.cf.add_BranchOp(
+        dest=mlir_block.label,
+        destOperands=tuple(context.get_var(arg) for arg in operation.args),
+    )
+    return []
+
+
+@mlir_op_lowering
+def lower_cond_branch(
+    context: MLIRLoweringContext, operation: ops.CondBranch
+) -> Sequence[mlir.Value]:
+    cond = mlir.arith.add_TruncIOp(
+        out_type=T.i1(),
+        in_=context.get_var(operation.cond),
+    )
+    true_block = context.block_map[operation.true_target]
+    false_block = context.block_map[operation.false_target]
+    mlir.cf.add_CondBranchOp(
+        condition=cond,
+        trueDest=true_block.label,
+        falseDest=false_block.label,
+        trueDestOperands=tuple(context.get_var(arg) for arg in operation.true_args),
+        falseDestOperands=tuple(context.get_var(arg) for arg in operation.false_args),
+    )
+    return []
+
+
+@mlir_op_lowering
+def lower_assign(context: MLIRLoweringContext, operation: ops.Assign) -> None:
+    if operation.result_var.is_aggregate():
+        context.bind_aggregate(operation.result_var, operation.value)
+    else:
+        context.def_var(operation.result_var, context.get_var(operation.value))
+
+
+@mlir_op_lowering
+def lower_raw_where(
+    context: MLIRLoweringContext, operation: ops.RawWhereOperation
+) -> Sequence[mlir.Value]:
+    cond_type = _expect_arith_type(operation.cond.get_type())
+    if cond_type.tensor_shape() == ():
+        result_type = T.i1()
+    else:
+        result_type = mlir.VectorType(
+            shape=cond_type.tensor_shape(),
+            elementType=T.i1(),
+            scalableDims=(False,) * len(cond_type.tensor_shape()),
+        )
+    cond = mlir.arith.add_TruncIOp(
+        out_type=result_type,
+        in_=context.get_var(operation.cond),
+    )
+    return [
+        mlir.llvm.add_SelectOp(
+            condition=cond,
+            trueValue=context.get_var(operation.x),
+            falseValue=context.get_var(operation.y),
+        )
+    ]
+
+
+@mlir_op_lowering
+def lower_dummy(
+    context: MLIRLoweringContext, operation: ops.MakeDummy
+) -> Sequence[mlir.Value]:
+    del context
+    result_type = ir_type_to_mlir_type(operation.result_var.get_type())
+    if isinstance(result_type, mlir.llvm.LLVMPointerType):
+        return [mlir.llvm.add_ZeroOp(res_type=result_type)]
+    return [mlir_constant_of_type(result_type, 0)]
+
+
+class DeviceIR2MLIR:
+    def __init__(
+        self,
+        signature: KernelSignature,
+        region: ir.Region,
+        ctx: ir.IRContext,
+        compiler_options: CompilerOptions,
+    ):
+        self.context = DeviceLoweringContext(
+            signature=signature,
+            region=region,
+            ir_context=ctx,
+        )
+        self.compiler_options = compiler_options
+
+    def __call__(self) -> mlir.Operation:
+        context = self.context
+        self.setup_func_op()
+        self.setup_blocks()
+
+        try:
+            self.lower_region()
+        except Exception:
+            if context.ir_context.log_ir_on_error:
+                highlight_loc = (
+                    context.current_op.loc
+                    if context.current_op is not None
+                    else None
+                )
+                ir_str = context.region.to_string(highlight_loc=highlight_loc)
+                print(
+                    f"==== Encountered error converting IR to MLIR: ====\n\n{ir_str}\n\n",
+                    file=sys.stderr,
+                )
+            raise
+
+        assert context.module_op is not None, "MLIR module not initialized"
+        return context.module_op
+
+    def lower_region(self) -> None:
+        context = self.context
+        for ir_block in context.region.blocks:
+            mlir_block = context.block_map[ir_block]
+            assert len(mlir_block.args) == len(ir_block.params), (
+                "MLIR block parameters do not match IR block parameters: "
+                f"{ir_block._name}"
+            )
+            for mlir_arg, ir_arg in zip(mlir_block.args, ir_block.params):
+                assert mlir_arg.type == ir_type_to_mlir_type(ir_arg.get_type()), (
+                    "MLIR argument type does not match IR argument type: "
+                    f"{ir_arg.name}"
+                )
+                context.def_var(ir_arg, mlir_arg)
+
+            self.lower_block(ir_block)
+
+    def lower_block(self, ir_block: ir.Block) -> None:
+        context = self.context
+        mlir_block = context.block_map[ir_block]
+        with mlir_block.append_here():
+            for operation in ir_block.operations:
+                context.current_op = operation
+
+                if isinstance(operation, tuple(_NOOP_LOWERINGS)):
+                    continue
+
+                results = _MLIR_OP_LOWERING.lower(self.context, operation)
+
+                # Aggregate assignments do not materialize an MLIR SSA value.
+                if isinstance(operation, ops.Assign):
+                    continue
+
+                assert len(operation.result_vars) == len(results)
+                for lhs, rhs in zip(operation.result_vars, results):
+                    context.def_var(lhs, rhs)
+
     def setup_blocks(self):
-        for ir_block in self.region.blocks:
+        context = self.context
+        assert context.func_op is not None, "MLIR GPU function not initialized"
+        func_region = context.func_op.regions[0]
+        for ir_block in context.region.blocks:
             mlir_block_param_types = tuple(
                 ir_type_to_mlir_type(param.get_type()) for param in ir_block.params
             )
@@ -455,17 +722,18 @@ class IR2MLIR:
                     mlir_block_param_types, block_param_names
                 )
             )
-            mlir_block = self.func_region.new_block(args=args, block_id=ir_block._name)
-            self.block_map[ir_block] = mlir_block
+            mlir_block = func_region.new_block(args=args, block_id=ir_block._name)
+            context.block_map[ir_block] = mlir_block
 
     def setup_func_op(self):
+        context = self.context
         with mlir.Block().append_here() as top_block:
             module_region = mlir.Region()
             mlir.add_ModuleOp(
                 bodyRegion=module_region,
                 extra_attributes=[("gpu.container_module", mlir.UnitAttr())],
             )
-        self._module_op = top_block[0]
+        context.module_op = top_block[0]
 
         with module_region.new_block().append_here() as module_block:
             gpu_module_region = mlir.Region()
@@ -474,30 +742,30 @@ class IR2MLIR:
                 targets=mlir.ArrayAttr(value=[mlir.nvvm.NVVMTargetAttr()]),
                 bodyRegion=gpu_module_region,
             )
-        self._gpu_module_op = module_block[0]
+        context.gpu_module_op = module_block[0]
 
         with gpu_module_region.new_block().append_here():
             body_region = mlir.Region()
             input_types = tuple(
                 ir_type_to_mlir_type(param.get_type())
-                for param in self.region.blocks[0].params
+                for param in context.region.blocks[0].params
             )
             function_type = mlir.llvm.LLVMFunctionType(
                 returnType=mlir.llvm.LLVMVoidType(), params=input_types, varArg=False
             )
             arg_attrs = [
                 self._get_arg_attributes(param.get_type())
-                for param in self.region.blocks[0].params
+                for param in context.region.blocks[0].params
             ]
 
             mlir.llvm.add_LLVMFuncOp(
-                sym_name=self.signature.symbol,
+                sym_name=context.signature.symbol,
                 function_type=function_type,
                 arg_attrs=mlir.ArrayAttr(value=arg_attrs),
                 body=body_region,
                 extra_attributes=self._get_nvvm_function_attributes(),
             )
-            self._func_op = gpu_module_region.blocks[0].operations[-1]
+            context.func_op = gpu_module_region.blocks[0].operations[-1]
 
     def _get_nvvm_function_attributes(self):
         attributes = [
@@ -559,752 +827,618 @@ class IR2MLIR:
                 "nvvm.grid_constant", mlir.UnitAttr()))
         return mlir.DictionaryAttr(value=named_attrs)
 
-    def lower_block(self, ir_block: ir.Block):
-        mlir_block = self.block_map[ir_block]
-        with mlir_block.append_here():
-            for ir_operation in ir_block.operations:
-                self._current_op = ir_operation
 
-                if isinstance(ir_operation, tuple(_NOOP_LOWERINGS)):
-                    continue
+@mlir_op_lowering
+def lower_assume_bounded(
+    context: MLIRLoweringContext, operation: ops.AssumeBounded
+) -> Sequence[mlir.Value]:
+    return [context.get_var(operation.x)]
 
-                results = self.lower_operation(ir_operation)
 
-                # Aggregate assignments do not materialize an MLIR SSA value
-                if isinstance(ir_operation, ops.Assign):
-                    continue
+@mlir_op_lowering
+def lower_assume_div_by(
+    context: MLIRLoweringContext, operation: ops.AssumeDivBy
+) -> Sequence[mlir.Value]:
+    return [context.get_var(operation.x)]
 
-                assert len(ir_operation.result_vars) == len(results)
-                for lhs, rhs in zip(ir_operation.result_vars, results):
-                    self.def_var(lhs, rhs)
 
-    @singledispatchmethod
-    def lower_operation(self, operation: ir.Operation) -> Sequence[mlir.Value]:
-        raise NotImplementedError(f"Unable to lower {operation=} to MLIR")
+@mlir_op_lowering
+def lower_astype(
+    context: MLIRLoweringContext, operation: ops.TileAsType
+) -> Sequence[mlir.Value]:
+    src = context.get_var(operation.x)
+    src_type = _expect_arith_type(operation.x.get_type())
+    dst_type = _expect_arith_type(operation.result_var.get_type())
+    assert src_type.tensor_shape() == dst_type.tensor_shape()
+    assert datatype.is_arithmetic(src_type.tensor_dtype())
+    assert datatype.is_arithmetic(dst_type.tensor_dtype())
+    result = convert_dtype(src_type, dst_type, src)
+    return [result]
 
-    @lower_operation.register
-    def lower_comparison(
-        self, operation: ops.RawComparisonOperation
-    ) -> Sequence[mlir.Value]:
-        lhs_type = operation.lhs.get_type()
-        rhs_type = operation.lhs.get_type()
-        assert lhs_type == rhs_type
 
-        dtype = _expect_arith_type(lhs_type).tensor_dtype()
-        res_type = _expect_arith_type(operation.result_var.get_type())
+@mlir_op_lowering(host=False)
+def lower_atomic_rmw(
+    context: DeviceLoweringContext, operation: ops.AtomicRMW
+) -> Sequence[mlir.Value]:
+    pointer = context.get_var(operation.pointer)
+    value = context.get_var(operation.value)
+    value_dtype = operation.value.get_type().dtype
+    bin_op = _get_llvm_atomic_binop(operation.kind, value_dtype)
 
-        mlir_op = _get_mlir_comparison_op(operation.fn, dtype)
-        if mlir_op is None:
-            raise NotImplementedError(
-                f"Comparison operation {operation.fn} not supported for {dtype}"
-            )
+    result = mlir.llvm.add_AtomicRMWOp(
+        bin_op=bin_op,
+        ptr=pointer,
+        val=value,
+        ordering=_get_llvm_memory_ordering(operation.memory_order),
+        syncscope=_get_llvm_syncscope(operation.memory_scope),
+    )
+    return [result]
 
-        lhs = self.get_var(operation.lhs)
-        rhs = self.get_var(operation.rhs)
 
-        result = mlir_op(lhs=lhs, rhs=rhs)
-        result = mlir.arith.add_ExtUIOp(
-            out_type=ir_type_to_mlir_type(res_type),
-            in_=result,
-        )
-        return [result]
+@mlir_op_lowering(host=False)
+def lower_atomic_exchange(
+    context: DeviceLoweringContext, operation: ops.AtomicExchange
+) -> Sequence[mlir.Value]:
+    pointer = context.get_var(operation.pointer)
+    value = context.get_var(operation.value)
+    result = mlir.llvm.add_AtomicRMWOp(
+        bin_op=mlir.llvm.AtomicBinOp.xchg,
+        ptr=pointer,
+        val=value,
+        ordering=_get_llvm_memory_ordering(operation.memory_order),
+        syncscope=_get_llvm_syncscope(operation.memory_scope),
+    )
+    return [result]
 
-    @lower_operation.register
-    def lower_assume_bounded(
-        self, operation: ops.AssumeBounded
-    ) -> Sequence[mlir.Value]:
-        return [self.get_var(operation.x)]
 
-    @lower_operation.register
-    def lower_assume_div_by(self, operation: ops.AssumeDivBy) -> Sequence[mlir.Value]:
-        return [self.get_var(operation.x)]
+@mlir_op_lowering(host=False)
+def lower_atomic_cas(
+    context: DeviceLoweringContext, operation: ops.AtomicCAS
+) -> Sequence[mlir.Value]:
+    pointer = context.get_var(operation.pointer)
+    compare = context.get_var(operation.compare)
+    value = context.get_var(operation.value)
+    pair = mlir.llvm.add_AtomicCmpXchgOp(
+        ptr=pointer,
+        cmp=compare,
+        val=value,
+        success_ordering=_get_llvm_memory_ordering(operation.memory_order),
+        failure_ordering=_get_llvm_cmpxchg_failure_ordering(
+            operation.memory_order
+        ),
+        syncscope=_get_llvm_syncscope(operation.memory_scope),
+    )
 
-    @lower_operation.register
-    def lower_raw_unary_arith(self, operation: ops.Unary) -> Sequence[mlir.Value]:
-        res_type = _expect_arith_type(operation.result_var.get_type())
-        mlir_op = _get_mlir_unary_op_for_op_and_type(
-            operation.fn,
-            res_type,
-        )
-        if mlir_op is None:
-            raise NotImplementedError(
-                f"Arithmetic operation '{operation.fn}' not supported for {res_type=}"
-            )
+    # llvm.cmpxchg returns {old_value, success_flag}, we want the old value.
+    old_value = mlir.llvm.add_ExtractValueOp(
+        res_type=value.type,
+        container=pair,
+        position=(0,),
+    )
+    return [old_value]
 
-        operand = self.get_var(operation.operand)
-        result = mlir_op(operand=operand)
-        return [result]
 
-    @lower_operation.register
-    def lower_raw_binary_arith(
-        self, operation: ops.RawBinaryArithmeticOperation
-    ) -> Sequence[mlir.Value]:
-        lhs_type = _expect_arith_type(operation.lhs.get_type())
-        rhs_type = _expect_arith_type(operation.rhs.get_type())
-        res_type = _expect_arith_type(operation.result_var.get_type())
-        assert lhs_type == rhs_type == res_type
+@mlir_op_lowering(host=False)
+def lower_return(context: DeviceLoweringContext, operation: ops.Return) -> Sequence[mlir.Value]:
+    assert operation.result_vars == (), "Kernels may not return values"
+    mlir.llvm.add_ReturnOp()
+    return []
 
-        res_dtype = res_type.tensor_dtype()
-        lhs = self.get_var(operation.lhs)
-        rhs = self.get_var(operation.rhs)
 
-        mlir_op = _get_mlir_op_for_op_and_dtype(operation.fn, res_dtype)
-        if mlir_op is None:
-            raise NotImplementedError(
-                f"Arithmetic operation {operation.fn} not supported for {res_dtype=}"
-            )
+@mlir_op_lowering(host=False)
+def lower_printf(context: DeviceLoweringContext, operation: ops.TilePrintf) -> Sequence[mlir.Value]:
+    args = tuple(context.get_var(arg) for arg in operation.args)
+    mlir.gpu.add_PrintfOp(format=operation.format, args=args)
+    # printOp returns a token, which is only used in cutile token order pass,
+    # to match the number of return vars, we return a dummy value None
+    # that will not get used.
+    return [None]
 
-        result = mlir_op(lhs=lhs, rhs=rhs)
-        return [result]
 
-    @lower_operation.register
-    def lower_raw_binary_bitwise_arith(
-        self, operation: ops.RawBinaryBitwiseOperation
-    ) -> Sequence[mlir.Value]:
-        return self.lower_raw_binary_arith(operation)
+@mlir_op_lowering
+def lower_pointer_offset(
+    context: MLIRLoweringContext, operation: ops.PointerOffset
+) -> Sequence[mlir.Value]:
+    ptr_ty = _expect_pointer_type(operation.pointer.get_type())
+    element_type = dtype_to_mlir_type(ptr_ty.pointee_dtype)
 
-    @lower_operation.register
-    def lower_astype(self, operation: ops.TileAsType) -> Sequence[mlir.Value]:
-        src = self.get_var(operation.x)
-        src_type = _expect_arith_type(operation.x.get_type())
-        dst_type = _expect_arith_type(operation.result_var.get_type())
-        assert src_type.tensor_shape() == dst_type.tensor_shape()
-        assert datatype.is_arithmetic(src_type.tensor_dtype())
-        assert datatype.is_arithmetic(dst_type.tensor_dtype())
-        result = convert_dtype(src_type, dst_type, src)
-        return [result]
+    pointer = context.get_var(operation.pointer)
+    offset = context.get_var(operation.offset)
+    dynamic_32b_sentinel = -1 << 31
+    offset_pointer = mlir.llvm.add_GEPOp(
+        res_type=pointer.type,
+        base=pointer,
+        dynamicIndices=[offset],
+        rawConstantIndices=[dynamic_32b_sentinel],
+        elem_type=element_type,
+    )
+    return [offset_pointer]
 
-    @lower_operation.register
-    def lower_typed_const(self, operation: ops.TypedConst) -> Sequence[mlir.Value]:
-        target_type = operation.result_var.get_type()
-        value = operation.value
-        match target_type:
-            case (
-                ir_type.FunctionTy()
-                | ir_type.ModuleTy()
-                | ir_type.StringTy()
-                | ir_type.DTypeConstructor()
-                | ir_type.NoneType()
-                | ir_type.TypeTy()
-                | ir_type.EnumTy()
-            ):
-                return [value]
-            case ir_type.ScalarTy() | ir_type.VectorTy():
-                mlir_type = ir_type_to_mlir_type(target_type)
-                cst = mlir_constant_of_type(mlir_type, value)
-                return [cst]
-            case _:
-                raise NotImplementedError(
-                    f"Unable to convert {value=} to MLIR constant of type {target_type=}"
-                )
 
-    @lower_operation.register
-    def lower_atomic_rmw(self, operation: ops.AtomicRMW) -> Sequence[mlir.Value]:
-        pointer = self.get_var(operation.pointer)
-        value = self.get_var(operation.value)
-        value_dtype = operation.value.get_type().dtype
-        bin_op = _get_llvm_atomic_binop(operation.kind, value_dtype)
+@mlir_op_lowering
+def lower_vector_getitem(
+    context: MLIRLoweringContext, operation: ops.VectorGetItem
+) -> Sequence[mlir.Value]:
+    vector = context.get_var(operation.x)
+    position = context.get_var(operation.index)
+    element = mlir.llvm.add_ExtractElementOp(vector=vector, position=position)
+    return [element]
 
-        result = mlir.llvm.add_AtomicRMWOp(
-            bin_op=bin_op,
-            ptr=pointer,
-            val=value,
-            ordering=_get_llvm_memory_ordering(operation.memory_order),
-            syncscope=_get_llvm_syncscope(operation.memory_scope),
-        )
-        return [result]
 
-    @lower_operation.register
-    def lower_atomic_exchange(
-        self, operation: ops.AtomicExchange
-    ) -> Sequence[mlir.Value]:
-        pointer = self.get_var(operation.pointer)
-        value = self.get_var(operation.value)
-        result = mlir.llvm.add_AtomicRMWOp(
-            bin_op=mlir.llvm.AtomicBinOp.xchg,
-            ptr=pointer,
-            val=value,
-            ordering=_get_llvm_memory_ordering(operation.memory_order),
-            syncscope=_get_llvm_syncscope(operation.memory_scope),
-        )
-        return [result]
+@mlir_op_lowering(host=False)
+def lower_load_pointer(
+    context: DeviceLoweringContext, operation: ops.LoadPointer
+) -> Sequence[mlir.Value]:
+    ptr_dtype = operation.pointer.get_type().pointer_dtype
+    ordering = _get_llvm_memory_ordering(operation.memory_order)
+    info = PointerInfo(ptr_dtype)
+    assert not info.opaque, f"Expected a typed pointer, got {ptr_dtype}"
+    result_type = ir_type_to_mlir_type(operation.result_var.get_type())
+    pointer = context.get_var(operation.pointer)
+    result = mlir.llvm.add_LoadOp(
+        res_type=result_type,
+        addr=pointer,
+        alignment=operation.alignment,
+        volatile_=operation.volatile,
+        ordering=ordering,
+    )
+    return [result]
 
-    @lower_operation.register
-    def lower_atomic_cas(self, operation: ops.AtomicCAS) -> Sequence[mlir.Value]:
-        pointer = self.get_var(operation.pointer)
-        compare = self.get_var(operation.compare)
-        value = self.get_var(operation.value)
-        pair = mlir.llvm.add_AtomicCmpXchgOp(
-            ptr=pointer,
-            cmp=compare,
-            val=value,
-            success_ordering=_get_llvm_memory_ordering(operation.memory_order),
-            failure_ordering=_get_llvm_cmpxchg_failure_ordering(
-                operation.memory_order
-            ),
-            syncscope=_get_llvm_syncscope(operation.memory_scope),
-        )
 
-        # llvm.cmpxchg returns {old_value, success_flag}, we want the old value.
-        old_value = mlir.llvm.add_ExtractValueOp(
-            res_type=value.type,
-            container=pair,
-            position=(0,),
-        )
-        return [old_value]
+@mlir_op_lowering(host=False)
+def lower_store_pointer(
+    context: DeviceLoweringContext, operation: ops.StorePointer
+) -> Sequence[mlir.Value]:
+    pointer = context.get_var(operation.pointer)
+    ordering = _get_llvm_memory_ordering(operation.memory_order)
+    value = context.get_var(operation.value)
+    mlir.llvm.add_StoreOp(
+        value=value,
+        addr=pointer,
+        alignment=operation.alignment,
+        volatile_=operation.volatile,
+        ordering=ordering,
+    )
+    return []
 
-    @lower_operation.register
-    def lower_branch(self, operation: ops.Branch) -> Sequence[mlir.Value]:
-        mlir_block = self.block_map[operation.target]
-        mlir_args = tuple(self.get_var(arg) for arg in operation.args)
-        mlir.cf.add_BranchOp(
-            dest=mlir_block.label,
-            destOperands=mlir_args,
-        )
-        return []
 
-    @lower_operation.register
-    def lower_cond_branch(self, operation: ops.CondBranch) -> Sequence[mlir.Value]:
-        cond = self.get_var(operation.cond)
-        cond = mlir.arith.add_TruncIOp(
-            out_type=T.i1(),
-            in_=cond,
-        )
-        true_block = self.block_map[operation.true_target]
-        true_args = tuple(self.get_var(arg) for arg in operation.true_args)
-        false_block = self.block_map[operation.false_target]
-        false_args = tuple(self.get_var(arg) for arg in operation.false_args)
-        mlir.cf.add_CondBranchOp(
-            condition=cond,
-            trueDest=true_block.label,
-            falseDest=false_block.label,
-            trueDestOperands=true_args,
-            falseDestOperands=false_args,
-        )
-        return []
+@mlir_op_lowering(host=False)
+def lower_alloc_local_memory(
+    context: DeviceLoweringContext, operation: ops.AllocLocalMemory
+) -> Sequence[mlir.Value]:
+    result_ty = operation.result_var.get_type()
+    assert isinstance(result_ty, ir_type.PointerTy)
+    result_ty_mlir = ir_type_to_mlir_type(result_ty)
+    elem_type_mlir = dtype_to_mlir_type(result_ty.pointee_dtype)
 
-    @lower_operation.register
-    def lower_assign(self, operation: ops.Assign) -> None:
-        if operation.result_var.is_aggregate():
-            self.lower_aggregate_assign(operation.result_var, operation.value)
-        else:
-            self.def_var(operation.result_var, self.get_var(operation.value))
-
-    @lower_operation.register
-    def lower_return(self, operation: ops.Return) -> Sequence[mlir.Value]:
-        assert operation.result_vars == (), "Kernels may not return values"
-        mlir.llvm.add_ReturnOp()
-        return []
-
-    @lower_operation.register
-    def lower_printf(self, operation: ops.TilePrintf) -> Sequence[mlir.Value]:
-        args = tuple(self.get_var(arg) for arg in operation.args)
-        mlir.gpu.add_PrintfOp(format=operation.format, args=args)
-        # printOp returns a token, which is only used in cutile token order pass,
-        # to match the number of return vars, we return a dummy value None
-        # that will not get used.
-        return [None]
-
-    @lower_operation.register
-    def lower_pointer_offset(
-        self, operation: ops.PointerOffset
-    ) -> Sequence[mlir.Value]:
-        ptr_ty = _expect_pointer_type(operation.pointer.get_type())
-        element_type = dtype_to_mlir_type(ptr_ty.pointee_dtype)
-
-        pointer = self.get_var(operation.pointer)
-        offset = self.get_var(operation.offset)
-        dynamic_32b_sentinel = -1 << 31
-        offset_pointer = mlir.llvm.add_GEPOp(
-            res_type=pointer.type,
-            base=pointer,
-            dynamicIndices=[offset],
-            rawConstantIndices=[dynamic_32b_sentinel],
-            elem_type=element_type,
-        )
-        return [offset_pointer]
-
-    @lower_operation.register
-    def lower_vector_getitem(self, operation: ops.VectorGetItem) -> Sequence[mlir.Value]:
-        vector = self.get_var(operation.x)
-        position = self.get_var(operation.index)
-        element = mlir.llvm.add_ExtractElementOp(vector=vector, position=position)
-        return [element]
-
-    @lower_operation.register
-    def lower_load_pointer(self, operation: ops.LoadPointer) -> Sequence[mlir.Value]:
-        ptr_dtype = operation.pointer.get_type().pointer_dtype
-        ordering = _get_llvm_memory_ordering(operation.memory_order)
-        info = PointerInfo(ptr_dtype)
-        assert not info.opaque, f"Expected a typed pointer, got {ptr_dtype}"
-        result_type = ir_type_to_mlir_type(operation.result_var.get_type())
-        pointer = self.get_var(operation.pointer)
-        result = mlir.llvm.add_LoadOp(
-            res_type=result_type,
-            addr=pointer,
+    with context.function_region.blocks[0].prepend_here():
+        array_size = mlir_constant_of_type(T.i64(), operation.count)
+        ptr = mlir.llvm.add_AllocaOp(
+            res_type=result_ty_mlir,
+            arraySize=array_size,
+            elem_type=elem_type_mlir,
             alignment=operation.alignment,
-            volatile_=operation.volatile,
-            ordering=ordering,
         )
-        return [result]
+    # It would be nice to emit llvm.intr.lifetime_start() here but MLIR's region-simplify
+    # pass doesn't respect it and produces invalid IR as a result.
+    # mlir.llvm.add_LifetimeStartOp(ptr=ptr)
+    return [ptr]
 
-    @lower_operation.register
-    def lower_store_pointer(self, operation: ops.StorePointer) -> Sequence[mlir.Value]:
-        pointer = self.get_var(operation.pointer)
-        ordering = _get_llvm_memory_ordering(operation.memory_order)
-        value = self.get_var(operation.value)
-        mlir.llvm.add_StoreOp(
-            value=value,
-            addr=pointer,
+
+@mlir_op_lowering(host=False)
+def lower_dealloc_local_memory(context: DeviceLoweringContext, operation: ops.DeallocLocalMemory):
+    # It would be nice to emit llvm.intr.lifetime_end() here but MLIR's region-simplify
+    # pass doesn't respect it and produces invalid IR as a result.
+    # mlir.llvm.add_LifetimeEndOp(ptr=context.get_var(operation.ptr))
+    return ()
+
+
+@mlir_op_lowering(host=False)
+def lower_alloc_static_shared_memory(
+    context: DeviceLoweringContext, operation: ops.AllocStaticSharedMemory
+) -> Sequence[mlir.Value]:
+    result_ty = operation.result_var.get_type()
+    assert isinstance(result_ty, ir_type.PointerTy)
+    elem_type = dtype_to_mlir_type(result_ty.pointee_dtype)
+    global_type = mlir.llvm.LLVMArrayType(
+        elementType=elem_type,
+        numElements=operation.count,
+    )
+    sym = f"static_shared_memory_{operation.result_var.name}"
+    with context.gpu_module.regions[0].blocks[0].prepend_here():
+        mlir.llvm.add_GlobalOp(
+            global_type=global_type,
+            sym_name=sym,
+            linkage=mlir.llvm.Linkage.Internal,
+            addr_space=ir_type.MemorySpace.SHARED._value_,
+            visibility_=mlir.llvm.Visibility.Default,
+            initializer=mlir.Region(),
             alignment=operation.alignment,
-            volatile_=operation.volatile,
-            ordering=ordering,
         )
-        return []
+    base = mlir.llvm.add_AddressOfOp(
+        res_type=ir_type_to_mlir_type(result_ty),
+        global_name=sym,
+    )
+    return [base]
 
-    @lower_operation.register
-    def lower_alloc_local_memory(
-        self, operation: ops.AllocLocalMemory
-    ) -> Sequence[mlir.Value]:
-        result_ty = operation.result_var.get_type()
-        assert isinstance(result_ty, ir_type.PointerTy)
-        result_ty_mlir = ir_type_to_mlir_type(result_ty)
-        elem_type_mlir = dtype_to_mlir_type(result_ty.pointee_dtype)
 
-        with self.func_region.blocks[0].prepend_here():
-            array_size = mlir_constant_of_type(T.i64(), operation.count)
-            ptr = mlir.llvm.add_AllocaOp(
-                res_type=result_ty_mlir,
-                arraySize=array_size,
-                elem_type=elem_type_mlir,
-                alignment=operation.alignment,
+@mlir_op_lowering(host=False)
+def lower_get_dyn_shared_memory_base_ptr(
+    context: DeviceLoweringContext,
+    operation: ops.GetDynSharedMemoryBasePtr,
+) -> Sequence[mlir.Value]:
+    global_type = mlir.llvm.LLVMArrayType(elementType=T.i8(), numElements=0)
+    sym = context.signature.symbol + "$dynamic_shared_memory"
+    addr_space = ir_type.MemorySpace.SHARED._value_
+    with context.gpu_module.regions[0].blocks[0].prepend_here():
+        mlir.llvm.add_GlobalOp(
+            global_type=global_type,
+            sym_name=sym,
+            linkage=mlir.llvm.Linkage.External,
+            addr_space=addr_space,
+            visibility_=mlir.llvm.Visibility.Default,
+            initializer=mlir.Region(),
+            alignment=ops.GetDynSharedMemoryBasePtr.initial_alignment,
+        )
+    res_type = ir_type_to_mlir_type(operation.result_var.get_type())
+    assert isinstance(res_type, mlir.llvm.LLVMPointerType)
+    ptr = mlir.llvm.add_AddressOfOp(res_type=res_type, global_name=sym)
+    return [ptr]
+
+
+@mlir_op_lowering
+def lower_tensor_map_as_opaque_ptr(
+    context: MLIRLoweringContext, operation: ops.TensorMapAsOpaquePtr
+):
+    tm = context.get_var(operation.tensor_map)
+    return [tm]
+
+
+@mlir_op_lowering(host=False)
+def lower_inline_ptx(
+    context: DeviceLoweringContext, operation: ops.InlinePTX
+) -> Sequence[mlir.Value]:
+    ptx_code = operation.ptx_code
+    ro_args = tuple(context.get_var(arg) for arg in operation.read_only_operands)
+    rw_args = tuple(context.get_var(arg) for arg in operation.read_write_operands)
+    wo_args = tuple(dtype_to_mlir_type(arg) for arg in operation.write_only_operands)
+    results = mlir.nvvm.add_InlinePtxOp(
+        ptxCode=ptx_code,
+        readOnlyArgs=ro_args,
+        readWriteArgs=rw_args,
+        writeOnlyArgs_types=wo_args,
+    )
+    return tuple(results)
+
+
+def _lower_intrinsic_operand(context: MLIRLoweringContext, operand: ir.Var) -> mlir.Value:
+    """
+    Bool operands need to be truncated from their cutile storage type
+    to their MLIR storage type
+    """
+    operand_value = context.get_var(operand)
+    operand_type = operand.get_type()
+    match operand_type:
+        case ir_type.VectorTy() as vt if vt.element_dtype == datatype.bool_:
+            res_ty = mlir.VectorType(
+                shape=[vt.length], elementType=T.i1(), scalableDims=[False]
             )
-        # It would be nice to emit llvm.intr.lifetime_start() here but MLIR's region-simplify
-        # pass doesn't respect it and produces invalid IR as a result.
-        # mlir.llvm.add_LifetimeStartOp(ptr=ptr)
-        return [ptr]
+            return mlir.arith.add_TruncIOp(out_type=res_ty, in_=operand_value)
+        case ir_type.ScalarTy() as st if st.dtype == datatype.bool_:
+            return mlir.arith.add_TruncIOp(out_type=T.i1(), in_=operand_value)
+        case _:
+            return operand_value
 
-    @lower_operation.register
-    def lower_dealloc_local_memory(self, operation: ops.DeallocLocalMemory):
-        # It would be nice to emit llvm.intr.lifetime_end() here but MLIR's region-simplify
-        # pass doesn't respect it and produces invalid IR as a result.
-        # mlir.llvm.add_LifetimeEndOp(ptr=self.get_var(operation.ptr))
-        return ()
 
-    @lower_operation.register
-    def lower_alloc_static_shared_memory(
-        self, operation: ops.AllocStaticSharedMemory
-    ) -> Sequence[mlir.Value]:
-        result_ty = operation.result_var.get_type()
-        assert isinstance(result_ty, ir_type.PointerTy)
-        elem_type = dtype_to_mlir_type(result_ty.pointee_dtype)
-        global_type = mlir.llvm.LLVMArrayType(
-            elementType=elem_type,
-            numElements=operation.count,
-        )
-        sym = f"static_shared_memory_{operation.result_var.name}"
-        with self.gpu_module_op.regions[0].blocks[0].prepend_here():
-            mlir.llvm.add_GlobalOp(
-                global_type=global_type,
-                sym_name=sym,
-                linkage=mlir.llvm.Linkage.Internal,
-                addr_space=ir_type.MemorySpace.SHARED._value_,
-                visibility_=mlir.llvm.Visibility.Default,
-                initializer=mlir.Region(),
-                alignment=operation.alignment,
-            )
-        base = mlir.llvm.add_AddressOfOp(
-            res_type=ir_type_to_mlir_type(result_ty),
-            global_name=sym,
-        )
-        return [base]
-
-    @lower_operation.register
-    def lower_get_dyn_shared_memory_base_ptr(self, operation: ops.GetDynSharedMemoryBasePtr
-                                             ) -> Sequence[mlir.Value]:
-        global_type = mlir.llvm.LLVMArrayType(elementType=T.i8(), numElements=0)
-        sym = self.signature.symbol + "$dynamic_shared_memory"
-        addr_space = ir_type.MemorySpace.SHARED._value_
-        with self.gpu_module_op.regions[0].blocks[0].prepend_here():
-            mlir.llvm.add_GlobalOp(
-                global_type=global_type,
-                sym_name=sym,
-                linkage=mlir.llvm.Linkage.External,
-                addr_space=addr_space,
-                visibility_=mlir.llvm.Visibility.Default,
-                initializer=mlir.Region(),
-                alignment=ops.GetDynSharedMemoryBasePtr.initial_alignment,
-            )
-        res_type = ir_type_to_mlir_type(operation.result_var.get_type())
-        assert isinstance(res_type, mlir.llvm.LLVMPointerType)
-        ptr = mlir.llvm.add_AddressOfOp(res_type=res_type, global_name=sym)
-        return [ptr]
-
-    @lower_operation.register
-    def lower_tensor_map_as_opaque_ptr(self, operation: ops.TensorMapAsOpaquePtr):
-        tm = self.get_var(operation.tensor_map)
-        return [tm]
-
-    @lower_operation.register
-    def lower_inline_ptx(self, operation: ops.InlinePTX) -> Sequence[mlir.Value]:
-        ptx_code = operation.ptx_code
-        ro_args = tuple(self.get_var(arg) for arg in operation.read_only_operands)
-        rw_args = tuple(self.get_var(arg) for arg in operation.read_write_operands)
-        wo_args = tuple(dtype_to_mlir_type(arg) for arg in operation.write_only_operands)
-        results = mlir.nvvm.add_InlinePtxOp(
-            ptxCode=ptx_code,
-            readOnlyArgs=ro_args,
-            readWriteArgs=rw_args,
-            writeOnlyArgs_types=wo_args,
-        )
-        return tuple(results)
-
-    def _lower_intrinsic_operand(self, operand: ir.Var) -> mlir.Value:
-        """
-        Bool operands need to be truncated from their cutile storage type
-        to their MLIR storage type
-        """
-        operand_value = self.get_var(operand)
-        operand_type = operand.get_type()
-        match operand_type:
-            case ir_type.VectorTy() as vt if vt.element_dtype == datatype.bool_:
-                res_ty = mlir.VectorType(
-                    shape=[vt.length], elementType=T.i1(), scalableDims=[False]
-                )
-                return mlir.arith.add_TruncIOp(out_type=res_ty, in_=operand_value)
-            case ir_type.ScalarTy() as st if st.dtype == datatype.bool_:
-                return mlir.arith.add_TruncIOp(out_type=T.i1(), in_=operand_value)
-            case _:
-                return operand_value
-
-    def _lower_intrinsic_result(
-        self, results: Sequence[mlir.Value]
-    ) -> Sequence[mlir.Value]:
-        for result in results:
-            if result.type == T.i1():
-                yield mlir.arith.add_ExtUIOp(out_type=T.i8(), in_=result)
-            elif (
-                isinstance(result.type, mlir.VectorType)
-                and result.type.elementType == T.i1()
-            ):
-                out_type = mlir.VectorType(
-                    shape=result.type.shape, elementType=T.i8(), scalableDims=[False]
-                )
-                yield mlir.arith.add_ExtUIOp(out_type=out_type, in_=result)
-            else:
-                yield result
-
-    def _lower_intrinsic_result_type(
-        self, result_types: Sequence[ir_type.Type]
-    ) -> Sequence[mlir.Type]:
-        for result_type in result_types:
-            if result_type == ir_type.ScalarTy(datatype.bool_):
-                yield T.i1()
-            elif (
-                isinstance(result_type, ir_type.VectorTy)
-                and result_type.element_dtype == datatype.bool_
-            ):
-                yield mlir.VectorType(
-                    shape=[result_type.length], elementType=T.i1(), scalableDims=[False]
-                )
-            else:
-                yield ir_type_to_mlir_type(result_type)
-
-    def _extract_aggregate_elements(self, value: mlir.Value) -> Sequence[mlir.Value]:
-        assert isinstance(value.type, mlir.llvm.LLVMStructType)
-        element_types = value.type.types
-        for i, element_type in enumerate(element_types):
-            yield mlir.llvm.add_ExtractValueOp(
-                res_type=element_type,
-                container=value,
-                position=[i]
-            )
-
-    @lower_operation.register
-    def lower_raw_nvvm_intrinsic(
-        self, operation: ops.RawNVVMIntrinsic
-    ) -> Sequence[mlir.Value]:
-        operands = tuple(
-            self._lower_intrinsic_operand(operand)
-            for operand in operation.operands_
-        )
-        result_types = tuple(
-            self._lower_intrinsic_result_type(
-                result.get_type()
-                for result in operation.result_vars
-            )
-        )
-
-        match len(result_types):
-            case 0:
-                mlir_result_type = None
-            case 1:
-                mlir_result_type = result_types[0]
-            case _:
-                mlir_result_type = mlir.llvm.LLVMStructType(types=result_types)
-
-        intrinsic_call_result = mlir.llvm.add_CallIntrinsicOp(
-            results_type=mlir_result_type,
-            intrin=operation.intrinsic,
-            args=operands,
-            op_bundle_operands=(),
-            op_bundle_sizes=(),
-        )
-
-        match len(result_types):
-            case 0:
-                mlir_values = []
-            case 1:
-                mlir_values = [intrinsic_call_result]
-            case _:
-                mlir_values = list(self._extract_aggregate_elements(intrinsic_call_result))
-
-        return tuple(self._lower_intrinsic_result(mlir_values))
-
-    @lower_operation.register
-    def lower_raw_mlir_operation(
-        self, operation: ops.RawMLIROperation
-    ) -> Sequence[mlir.Value]:
-        operands = tuple(
-            self._lower_intrinsic_operand(operand) for operand in operation.operands_
-        )
-        result_types = tuple(
-            self._lower_intrinsic_result_type(
-                result_var.get_type() for result_var in operation.result_vars
-            )
-        )
-        results = mlir.add_operation(
-            name=operation.op_name,
-            result_type=result_types,
-            operands=operands,
-            properties=(),
-            attributes=operation.mlir_attributes,
-        )
-        return tuple(self._lower_intrinsic_result(results))
-
-    @lower_operation.register
-    def lower_raw_where(self, operation: ops.RawWhereOperation) -> Sequence[mlir.Value]:
-        cond_i8 = self.get_var(operation.cond)
-        cond_type = _expect_arith_type(operation.cond.get_type())
-        if cond_type.tensor_shape() == ():
-            result_type = T.i1()
-        else:
-            result_type = mlir.VectorType(
-                shape=cond_type.tensor_shape(),
-                elementType=T.i1(),
-                scalableDims=(False,) * len(cond_type.tensor_shape()),
-            )
-
-        cond = mlir.arith.add_TruncIOp(
-            out_type=result_type,
-            in_=cond_i8,
-        )
-        x = self.get_var(operation.x)
-        y = self.get_var(operation.y)
-        result = mlir.llvm.add_SelectOp(
-            condition=cond,
-            trueValue=x,
-            falseValue=y,
-        )
-        return [result]
-
-    @lower_operation.register
-    def lower_reinterpret_pointer(
-        self, operation: ops.ReinterpretPointer
-    ) -> Sequence[mlir.Value]:
-        # This operation only exists to reinterpret the type of a pointer
-        # at the IR level, but the MLIR representation will be the same either way.
-        return [self.get_var(operation.pointer)]
-
-    @lower_operation.register
-    def lower_addrspace_cast(
-        self, operation: ops.AddrSpaceCast
-    ) -> Sequence[mlir.Value]:
-        value = self.get_var(operation.pointer)
-        ir_result_type: ir_type.PointerTy = operation.result_var.get_type()
-        if ir_result_type.memory_space.value == value.type.addressSpace:
-            return [value]
-        mlir_result_type = ir_type_to_mlir_type(ir_result_type)
-        result = mlir.llvm.add_AddrSpaceCastOp(
-            res_type=mlir_result_type,
-            arg=value,
-        )
-        return [result]
-
-    @lower_operation.register
-    def lower_bitshift(
-        self, operation: ops.RawBitwiseShiftOperation
-    ) -> Sequence[mlir.Value]:
-        lhs_type = _expect_arith_type(operation.lhs.get_type())
-        rhs_type = _expect_arith_type(operation.rhs.get_type())
-        res_type = _expect_arith_type(operation.result_var.get_type())
-
-        assert lhs_type == rhs_type == res_type
-        assert datatype.is_integral(res_type.tensor_dtype())
-
-        lhs = self.get_var(operation.lhs)
-        rhs = self.get_var(operation.rhs)
-
-        match operation.fn:
-            case "lshift":
-                result = mlir.arith.add_ShLIOp(lhs=lhs, rhs=rhs)
-            case "rshift":
-                shift_op = (
-                    mlir.arith.add_ShRSIOp
-                    if datatype.is_signed(res_type.tensor_dtype())
-                    else mlir.arith.add_ShRUIOp
-                )
-                result = shift_op(lhs=lhs, rhs=rhs)
-            case _:
-                raise NotImplementedError(
-                    f"Bitwise shift operation {operation.fn} not supported"
-                )
-
-        return [result]
-
-    @lower_operation.register
-    def lower_dummy(
-        self, operation: ops.MakeDummy
-    ) -> Sequence[mlir.Value]:
-        result_type = ir_type_to_mlir_type(operation.result_var.get_type())
-        dummy = mlir_constant_of_type(result_type, 0)
-        return [dummy]
-
-    @lower_operation.register
-    def lower_tile_broadcast(
-        self, operation: ops.TileBroadcast
-    ) -> Sequence[mlir.Value]:
-        res_ty = operation.result_var.get_type()
-        x = operation.x
-        x_ty = x.get_type()
-        if (
-            not isinstance(x_ty, ir_type.VectorTy)
-            or not isinstance(res_ty, ir_type.VectorTy)
-            or x_ty.length != 1
+def _lower_intrinsic_result(
+    context: MLIRLoweringContext, results: Sequence[mlir.Value]
+) -> Sequence[mlir.Value]:
+    for result in results:
+        if result.type == T.i1():
+            yield mlir.arith.add_ExtUIOp(out_type=T.i8(), in_=result)
+        elif (
+            isinstance(result.type, mlir.VectorType)
+            and result.type.elementType == T.i1()
         ):
-            raise InternalError(
-                "Expected length-1 vector but got result "
-                f"type {res_ty} and operand type {x_ty}"
+            out_type = mlir.VectorType(
+                shape=result.type.shape, elementType=T.i8(), scalableDims=[False]
             )
-        if x_ty.element_dtype != res_ty.element_dtype:
-            raise InternalError(
-                "Expected broadcast operand and result type to have same "
-                f"dtype but got result type {res_ty} and operand type {x_ty}"
-            )
-
-        mask = [0 for _ in range(res_ty.length)]
-        res_ty = ir_type_to_mlir_type(res_ty)
-        x = self.get_var(x)
-        res = mlir.llvm.add_ShuffleVectorOp(res_type=res_ty, v1=x, v2=x, mask=mask)
-        return [res]
-
-    @lower_operation.register
-    def lower_tile_reshape(
-        self, operation: ops.TileReshape
-    ) -> Sequence[mlir.Value]:
-        res_ty = operation.result_var.get_type()
-        x = operation.x
-        x_ty = x.get_type()
-        match x_ty, res_ty:
-            case ir_type.ScalarTy(), ir_type.VectorTy():
-                res_ty = ir_type_to_mlir_type(res_ty)
-                res = mlir.llvm.add_PoisonOp(res_type=res_ty)
-                if len(res_ty.shape) != 1:
-                    raise InternalError(
-                        f"Expected vector to have 1d shape but got {res_ty}"
-                    )
-                for i in range(res_ty.shape[0]):
-                    position = mlir_constant_of_type(T.i32(), i)
-                    res = mlir.llvm.add_InsertElementOp(
-                        vector=res,
-                        value=self.get_var(x),
-                        position=position,
-                    )
-                return [res]
-        raise NotImplementedError(
-            f"Could not broadcast value of type {x_ty} to type {res_ty}"
-        )
-
-    @lower_operation.register
-    def lower_foreign_function(
-        self, operation: ops.ForeignFunction
-    ) -> Sequence[mlir.Value]:
-        function_name = operation.function_name
-        operands = tuple(self.get_var(operand) for operand in operation.operands_)
-        operand_types = tuple(
-            ir_type_to_mlir_type(operand.get_type()) for operand in operation.operands_
-        )
-
-        has_result = len(operation.result_vars) > 0
-        result_type = (
-            ir_type_to_mlir_type(operation.result_var.get_type())
-            if has_result
-            else None
-        )
-        function_type = mlir.llvm.LLVMFunctionType(
-            returnType=result_type if result_type else mlir.llvm.LLVMVoidType(),
-            params=operand_types,
-            varArg=False,
-        )
-        if prev_type := self._seen_foreign_functions.get(function_name):
-            if prev_type != function_type:
-                raise TypeCheckingError(
-                    f"Tried calling foreign function {function_name} with type {function_type} "
-                    f"but it has already been declared with type {prev_type!r}"
-                )
+            yield mlir.arith.add_ExtUIOp(out_type=out_type, in_=result)
         else:
-            mlir.llvm.add_LLVMFuncOp(
-                sym_name=function_name,
-                linkage=mlir.llvm.Linkage.External,
-                body=mlir.Region(),
-                function_type=function_type,
+            yield result
+
+
+def _lower_intrinsic_result_type(
+    context: MLIRLoweringContext, result_types: Sequence[ir_type.Type]
+) -> Sequence[mlir.Type]:
+    for result_type in result_types:
+        if result_type == ir_type.ScalarTy(datatype.bool_):
+            yield T.i1()
+        elif (
+            isinstance(result_type, ir_type.VectorTy)
+            and result_type.element_dtype == datatype.bool_
+        ):
+            yield mlir.VectorType(
+                shape=[result_type.length], elementType=T.i1(), scalableDims=[False]
             )
-            func_op = _Cursor.current()._block.operations.pop()
-            self.gpu_module_op.regions[0].blocks[0].operations.insert(0, func_op)
-            self._seen_foreign_functions[function_name] = function_type
+        else:
+            yield ir_type_to_mlir_type(result_type)
 
-        call = mlir.llvm.add_CallOp(
-            result_type=result_type,
-            callee=function_name,
-            callee_operands=operands,
-            op_bundle_operands=(),
-            op_bundle_sizes=(),
-        )
-        return [call] if has_result else []
 
-    @lower_operation.register
-    def lower_bitcast(
-        self, operation: ops.BitCast
-    ) -> Sequence[mlir.Value]:
-        x = self.get_var(operation.x)
-        src_ty, dst_ty = operation.x.get_type(), operation.result_var.get_type()
-        src_mlir_ty, dst_mlir_ty = (
-            ir_type_to_mlir_type(src_ty),
-            ir_type_to_mlir_type(dst_ty),
+def _extract_aggregate_elements(
+    context: DeviceLoweringContext, value: mlir.Value
+) -> Sequence[mlir.Value]:
+    del context
+    assert isinstance(value.type, mlir.llvm.LLVMStructType)
+    element_types = value.type.types
+    for i, element_type in enumerate(element_types):
+        yield mlir.llvm.add_ExtractValueOp(
+            res_type=element_type,
+            container=value,
+            position=[i]
         )
-        if src_mlir_ty == dst_mlir_ty:
-            return [x]
-        match src_ty, dst_ty:
-            case ir_type.PointerTy(), ir_type.PointerTy():
-                res = mlir.llvm.add_AddrSpaceCastOp(res_type=dst_mlir_ty, arg=x)
-                return [res]
-            case ir_type.ScalarTy() as st, ir_type.PointerTy():
-                if not datatype.is_integral(st.dtype):
-                    raise InternalError(
-                        "bitcast to or from pointer must go through integer"
-                    )
-                res = mlir.llvm.add_IntToPtrOp(res_type=dst_mlir_ty, arg=x)
-                return [res]
-            case ir_type.PointerTy(), ir_type.ScalarTy() as st:
-                if not datatype.is_integral(st.dtype):
-                    raise InternalError(
-                        "bitcast to or from pointer must go through integer"
-                    )
-                res = mlir.llvm.add_PtrToIntOp(res_type=dst_mlir_ty, arg=x)
-                return [res]
-            case _:
-                res = mlir.llvm.add_BitcastOp(res_type=dst_mlir_ty, arg=x)
-                return [res]
+
+
+@mlir_op_lowering(host=False)
+def lower_raw_nvvm_intrinsic(
+    context: DeviceLoweringContext, operation: ops.RawNVVMIntrinsic
+) -> Sequence[mlir.Value]:
+    operands = tuple(
+        _lower_intrinsic_operand(context, operand)
+        for operand in operation.operands_
+    )
+    result_types = tuple(
+        _lower_intrinsic_result_type(
+            context,
+            (result.get_type() for result in operation.result_vars),
+        )
+    )
+
+    match len(result_types):
+        case 0:
+            mlir_result_type = None
+        case 1:
+            mlir_result_type = result_types[0]
+        case _:
+            mlir_result_type = mlir.llvm.LLVMStructType(types=result_types)
+
+    intrinsic_call_result = mlir.llvm.add_CallIntrinsicOp(
+        results_type=mlir_result_type,
+        intrin=operation.intrinsic,
+        args=operands,
+        op_bundle_operands=(),
+        op_bundle_sizes=(),
+    )
+
+    match len(result_types):
+        case 0:
+            mlir_values = []
+        case 1:
+            mlir_values = [intrinsic_call_result]
+        case _:
+            mlir_values = list(_extract_aggregate_elements(context, intrinsic_call_result))
+
+    return tuple(_lower_intrinsic_result(context, mlir_values))
+
+
+@mlir_op_lowering
+def lower_raw_mlir_operation(
+    context: MLIRLoweringContext, operation: ops.RawMLIROperation
+) -> Sequence[mlir.Value]:
+    operands = tuple(
+        _lower_intrinsic_operand(context, operand) for operand in operation.operands_
+    )
+    result_types = tuple(
+        _lower_intrinsic_result_type(
+            context,
+            (result_var.get_type() for result_var in operation.result_vars),
+        )
+    )
+    results = mlir.add_operation(
+        name=operation.op_name,
+        result_type=result_types,
+        operands=operands,
+        properties=(),
+        attributes=operation.mlir_attributes,
+    )
+    return tuple(_lower_intrinsic_result(context, results))
+
+
+@mlir_op_lowering
+def lower_reinterpret_pointer(
+    context: MLIRLoweringContext, operation: ops.ReinterpretPointer
+) -> Sequence[mlir.Value]:
+    # This operation only exists to reinterpret the type of a pointer
+    # at the IR level, but the MLIR representation will be the same either way.
+    return [context.get_var(operation.pointer)]
+
+
+@mlir_op_lowering
+def lower_addrspace_cast(
+    context: MLIRLoweringContext, operation: ops.AddrSpaceCast
+) -> Sequence[mlir.Value]:
+    value = context.get_var(operation.pointer)
+    ir_result_type: ir_type.PointerTy = operation.result_var.get_type()
+    if ir_result_type.memory_space.value == value.type.addressSpace:
+        return [value]
+    mlir_result_type = ir_type_to_mlir_type(ir_result_type)
+    result = mlir.llvm.add_AddrSpaceCastOp(
+        res_type=mlir_result_type,
+        arg=value,
+    )
+    return [result]
+
+
+@mlir_op_lowering
+def lower_bitshift(
+    context: MLIRLoweringContext, operation: ops.RawBitwiseShiftOperation
+) -> Sequence[mlir.Value]:
+    lhs_type = _expect_arith_type(operation.lhs.get_type())
+    rhs_type = _expect_arith_type(operation.rhs.get_type())
+    res_type = _expect_arith_type(operation.result_var.get_type())
+
+    assert lhs_type == rhs_type == res_type
+    assert datatype.is_integral(res_type.tensor_dtype())
+
+    lhs = context.get_var(operation.lhs)
+    rhs = context.get_var(operation.rhs)
+
+    match operation.fn:
+        case "lshift":
+            result = mlir.arith.add_ShLIOp(lhs=lhs, rhs=rhs)
+        case "rshift":
+            shift_op = (
+                mlir.arith.add_ShRSIOp
+                if datatype.is_signed(res_type.tensor_dtype())
+                else mlir.arith.add_ShRUIOp
+            )
+            result = shift_op(lhs=lhs, rhs=rhs)
+        case _:
+            raise NotImplementedError(
+                f"Bitwise shift operation {operation.fn} not supported"
+            )
+
+    return [result]
+
+
+@mlir_op_lowering
+def lower_tile_broadcast(
+    context: MLIRLoweringContext, operation: ops.TileBroadcast
+) -> Sequence[mlir.Value]:
+    res_ty = operation.result_var.get_type()
+    x = operation.x
+    x_ty = x.get_type()
+    if (
+        not isinstance(x_ty, ir_type.VectorTy)
+        or not isinstance(res_ty, ir_type.VectorTy)
+        or x_ty.length != 1
+    ):
+        raise InternalError(
+            "Expected length-1 vector but got result "
+            f"type {res_ty} and operand type {x_ty}"
+        )
+    if x_ty.element_dtype != res_ty.element_dtype:
+        raise InternalError(
+            "Expected broadcast operand and result type to have same "
+            f"dtype but got result type {res_ty} and operand type {x_ty}"
+        )
+
+    mask = [0 for _ in range(res_ty.length)]
+    res_ty = ir_type_to_mlir_type(res_ty)
+    x = context.get_var(x)
+    res = mlir.llvm.add_ShuffleVectorOp(res_type=res_ty, v1=x, v2=x, mask=mask)
+    return [res]
+
+
+@mlir_op_lowering
+def lower_tile_reshape(
+    context: MLIRLoweringContext, operation: ops.TileReshape
+) -> Sequence[mlir.Value]:
+    res_ty = operation.result_var.get_type()
+    x = operation.x
+    x_ty = x.get_type()
+    match x_ty, res_ty:
+        case ir_type.ScalarTy(), ir_type.VectorTy():
+            res_ty = ir_type_to_mlir_type(res_ty)
+            res = mlir.llvm.add_PoisonOp(res_type=res_ty)
+            if len(res_ty.shape) != 1:
+                raise InternalError(
+                    f"Expected vector to have 1d shape but got {res_ty}"
+                )
+            for i in range(res_ty.shape[0]):
+                position = mlir_constant_of_type(T.i32(), i)
+                res = mlir.llvm.add_InsertElementOp(
+                    vector=res,
+                    value=context.get_var(x),
+                    position=position,
+                )
+            return [res]
+    raise NotImplementedError(
+        f"Could not broadcast value of type {x_ty} to type {res_ty}"
+    )
+
+
+@mlir_op_lowering(host=False)
+def lower_foreign_function(
+    context: DeviceLoweringContext, operation: ops.ForeignFunction
+) -> Sequence[mlir.Value]:
+    function_name = operation.function_name
+    operands = tuple(context.get_var(operand) for operand in operation.operands_)
+    operand_types = tuple(
+        ir_type_to_mlir_type(operand.get_type()) for operand in operation.operands_
+    )
+
+    has_result = len(operation.result_vars) > 0
+    result_type = (
+        ir_type_to_mlir_type(operation.result_var.get_type())
+        if has_result
+        else None
+    )
+    function_type = mlir.llvm.LLVMFunctionType(
+        returnType=result_type if result_type else mlir.llvm.LLVMVoidType(),
+        params=operand_types,
+        varArg=False,
+    )
+    if prev_type := context.seen_foreign_functions.get(function_name):
+        if prev_type != function_type:
+            raise TypeCheckingError(
+                f"Tried calling foreign function {function_name} with type {function_type} "
+                f"but it has already been declared with type {prev_type!r}"
+            )
+    else:
+        mlir.llvm.add_LLVMFuncOp(
+            sym_name=function_name,
+            linkage=mlir.llvm.Linkage.External,
+            body=mlir.Region(),
+            function_type=function_type,
+        )
+        func_op = _Cursor.current()._block.operations.pop()
+        context.gpu_module.regions[0].blocks[0].operations.insert(0, func_op)
+        context.seen_foreign_functions[function_name] = function_type
+
+    call = mlir.llvm.add_CallOp(
+        result_type=result_type,
+        callee=function_name,
+        callee_operands=operands,
+        op_bundle_operands=(),
+        op_bundle_sizes=(),
+    )
+    return [call] if has_result else []
+
+
+@mlir_op_lowering
+def lower_bitcast(
+    context: MLIRLoweringContext, operation: ops.BitCast
+) -> Sequence[mlir.Value]:
+    x = context.get_var(operation.x)
+    src_ty, dst_ty = operation.x.get_type(), operation.result_var.get_type()
+    src_mlir_ty, dst_mlir_ty = (
+        ir_type_to_mlir_type(src_ty),
+        ir_type_to_mlir_type(dst_ty),
+    )
+    if src_mlir_ty == dst_mlir_ty:
+        return [x]
+    match src_ty, dst_ty:
+        case ir_type.PointerTy(), ir_type.PointerTy():
+            res = mlir.llvm.add_AddrSpaceCastOp(res_type=dst_mlir_ty, arg=x)
+            return [res]
+        case ir_type.ScalarTy() as st, ir_type.PointerTy():
+            if not datatype.is_integral(st.dtype):
+                raise InternalError(
+                    "bitcast to or from pointer must go through integer"
+                )
+            res = mlir.llvm.add_IntToPtrOp(res_type=dst_mlir_ty, arg=x)
+            return [res]
+        case ir_type.PointerTy(), ir_type.ScalarTy() as st:
+            if not datatype.is_integral(st.dtype):
+                raise InternalError(
+                    "bitcast to or from pointer must go through integer"
+                )
+            res = mlir.llvm.add_PtrToIntOp(res_type=dst_mlir_ty, arg=x)
+            return [res]
+        case _:
+            res = mlir.llvm.add_BitcastOp(res_type=dst_mlir_ty, arg=x)
+            return [res]
 
 
 def ir2mlir(
@@ -1313,7 +1447,7 @@ def ir2mlir(
     ctx: ir.IRContext,
     compiler_options: CompilerOptions,
 ) -> mlir.Operation:
-    lower = IR2MLIR(signature, body, ctx, compiler_options)
+    lower = DeviceIR2MLIR(signature, body, ctx, compiler_options)
     op = lower()
     return op
 
