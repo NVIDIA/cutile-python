@@ -6,7 +6,11 @@ import pytest
 
 import cuda.lang as cl
 from cuda.lang._compile import KernelSignature, get_compute_capability
-from cuda.lang._exception import TypeCheckingError, InvalidValueError, CompilerExecutionError
+from cuda.lang._exception import (
+    TypeCheckingError,
+    InvalidValueError,
+    CompilerExecutionError,
+)
 from test.util import make_symbolic_tensor, compile_kernel
 
 
@@ -265,7 +269,7 @@ def test_copy(shape, cta_group, multicast, source_format):
         smem = cl.shared_array(1, tmem_dtype, alignment=4)
         cl.tcgen05_allocate(smem.get_base_pointer(), 128, cta_group=allocation_group)
         tmem_ptr = smem[0]
-        descriptor = cl.int64(0xDEADBEEF)
+        descriptor = cl.uint64(0xDEADBEEF)
         cl.tcgen05_copy(
             tmem_ptr,
             descriptor,
@@ -296,7 +300,9 @@ def test_copy(shape, cta_group, multicast, source_format):
     elif multicast not in (*tuple(cl.Tcgen05CopyMulticast), None):
         raises = pytest.raises(TypeCheckingError, match="Expected Tcgen05CopyMulticast")
     elif source_format not in (*tuple(cl.Tcgen05CopySourceFormat), None):
-        raises = pytest.raises(TypeCheckingError, match="Expected Tcgen05CopySourceFormat")
+        raises = pytest.raises(
+            TypeCheckingError, match="Expected Tcgen05CopySourceFormat"
+        )
     elif multicast not in valid_multicasts[shape]:
         raises = pytest.raises(CompilerExecutionError)
     else:
@@ -357,7 +363,9 @@ def test_load(shape, count, pack, offset):
     compile_kernel(
         kernel,
         assert_in_ptx=None if bad_args else ("tcgen05.ld.sync.aligned", shape.value),
-        raises=pytest.raises((TypeCheckingError, InvalidValueError)) if bad_args else None,
+        raises=pytest.raises((TypeCheckingError, InvalidValueError))
+        if bad_args
+        else None,
     )
 
 
@@ -369,26 +377,33 @@ ORDINARY_MMA_KINDS = (
 )
 
 
+@pytest.mark.parametrize("sparse", (False, True))
 @pytest.mark.parametrize("kind", ORDINARY_MMA_KINDS)
 @pytest.mark.parametrize("cta_group", tuple(cl.CTAGroup))
 @pytest.mark.parametrize("collector_op", tuple(cl.Tcgen05MMACollectorOp))
-def test_mma_valid_enum_combinations(kind, cta_group, collector_op, request):
+def test_mma_valid_enum_combinations(sparse, kind, cta_group, collector_op, request):
 
     def kernel():
         tmem_dtype = cl.pointer_dtype(cl.int8, cl.MemorySpace.TENSOR)
-        tmem_smem = cl.shared_array(1, tmem_dtype, alignment=4)
+        tmem = cl.shared_array(2, tmem_dtype, alignment=4)
+        sparse_metadata = tmem[1] if sparse else None
         cl.tcgen05_mma(
             kind,
-            tmem_smem[0],
+            tmem[0],
             cl.int64(0),
             cl.int64(0),
             cl.int32(0),
             accumulate=False,
+            sparse_metadata=sparse_metadata,
             cta_group=cta_group,
             collector_op=collector_op,
         )
 
-    compile_kernel(kernel, assert_in_ptx="tcgen05.mma")
+    compile_kernel(
+        kernel,
+        assert_in_ptx="tcgen05.mma.sp" if sparse else "tcgen05.mma",
+        assert_not_in_ptx=None if sparse else "tcgen05.mma.sp",
+    )
 
 
 MMA_BLOCK_SCALE_CASES = (
@@ -419,6 +434,7 @@ MMA_BLOCK_SCALE_CASES = (
 )
 
 
+@pytest.mark.parametrize("sparse", (False, True))
 @pytest.mark.parametrize("kind", tuple(cl.Tcgen05MMABlockScaleKind))
 @pytest.mark.parametrize(
     "scale_vector_size",
@@ -430,6 +446,7 @@ MMA_BLOCK_SCALE_CASES = (
     tuple(cl.Tcgen05MMACollectorOp),
 )
 def test_mma_block_scale_valid_enum_combinations(
+    sparse,
     kind,
     scale_vector_size,
     cta_group,
@@ -438,7 +455,8 @@ def test_mma_block_scale_valid_enum_combinations(
     @cl.kernel
     def kernel():
         tmem_dtype = cl.pointer_dtype(cl.int8, cl.MemorySpace.TENSOR)
-        tmem = cl.shared_array(3, tmem_dtype, alignment=4)
+        tmem = cl.shared_array(4, tmem_dtype, alignment=4)
+        sparse_metadata = tmem[3] if sparse else None
 
         cl.tcgen05_mma_block_scale(
             kind,
@@ -449,6 +467,7 @@ def test_mma_block_scale_valid_enum_combinations(
             tmem[1],
             tmem[2],
             accumulate=False,
+            sparse_metadata=sparse_metadata,
             cta_group=cta_group,
             scale_vector_size=scale_vector_size,
             collector_op=collector_op,
@@ -457,7 +476,8 @@ def test_mma_block_scale_valid_enum_combinations(
     if (kind, scale_vector_size) in MMA_BLOCK_SCALE_CASES:
         compile_kernel(
             kernel,
-            filecheck_ptx="""CHECK: tcgen05.mma
+            assert_not_in_ptx=None if sparse else "tcgen05.mma.sp",
+            filecheck_ptx=f"""CHECK: {"tcgen05.mma.sp" if sparse else "tcgen05.mma"}
                              CHECK-SAME: .block_scale""",
         )
     else:
@@ -467,19 +487,21 @@ def test_mma_block_scale_valid_enum_combinations(
         )
 
 
+@pytest.mark.parametrize("sparse", (False, True))
 @pytest.mark.parametrize("kind", ORDINARY_MMA_KINDS)
 @pytest.mark.parametrize("collector_b_buffer", tuple(cl.Tcgen05MMACollectorBBuffer))
 @pytest.mark.parametrize("collector_op", tuple(cl.Tcgen05MMACollectorOp))
 def test_mma_weight_stationary_valid_enum_combinations(
+    sparse,
     kind,
     collector_b_buffer,
     collector_op,
-    request,
 ):
     @cl.kernel
     def kernel():
         tmem_dtype = cl.pointer_dtype(cl.int8, cl.MemorySpace.TENSOR)
-        tmem = cl.shared_array(1, tmem_dtype, alignment=4)
+        tmem = cl.shared_array(2, tmem_dtype, alignment=4)
+        sparse_metadata = tmem[1] if sparse else None
 
         cl.tcgen05_mma_weight_stationary(
             kind,
@@ -488,13 +510,15 @@ def test_mma_weight_stationary_valid_enum_combinations(
             cl.int64(0),
             cl.int32(0),
             accumulate=False,
+            sparse_metadata=sparse_metadata,
             collector_b_buffer=collector_b_buffer,
             collector_op=collector_op,
         )
 
     compile_kernel(
         kernel,
-        assert_in_ptx="tcgen05.mma.ws",
+        assert_in_ptx="tcgen05.mma.ws.sp" if sparse else "tcgen05.mma.ws",
+        assert_not_in_ptx=None if sparse else "tcgen05.mma.ws.sp",
     )
 
 

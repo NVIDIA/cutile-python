@@ -227,6 +227,8 @@ Synchronization
     mbarrier_test_wait_parity
     mbarrier_try_wait
     mbarrier_try_wait_parity
+    mbarrier_wait
+    mbarrier_wait_parity
 
 .. autosummary::
    :toctree: generated

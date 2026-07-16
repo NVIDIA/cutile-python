@@ -2,6 +2,8 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+from cuda.lang._enums import SwizzleMode
+from cuda.tile._ir.type import ArrayTy
 from typing import Any, NamedTuple, cast
 
 from cuda.tile._ir.cast_ops import implicit_cast
@@ -10,6 +12,7 @@ from cuda.tile._ir.arithmetic_ops import (
     binary_bitwise_tensorlike,
     bitwise_shift_tensorlike,
 )
+from cuda.tile._ir.type import DataclassValue
 from cuda.tile._ir.core_ops import strictly_typed_const
 import cuda.lang._datatype as datatype
 from cuda.lang._enums import (
@@ -54,6 +57,7 @@ from cuda.tile._ir.op_impl import (
     require_constant_int,
 )
 import cuda.lang._mlir as mlir
+from .core_api_impl import bitcast
 
 
 _registry = ImplRegistry()
@@ -181,11 +185,8 @@ def tcgen05_copy_impl(
     source_format,
 ):
     require_pointer_in_memory_space(address, (MemorySpace.TENSOR,))
-    require_scalar_type(
-        shared_memory_descriptor,
-        lambda x: x == datatype.int64,
-        "Expected shared memory descriptor to be encoded as a 64-bit integer.",
-    )
+    require_integral_scalar_type(shared_memory_descriptor, bitwidth=64)
+    shared_memory_descriptor = astype(shared_memory_descriptor, datatype.int64)
 
     group_value = require_constant_enum(cta_group, CTAGroup)
     group_attribute = cl_enum_to_mlir_attribute(group_value)
@@ -743,3 +744,88 @@ def tcgen05_mma_weight_stationary_impl(
         intrinsic=".".join(intrinsic_parts),
         operands_=tuple(operands),
     )
+
+
+@impl(tcgen05_stub.Tcgen05SharedMemoryDescriptor.encode)
+def tcgen05_shared_memory_descriptor_encode_impl(self: Var) -> Var:
+    descriptor = self.get_aggregate()
+    assert isinstance(descriptor, DataclassValue)
+
+    u64_ty = ScalarTy(datatype.uint64)
+
+    def set_bits(value: Var, field: Var, position: int, width: int) -> Var:
+        field_mask = (1 << width) - 1
+        mask = field_mask << position
+        clear_mask = 0xFFFF_FFFF_FFFF_FFFF - mask
+        clear_mask = strictly_typed_const(clear_mask, u64_ty)
+        field_mask = strictly_typed_const(field_mask, u64_ty)
+        position = strictly_typed_const(position, u64_ty)
+        field_and_mask = binary_bitwise_tensorlike("and_", field, field_mask)
+        insert = bitwise_shift_tensorlike("lshift", field_and_mask, position)
+        value_and_clear_mask = binary_bitwise_tensorlike("and_", value, clear_mask)
+        return binary_bitwise_tensorlike("or_", value_and_clear_mask, insert)
+
+    leading_dimension_mode = require_constant_int(
+        descriptor.get_field("leading_dimension_mode")
+    )
+    swizzle_mode = descriptor.get_field("swizzle_mode")
+    swizzle_mode = require_constant_enum(swizzle_mode, SwizzleMode)
+    swizzle_encoding = {
+        SwizzleMode.SWIZZLE_NONE: 0,
+        SwizzleMode.SWIZZLE_128B_ATOM_32B: 1,
+        SwizzleMode.SWIZZLE_128B: 2,
+        SwizzleMode.SWIZZLE_64B: 4,
+        SwizzleMode.SWIZZLE_32B: 6,
+    }
+    if swizzle_mode not in swizzle_encoding:
+        raise InvalidValueError(
+            f"Swizzle mode {swizzle_mode.name} is not supported by "
+            "tcgen05 shared-memory descriptors"
+        )
+
+    c_0x3ffff = strictly_typed_const(0x3FFFF, u64_ty)
+    c_4 = strictly_typed_const(4, u64_ty)
+    value = strictly_typed_const(0, u64_ty)
+    matrix_start_address = descriptor.get_field("matrix_start_address")
+
+    address_type = matrix_start_address.get_type()
+    match address_type:
+        case ScalarTy():
+            require_integral_scalar_type(matrix_start_address)
+        case PointerTy():
+            require_pointer_in_memory_space(matrix_start_address, [MemorySpace.SHARED])
+            matrix_start_address = bitcast(matrix_start_address, datatype.int32)
+        case ArrayTy():
+            pointer = matrix_start_address.get_aggregate().base_ptr
+            require_pointer_in_memory_space(pointer, [MemorySpace.SHARED])
+            matrix_start_address = bitcast(pointer, datatype.int32)
+        case _:
+            raise TypeCheckingError(
+                "Matrix start address must be a pointer or array in shared "
+                "memory or already encoded as an integer"
+            )
+
+    def encode_field(value, field, position):
+        field = astype(field, datatype.uint64)
+        field = binary_bitwise_tensorlike("and_", field, c_0x3ffff)
+        field = bitwise_shift_tensorlike("rshift", field, c_4)
+        return set_bits(value, field, position, 14)
+
+    matrix_start_address = astype(matrix_start_address, datatype.uint64)
+    value = encode_field(value, matrix_start_address, 0)
+    field = descriptor.get_field("leading_dimension_byte_offset")
+    value = encode_field(value, field, 16)
+    field = descriptor.get_field("stride_dimension_byte_offset")
+    value = encode_field(value, field, 32)
+
+    value = set_bits(value, strictly_typed_const(0b001, u64_ty), 46, 3)
+
+    base_offset = astype(descriptor.get_field("base_offset"), datatype.uint64)
+    value = set_bits(value, base_offset, 49, 3)
+
+    leading_dimension_mode = strictly_typed_const(leading_dimension_mode, u64_ty)
+    value = set_bits(value, leading_dimension_mode, 52, 1)
+
+    swizzle_value = strictly_typed_const(swizzle_encoding[swizzle_mode], u64_ty)
+    value = set_bits(value, swizzle_value, 61, 3)
+    return value

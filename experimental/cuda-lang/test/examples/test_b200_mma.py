@@ -26,10 +26,6 @@ def wait_mbarrier(mbar, phase):
         pass
 
 
-def p3_to_u64(pointer):
-    return cl.uint64(cl.bitcast(pointer, cl.uint32))
-
-
 def epilogue_store_tile(c_ptr, tmem_base, warp, base_col, g_row, g_col, n):
     tmem_ptr = cl.tcgen05_tmem_offset(
         tmem_base,
@@ -229,16 +225,14 @@ def make_mma_kernel(
                         b_stage_ptr = b_smem.get_element_pointer((tma_stage, 0))
                         tensor_memory_address = mainloop_stage * block_n
 
-                        a_smem_addr = p3_to_u64(a_stage_ptr)
-                        b_smem_addr = p3_to_u64(b_stage_ptr)
                         a_desc = cl.Tcgen05SharedMemoryDescriptor(
-                            matrix_start_address=a_smem_addr,
+                            matrix_start_address=a_stage_ptr,
                             leading_dimension_byte_offset=16,
                             stride_dimension_byte_offset=8 * 128,
                             swizzle_mode=(cl.SwizzleMode.SWIZZLE_128B),
                         ).encode()
                         b_desc = cl.Tcgen05SharedMemoryDescriptor(
-                            matrix_start_address=b_smem_addr,
+                            matrix_start_address=b_stage_ptr,
                             leading_dimension_byte_offset=16,
                             stride_dimension_byte_offset=8 * 128,
                             swizzle_mode=(cl.SwizzleMode.SWIZZLE_128B),

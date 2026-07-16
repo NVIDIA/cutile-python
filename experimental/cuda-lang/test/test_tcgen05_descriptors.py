@@ -166,3 +166,57 @@ def test_tcgen05_shared_memory_descriptor_swizzle_encoding(
     out = torch.zeros(1, dtype=torch.int64, device="cuda")
     cl.launch(torch.cuda.current_stream(), (1,), (1,), kernel, (out,))
     assert out.cpu().item() == expected_encoding
+
+
+def test_tcgen05_shared_memory_descriptor_pointer_encoding():
+    @cl.kernel
+    def kernel(out):
+        mat = cl.shared_array(16, cl.int8)
+        descriptor = cl.Tcgen05SharedMemoryDescriptor(
+            matrix_start_address=mat.get_base_pointer(),
+            leading_dimension_byte_offset=0,
+            stride_dimension_byte_offset=0,
+        )
+        out[0] = descriptor.encode()
+
+    out = torch.zeros(1, dtype=torch.int64).cuda()
+    cl.launch(torch.cuda.current_stream(), (1,), (1,), kernel, (out,))
+
+
+def test_tcgen05_shared_memory_descriptor_array_encoding():
+    @cl.kernel
+    def kernel(out):
+        mat = cl.shared_array(16, cl.int8)
+        descriptor = cl.Tcgen05SharedMemoryDescriptor(
+            matrix_start_address=mat,
+            leading_dimension_byte_offset=0,
+            stride_dimension_byte_offset=0,
+        )
+        out[0] = descriptor.encode()
+
+    out = torch.zeros(1, dtype=torch.int64).cuda()
+    cl.launch(torch.cuda.current_stream(), (1,), (1,), kernel, (out,))
+
+
+@pytest.mark.parametrize("dtype", (cl.int32, cl.uint32, cl.int64, cl.uint64))
+def test_tcgen05_shared_memory_descriptor_int_encoding(dtype):
+    @cl.metafunction
+    def cast(pointer, dtype):
+        if dtype.bitwidth == 64:
+            pointer = cl.address_space_cast(pointer, cl.MemorySpace.GENERIC)
+        return cl.bitcast(pointer, dtype)
+
+    @cl.kernel
+    def kernel(out):
+        mat = cl.shared_array(16, cl.int8)
+        ptr = mat.get_base_pointer()
+        intval = cast(ptr, dtype)
+        descriptor = cl.Tcgen05SharedMemoryDescriptor(
+            matrix_start_address=intval,
+            leading_dimension_byte_offset=0,
+            stride_dimension_byte_offset=0,
+        )
+        out[0] = descriptor.encode()
+
+    out = torch.zeros(1, dtype=torch.int64).cuda()
+    cl.launch(torch.cuda.current_stream(), (1,), (1,), kernel, (out,))

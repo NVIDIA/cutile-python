@@ -19,7 +19,7 @@ from cuda.tile._ir.op_impl import (
     require_constant_axis_order,
     ImplRegistry,
 )
-from cuda.tile._ir.type import DataclassValue, TensorLikeTy
+from cuda.tile._ir.type import TensorLikeTy
 from cuda.tile._ir.core_ops import (
     TypedConst, core_impl_registry,
 )
@@ -27,7 +27,6 @@ from cuda.tile._ir.arithmetic_ops import (
     binary_arithmetic_tensorlike,
     binary_arithmetic_tensorlike_raw,
     binary_bitwise_tensorlike,
-    bitwise_shift_tensorlike,
     RawBinaryArithmeticOperation,
     RawComparisonOperation,
     RawBinaryBitwiseOperation,
@@ -90,18 +89,18 @@ from .atomics_support import (
     require_atomic_memory_order_and_scope,
     require_atomic_rmw_value,
 )
-from .op_defs import (
+from .op_defs import (  # noqa: F401
     RawNVVMIntrinsic,
     RawMLIROperation,
     ForeignFunction,
     TensorMapAsOpaquePtr,
     VectorGetItem,
-    BitCast,
     StorePointer,
     LoadPointer,
     ReinterpretPointerAsArray,
+    BitCast,
 )
-from .op_impl.core_api_impl import core_api_impl_registry
+from .op_impl.core_api_impl import core_api_impl_registry, bitcast
 from .type_checking_helpers import (
     require_optional_alignment,
     require_scalar_type,
@@ -117,8 +116,11 @@ from .type_checking_helpers import (
 )
 
 from .type import (
-    DTypeConstructor, LocalArrayContextManagerTy, ContextManagerState, TensorMapTy,
-    dtype_to_tensor_map_type, ArrayValue,
+    LocalArrayContextManagerTy,
+    ContextManagerState,
+    TensorMapTy,
+    dtype_to_tensor_map_type,
+    ArrayValue,
     MemorySpace,
     Type,
     ArrayTy,
@@ -126,7 +128,7 @@ from .type import (
     PointerTy,
     VectorTy,
     TupleTy,
-    TupleValue, type_bitwidth
+    TupleValue,
 )
 
 from .ir import (
@@ -147,7 +149,6 @@ from .._stub import (
     foreign_function,
     core_api,
     mbarrier as mbarrier_stub,
-    tcgen05 as tcgen05_stub,
     tensor_map,
     cache_policy,
 )
@@ -918,71 +919,6 @@ def tensor_map_as_opaque_ptr_impl(self: Var):
     return add_operation(TensorMapAsOpaquePtr, result_ty, tensor_map=self)
 
 
-@impl(tcgen05_stub.Tcgen05SharedMemoryDescriptor.encode)
-def tcgen05_shared_memory_descriptor_encode_impl(self: Var) -> Var:
-    descriptor = self.get_aggregate()
-    assert isinstance(descriptor, DataclassValue)
-
-    uint64_ty = ScalarTy(datatype.uint64)
-
-    def set_bits(value: Var, field: Var, position: int, width: int) -> Var:
-        field_mask = (1 << width) - 1
-        mask = field_mask << position
-        clear_mask = 0xFFFF_FFFF_FFFF_FFFF - mask
-        clear_mask = strictly_typed_const(clear_mask, uint64_ty)
-        field_mask = strictly_typed_const(field_mask, uint64_ty)
-        position = strictly_typed_const(position, uint64_ty)
-        field_and_mask = binary_bitwise_tensorlike("and_", field, field_mask)
-        insert = bitwise_shift_tensorlike("lshift", field_and_mask, position)
-        value_and_clear_mask = binary_bitwise_tensorlike("and_", value, clear_mask)
-        return binary_bitwise_tensorlike("or_", value_and_clear_mask, insert)
-
-    leading_dimension_mode = require_constant_int(
-        descriptor.get_field("leading_dimension_mode")
-    )
-    swizzle_mode = descriptor.get_field("swizzle_mode")
-    swizzle_mode = require_constant_enum(swizzle_mode, SwizzleMode)
-    swizzle_encoding = {
-        SwizzleMode.SWIZZLE_NONE: 0,
-        SwizzleMode.SWIZZLE_128B_ATOM_32B: 1,
-        SwizzleMode.SWIZZLE_128B: 2,
-        SwizzleMode.SWIZZLE_64B: 4,
-        SwizzleMode.SWIZZLE_32B: 6,
-    }
-    if swizzle_mode not in swizzle_encoding:
-        raise InvalidValueError(
-            f"Swizzle mode {swizzle_mode.name} is not supported by "
-            "tcgen05 shared-memory descriptors"
-        )
-
-    position = 0
-    value = strictly_typed_const(0, uint64_ty)
-    for field_name in (
-        "matrix_start_address",
-        "leading_dimension_byte_offset",
-        "stride_dimension_byte_offset",
-    ):
-        c_0x3ffff = strictly_typed_const(0x3FFFF, uint64_ty)
-        c_4 = strictly_typed_const(4, uint64_ty)
-        field = astype(descriptor.get_field(field_name), datatype.uint64)
-        field = binary_bitwise_tensorlike("and_", field, c_0x3ffff)
-        field = bitwise_shift_tensorlike("rshift", field, c_4)
-        value = set_bits(value, field, position, 14)
-        position += 16
-
-    value = set_bits(value, strictly_typed_const(0b001, uint64_ty), 46, 3)
-
-    base_offset = astype(descriptor.get_field("base_offset"), datatype.uint64)
-    value = set_bits(value, base_offset, 49, 3)
-
-    leading_dimension_mode = strictly_typed_const(leading_dimension_mode, uint64_ty)
-    value = set_bits(value, leading_dimension_mode, 52, 1)
-
-    swizzle_value = strictly_typed_const(swizzle_encoding[swizzle_mode], uint64_ty)
-    value = set_bits(value, swizzle_value, 61, 3)
-    return value
-
-
 @impl(clusterlaunchcontrol_try_cancel)
 def clusterlaunchcontrol_try_cancel_impl(addr: Var, mbar: Var, multicast: Var) -> None:
     addr_info = PointerInfo(require_pointer_type(addr).pointer_dtype)
@@ -1365,66 +1301,6 @@ def map_shared_to_leader_block(pointer: Var):
     mapped = binary_bitwise_tensorlike("and_", int_value, mask)
     # TODO: should this be shared_cluster memory space?
     return bitcast(mapped, pointer_type.pointer_dtype)
-
-
-def bitcast(x: Var[ScalarTy | PointerTy | VectorTy], dtype: datatype.DType):
-    x_ty = x.get_type()
-    x_dtype = x_ty.tensor_dtype()
-    if isinstance(dtype, VectorTy):
-        # dead code for now - users have no way to construct vector dtypes
-        raise TypeCheckingError("bitcast to vector is not supported")
-    if datatype.bool_ in (dtype, x_dtype):
-        raise TypeCheckingError("bitcast to or from bool is not supported")
-    x_bitwidth = type_bitwidth(x_ty)
-    if x_bitwidth != dtype.bitwidth:
-        raise TypeCheckingError(
-            "bitcast requires input value's type and output type to have the "
-            f"same bitwidth, but input type is {x_bitwidth} bits and output "
-            f"dtype has {dtype.bitwidth} bits"
-        )
-
-    # at the mlir level, we only have bitcast, inttoptr, and ptrtoint. If we
-    # have a pointer, cast it to an int first then to the real dst type.
-    # If we are casting *to* a pointer, first cast to int then the real dst
-    # type. If both src and dst are pointer types, use a regular bitcast.
-    # ir2mlir will use an address space cast.
-
-    src_dtype, dst_dtype = x_dtype, dtype
-    src_is_ptr = is_pointer_dtype(src_dtype)
-    dst_is_ptr = is_pointer_dtype(dst_dtype)
-    src_is_int_scalar = isinstance(x_ty, ScalarTy) and datatype.is_integral(src_dtype)
-    dst_is_int_scalar = datatype.is_integral(dst_dtype)
-
-    def direct_bitcast():
-        res_ty = PointerTy(dtype) if is_pointer_dtype(dtype) else ScalarTy(dtype)
-        return add_operation(BitCast, res_ty, x=x)
-
-    def bitcast_through_int():
-        intermediate_type = getattr(datatype, f'int{x_bitwidth}')
-        first = bitcast(x, intermediate_type)
-        return bitcast(first, dtype)
-
-    if src_is_ptr and dst_is_ptr:
-        return direct_bitcast()
-
-    if src_is_ptr:
-        if dst_is_int_scalar:
-            return direct_bitcast()
-        return bitcast_through_int()
-
-    if dst_is_ptr:
-        if src_is_int_scalar:
-            return direct_bitcast()
-        return bitcast_through_int()
-
-    # no pointer involved: direct bitcast
-    return direct_bitcast()
-
-
-@impl(core_api.bitcast)
-def bitcast_impl(x: Var[ScalarTy | PointerTy | VectorTy], dtype: Var[DTypeConstructor]):
-    dtype = require_dtype_spec(dtype)
-    return bitcast(x, dtype)
 
 
 @impl(core_api.setmaxregister_decrease)

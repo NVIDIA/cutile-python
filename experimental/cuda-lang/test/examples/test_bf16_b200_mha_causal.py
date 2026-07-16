@@ -81,10 +81,6 @@ def get_tile_coordinates(block_idx, batch, q_sequence, heads, swizzle):
     return batch_idx, m_cluster * 4, head_idx
 
 
-def p3_to_u64(pointer):
-    return cl.uint64(cl.bitcast(pointer, cl.uint32))
-
-
 def fast_exp2(value):
     (result,) = cl._inline_ptx(
         "ex2.approx.ftz.f32 %0, %1;",
@@ -160,7 +156,7 @@ def store_output_pairs(o_smem, values, inv_norm, row, column):
 
 def qk_descriptor(pointer, row_count, chunk):
     base = cl.Tcgen05SharedMemoryDescriptor(
-        matrix_start_address=p3_to_u64(pointer),
+        matrix_start_address=pointer,
         leading_dimension_byte_offset=16,
         stride_dimension_byte_offset=8 * 128,
         swizzle_mode=cl.SwizzleMode.SWIZZLE_128B,
@@ -170,7 +166,7 @@ def qk_descriptor(pointer, row_count, chunk):
 
 def v_descriptor(pointer, chunk):
     base = cl.Tcgen05SharedMemoryDescriptor(
-        matrix_start_address=p3_to_u64(pointer),
+        matrix_start_address=pointer,
         leading_dimension_byte_offset=4096,
         stride_dimension_byte_offset=8 * 128,
         swizzle_mode=cl.SwizzleMode.SWIZZLE_128B,

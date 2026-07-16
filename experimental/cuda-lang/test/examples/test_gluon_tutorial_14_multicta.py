@@ -254,10 +254,6 @@ def tensor_memory_pointer(base, lane_offset, column_offset):
     return cl.bitcast(address + offset, pointer_dtype)
 
 
-def p3_to_u64(pointer):
-    return cl.uint64(cl.bitcast(pointer, cl.uint32))
-
-
 def store_fp16_tmem_tile(dst, tmem_base, warp, column, row, output_column, n):
     tmem = tensor_memory_pointer(tmem_base, warp * WARP_SIZE, column)
     regs = cl.tcgen05_load(cl.Tcgen05LoadStoreShape.SHAPE_32X32B, tmem, count=16)
@@ -338,13 +334,13 @@ def two_cta_tcgen05_kernel(a, b, c):
             wait_mbarrier(tma_bar, 0)
             cl.tcgen05_fence_after_thread_sync()
             a_desc = cl.Tcgen05SharedMemoryDescriptor(
-                matrix_start_address=p3_to_u64(a_smem.get_base_pointer()),
+                matrix_start_address=a_smem,
                 leading_dimension_byte_offset=16,
                 stride_dimension_byte_offset=8 * 128,
                 swizzle_mode=cl.SwizzleMode.SWIZZLE_128B,
             ).encode()
             b_desc = cl.Tcgen05SharedMemoryDescriptor(
-                matrix_start_address=p3_to_u64(b_smem.get_base_pointer()),
+                matrix_start_address=b_smem,
                 leading_dimension_byte_offset=16,
                 stride_dimension_byte_offset=8 * 128,
                 swizzle_mode=cl.SwizzleMode.SWIZZLE_128B,
@@ -460,13 +456,13 @@ def tma_tcgen05_kernel(a, b, c):
         )
 
     a_desc = cl.Tcgen05SharedMemoryDescriptor(
-        matrix_start_address=p3_to_u64(a_smem.get_base_pointer()),
+        matrix_start_address=a_smem,
         leading_dimension_byte_offset=16,
         stride_dimension_byte_offset=8 * 128,
         swizzle_mode=cl.SwizzleMode.SWIZZLE_128B,
     ).encode()
     b_desc = cl.Tcgen05SharedMemoryDescriptor(
-        matrix_start_address=p3_to_u64(b_smem.get_base_pointer()),
+        matrix_start_address=b_smem,
         leading_dimension_byte_offset=16,
         stride_dimension_byte_offset=8 * 128,
         swizzle_mode=cl.SwizzleMode.SWIZZLE_128B,
@@ -904,17 +900,13 @@ def matmul_multicta_kernel(
                     wait_mbarrier(load_ready.get_element_pointer(stage), stage_phase)
                     cl.tcgen05_fence_after_thread_sync()
                     a_desc = cl.Tcgen05SharedMemoryDescriptor(
-                        matrix_start_address=p3_to_u64(
-                            a_smem.get_element_pointer((stage, 0))
-                        ),
+                        matrix_start_address=a_smem.get_element_pointer((stage, 0)),
                         leading_dimension_byte_offset=16,
                         stride_dimension_byte_offset=8 * 128,
                         swizzle_mode=cl.SwizzleMode.SWIZZLE_128B,
                     ).encode()
                     b_desc = cl.Tcgen05SharedMemoryDescriptor(
-                        matrix_start_address=p3_to_u64(
-                            b_smem.get_element_pointer((stage, 0))
-                        ),
+                        matrix_start_address=b_smem.get_element_pointer((stage, 0)),
                         leading_dimension_byte_offset=16,
                         stride_dimension_byte_offset=8 * 128,
                         swizzle_mode=cl.SwizzleMode.SWIZZLE_128B,

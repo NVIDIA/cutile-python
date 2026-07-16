@@ -187,6 +187,14 @@ def mbarrier_try_wait(
     """
 
 
+def mbarrier_wait(*args, time_hint=10_000, **kwargs):
+    """Synchronously wait for an mbarrier to complete.
+    Accepts the same arguments as :func:``mbarrier_try_wait``.
+    """
+    while not mbarrier_try_wait(*args, time_hint=time_hint, **kwargs):
+        pass
+
+
 @stub
 def mbarrier_try_wait_parity(
     mbar,
@@ -211,15 +219,9 @@ def mbarrier_try_wait_parity(
     """
 
 
-__all__ = (
-    "mbarrier_initialize",
-    "mbarrier_invalidate",
-    "mbarrier_arrive",
-    "mbarrier_arrive_expect_transaction",
-    "mbarrier_expect_transaction",
-    "mbarrier_complete_transaction",
-    "mbarrier_test_wait",
-    "mbarrier_test_wait_parity",
-    "mbarrier_try_wait",
-    "mbarrier_try_wait_parity",
-)
+def mbarrier_wait_parity(*args, time_hint=10_000, **kwargs):
+    """Synchronously wait for an mbarrier to complete for a given phase parity.
+    Accepts the same arguments as :func:``mbarrier_try_wait_parity``.
+    """
+    while not mbarrier_try_wait_parity(*args, time_hint=time_hint, **kwargs):
+        pass

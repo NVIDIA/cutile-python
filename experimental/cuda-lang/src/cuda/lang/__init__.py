@@ -211,6 +211,8 @@ from cuda.lang._stub.mbarrier import (
     mbarrier_test_wait_parity,
     mbarrier_try_wait,
     mbarrier_try_wait_parity,
+    mbarrier_wait,
+    mbarrier_wait_parity,
 )
 
 from cuda.lang._stub.barrier import (
@@ -384,6 +386,8 @@ __all__ = (
     "mbarrier_test_wait_parity",
     "mbarrier_try_wait",
     "mbarrier_try_wait_parity",
+    "mbarrier_wait",
+    "mbarrier_wait_parity",
     "barrier_sync_warp",
     "barrier_sync_block",
     "barrier_arrive_block",

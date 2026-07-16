@@ -13,11 +13,12 @@ from cuda.lang._exception import TypeCheckingError
 from cuda.tile import DType
 from cuda.tile._memory_model import MemoryOrder
 from cuda.tile._ir.ir import Var
-from cuda.tile._ir.op_impl import (
+from cuda.tile._ir.op_impl import (  # noqa: F401
     make_type_checking_error,
     require_array_type,
     require_optional_constant_enum,
     require_optional_constant_int,
+    require_dtype_spec,
 )
 from cuda.tile._ir.ops import broadcast_to, implicit_cast
 from cuda.tile._ir.ops_utils import promote_types
