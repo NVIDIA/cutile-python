@@ -138,6 +138,10 @@ class kernel(_cext.TileDispatcher):
         max_blocks_per_cluster: int | None = None,
         max_registers_per_thread: int | None = None,
         min_blocks_per_sm: int | None = None,
+        _ptx_compiler_verbose: bool = False,
+        _ptx_compiler_warn_on_local_memory_usage: bool = False,
+        _ptx_compiler_warn_on_spills: bool = False,
+        _ptx_compiler_make_errors_visible_at_exit: bool = False,
     ):
         """
         Args:
@@ -168,6 +172,10 @@ class kernel(_cext.TileDispatcher):
             max_blocks_per_cluster=max_blocks_per_cluster,
             max_registers_per_thread=max_registers_per_thread,
             min_blocks_per_sm=min_blocks_per_sm,
+            _ptx_compiler_verbose=_ptx_compiler_verbose,
+            _ptx_compiler_warn_on_local_memory_usage=_ptx_compiler_warn_on_local_memory_usage,
+            _ptx_compiler_warn_on_spills=_ptx_compiler_warn_on_spills,
+            _ptx_compiler_make_errors_visible_at_exit=_ptx_compiler_make_errors_visible_at_exit,
         )
         self._arch = arch
         self._gpu_name = gpu_name

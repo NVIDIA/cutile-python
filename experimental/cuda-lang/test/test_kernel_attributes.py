@@ -6,6 +6,7 @@ import cuda.lang as cl
 from cuda.lang._exception import TypeCheckingError
 from test.util import compile_kernel, require_hopper_or_newer
 import pytest
+import torch
 
 
 @require_hopper_or_newer()
@@ -20,6 +21,10 @@ import pytest
         dict(max_threads_per_block=1.0),
         dict(max_registers_per_thread=1.0),
         dict(min_blocks_per_sm=1.0),
+        dict(_ptx_compiler_verbose=1.0),
+        dict(_ptx_compiler_warn_on_local_memory_usage=1.0),
+        dict(_ptx_compiler_warn_on_spills=1.0),
+        dict(_ptx_compiler_make_errors_visible_at_exit=1.0),
     ),
 )
 def test_bad_kernel_attribute_types(kwarg):
@@ -119,3 +124,41 @@ def test_min_blocks_per_sm():
         CHECK-NEXT: .minnctapersm 2
         """,
     )
+
+
+@pytest.mark.parametrize(
+    "option",
+    (
+        "_ptx_compiler_verbose",
+        "_ptx_compiler_warn_on_local_memory_usage",
+        "_ptx_compiler_warn_on_spills",
+        "_ptx_compiler_make_errors_visible_at_exit",
+    ),
+)
+@pytest.mark.parametrize("value", (True, False))
+def test_ptx_compiler_accepts_all_options(option, value):
+    @cl.kernel(**{option: value})
+    def foo():
+        pass
+
+    cl.launch(torch.cuda.current_stream(), (1,), (1,), foo, ())
+
+
+def test_ptx_compiler_verbose_stderr(capsys):
+    @cl.kernel(_ptx_compiler_verbose=True)
+    def foo():
+        pass
+
+    cl.launch(torch.cuda.current_stream(), (1,), (1,), foo, ())
+    outerr = capsys.readouterr()
+    assert "ptxas info" in outerr.err
+
+
+def test_ptx_compiler_stderr_empty_when_not_verbose(capsys):
+    @cl.kernel(_ptx_compiler_verbose=False)
+    def foo():
+        pass
+
+    cl.launch(torch.cuda.current_stream(), (1,), (1,), foo, ())
+    outerr = capsys.readouterr()
+    assert "ptxas info" not in outerr.err

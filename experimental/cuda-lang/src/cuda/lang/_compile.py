@@ -60,10 +60,15 @@ def mlir2cubin(
     gpu_name: str,
     arch: str,
     emit_ptx: bool = False,
+    ptx_compiler_options: Sequence[str] = (),
 ) -> MLIR2CubinResult:
     executable = get_compiler_binary_path()
     argv = [executable, "-", "-o", "-", f"--gpu-name={gpu_name}", f"--arch={arch}"]
     custom_flags = os.environ.get("CUDA_LANG_MLIR2CUBIN_FLAGS", None)
+
+    argv.extend(
+        f"--ptx-compiler-option={option}" for option in ptx_compiler_options
+    )
 
     if custom_flags is not None:
         argv.extend(custom_flags.split())
@@ -266,9 +271,17 @@ def compile_simt(
         arch = arch or cc.arch + suffix
 
     need_ptx = log_flags.log_ptx or keep_ptx
+    ptx_compiler_options = compiler_options._ptx_compiler_options
     compiled = mlir2cubin(
-        mlir_text, gpu_name=gpu_name, arch=arch, emit_ptx=need_ptx
+        mlir_text,
+        gpu_name=gpu_name,
+        arch=arch,
+        emit_ptx=need_ptx,
+        ptx_compiler_options=ptx_compiler_options,
     )
+
+    if compiled.stderr and ptx_compiler_options:
+        _dump("PTX compiler", compiled.stderr.decode())
 
     if need_ptx:
         assert compiled.ptx is not None
