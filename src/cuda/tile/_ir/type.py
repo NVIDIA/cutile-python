@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING
 
 from typing_extensions import override
 
-from cuda.tile._exception import Loc, TileTypeError, TileValueError
+from cuda.tile._exception import Loc, TileTypeError
 from cuda.tile._memory_model import MemorySpace
 from cuda.tile._stub import Tile, Array
 from cuda.tile._numeric_semantics import PaddingMode
@@ -499,20 +499,20 @@ class SymbolicTile(Symbol, Tile):
         return len(self.shape)
 
     def __bool__(self):
-        raise TileValueError("Symbolic tile has no concrete value and thus cannot be converted"
-                             " to boolean")
+        raise ValueError("Symbolic tile has no concrete value and thus cannot be converted"
+                         " to boolean")
 
     def __int__(self):
-        raise TileValueError("Symbolic tile has no concrete value and thus cannot be converted"
-                             " to an integer")
+        raise ValueError("Symbolic tile has no concrete value and thus cannot be converted"
+                         " to an integer")
 
     def __float__(self):
-        raise TileValueError("Symbolic tile has no concrete value and thus cannot be converted"
-                             " to a float")
+        raise ValueError("Symbolic tile has no concrete value and thus cannot be converted"
+                         " to a float")
 
     def __index__(self):
-        raise TileValueError("Symbolic tile has no concrete value and thus cannot be converted"
-                             " to an integer")
+        raise ValueError("Symbolic tile has no concrete value and thus cannot be converted"
+                         " to an integer")
 
     def __repr__(self):
         return f"<tile[{self.dtype}, {self.shape}]>"

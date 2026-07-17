@@ -94,7 +94,7 @@ def test_static_iter_tile_ops_not_allowed_in_iterable():
 
     x = torch.zeros((10,), dtype=torch.int32, device="cuda")
     with pytest.raises(ct.TileStaticEvalError,
-                       match="Tile functions cannot be called inside static_iter\\(\\) iterable"):
+                       match=re.escape("ones() cannot be called inside static_iter() iterable")):
         ct.launch(torch.cuda.current_stream(), (1,), kernel, (x,))
 
 
@@ -170,7 +170,7 @@ def test_static_iter_dynamic_bound():
             ct.scatter(x, i, 1)
 
     x = torch.zeros((10,), dtype=torch.int32, device="cuda")
-    with pytest.raises(ct.TileValueError,
+    with pytest.raises(ct.TileStaticEvalError,
                        match=re.escape("Symbolic tile has no concrete value"
                                        " and thus cannot be converted to an integer")):
         ct.launch(torch.cuda.current_stream(), (1,), kernel, (x, 3))

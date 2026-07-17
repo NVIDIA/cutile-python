@@ -6,25 +6,25 @@
 from cuda.lang._execution import stub
 
 
-@stub
+@stub(static_eval_ok=True)
 def add(x, y, /):
     """Compute ``x + y``."""
     ...
 
 
-@stub
+@stub(static_eval_ok=True)
 def sub(x, y, /):
     """Compute ``x - y``."""
     ...
 
 
-@stub
+@stub(static_eval_ok=True)
 def mul(x, y, /):
     """Compute ``x * y``."""
     ...
 
 
-@stub
+@stub(static_eval_ok=True)
 def truediv(x, y, /, *, approx=False):
     """Compute ``x / y``.
 
@@ -32,27 +32,26 @@ def truediv(x, y, /, *, approx=False):
         approx: Whether to use an approximate implementation if one is available
             for the given operand types.
     """
-    ...
 
 
-@stub
+@stub(static_eval_ok=True)
 def floordiv(x, y, /):
     """Compute ``x // y``."""
     ...
 
 
-@stub
+@stub(static_eval_ok=True)
 def mod(x, y, /):
     """Compute ``x % y``."""
     ...
 
 
-@stub
+@stub(static_eval_ok=True)
 def divmod(x, y, /):
     """Compute divmod(x, y)."""
 
 
-@stub
+@stub(static_eval_ok=True)
 def negative(x, /):
     """Compute ``-x``."""
     ...
@@ -230,7 +229,7 @@ def pow(x, y, /, *, approx=False):
     ...
 
 
-@stub
+@stub(static_eval_ok=True)
 def maximum(x, y, /, *, propagate_nan=False):
     """Compute the element-wise maximum of ``x`` and ``y``.
 
@@ -244,7 +243,7 @@ def maximum(x, y, /, *, propagate_nan=False):
     ...
 
 
-@stub
+@stub(static_eval_ok=True)
 def minimum(x, y, /, *, propagate_nan=False):
     """Compute the element-wise minimum of ``x`` and ``y``.
 
@@ -258,52 +257,52 @@ def minimum(x, y, /, *, propagate_nan=False):
     ...
 
 
-@stub
+@stub(static_eval_ok=True)
 def bitwise_and(x, y, /):
     """Compute ``x & y``."""
 
 
-@stub
+@stub(static_eval_ok=True)
 def bitwise_or(x, y, /):
     """Compute ``x | y``."""
 
 
-@stub
+@stub(static_eval_ok=True)
 def bitwise_xor(x, y, /):
     """Compute ``x ^ y``."""
 
 
-@stub
+@stub(static_eval_ok=True)
 def bitwise_not(x, /):
     """Compute ``~x``."""
 
 
-@stub
+@stub(static_eval_ok=True)
 def greater(x, y, /):
     """Compute ``x > y``."""
 
 
-@stub
+@stub(static_eval_ok=True)
 def greater_equal(x, y, /):
     """Compute ``x >= y``."""
 
 
-@stub
+@stub(static_eval_ok=True)
 def less(x, y, /):
     """Compute ``x < y``."""
 
 
-@stub
+@stub(static_eval_ok=True)
 def less_equal(x, y, /):
     """Compute ``x <= y``."""
 
 
-@stub
+@stub(static_eval_ok=True)
 def equal(x, y, /):
     """Compute ``x == y``."""
 
 
-@stub
+@stub(static_eval_ok=True)
 def not_equal(x, y, /):
     """Compute ``x != y``."""
 

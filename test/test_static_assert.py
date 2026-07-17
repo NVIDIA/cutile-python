@@ -136,7 +136,7 @@ def test_static_assert_error_when_calling_tile_func():
 
     y = torch.zeros((), dtype=torch.int32, device="cuda")
     with pytest.raises(ct.TileStaticEvalError,
-                       match=re.escape("Tile functions cannot be called inside static_assert()")):
+                       match=re.escape("ones() cannot be called inside static_assert()")):
         ct.launch(torch.cuda.current_stream(), (1,), kernel, (y,))
 
 

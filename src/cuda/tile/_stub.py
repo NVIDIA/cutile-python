@@ -713,6 +713,18 @@ class Tile:
     def __rdivmod__(self, other):
         return divmod(other, self)
 
+    def __lshift__(self, other):
+        return bitwise_lshift(self, other)
+
+    def __rlshift__(self, other):
+        return bitwise_lshift(other, self)
+
+    def __rshift__(self, other):
+        return bitwise_rshift(self, other)
+
+    def __rrshift__(self, other):
+        return bitwise_rshift(other, self)
+
 
 TileOrScalar = Union[Tile, Scalar]
 
@@ -2307,7 +2319,7 @@ def mma_scaled(x, x_scale, y, y_scale, /, acc) -> Tile:
     """
 
 
-@stub
+@stub(static_eval_ok=True)
 def matmul(x, y, /) -> Tile:
     """Performs matrix multiply on the given tiles.
 
@@ -3150,10 +3162,6 @@ def scan(x, /, axis, func, identity, *, reverse=False):
 # ======== Math binary ==============
 def _doc_binary_op(builtin_op):
     def decorator(f):
-        @functools.wraps(f)
-        def wrapped(*args, **kwargs):
-            return f(*args, **kwargs)
-
         op_name = f.__name__
         extra_block = _math_op_extra_block(f, indent="            ")
 
@@ -3164,7 +3172,7 @@ def _doc_binary_op(builtin_op):
 
         orig_doc = textwrap.dedent(f.__doc__ or "")
 
-        wrapped.__doc__ = f"""\
+        f.__doc__ = f"""\
 Elementwise {op_name} on two tiles.
 
 Can also use builtin operation `{builtin_example.format('x', 'y')}`.
@@ -3180,12 +3188,12 @@ Returns:
     Tile:
 
 """ + orig_doc
-        return wrapped
+        return f
     return decorator
 
 
 @_doc_binary_op('+')
-@stub
+@stub(static_eval_ok=True)
 def add(x, y, /, *, rounding_mode: Optional[RoundingMode] = None,
         flush_to_zero: bool = False) -> TileOrScalar:
     """
@@ -3205,7 +3213,7 @@ def add(x, y, /, *, rounding_mode: Optional[RoundingMode] = None,
 
 
 @_doc_binary_op('-')
-@stub
+@stub(static_eval_ok=True)
 def sub(x, y, /, *, rounding_mode: Optional[RoundingMode] = None,
         flush_to_zero: bool = False) -> TileOrScalar:
     """
@@ -3225,7 +3233,7 @@ def sub(x, y, /, *, rounding_mode: Optional[RoundingMode] = None,
 
 
 @_doc_binary_op('*')
-@stub
+@stub(static_eval_ok=True)
 def mul(x, y, /, *, rounding_mode: Optional[RoundingMode] = None,
         flush_to_zero: bool = False) -> TileOrScalar:
     """
@@ -3245,7 +3253,7 @@ def mul(x, y, /, *, rounding_mode: Optional[RoundingMode] = None,
 
 
 @_doc_binary_op('/')
-@stub
+@stub(static_eval_ok=True)
 def truediv(x, y, /, *, rounding_mode: Optional[RoundingMode] = None,
             flush_to_zero: bool = False) -> TileOrScalar:
     """
@@ -3265,7 +3273,7 @@ def truediv(x, y, /, *, rounding_mode: Optional[RoundingMode] = None,
     pass
 
 
-@stub
+@stub(static_eval_ok=True)
 def floordiv(x, y, /) -> TileOrScalar:
     """Elementwise floordiv on two tiles.
 
@@ -3302,7 +3310,7 @@ def floordiv(x, y, /) -> TileOrScalar:
 
 
 @_doc_binary_op('**')
-@stub
+@stub(static_eval_ok=True)
 def pow(x, y, /) -> TileOrScalar:
     """
     Examples:
@@ -3353,7 +3361,7 @@ def atan2(x1, x2, /) -> TileOrScalar:
 
 
 @_doc_binary_op('%')
-@stub
+@stub(static_eval_ok=True)
 def mod(x, y, /) -> TileOrScalar:
     """
     Examples:
@@ -3371,7 +3379,7 @@ def mod(x, y, /) -> TileOrScalar:
     pass
 
 
-@stub
+@stub(static_eval_ok=True)
 def divmod(x, y, /) -> tuple[TileOrScalar, TileOrScalar]:
     """
     Elementwise ``divmod()`` on two tiles.
@@ -3406,7 +3414,7 @@ def divmod(x, y, /) -> tuple[TileOrScalar, TileOrScalar]:
 
 
 @_doc_binary_op('&')
-@stub
+@stub(static_eval_ok=True)
 def bitwise_and(x, y, /) -> TileOrScalar:
     """
     Examples:
@@ -3426,7 +3434,7 @@ def bitwise_and(x, y, /) -> TileOrScalar:
 
 
 @_doc_binary_op('|')
-@stub
+@stub(static_eval_ok=True)
 def bitwise_or(x, y, /) -> TileOrScalar:
     """
     Examples:
@@ -3446,7 +3454,7 @@ def bitwise_or(x, y, /) -> TileOrScalar:
 
 
 @_doc_binary_op('^')
-@stub
+@stub(static_eval_ok=True)
 def bitwise_xor(x, y, /) -> TileOrScalar:
     """
     Examples:
@@ -3466,7 +3474,7 @@ def bitwise_xor(x, y, /) -> TileOrScalar:
 
 
 @_doc_binary_op('<<')
-@stub
+@stub(static_eval_ok=True)
 def bitwise_lshift(x, y, /) -> TileOrScalar:
     """
     Examples:
@@ -3485,7 +3493,7 @@ def bitwise_lshift(x, y, /) -> TileOrScalar:
 
 
 @_doc_binary_op('>>')
-@stub
+@stub(static_eval_ok=True)
 def bitwise_rshift(x, y, /) -> TileOrScalar:
     """
     Examples:
@@ -3504,7 +3512,7 @@ def bitwise_rshift(x, y, /) -> TileOrScalar:
     pass
 
 
-@stub
+@stub(static_eval_ok=True)
 def bitwise_not(x, /) -> TileOrScalar:
     """Elementwise bitwise not on a tile.
 
@@ -3534,7 +3542,7 @@ def bitwise_not(x, /) -> TileOrScalar:
 
 
 @_doc_binary_op('min')
-@stub
+@stub(static_eval_ok=True)
 def minimum(x, y, /, *, flush_to_zero: bool = False, propagate_nan: bool = False) -> TileOrScalar:
     """
     Examples:
@@ -3554,7 +3562,7 @@ def minimum(x, y, /, *, flush_to_zero: bool = False, propagate_nan: bool = False
 
 
 @_doc_binary_op('max')
-@stub
+@stub(static_eval_ok=True)
 def maximum(x, y, /, *, flush_to_zero: bool = False, propagate_nan: bool = False) -> TileOrScalar:
     """
     Examples:
@@ -3573,7 +3581,7 @@ def maximum(x, y, /, *, flush_to_zero: bool = False, propagate_nan: bool = False
     pass
 
 
-@stub(host=True)
+@stub(host=True, static_eval_ok=True)
 def cdiv(x, y, /) -> TileOrScalar:
     """Computes ceil(x / y). Can be used on the host.
 
@@ -3610,7 +3618,7 @@ def _doc_cmp_op(builtin_op):
 
         orig_doc = textwrap.dedent(f.__doc__ or "")
 
-        wrapped.__doc__ = f"""\
+        f.__doc__ = f"""\
 Compare two tiles elementwise with `{builtin_op}`.
 
 Can also use builtin operation `x {builtin_op} y`.
@@ -3626,12 +3634,12 @@ Returns:
     Tile:
 
 """ + orig_doc
-        return wrapped
+        return f
     return decorator
 
 
 @_doc_cmp_op('>')
-@stub
+@stub(static_eval_ok=True)
 def greater(x, y, /) -> TileOrScalar:
     """
     Examples:
@@ -3650,7 +3658,7 @@ def greater(x, y, /) -> TileOrScalar:
 
 
 @_doc_cmp_op('>=')
-@stub
+@stub(static_eval_ok=True)
 def greater_equal(x, y, /) -> TileOrScalar:
     """
     Examples:
@@ -3669,7 +3677,7 @@ def greater_equal(x, y, /) -> TileOrScalar:
 
 
 @_doc_cmp_op('<')
-@stub
+@stub(static_eval_ok=True)
 def less(x, y, /) -> TileOrScalar:
     """
     Examples:
@@ -3688,7 +3696,7 @@ def less(x, y, /) -> TileOrScalar:
 
 
 @_doc_cmp_op('<=')
-@stub
+@stub(static_eval_ok=True)
 def less_equal(x, y, /) -> TileOrScalar:
     """
     Examples:
@@ -3707,7 +3715,7 @@ def less_equal(x, y, /) -> TileOrScalar:
 
 
 @_doc_cmp_op('==')
-@stub
+@stub(static_eval_ok=True)
 def equal(x, y, /) -> TileOrScalar:
     """
     Examples:
@@ -3726,7 +3734,7 @@ def equal(x, y, /) -> TileOrScalar:
 
 
 @_doc_cmp_op('!=')
-@stub
+@stub(static_eval_ok=True)
 def not_equal(x, y, /) -> TileOrScalar:
     """
     Examples:
@@ -4081,7 +4089,7 @@ def abs(x, /) -> TileOrScalar:
     pass
 
 
-@stub
+@stub(static_eval_ok=True)
 def negative(x, /) -> TileOrScalar:
     """Same as `-x`.
 
@@ -4374,7 +4382,7 @@ def assert_(cond, /, message=None) -> None:
 def static_eval(expr, /):
     """Evaluates the given Python expression at compile time.
 
-    The expression is evaluated using standard Python semantics, not Tile
+    The surrounded expression is evaluated using standard Python semantics, not Tile
     semantics. It can reference global variables and local variables from
     the surrounding tile function.
 
@@ -4382,21 +4390,24 @@ def static_eval(expr, /):
     with a corresponding Python object of that value. For example, a constant integer 3 will
     be passed as a plain ``int`` object of value 3.
 
-    If a referenced variable has dynamic value, such as a tile or an array,
-    it will be passed as a proxy object that allows querying compile-time attributes.
-    For example, if ``x`` is a tile, one can use ``x.shape`` to obtain the tile shape
-    as a tuple of integers.
+    If a referenced variable has dynamic value, such as a tile or an array, it will be passed
+    as a proxy object that allows querying compile-time attributes and building symbolic expressions
+    from it. For example, if ``x`` is a dynamic tile, it will be represented as a ``ct.Tile``
+    object. One can then use ``x.shape`` to obtain the tile shape as a tuple of integers;
+    ``x + 1`` will return a new proxy object that represents the symbolic expression ``x + 1``, etc.
 
-    The expression is allowed to return a proxy object for a dynamic value.
-    This can be used to select one of multiple dynamic values based on a compile-time
-    condition. For example, if ``N`` is an integer constant and ``x``, ``y`` are dynamic
-    tiles, then one can write ``x_or_y = ct.static_eval(x if N % 2 == 0 else y)`` to select
-    either ``x`` or ``y`` at compile tile, depending on the parity of ``N``.
+    The surrounded expression is allowed to return a proxy object for a dynamic value.
+    For example, this can be used to select one of multiple dynamic expressions
+    based on a compile-time condition: if ``N`` is an integer constant and ``x``, ``y``
+    are dynamic tiles, then one can write ``res = ct.static_eval(x + 1 if N % 2 == 0 else y - 1)``
+    to select either ``x + 1`` or ``y - 1`` at compile tile, depending on the parity
+    of the integer constant ``N``.
 
-    However, the expression is not allowed to perform any run-time operations. For example,
-    if ``x`` refers to a dynamic tile, then ``ct.static_eval(x + 1)`` will raise an error.
+    The symbolic expression building feature is limited to basic arithmetic operations.
+    For example, ``ct.static_eval(ct.gather(array, 0))`` will raise an error.
 
-    The expression must not assign to local variables (e.g., via the walrus operator ``:=``).
+    The surrounded expression must not assign to local variables
+    (e.g., via the walrus operator ``:=``).
 
     Despite being declared as a function, `static_eval()` is treated like a keyword:
     it skips the translation of the surrounded expression according to the Tile semantics.

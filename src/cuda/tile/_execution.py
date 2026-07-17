@@ -169,10 +169,15 @@ class kernel(TileDispatcher):
         raise TypeError("Tile kernels cannot be called directly. Use cuda.tile.launch() instead.")
 
 
-def stub(func=None, /, *, host=False):
+@dataclasses.dataclass
+class StubInfo:
+    static_eval_ok: bool
+
+
+def stub(func=None, /, *, host=False, static_eval_ok: bool = False):
     def decorate(func):
         func = function(func, host=host)
-        func._cutile_python_stub = True
+        func._cutile_python_stub = StubInfo(static_eval_ok=static_eval_ok)
         return func
 
     if func is None:
@@ -182,12 +187,24 @@ def stub(func=None, /, *, host=False):
 
 
 def is_stub(func) -> bool:
+    return _get_stub_info(func) is not None
+
+
+def is_static_eval_safe_stub(func) -> bool:
+    info = _get_stub_info(func)
+    if info is None:
+        return False
+    return info.static_eval_ok
+
+
+def _get_stub_info(func) -> StubInfo | None:
     while True:
-        if getattr(func, "_cutile_python_stub", False):
-            return True
+        info = getattr(func, "_cutile_python_stub", None)
+        if info is not None:
+            return info
         func = getattr(func, "__wrapped__", None)
         if func is None:
-            return False
+            return None
 
 
 def static_def(func, /):

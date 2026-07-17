@@ -36,7 +36,7 @@ from cuda.tile._ir.type import (
 import cuda.tile._datatype as datatype
 from cuda.tile._datatype import DType, PointerInfo
 from cuda.tile._ir.ir import Var, AggregateValue, TypingHooks
-from cuda.lang._exception import TypeCheckingError, InvalidValueError
+from cuda.lang._exception import TypeCheckingError
 
 
 @dataclass(frozen=True)
@@ -72,25 +72,25 @@ class SymbolicScalar(Symbol, Scalar):
         return self._var.get_type().dtype
 
     def __bool__(self):
-        raise InvalidValueError(
+        raise ValueError(
             "Symbolic scalar has no concrete value and thus cannot be converted"
             " to boolean"
         )
 
     def __int__(self):
-        raise InvalidValueError(
+        raise ValueError(
             "Symbolic scalar has no concrete value and thus cannot be converted"
             " to an integer"
         )
 
     def __float__(self):
-        raise InvalidValueError(
+        raise ValueError(
             "Symbolic scalar has no concrete value and thus cannot be converted"
             " to a float"
         )
 
     def __index__(self):
-        raise InvalidValueError(
+        raise ValueError(
             "Symbolic scalar has no concrete value and thus cannot be converted"
             " to an integer"
         )

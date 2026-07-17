@@ -330,7 +330,7 @@ def helper_function_using_ct_api(x, output, B: ct.Constant[int], N: ct.Constant[
 def test_calling_function_from_host(shape, tile):
     x = torch.rand(shape, dtype=torch.float32, device="cuda")
     y = torch.zeros_like(x)
-    with pytest.raises(RuntimeError, match="Tile functions can only be called from tile code."):
+    with pytest.raises(RuntimeError, match="Device functions can only be called from device code."):
         helper_function_using_ct_api(x, y, tile, shape[1])
 
 

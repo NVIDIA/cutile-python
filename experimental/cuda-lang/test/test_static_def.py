@@ -18,13 +18,14 @@ def test_static_def():
         return tuple(ret)
 
     @cl.kernel
-    def kern(y):
-        s = make_contiguous_strides((2, 5, 7))
+    def kern(x, y):
+        s = make_contiguous_strides(x.shape)
         cl.static_assert(len(s) == 3)
         y[0] = s[0]
         y[1] = s[1]
         y[2] = s[2]
 
+    x = torch.zeros((2, 5, 7), device="cuda")
     y = torch.zeros((3,), dtype=torch.int32, device="cuda")
-    cl.launch(torch.cuda.current_stream(), (1,), (1,), kern, (y,))
+    cl.launch(torch.cuda.current_stream(), (1,), (1,), kern, (x, y,))
     assert y.tolist() == [1, 2, 10]

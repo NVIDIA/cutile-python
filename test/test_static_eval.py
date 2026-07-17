@@ -1,6 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) <2026> NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 #
 # SPDX-License-Identifier: Apache-2.0
+import operator
 import re
 
 import torch
@@ -132,7 +133,7 @@ def test_closure():
         ct.static_eval(f(3))
 
     with pytest.raises(TileStaticEvalError,
-                       match=re.escape("Tile functions cannot be called inside static_eval()")):
+                       match=re.escape("cannot be called inside static_eval()")):
         ct.launch(torch.cuda.current_stream(), (1,), kernel, ())
 
 
@@ -165,13 +166,56 @@ def test_static_eval_error_when_called_indirectly():
 def test_static_eval_error_when_calling_tile_func():
     @ct.kernel
     def kernel(y):
-        v = ct.static_eval(ct.ones((4,), dtype=ct.int32).shape[0])
-        ct.scatter(y, (), v)
+        t = ct.ones((4,), dtype=ct.int32)
+        ct.static_eval(ct.scatter(y, (), t))
 
     y = torch.zeros((), dtype=torch.int32, device="cuda")
     with pytest.raises(ct.TileStaticEvalError,
-                       match=re.escape("Tile functions cannot be called inside static_eval()")):
+                       match=re.escape("scatter() cannot be called inside static_eval()")):
         ct.launch(torch.cuda.current_stream(), (1,), kernel, (y,))
+
+
+@pytest.mark.parametrize("func", [
+    operator.add,
+    operator.sub,
+    operator.mul,
+    operator.truediv,
+    operator.floordiv,
+    operator.mod,
+    operator.gt,
+    operator.ge,
+    operator.lt,
+    operator.le,
+    operator.eq,
+    operator.ne,
+    ct.minimum,
+    ct.maximum,
+    operator.lshift,
+    operator.rshift,
+    operator.and_,
+    operator.or_,
+    operator.xor,
+])
+def test_static_eval_allow_pure_expressions_binary_op(func):
+    A, B = 15, 4
+
+    @ct.kernel
+    def kernel(y):
+        lhs = ct.bid(0) + 15
+        rhs = ct.bid(1) + 4
+        res = ct.static_eval(func(lhs, rhs))
+        ct.scatter(y, (), res)
+
+    if func is ct.minimum:
+        expected = min(A, B)
+    elif func is ct.maximum:
+        expected = max(A, B)
+    else:
+        expected = func(A, B)
+
+    y = torch.zeros((), dtype=torch.float64, device="cuda")
+    ct.launch(torch.cuda.current_stream(), (1,), kernel, (y,))
+    assert y.item() == expected
 
 
 def test_nested_static_eval():
@@ -267,5 +311,5 @@ def test_static_eval_error_when_calling_bound_method():
 
     x = torch.zeros((3,), dtype=torch.int32, device="cuda")
     with pytest.raises(ct.TileStaticEvalError,
-                       match=re.escape("Tile functions cannot be called inside static_eval()")):
+                       match=re.escape("slice() cannot be called inside static_eval()")):
         ct.launch(torch.cuda.current_stream(), (1,), kernel, (x,))
