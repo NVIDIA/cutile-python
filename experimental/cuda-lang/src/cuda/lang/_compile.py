@@ -53,13 +53,16 @@ class MLIR2CubinResult:
     cubin: bytes
     stderr: bytes
     ptx: str | None
+    nvvm: str | None
 
 
 def mlir2cubin(
     mlir_text: str,
     gpu_name: str,
     arch: str,
+    *,
     emit_ptx: bool = False,
+    emit_nvvm: bool = False,
     ptx_compiler_options: Sequence[str] = (),
 ) -> MLIR2CubinResult:
     executable = get_compiler_binary_path()
@@ -74,7 +77,12 @@ def mlir2cubin(
         argv.extend(custom_flags.split())
 
     with contextlib.ExitStack() as ec:
+        nvvm_file, nvvm_src = None, None
         ptx_file, ptx_src = None, None
+
+        if emit_nvvm:
+            nvvm_file = ec.enter_context(tempfile.NamedTemporaryFile(mode="w+t"))
+            argv.extend(["--dump-nvvm=" + nvvm_file.name])
 
         if emit_ptx:
             ptx_file = ec.enter_context(tempfile.NamedTemporaryFile(mode="w+t"))
@@ -92,12 +100,17 @@ def mlir2cubin(
                 compiler_version=None,
             )
 
+        if emit_nvvm:
+            assert nvvm_file is not None
+            nvvm_file.seek(0)
+            nvvm_src = nvvm_file.read()
+
         if emit_ptx:
             assert ptx_file is not None
             ptx_file.seek(0)
             ptx_src = ptx_file.read()
 
-    return MLIR2CubinResult(completed.stdout, completed.stderr, ptx_src)
+    return MLIR2CubinResult(completed.stdout, completed.stderr, ptx_src, nvvm_src)
 
 
 def get_compiler_binary_path() -> str:
@@ -144,10 +157,11 @@ class CompilationResult:
     dyn_smem_size_program: HostProgram | None
     hoisted_tensor_maps: list[HoistedTensorMap]
 
+    stderr: bytes | None = None
     hir: hir_ir.Function | None = None
     final_ir: ir.Region | None = None
     mlir: str | None = None
-    stderr: bytes | None = None
+    nvvm: str | None = None
     ptx: str | None = None
     cubin: bytes | None = None
 
@@ -206,10 +220,12 @@ def compile_simt(
     keep_hir: bool = False,
     keep_final_ir: bool = False,
     keep_mlir: bool = False,
+    keep_nvvm: bool = False,
     keep_ptx: bool = False,
     log_hir: bool = False,
     log_ir: bool = False,
     log_mlir: bool = False,
+    log_nvvm: bool = False,
     log_ptx: bool = False,
 ) -> CompilationResult:
     match function:
@@ -222,6 +238,7 @@ def compile_simt(
     log_flags.log_hir |= log_hir
     log_flags.log_ir |= log_ir
     log_flags.log_mlir |= log_mlir
+    log_flags.log_nvvm |= log_nvvm
     log_flags.log_ptx |= log_ptx
 
     def _dump(phase: str, contents: object) -> None:
@@ -270,12 +287,14 @@ def compile_simt(
         gpu_name = gpu_name or cc.gpu_name + suffix
         arch = arch or cc.arch + suffix
 
+    need_nvvm = log_flags.log_nvvm or keep_nvvm
     need_ptx = log_flags.log_ptx or keep_ptx
     ptx_compiler_options = compiler_options._ptx_compiler_options
     compiled = mlir2cubin(
         mlir_text,
         gpu_name=gpu_name,
         arch=arch,
+        emit_nvvm=need_nvvm,
         emit_ptx=need_ptx,
         ptx_compiler_options=ptx_compiler_options,
     )
@@ -283,8 +302,14 @@ def compile_simt(
     if compiled.stderr and ptx_compiler_options:
         _dump("PTX compiler", compiled.stderr.decode())
 
+    if need_nvvm:
+        assert compiled.nvvm is not None
+
     if need_ptx:
         assert compiled.ptx is not None
+
+    if log_flags.log_nvvm:
+        _dump("NVVM", compiled.nvvm)
 
     if log_flags.log_ptx:
         _dump("PTX", compiled.ptx)
@@ -296,6 +321,7 @@ def compile_simt(
         hir=func_hir if keep_hir else None,
         final_ir=flattened_ir if keep_final_ir else None,
         mlir=mlir_text if keep_mlir else None,
+        nvvm=compiled.nvvm if keep_nvvm else None,
         ptx=compiled.ptx if keep_ptx else None,
         stderr=compiled.stderr,
         cubin=compiled.cubin,
