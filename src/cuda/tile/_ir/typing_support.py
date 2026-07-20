@@ -10,7 +10,7 @@ from types import ModuleType, FunctionType, BuiltinFunctionType
 from typing import Any, Callable, Mapping, Union, Sequence
 
 from cuda.tile import _datatype as datatype, DType
-from cuda.tile._exception import TileTypeError, TileValueError, TypeCheckingError
+from cuda.tile._exception import TileTypeError, TileValueError
 from .ir import TypingHooks
 from .type import DataclassInfo, PointerInfoTy
 
@@ -217,15 +217,8 @@ def get_dataclass_info(cls) -> DataclassInfo:
     if hasattr(cls, "__post_init__"):
         raise TileTypeError("Dataclasses with __post_init__ are not supported")
 
-    if "__new__" in cls.__dict__:
+    if find_method(cls, "__new__") is not object.__new__:
         raise TileTypeError("Dataclasses with custom __new__ are not supported")
-
-    # Only allow supported frozen dataclasses as bases
-    for base in cls.__bases__:
-        if base is not object:
-            if not dataclasses.is_dataclass(base):
-                raise TypeCheckingError("Dataclasses with non-dataclass base are not supported")
-            get_dataclass_info(base)
 
     field_name_to_idx = {}
     field_names = []

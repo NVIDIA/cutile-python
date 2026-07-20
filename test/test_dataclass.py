@@ -326,23 +326,6 @@ def test_dataclass_with_base():
     assert x.tolist() == [3, 5]
 
 
-def test_reject_nondataclass_base():
-    class Base:
-        pass
-
-    @dataclass(frozen=True)
-    class Derived(Base):
-        foo: int
-
-    @ct.kernel
-    def kern():
-        Derived(3)
-
-    with pytest.raises(TileTypeError,
-                       match="Dataclasses with non-dataclass base are not supported"):
-        ct.launch(torch.cuda.current_stream(), (1,), kern, ())
-
-
 def test_reject_base_with_custom_new():
     @dataclass(frozen=True)
     class Base:
