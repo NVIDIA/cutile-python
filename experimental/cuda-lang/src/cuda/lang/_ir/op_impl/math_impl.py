@@ -4,9 +4,11 @@
 
 import operator
 
+from cuda.tile._ir.ir import add_operation_variadic
 from cuda.tile._ir.ops_utils import promote_dtypes
 
 import cuda.lang._datatype as datatype
+import cuda.lang._mlir as mlir
 from cuda.lang._exception import TypeCheckingError
 from cuda.lang._ir.ir import Var, add_operation
 from .vector_impl import vector_elementwise_apply
@@ -23,6 +25,7 @@ from cuda.lang._ir.op_defs import (
 from cuda.lang._ir.type_checking_helpers import (
     broadcast_to_same_shape,
     common_type,
+    require_scalar_type,
     require_scalar_or_vector_float_type,
     require_scalar_or_vector_type,
 )
@@ -39,7 +42,7 @@ from cuda.tile._ir.arithmetic_ops import (
     unary,
     where, invert_tensorlike, divmod_tensorlike,
 )
-from cuda.tile._ir.core_ops import strictly_typed_const
+from cuda.tile._ir.core_ops import build_tuple, strictly_typed_const
 from cuda.tile._ir.op_impl import (
     ImplRegistry,
     require_constant_bool,
@@ -59,12 +62,43 @@ def math_impl_registry() -> ImplRegistry:
 @impl(cl_math.add, fixed_args=["add"])
 @impl(cl_math.sub, fixed_args=["sub"])
 @impl(cl_math.mul, fixed_args=["mul"])
-@impl(cl_math.truediv, fixed_args=["truediv"])
 @impl(cl_math.floordiv, fixed_args=["floordiv"])
 def math_binary_arithmetic_impl(fn: str, x: Var, y: Var):
     require_scalar_or_vector_type(x)
     require_scalar_or_vector_type(y)
     return binary_arithmetic_tensorlike(fn, x, y)
+
+
+@impl(cl_math.truediv)
+def math_truediv_impl(x: Var, y: Var, approx: Var):
+    require_scalar_or_vector_type(x)
+    require_scalar_or_vector_type(y)
+    if not require_constant_bool(approx):
+        return binary_arithmetic_tensorlike("truediv", x, y)
+
+    ty = common_type(x, y)
+    dtype = ty.tensor_dtype()
+    if not is_float(dtype) or dtype == datatype.float64:
+        return binary_arithmetic_tensorlike("truediv", x, y)
+
+    x = promote_and_broadcast_to(x, ty)
+    y = promote_and_broadcast_to(y, ty)
+    x = astype(x, datatype.float32)
+    y = astype(y, datatype.float32)
+
+    def fast_fdividef(lhs, rhs):
+        return add_operation(
+            ForeignFunction,
+            ScalarTy(datatype.float32),
+            function_name="__nv_fast_fdividef",
+            operands_=(lhs, rhs),
+        )
+
+    if isinstance(ty, ScalarTy):
+        value = fast_fdividef(x, y)
+    else:
+        value = vector_elementwise_apply(fast_fdividef, x, y)
+    return astype(value, dtype)
 
 
 @impl(cl_math.bitwise_and, fixed_args=["and_"])
@@ -176,19 +210,13 @@ def math_negative_impl(x: Var):
 
 
 @impl(cl_math.ceil, fixed_args=["math.ceil"])
-@impl(cl_math.exp, fixed_args=["math.exp"])
 @impl(cl_math.exp2, fixed_args=["math.exp2"])
-@impl(cl_math.sin, fixed_args=["math.sin"])
-@impl(cl_math.cos, fixed_args=["math.cos"])
-@impl(cl_math.tan, fixed_args=["math.tan"])
 @impl(cl_math.sinh, fixed_args=["math.sinh"])
 @impl(cl_math.cosh, fixed_args=["math.cosh"])
 @impl(cl_math.tanh, fixed_args=["math.tanh"])
 @impl(cl_math.sqrt, fixed_args=["math.sqrt"])
 @impl(cl_math.rsqrt, fixed_args=["math.rsqrt"])
 @impl(cl_math.floor, fixed_args=["math.floor"])
-@impl(cl_math.log, fixed_args=["math.log"])
-@impl(cl_math.log2, fixed_args=["math.log2"])
 def math_float_unary_impl(op_name: str, x: Var):
     x_ty = require_scalar_or_vector_float_type(x)
     return add_operation(
@@ -197,6 +225,42 @@ def math_float_unary_impl(op_name: str, x: Var):
         op_name=op_name,
         operands_=(x,),
     )
+
+
+def _fastmath_attributes(approx: Var):
+    approx = require_constant_bool(approx)
+    flags = mlir.arith.FastMathFlags.afn if approx else mlir.arith.FastMathFlags.none
+    return (("fastmath", mlir.arith.FastMathFlagsAttr(value=flags)),)
+
+
+@impl(cl_math.exp, fixed_args=["math.exp"])
+@impl(cl_math.sin, fixed_args=["math.sin"])
+@impl(cl_math.cos, fixed_args=["math.cos"])
+@impl(cl_math.tan, fixed_args=["math.tan"])
+@impl(cl_math.log, fixed_args=["math.log"])
+@impl(cl_math.log2, fixed_args=["math.log2"])
+def math_float_approx_unary_impl(op_name: str, x: Var, approx: Var):
+    x_ty = require_scalar_or_vector_float_type(x)
+    return add_operation(
+        RawMLIROperation,
+        x_ty,
+        op_name=op_name,
+        operands_=(x,),
+        mlir_attributes=_fastmath_attributes(approx),
+    )
+
+
+@impl(cl_math.sincos)
+def math_sincos_impl(x: Var, approx: Var):
+    x_ty = require_scalar_type(x, is_float)
+    results = add_operation_variadic(
+        RawMLIROperation,
+        (x_ty, x_ty),
+        op_name="math.sincos",
+        operands_=(x,),
+        mlir_attributes=_fastmath_attributes(approx),
+    )
+    return build_tuple(results)
 
 
 @impl(cl_math.isnormal)
@@ -240,31 +304,7 @@ def math_float_fpclass_impl(op_name: str, x: Var):
     return vector_elementwise_apply(scalar_fpclass, x)
 
 
-def get_libdevice_pow_function(base_dt, exp_dt):
-    match base_dt, exp_dt:
-        case datatype.float32, datatype.float32:
-            entrypoint = "__nv_powf"
-        case datatype.float64, datatype.float64:
-            entrypoint = "__nv_pow"
-        case datatype.float32, datatype.int32:
-            entrypoint = "__nv_powif"
-        case datatype.float64, datatype.int32:
-            entrypoint = "__nv_powi"
-        case _:
-            raise TypeCheckingError(
-                f"pow is not valid for the given datatypes: {base_dt=} {exp_dt=}"
-            )
-    return lambda x, y: add_operation(
-        ForeignFunction,
-        ScalarTy(base_dt),
-        function_name=entrypoint,
-        operands_=(x, y),
-    )
-
-
-@impl(operator.pow, overload=(TensorLikeTy, TensorLikeTy))
-@impl(cl_math.pow)
-def math_pow_impl(x: Var, y: Var):
+def _math_pow_impl(x: Var, y: Var, approx: Var):
     x_ty, y_ty = x.get_type(), y.get_type()
     base_dt, exp_dt = x_ty.tensor_dtype(), y_ty.tensor_dtype()
 
@@ -294,11 +334,25 @@ def math_pow_impl(x: Var, y: Var):
     y = astype(y, exp_dt)
     x, y = broadcast_to_same_shape(x, y)
 
-    scalar_fn = get_libdevice_pow_function(base_dt, exp_dt)
-    if isinstance(x.get_type(), ScalarTy):
-        return scalar_fn(x, y)
+    op_name = "math.fpowi" if is_integral(exp_dt) else "math.powf"
+    return add_operation(
+        RawMLIROperation,
+        x.get_type(),
+        op_name=op_name,
+        operands_=(x, y),
+        mlir_attributes=_fastmath_attributes(approx),
+    )
 
-    return vector_elementwise_apply(scalar_fn, x, y)
+
+@impl(cl_math.pow)
+def math_pow_impl(x: Var, y: Var, approx: Var):
+    return _math_pow_impl(x, y, approx)
+
+
+@impl(operator.pow, overload=(TensorLikeTy, TensorLikeTy))
+def math_operator_pow_impl(x: Var, y: Var):
+    approx = strictly_typed_const(False, ScalarTy(datatype.bool_))
+    return _math_pow_impl(x, y, approx)
 
 
 @impl(cl_math.atan2, fixed_args=["math.atan2"])

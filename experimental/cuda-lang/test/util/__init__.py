@@ -45,20 +45,27 @@ def compile_kernel(
     assert_not_in_ptx=None,
     assert_in_mlir=None,
     assert_not_in_mlir=None,
+    assert_in_nvvm=None,
+    assert_not_in_nvvm=None,
     filecheck_ptx=None,
     filecheck_mlir=None,
     raises=None,
     **compile_simt_kwargs,
 ):
     if raises is not None:
-        assert assert_in_ptx is None
-        assert assert_not_in_ptx is None
-        assert assert_in_mlir is None
-        assert assert_not_in_mlir is None
-        assert filecheck_ptx is None
-        assert filecheck_mlir is None
+        message = "If the `raises` argument was passed, then we can't check the IR"
+        assert assert_in_ptx is None, message
+        assert assert_not_in_ptx is None, message
+        assert assert_in_mlir is None, message
+        assert assert_not_in_mlir is None, message
+        assert assert_in_nvvm is None, message
+        assert assert_not_in_nvvm is None, message
+        assert filecheck_ptx is None, message
+        assert filecheck_mlir is None, message
+
         with raises:
             cl.compile_simt(kernel, [signature], **compile_simt_kwargs)
+
         return
 
     compiled = cl.compile_simt(
@@ -66,10 +73,13 @@ def compile_kernel(
         [signature],
         keep_ptx=True,
         keep_mlir=True,
+        keep_nvvm=assert_in_nvvm is not None or assert_not_in_nvvm is not None,
         **compile_simt_kwargs,
     )
     assert compiled.mlir
     assert compiled.ptx
+    if assert_in_nvvm is not None or assert_not_in_nvvm is not None:
+        assert compiled.nvvm
 
     def tuple_or_str_check(check, scrutinee, predicate=lambda x, y: x in y):
         match check:
@@ -85,12 +95,22 @@ def compile_kernel(
                         f"{predicate=} failed with\n{single_check=}\n{scrutinee}"
                     )
             case _:
-                assert False, "expected assert_in_ptx to be str or iterable of str"
+                assert False, "expected check to be str or iterable of str"
 
-    tuple_or_str_check(assert_in_ptx, compiled.ptx)
-    tuple_or_str_check(assert_not_in_ptx, compiled.ptx, lambda x, y: x not in y)
-    tuple_or_str_check(assert_in_mlir, compiled.mlir)
-    tuple_or_str_check(assert_not_in_mlir, compiled.mlir, lambda x, y: x not in y)
+    def is_in(x, y):
+        return x in y
+
+    def is_not_in(x, y):
+        return x not in y
+
+    tuple_or_str_check(assert_in_ptx, compiled.ptx, is_in)
+    tuple_or_str_check(assert_not_in_ptx, compiled.ptx, is_not_in)
+
+    tuple_or_str_check(assert_in_mlir, compiled.mlir, is_in)
+    tuple_or_str_check(assert_not_in_mlir, compiled.mlir, is_not_in)
+
+    tuple_or_str_check(assert_in_nvvm, compiled.nvvm, is_in)
+    tuple_or_str_check(assert_not_in_nvvm, compiled.nvvm, is_not_in)
 
     if filecheck_ptx is not None:
         assert isinstance(filecheck_ptx, str)

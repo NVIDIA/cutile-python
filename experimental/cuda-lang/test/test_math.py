@@ -16,7 +16,7 @@ from cuda.lang._stub import math as device_math
 from cuda.lang.compilation import KernelSignature
 from cuda.lang._exception import TypeCheckingError
 from cuda.lang._fp_utils import _FLOAT_SMALLEST_NORMAL, isnormal
-from .util import filecheck, make_symbolic_tensor
+from .util import make_symbolic_tensor
 
 
 rng = torch.Generator().manual_seed(0)
@@ -50,6 +50,15 @@ UNARY_FLOAT_OPS = (
     (device_math.log, host_math.log),
     (device_math.log2, host_math.log2),
     (device_math.abs, builtins.abs),
+)
+
+APPROX_UNARY_MATH_OPS = (
+    (device_math.exp, "math.exp", "__nv{approx}_expf"),
+    (device_math.sin, "math.sin", "__nv{approx}_sinf"),
+    (device_math.cos, "math.cos", "__nv{approx}_cosf"),
+    (device_math.tan, "math.tan", "__nv{approx}_tanf"),
+    (device_math.log, "math.log", "__nv{approx}_logf"),
+    (device_math.log2, "math.log2", "__nv{approx}_log2f"),
 )
 
 BINARY_FLOAT_OPS = ((device_math.atan2, host_math.atan2),)
@@ -171,6 +180,90 @@ def test_math_unary_float(dtype, device_op, host_op):
     out = torch.tensor([0.0], dtype=torch_dt, device="cuda")
     cl.launch(torch.cuda.current_stream(), (1,), (1,), kernel, (inp, out))
     assert out[0].item() == approx_float(expected, dtype)
+
+
+@pytest.mark.parametrize(
+    "device_op, op_name, libdevice_name_template", APPROX_UNARY_MATH_OPS
+)
+@pytest.mark.parametrize("approx", (False, True))
+@pytest.mark.parametrize("vector", (False, True))
+def test_math_unary_approx_fastmath(
+    device_op, op_name, libdevice_name_template, approx, vector
+):
+    def kernel(inp, out):
+        if vector:
+            value = inp.get_base_pointer().load(count=2)
+            out.get_base_pointer().store(device_op(value, approx=approx))
+        else:
+            out[0] = device_op(inp[0], approx=approx)
+
+    count = 2 if vector else 1
+    inp = make_symbolic_tensor([count], datatype.float32)
+    out = make_symbolic_tensor([count], datatype.float32)
+    fastmath = "afn" if approx else "none"
+    approx_suffix = "_fast" if approx else ""
+    libdevice_name = libdevice_name_template.format(approx=approx_suffix)
+    filecheck = (
+        "CHECK: " + op_name + "{{.+}}" + f"fastmath = #arith<fastmath <{fastmath}>>"
+    )
+    compile_kernel(
+        kernel,
+        signature=KernelSignature([inp, out]),
+        filecheck_mlir=filecheck,
+        assert_in_nvvm=f"call float @{libdevice_name}(",
+    )
+
+
+@pytest.mark.parametrize("approx", (False, True))
+def test_math_sincos_approx_fastmath(approx):
+    def kernel(inp, sin_out, cos_out):
+        sin, cos = device_math.sincos(inp[0], approx=approx)
+        sin_out[0] = sin
+        cos_out[0] = cos
+
+    inp = make_symbolic_tensor([1], datatype.float32)
+    sin_out = make_symbolic_tensor([1], datatype.float32)
+    cos_out = make_symbolic_tensor([1], datatype.float32)
+    fastmath = "afn" if approx else "none"
+    approx_suffix = "_fast" if approx else ""
+    filecheck = (
+        "CHECK: math.sincos{{.+}}" + f"fastmath = #arith<fastmath <{fastmath}>>"
+    )
+    compile_kernel(
+        kernel,
+        signature=KernelSignature([inp, sin_out, cos_out]),
+        filecheck_mlir=filecheck,
+        assert_in_nvvm=f"call void @__nv{approx_suffix}_sincosf(",
+    )
+
+
+@pytest.mark.parametrize("approx", (False, True))
+@pytest.mark.parametrize("vector", (False, True))
+def test_math_truediv_approx(approx, vector):
+    def kernel(lhs, rhs, out):
+        if vector:
+            lhs_value = lhs.get_base_pointer().load(count=2)
+            rhs_value = rhs.get_base_pointer().load(count=2)
+            value = device_math.truediv(lhs_value, rhs_value, approx=approx)
+            out.get_base_pointer().store(value)
+        else:
+            out[0] = device_math.truediv(lhs[0], rhs[0], approx=approx)
+
+    count = 2 if vector else 1
+    lhs = make_symbolic_tensor([count], datatype.float32)
+    rhs = make_symbolic_tensor([count], datatype.float32)
+    out = make_symbolic_tensor([count], datatype.float32)
+    if approx:
+        assert_in_nvvm = "call float @__nv_fast_fdividef("
+    elif vector:
+        assert_in_nvvm = "fdiv <2 x float>"
+    else:
+        assert_in_nvvm = "fdiv float"
+    compile_kernel(
+        kernel,
+        signature=KernelSignature([lhs, rhs, out]),
+        assert_in_nvvm=assert_in_nvvm,
+    )
 
 
 def _pow_test_values(dtype):
@@ -296,36 +389,50 @@ def test_pow_scalar_vector_broadcast(lhs_dt, rhs_dt, result_dt, vector_side):
 
 
 @pytest.mark.parametrize(
-    "lhs_dt, rhs_dt, entrypoint",
+    "lhs_dt, rhs_dt, op_name, libdevice_name_template",
     (
-        # fpowf no promotion
-        (datatype.float32, datatype.float32, "__nv_powf"),
-        (datatype.float64, datatype.float64, "__nv_pow"),
-        # fpowi no promotion
-        (datatype.float32, datatype.int32, "__nv_powif"),
-        (datatype.float64, datatype.int32, "__nv_powi"),
-        # fpowi integer exponent cast to i32
-        (datatype.float64, datatype.int8, "__nv_powi"),
-        (datatype.float64, datatype.int16, "__nv_powi"),
-        (datatype.float64, datatype.int64, "__nv_powi"),
+        # Floating-point exponent without promotion.
+        (datatype.float32, datatype.float32, "math.powf", "__nv{approx}_powf"),
+        (datatype.float64, datatype.float64, "math.powf", "__nv_pow"),
+        # Integer exponent without promotion.
+        (datatype.float32, datatype.int32, "math.fpowi", "__nv_powif"),
+        (datatype.float64, datatype.int32, "math.fpowi", "__nv_powi"),
+        # Integer exponent cast to i32.
+        (datatype.float64, datatype.int8, "math.fpowi", "__nv_powi"),
+        (datatype.float64, datatype.int16, "math.fpowi", "__nv_powi"),
+        (datatype.float64, datatype.int64, "math.fpowi", "__nv_powi"),
         # promote floats to same type
-        (datatype.float32, datatype.float64, "__nv_pow"),
-        (datatype.float64, datatype.float32, "__nv_pow"),
+        (datatype.float32, datatype.float64, "math.powf", "__nv_pow"),
+        (datatype.float64, datatype.float32, "math.powf", "__nv_pow"),
         # half precision promotion
-        (datatype.float16, datatype.float16, "__nv_powf"),
+        (datatype.float16, datatype.float16, "math.powf", "__nv{approx}_powf"),
     ),
 )
-def test_pow_libdevice_entrypoints(lhs_dt, rhs_dt, entrypoint):
+@pytest.mark.parametrize("approx", (False, True))
+def test_pow_math_dialect(
+    lhs_dt, rhs_dt, op_name, libdevice_name_template, approx
+):
     def kernel(lhs, rhs, out):
-        out[0] = out.dtype(device_math.pow(lhs[0], rhs[0]))
+        out[0] = out.dtype(device_math.pow(lhs[0], rhs[0], approx=approx))
 
     lhs = make_symbolic_tensor([1], lhs_dt)
     rhs = make_symbolic_tensor([1], rhs_dt)
     out = make_symbolic_tensor([1], lhs_dt)
-    cres = cl.compile_simt(
-        kernel, [KernelSignature([lhs, rhs, out])], keep_mlir=True
+    fastmath = "afn" if approx else "none"
+    approx_suffix = "_fast" if approx else ""
+    libdevice_name = libdevice_name_template.format(approx=approx_suffix)
+    return_type = (
+        "double" if libdevice_name in ("__nv_pow", "__nv_powi") else "float"
     )
-    filecheck(cres.mlir, "CHECK: llvm.call{{.+}}callee = @" + entrypoint)
+    filecheck = (
+        "CHECK: " + op_name + "{{.+}}" + f"fastmath = #arith<fastmath <{fastmath}>>"
+    )
+    compile_kernel(
+        kernel,
+        signature=KernelSignature([lhs, rhs, out]),
+        filecheck_mlir=filecheck,
+        assert_in_nvvm=f"call {return_type} @{libdevice_name}(",
+    )
 
 
 @pytest.mark.skipif(

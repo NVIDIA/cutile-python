@@ -25,8 +25,13 @@ def mul(x, y, /):
 
 
 @stub
-def truediv(x, y, /):
-    """Compute ``x / y``."""
+def truediv(x, y, /, *, approx=False):
+    """Compute ``x / y``.
+
+    Args:
+        approx: Whether to use an approximate implementation if one is available
+            for the given operand types.
+    """
     ...
 
 
@@ -60,8 +65,13 @@ def ceil(x, /):
 
 
 @stub
-def exp(x, /):
-    """Compute ``e`` raised to the power ``x``."""
+def exp(x, /, *, approx=False):
+    """Compute ``e`` raised to the power ``x``.
+
+    Args:
+        approx: Whether to use an approximate implementation if one is available
+            for the given operand types.
+    """
     ...
 
 
@@ -72,20 +82,46 @@ def exp2(x, /):
 
 
 @stub
-def sin(x, /):
-    """Compute the sine of ``x``."""
+def sin(x, /, *, approx=False):
+    """Compute the sine of ``x``.
+
+    Args:
+        approx: Whether to use an approximate implementation if one is available
+            for the given operand types.
+    """
     ...
 
 
 @stub
-def cos(x, /):
-    """Compute the cosine of ``x``."""
+def cos(x, /, *, approx=False):
+    """Compute the cosine of ``x``.
+
+    Args:
+        approx: Whether to use an approximate implementation if one is available
+            for the given operand types.
+    """
     ...
 
 
 @stub
-def tan(x, /):
-    """Compute the tangent of ``x``."""
+def sincos(x, /, *, approx=False):
+    """Compute both the sine and cosine of ``x``.
+
+    Args:
+        approx: Whether to use an approximate implementation if one is available
+            for the given operand types.
+    """
+    ...
+
+
+@stub
+def tan(x, /, *, approx=False):
+    """Compute the tangent of ``x``.
+
+    Args:
+        approx: Whether to use an approximate implementation if one is available
+            for the given operand types.
+    """
     ...
 
 
@@ -126,14 +162,24 @@ def floor(x, /):
 
 
 @stub
-def log(x, /):
-    """Compute the natural logarithm of ``x``."""
+def log(x, /, *, approx=False):
+    """Compute the natural logarithm of ``x``.
+
+    Args:
+        approx: Whether to use an approximate implementation if one is available
+            for the given operand types.
+    """
     ...
 
 
 @stub
-def log2(x, /):
-    """Compute the base-2 logarithm of ``x``."""
+def log2(x, /, *, approx=False):
+    """Compute the base-2 logarithm of ``x``.
+
+    Args:
+        approx: Whether to use an approximate implementation if one is available
+            for the given operand types.
+    """
     ...
 
 
@@ -174,8 +220,13 @@ def isnormal(x, /):
 
 
 @stub
-def pow(x, y, /):
-    """Calculate the value of ``x`` to the power of ``y``."""
+def pow(x, y, /, *, approx=False):
+    """Calculate the value of ``x`` to the power of ``y``.
+
+    Args:
+        approx: Whether to use an approximate implementation if one is available
+            for the given operand types.
+    """
     ...
 
 
