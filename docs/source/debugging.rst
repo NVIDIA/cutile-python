@@ -57,3 +57,18 @@ Set ``CUDA_TILE_CACHE_SIZE`` to configure the maximum
 disk cache size in bytes. Oldest entries are evicted
 when the cache exceeds this limit. Defaults to
 2 GB (2147483648).
+
+
+Inspecting the Compilation Cache
+--------------------------------
+
+Use the ``cutile-cache log`` command to page through cached compilations in
+most-recently-accessed order. Each entry shows the kernel's mangled name,
+compiler version, compilation date and duration, CUBIN size, and optimization
+remarks::
+
+    cutile-cache log
+
+Compilation remarks are captured in YAML format when using ``tileiras`` 13.4
+or newer. Entries produced by earlier cuTile Python or compiler versions remain
+readable but may show metadata as unavailable.

@@ -39,7 +39,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-tileiras = [ "cuda-toolkit[tileiras,nvcc,nvvm]>=13.2,<13.4" ]
+tileiras = [ "cuda-toolkit[tileiras,nvcc,nvvm]>=13.2,<13.5" ]
 
 [project.urls]
 Homepage = "https://github.com/nvidia/cutile-python"
@@ -47,12 +47,16 @@ Repository = "https://github.com/nvidia/cutile-python"
 documentation = "https://docs.nvidia.com/cuda/cutile-python"
 "Bug Tracker" = "https://github.com/nvidia/cutile-python/issues"
 
+[project.scripts]
+cutile-cache = "cutile_cache._cli:main"
+
 [tool.setuptools.dynamic]
 version = {file = "src/cuda/tile/VERSION"}
 
 [tool.setuptools.packages.find]
 where = ["src"]
 include = [
+    "cutile_cache",
     "cuda",
     "cuda.tile",
     "cuda.tile.compilation",

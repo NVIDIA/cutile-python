@@ -4,10 +4,19 @@
 
 import sqlite3
 import time
+from pathlib import Path
 
 import pytest
 
-from cuda.tile._cache import cache_key, cache_lookup, cache_store, evict_lru
+from cutile_cache import _cache
+from cutile_cache._cache import (
+    MetadataV1,
+    cache_entries,
+    cache_key,
+    cache_lookup,
+    cache_store,
+    evict_lru,
+)
 
 
 def test_cache_key_equal():
@@ -29,6 +38,24 @@ def test_cache_key_device_debug_differs():
     assert cache_key("v1", "sm_90", 0, b"data", True) != base
 
 
+def test_metadata():
+    first = "--- !Passed\nName: First\n...\n"
+    second = "--- !Failure\nName: Second\n...\n"
+    dup = "--- !Failure\nName: Second\n...\n"
+    remarks = first + second + dup
+
+    metadata = MetadataV1(
+        kernel_names=["kernel_Knew"],
+        compiler_version="tileiras 13.4",
+        compilation_timestamp=1.0,
+        compilation_time_seconds=0.125,
+        remarks=remarks,
+    ).to_dict()
+
+    assert metadata["version"] == 1
+    assert metadata["remarks"] == first + second
+
+
 @pytest.fixture
 def cache_env(tmp_path):
     cache_dir = str(tmp_path / "cache")
@@ -45,6 +72,58 @@ def test_store_then_lookup(cache_env):
     result = cache_lookup(cache_dir, key)
     assert result is not None
     assert result == content
+
+
+def test_existing_database_is_migrated(cache_env):
+    cache_dir, _ = cache_env
+    Path(cache_dir).mkdir()
+    db_path = Path(cache_dir) / "cache.db"
+    conn = sqlite3.connect(db_path)
+    conn.execute("""
+        CREATE TABLE cache (
+            key TEXT PRIMARY KEY,
+            blob BLOB NOT NULL,
+            blob_size INTEGER NOT NULL,
+            atime REAL NOT NULL
+        )
+    """)
+    conn.execute(
+        "INSERT INTO cache (key, blob, blob_size, atime) VALUES (?, ?, ?, ?)",
+        ("old", b"old", 3, 1.0),
+    )
+    conn.commit()
+    conn.close()
+
+    metadata = MetadataV1(compiler_version="foo")
+    cache_store(cache_dir, "new", b"new", metadata.to_dict())
+
+    entries = {entry.key: entry for entry in cache_entries(cache_dir)}
+    assert entries["old"].metadata == MetadataV1()
+    assert entries["new"].metadata == metadata
+
+
+def test_cache_entries_does_not_block_writes(cache_env, monkeypatch):
+    cache_dir, _ = cache_env
+    cache_store(cache_dir, "first", b"first")
+    cache_store(cache_dir, "second", b"second")
+    monkeypatch.setattr(_cache, "_CACHE_ENTRY_BATCH_SIZE", 1)
+
+    entries = cache_entries(cache_dir)
+    next(entries)
+    try:
+        db_path = Path(cache_dir) / "cache.db"
+        conn = sqlite3.connect(db_path, timeout=0)
+        try:
+            conn.execute(
+                "INSERT INTO cache (key, blob, blob_size, atime, metadata) "
+                "VALUES (?, ?, ?, ?, ?)",
+                ("new", b"new", 3, time.time(), None),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+    finally:
+        entries.close()
 
 
 def test_lookup_updates_atime(cache_env):

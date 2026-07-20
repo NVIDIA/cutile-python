@@ -18,6 +18,7 @@ import shutil
 import sys
 import tempfile
 import threading
+import time
 import traceback
 from types import FunctionType
 from typing import Optional, Sequence
@@ -63,7 +64,7 @@ from cuda.tile._passes.check_dtype_support import check_dtype_support
 from cuda.tile._passes.dce import dead_code_elimination_pass
 from cuda.tile._passes.propagate_divby import add_divby_pass
 from cuda.tile._passes.token_order import token_order_pass
-from cuda.tile._cache import cache_key, cache_lookup, cache_store, evict_lru
+from cutile_cache._cache import MetadataV1, cache_key, cache_lookup, cache_store, evict_lru
 from cuda.tile._ir2bytecode import generate_bytecode_for_kernel
 from cuda.tile._version import __version__ as cutile_version
 import cuda.tile._bytecode as bc
@@ -547,9 +548,15 @@ def compile_tile(ann_func: AnnotatedFunction | FunctionType,
         f.write(bytecode_buf)
         f.flush()
 
+        capture_remarks = (cache_dir is not None
+                           and key is not None
+                           and _tileiras_supports_remarks(context.config.temp_dir))
+        remarks_file = Path(f.name).with_suffix(".remarks.yaml") if capture_remarks else None
+        compilation_start = time.perf_counter()
         try:
             cubin_file = compile_cubin(f.name, compiler_options, sm_arch,
-                                       timeout_sec=context.config.compiler_timeout_sec)
+                                       timeout_sec=context.config.compiler_timeout_sec,
+                                       remarks_output_file=remarks_file)
         except TileCompilerError as e:
             if context.config.enable_crash_dump:
                 anonymized_bytecode = _get_bytecode(ir_keeper, compiler_options,
@@ -560,10 +567,25 @@ def compile_tile(ann_func: AnnotatedFunction | FunctionType,
                                      e.compiler_flags, e.compiler_version)
 
             raise e
+        compilation_time = time.perf_counter() - compilation_start
         ret.cubin = Path(cubin_file).read_bytes()
 
     if cache_dir is not None and key is not None:
-        cache_store(cache_dir, key, ret.cubin)
+        remarks = ""
+        if capture_remarks:
+            try:
+                remarks = remarks_file.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                logger.debug("failed to read compilation remarks from %s",
+                             remarks_file, exc_info=True)
+        metadata = MetadataV1(
+            kernel_names=[signature.symbol or "" for signature in signatures],
+            compiler_version=compiler_ver.strip() if compiler_ver else None,
+            compilation_timestamp=time.time(),
+            compilation_time_seconds=compilation_time,
+            remarks=remarks,
+        )
+        cache_store(cache_dir, key, ret.cubin, metadata.to_dict())
         evict_lru(cache_dir, context.config.cache_size_limit)
 
     return ret
@@ -752,6 +774,13 @@ def _get_max_supported_bytecode_version(temp_dir: str, allow_dev: bool = False) 
     return BytecodeVersion.V_13_1
 
 
+def _tileiras_supports_remarks(temp_dir: str) -> bool:
+    max_supported_version = _get_max_supported_bytecode_version(
+        temp_dir, allow_dev=dev_features_enabled()
+    )
+    return max_supported_version >= BytecodeVersion.V_13_4
+
+
 def _find_compiler_in_default_cuda_toolkit_paths() -> tuple[str, str] | None:
     binary_name = "tileiras.exe" if is_windows() else "tileiras"
     for toolkit_path in _get_default_cuda_toolkit_paths():
@@ -812,7 +841,8 @@ def compile_cubin(
         fname_bytecode: str,
         compiler_options: CompilerOptions,
         sm_arch: str,
-        timeout_sec: Optional[float]) -> Path:
+        timeout_sec: Optional[float],
+        remarks_output_file: str | os.PathLike | None = None) -> Path:
     binary = _find_compiler_bin()
     fname_cubin = Path(fname_bytecode).with_suffix(".cubin")
     effective_opt, use_device_debug = _tileiras_effective_opt_and_device_debug(
@@ -830,6 +860,12 @@ def compile_cubin(
         flags.append("--device-debug")
     else:
         flags.append("--lineinfo")
+    if remarks_output_file is not None:
+        flags.extend([
+            "--remark-format=yaml",
+            "--remarks=all",
+            f"--remarks-output-file={remarks_output_file}",
+        ])
 
     binary.run(args, flags, timeout_sec)
     return fname_cubin

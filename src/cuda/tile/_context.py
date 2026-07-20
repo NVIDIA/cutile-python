@@ -6,10 +6,11 @@ import atexit
 from contextlib import contextmanager
 import os
 import shutil
-import sys
 import tempfile
 from dataclasses import dataclass
 from typing import Optional
+
+from cutile_cache._env import get_cache_dir_from_env
 
 
 @dataclass
@@ -86,19 +87,6 @@ def get_enable_crash_dump_from_env() -> bool:
     key = "CUDA_TILE_ENABLE_CRASH_DUMP"
     env = os.environ.get(key, "0").lower()
     return env in ("1", "true", "yes", "on")
-
-
-def get_cache_dir_from_env() -> Optional[str]:
-    home_cache = os.path.join(os.path.expanduser("~"), ".cache")
-    if sys.platform == "win32":
-        base = os.environ.get("LOCALAPPDATA", home_cache)
-    else:
-        base = os.environ.get("XDG_CACHE_HOME", home_cache)
-    default = os.path.join(base, "cutile-python")
-    env = os.environ.get("CUDA_TILE_CACHE_DIR", default)
-    if env.strip().lower() in ("0", "off", "none", ""):
-        return None
-    return env
 
 
 def get_cache_size_limit_from_env() -> int:
