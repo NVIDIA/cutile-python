@@ -224,19 +224,20 @@ def math_isnormal_impl(x: Var):
 @impl(cl_math.isfinite, fixed_args=["math.isfinite"])
 def math_float_fpclass_impl(op_name: str, x: Var):
     x_ty = require_scalar_or_vector_type(x, datatype.is_float)
-    match x_ty:
-        case ScalarTy():
-            res_ty = ScalarTy(datatype.bool_)
-        case VectorTy(length=length):
-            res_ty = VectorTy(datatype.bool_, length=length)
-        case _:
-            assert False
-    return add_operation(
-        RawMLIROperation,
-        res_ty,
-        op_name=op_name,
-        operands_=(x,),
-    )
+
+    # Work around MathToNVVM checking boolean result types before its vector
+    # scalarization pattern can run.
+    def scalar_fpclass(element: Var):
+        return add_operation(
+            RawMLIROperation,
+            ScalarTy(datatype.bool_),
+            op_name=op_name,
+            operands_=(element,),
+        )
+
+    if isinstance(x_ty, ScalarTy):
+        return scalar_fpclass(x)
+    return vector_elementwise_apply(scalar_fpclass, x)
 
 
 def get_libdevice_pow_function(base_dt, exp_dt):
