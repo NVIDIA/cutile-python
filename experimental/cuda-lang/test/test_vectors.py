@@ -73,6 +73,48 @@ def test_vector_apis():
     assert out.cpu().tolist() == [1, 1, 1, 4]
 
 
+@pytest.mark.parametrize('length', (2, 4))
+def test_vector_tuple(length):
+    expect = tuple(range(length))
+
+    @cl.kernel
+    def kernel(input, output):
+        vector = input.get_base_pointer().load(count=length, alignment=16)
+        elements = tuple(vector)
+        output[0] = elements == expect
+
+    input = torch.arange(4, dtype=torch.int32, device="cuda")
+    output = torch.tensor([False], dtype=torch.bool, device="cuda")
+    cl.launch(torch.cuda.current_stream(), (1,), (1,), kernel, (input, output))
+    assert output.cpu().item()
+
+
+@pytest.mark.parametrize('length', (2, 4))
+def test_vector_tuple_len(length):
+    @cl.kernel
+    def kernel(input, output):
+        vector = input.get_base_pointer().load(count=length, alignment=16)
+        output[0] = len(vector)
+
+    input = torch.arange(4, dtype=torch.int32, device="cuda")
+    output = torch.zeros(1, dtype=torch.int32, device="cuda")
+    cl.launch(torch.cuda.current_stream(), (1,), (1,), kernel, (input, output))
+    assert output.cpu().item() == length
+
+
+def test_tuple_rejects_non_iterable():
+    def kernel():
+        tuple(1)
+
+    compile_kernel(
+        kernel,
+        raises=pytest.raises(
+            TypeCheckingError,
+            match="Object of type int32 cannot be converted to a tuple",
+        ),
+    )
+
+
 def test_vector_constructor():
     @cl.kernel
     def kernel(out):

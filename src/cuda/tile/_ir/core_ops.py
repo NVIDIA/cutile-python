@@ -317,6 +317,15 @@ async def repr_dataclass_impl(x: Var[DataclassTy]):
     return res
 
 
+@overload_dispatcher(tuple)
+def tuple_overload_dispatcher(iterable: Var):
+    ty = iterable.get_type()
+    try:
+        yield (type(ty),)
+    except OverloadNotFoundError:
+        raise TileTypeError(f"Object of type {ty} cannot be converted to a tuple")
+
+
 @overload_dispatcher(hir_stubs.enter_context)
 def enter_context_overload_dispatcher(manager: Var):
     ty = manager.get_type()

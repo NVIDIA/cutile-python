@@ -9,7 +9,7 @@ from cuda.tile._ir.op_impl import (
     require_dtype_spec,
 )
 from cuda.tile._ir.cast_ops import implicit_cast
-from cuda.tile._ir.core_ops import bind_method
+from cuda.tile._ir.core_ops import bind_method, build_tuple, loosely_typed_const
 from cuda.tile._ir.ops import strictly_typed_const
 from cuda.tile._ir.ops_utils import promote_dtypes
 from cuda.tile._ir.type import LooselyTypedScalar
@@ -104,6 +104,23 @@ def vector_constructor_impl(elements: tuple[Var, ...], dtype: Var) -> Var[Vector
         value = implicit_cast(element, element_dtype, f"Vector() element {index}")
         res = vector_with_item(res, index, value)
     return res
+
+
+@impl(tuple, overload=(VectorTy,))
+def vector_tuple_impl(iterable: Var[VectorTy]):
+    length = iterable.get_type().length
+    return build_tuple(
+        vector_getitem(
+            iterable,
+            strictly_typed_const(index, ScalarTy(datatype.int32)),
+        )
+        for index in range(length)
+    )
+
+
+@impl(len, overload=(VectorTy,))
+def vector_len_impl(x: Var[VectorTy]):
+    return loosely_typed_const(x.get_type().length)
 
 
 def vector_elementwise_apply(
