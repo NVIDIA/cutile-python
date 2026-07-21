@@ -1008,14 +1008,21 @@ def _reference_accumulator(tensors: dict[str, torch.Tensor]) -> torch.Tensor:
     n = b_ref.shape[0]
     reference = torch.empty((batch, m, n), dtype=torch.float32, device="cuda")
     for batch_idx in range(batch):
-        reference[batch_idx] = torch._scaled_mm(
-            a_ref[:, :, batch_idx],
-            b_ref[:, :, batch_idx].transpose(0, 1),
-            to_blocked(sfa_ref[:, :, batch_idx]).cuda(),
-            to_blocked(sfb_ref[:, :, batch_idx]).cuda(),
-            bias=None,
-            out_dtype=torch.float32,
+        a_values = _unpack_e2m1_bytes_to_float(
+            a_ref[:, :, batch_idx].view(torch.uint8)
         )
+        b_values = _unpack_e2m1_bytes_to_float(
+            b_ref[:, :, batch_idx].view(torch.uint8)
+        )
+        scale_a = sfa_ref[:, :, batch_idx].to(
+            device=a_values.device, dtype=torch.float32
+        ).repeat_interleave(SF_VECTOR_SIZE, dim=1)
+        scale_b = sfb_ref[:, :, batch_idx].to(
+            device=b_values.device, dtype=torch.float32
+        ).repeat_interleave(SF_VECTOR_SIZE, dim=1)
+        a_values *= scale_a
+        b_values *= scale_b
+        reference[batch_idx] = a_values @ b_values.T.contiguous()
     return reference
 
 

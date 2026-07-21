@@ -877,7 +877,7 @@ def verify_output(
     _, _, batch = c.shape
     reference = torch.empty_like(c)
     for batch_idx in range(batch):
-        result = a[:, :, batch_idx].float().T @ b[:, :, batch_idx].float()
+        result = a[:, :, batch_idx].float().T @ b[:, :, batch_idx].float().contiguous()
         reference[:, :, batch_idx] = result.clamp(-448.0, 448.0).to(
             torch.float8_e4m3fn
         )

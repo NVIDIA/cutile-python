@@ -596,6 +596,28 @@ def run(tensors: dict[str, torch.Tensor], stream=None) -> None:
     )
 
 
+def _unpack_e2m1_bytes_to_float(fp4_bytes: torch.Tensor) -> torch.Tensor:
+    lookup = torch.tensor(
+        [0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0],
+        dtype=torch.float32,
+        device=fp4_bytes.device,
+    )
+    low = fp4_bytes & 0x0F
+    high = (fp4_bytes >> 4) & 0x0F
+    low_values = lookup[(low & 0x7).long()]
+    high_values = lookup[(high & 0x7).long()]
+    low_values = torch.where((low & 0x8) != 0, -low_values, low_values)
+    high_values = torch.where((high & 0x8) != 0, -high_values, high_values)
+    values = torch.empty(
+        (*fp4_bytes.shape[:-1], fp4_bytes.shape[-1] * 2),
+        dtype=torch.float32,
+        device=fp4_bytes.device,
+    )
+    values[..., 0::2] = low_values
+    values[..., 1::2] = high_values
+    return values
+
+
 def verify_output(
     tensors: dict[str, torch.Tensor], tolerance: float = _DEFAULT_TOLERANCE, **_
 ) -> None:
@@ -604,16 +626,21 @@ def verify_output(
     m, n, batch = c.shape
     reference = torch.empty_like(c)
     for batch_idx in range(batch):
-        scale_a = to_blocked(sfa_ref[:, :, batch_idx]).cuda()
-        scale_b = to_blocked(sfb_ref[:, :, batch_idx]).cuda()
-        reference[:, :, batch_idx] = torch._scaled_mm(
-            a_ref[:, :, batch_idx],
-            b_ref[:, :, batch_idx].transpose(0, 1),
-            scale_a,
-            scale_b,
-            bias=None,
-            out_dtype=torch.float16,
+        a_values = _unpack_e2m1_bytes_to_float(
+            a_ref[:, :, batch_idx].view(torch.uint8)
         )
+        b_values = _unpack_e2m1_bytes_to_float(
+            b_ref[:, :, batch_idx].view(torch.uint8)
+        )
+        scale_a = sfa_ref[:, :, batch_idx].to(
+            device=a_values.device, dtype=torch.float32
+        ).repeat_interleave(SF_VECTOR_SIZE, dim=1)
+        scale_b = sfb_ref[:, :, batch_idx].to(
+            device=b_values.device, dtype=torch.float32
+        ).repeat_interleave(SF_VECTOR_SIZE, dim=1)
+        a_values *= scale_a
+        b_values *= scale_b
+        reference[:, :, batch_idx] = a_values @ b_values.T.contiguous()
     torch.testing.assert_close(c, reference, atol=tolerance, rtol=1.0e-2)
 
 
