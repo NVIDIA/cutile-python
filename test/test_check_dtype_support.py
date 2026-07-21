@@ -14,12 +14,12 @@ from cuda.tile._exception import TileUnsupportedFeatureError, TileValueError
 from conftest import dtype_id, requires_tileiras
 
 
-def compile_with(pyfunc, args, arch: str, version: str):
+def compile_with(pyfunc, args, arch: str | None, version: str, output_format="cubin"):
     kernel = ct.kernel(pyfunc)
     sig = ct.compilation.KernelSignature.from_kernel_args(
             kernel, args, CallingConvention.cutile_python_v1())
     ct.compilation.export_kernel(kernel, [sig], output_file=BytesIO(), gpu_code=arch,
-                                 output_format="cubin", bytecode_version=version)
+                                 output_format=output_format, bytecode_version=version)
 
 
 @pytest.mark.parametrize("dtype", [
@@ -47,6 +47,25 @@ def test_fp4_not_supported_on_arch(arch):
 
     with pytest.raises(TileUnsupportedFeatureError, match=f"is not supported on {arch}"):
         compile_with(kernel, (), arch, "13.3")
+
+
+@requires_tileiras(BytecodeVersion.V_13_3)
+def test_skip_arch_check_when_no_arch():
+    def kernel():
+        t = ct.full((2,), 1.5, dtype=ct.float4_e2m1fn)
+        ct.printf("%f", t)
+
+    compile_with(kernel, (), arch=None, version="13.3", output_format="tileir_bytecode")
+
+
+def test_bytecode_version_check_runs_when_no_arch():
+    def kernel():
+        t = ct.full((2,), 1.5, dtype=ct.float4_e2m1fn)
+        ct.printf("%f", t)
+
+    with pytest.raises(TileUnsupportedFeatureError,
+                       match=r"float4_e2m1fn requires tileiras 13\.3"):
+        compile_with(kernel, (), arch=None, version="13.2", output_format="tileir_bytecode")
 
 
 def test_f8e8m0fnu_requires_13_2():

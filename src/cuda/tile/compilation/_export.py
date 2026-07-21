@@ -14,7 +14,7 @@ def export_kernel(kernel: kernel,
                   signatures: Sequence[KernelSignature],
                   output_file: IO | str | bytes | os.PathLike,
                   *,
-                  gpu_code: str,
+                  gpu_code: str | None = None,
                   output_format: Literal["cubin", "tileir_bytecode"],
                   bytecode_version: str | None = None):
     """
@@ -29,8 +29,11 @@ def export_kernel(kernel: kernel,
             Either a filename or a binary file-like object to write the output to.
             To save the result in memory, you can pass an instance of the `io.BytesIO`
             standard library class.
-        gpu_code (str):
-            Name of the target GPU for which to compile the kernel (e.g., `"sm_100"`)
+        gpu_code (str | None):
+            Name of the target GPU for which to compile the kernel (e.g., `"sm_100"`).
+            Required when `output_format` is `"cubin"`. It can be set to `None` when
+            `output_format` is `"tileir_bytecode"` to export architecture-independent
+            bytecode (requires a bytecode version of "13.3" or later).
         output_format (str):
             Set to "cubin" to export a CUDA binary file, or "tileir_bytecode"
             to export a TileIR bytecode file.
@@ -53,6 +56,9 @@ def export_kernel(kernel: kernel,
         return_cubin = False
     else:
         raise ValueError(f"Unknown output format '{output_format}'")
+
+    if gpu_code is None and output_format != "tileir_bytecode":
+        raise ValueError(f"gpu_code is required when output_format is '{output_format}'.")
 
     res = compile_tile(kernel._annotated_function, signatures,
                        sm_arch=gpu_code,

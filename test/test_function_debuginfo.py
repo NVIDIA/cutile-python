@@ -244,7 +244,7 @@ def test_linkage_names_appear_in_emitted_bytecode():
     sig = KernelSignature([_array()], CallingConvention.cutile_python_v1(),
                           symbol="bc_test_kernel")
     result = compile_tile(kernel, [sig], return_final_ir=True,
-                          return_bytecode=True, return_cubin=False)
+                          return_bytecode=True, return_cubin=False, sm_arch="sm_90")
     [body] = result.final_ir
     bytecode = bytes(result.bytecode)
 
@@ -283,7 +283,7 @@ def test_simple_function_desc_specialization_ids_are_deterministic_across_compil
         )
         return bytes(
             compile_tile(
-                kernel, [sig], return_bytecode=True, return_cubin=False
+                kernel, [sig], return_bytecode=True, return_cubin=False, sm_arch="sm_90"
             ).bytecode
         )
 

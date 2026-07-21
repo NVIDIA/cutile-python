@@ -81,8 +81,8 @@ def _check_const_value(op: TypedConst):
 
 
 def _check_atomic_rmw_dtype(op: TileAtomicRedView | TileAtomicRMW,
-                            sm_arch: str,
-                            sm_number: int,
+                            sm_arch: str | None,
+                            sm_number: int | None,
                             version: BytecodeVersion):
     dtypes = (_extract_dtypes(op.view.try_get_type())
               if isinstance(op, TileAtomicRedView) else
@@ -90,7 +90,7 @@ def _check_atomic_rmw_dtype(op: TileAtomicRedView | TileAtomicRMW,
     if not (op.mode == AtomicRMWMode.ADD_FLOAT and bfloat16 in dtypes):
         return
 
-    if sm_number < 90:
+    if sm_number is not None and sm_number < 90:
         raise TileUnsupportedFeatureError(
             f"{bfloat16} is not supported by atomic add on {sm_arch}",
             loc=op.loc
@@ -106,9 +106,10 @@ def _check_atomic_rmw_dtype(op: TileAtomicRedView | TileAtomicRMW,
         )
 
 
-def _check_dtype(dtype: DType, sm_arch: str, sm_number: int, version: BytecodeVersion, loc):
+def _check_dtype(dtype: DType, sm_arch: str | None, sm_number: int | None,
+                 version: BytecodeVersion, loc):
     min_sm = _DTYPE_MIN_SM.get(dtype)
-    if min_sm is not None and sm_number < min_sm:
+    if sm_number is not None and min_sm is not None and sm_number < min_sm:
         raise TileUnsupportedFeatureError(
             f"{dtype} is not supported on {sm_arch}",
             loc=loc,
@@ -124,8 +125,10 @@ def _check_dtype(dtype: DType, sm_arch: str, sm_number: int, version: BytecodeVe
         )
 
 
-def check_dtype_support(root_block: Block, sm_arch: str, version: BytecodeVersion) -> None:
-    sm_number = int(sm_arch.removeprefix("sm_"))
+def check_dtype_support(root_block: Block, sm_arch: str | None,
+                        version: BytecodeVersion) -> None:
+    # Skip arch check by setting sm_number to None when sm_arch is not provided
+    sm_number = int(sm_arch.removeprefix("sm_")) if sm_arch is not None else None
     for op in root_block.traverse():
         if isinstance(op, TypedConst):
             _check_const_value(op)

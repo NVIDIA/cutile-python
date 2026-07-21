@@ -13,6 +13,8 @@ import torch.cuda
 
 import cuda.tile as ct
 from cuda.tile._compile import get_sm_arch
+from cuda.tile._exception import TileUnsupportedFeatureError
+from util import get_bytecode
 
 
 class CudaDriver:
@@ -224,3 +226,35 @@ def test_tuple_with_v1_raises():
                                  " cutile_python_v1; version >= 2 is required")
     with pytest.raises(ValueError, match=expected_message):
         ct.compilation.KernelSignature([(ct.compilation.ScalarConstraint(ct.int32),)], cconv)
+
+
+@ct.kernel
+def add_one(x, y):
+    tx = ct.load(x, 0, shape=8)
+    ct.store(y, 0, tile=tx + 1)
+
+
+def test_export_bytecode_without_gpu_code():
+    x = torch.zeros(8, dtype=torch.float32, device="cuda")
+    y = torch.zeros_like(x)
+    bytecode = get_bytecode(add_one, (x, y), lambda: None, bytecode_version="13.3")
+    # Confirm bytecode generation by checking the headers
+    assert bytecode.startswith(b"\x7fTileIR\x00")
+    assert (bytecode[8], bytecode[9]) == (13, 3)
+
+
+def test_export_bytecode_without_gpu_code_requires_13_3():
+    x = torch.zeros(8, dtype=torch.float32, device="cuda")
+    y = torch.zeros_like(x)
+    with pytest.raises(TileUnsupportedFeatureError, match="13.3 or later"):
+        get_bytecode(add_one, (x, y), lambda: None, bytecode_version="13.1")
+
+
+def test_export_cubin_requires_gpu_code():
+    x = torch.zeros(8, dtype=torch.float32, device="cuda")
+    y = torch.zeros_like(x)
+    sig = ct.compilation.KernelSignature.from_kernel_args(
+        add_one, (x, y), ct.compilation.CallingConvention.cutile_python_v1())
+    with pytest.raises(ValueError, match="gpu_code is required"):
+        ct.compilation.export_kernel(add_one, [sig], output_file=BytesIO(),
+                                     output_format="cubin")

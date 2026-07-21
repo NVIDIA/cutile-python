@@ -368,7 +368,7 @@ class _IrKeeper:
                  func_hir: hir.Function,
                  signatures: Sequence[KernelSignature],
                  bytecode_version: bc.BytecodeVersion,
-                 sm_arch: str,
+                 sm_arch: str | None,
                  log_cutile_ir: bool,
                  keep_all: bool):
         self.ann_func = ann_func
@@ -462,7 +462,8 @@ def compile_tile(ann_func: AnnotatedFunction | FunctionType,
         if signatures[i].symbol is None:
             signatures[i] = signatures[i].with_mangled_symbol(ann_func.pyfunc.__name__)
 
-    if sm_arch is None:
+    if sm_arch is None and return_cubin:
+        # Fall back to the current device's arch iff exporting a cubin.
         sm_arch = get_sm_arch()
 
     if bytecode_version is None:

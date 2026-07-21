@@ -17,7 +17,8 @@ from cuda.tile._datatype import get_signedness, is_pointer_dtype, PointerInfo, \
 from cuda.tile import DType
 import cuda.tile._bytecode as bc
 from cuda.tile._compiler_options import CompilerOptions
-from cuda.tile._exception import TileInternalError, TileError, FunctionDesc
+from cuda.tile._exception import (
+    TileInternalError, TileError, TileUnsupportedFeatureError, FunctionDesc)
 from cuda.tile._numeric_semantics import RoundingMode
 from cuda.tile._ir.ir import Block, Loc, Var, IRContext
 from cuda.tile._ir.ops_utils import (
@@ -357,7 +358,7 @@ class BytecodeContext:
                  debug_attr_map: DebugAttrMap,
                  global_section: bc.GlobalSection,
                  ir_ctx: IRContext,
-                 sm_arch: str) -> None:
+                 sm_arch: str | None) -> None:
         self.builder = builder
         self.type_table = type_table
         self._debug_attr_map = debug_attr_map
@@ -477,6 +478,7 @@ class BytecodeContext:
             allow_tma = True
         load_store_hints = bc.LoadStoreHints(latency=latency, allow_tma=allow_tma)
         if self.builder.version < BytecodeVersion.V_13_3:
+            assert self.sm_arch is not None
             return make_load_store_hints({self.sm_arch: load_store_hints})
         else:
             return make_load_store_hints({"default": load_store_hints})
@@ -514,12 +516,17 @@ def _resolve_num_worker_warps(num_worker_warps: Optional[int],
 def generate_bytecode_for_kernel(func_body: Block,
                                  symbol: str,
                                  compiler_options: CompilerOptions,
-                                 sm_arch: str,
+                                 sm_arch: str | None,
                                  writer: bc.BytecodeWriter,
                                  anonymize_debug_attr: bool):
     version = writer.version
     hints_by_target = compiler_options.hints_by_target()
     if version < BytecodeVersion.V_13_3:
+        if sm_arch is None:
+            raise TileUnsupportedFeatureError(
+                f"Architecture-independent TileIR bytecode generation requires version"
+                f" {BytecodeVersion.V_13_3.as_string()} or later, but got {version.as_string()}."
+                f" Specify a target architecture (gpu_code) for an earlier version.")
         specialized_hints = dict(hints_by_target.get("default", {}))
         specialized_hints.update(hints_by_target.get(sm_arch, {}))
         hints_by_target = {sm_arch: specialized_hints}
