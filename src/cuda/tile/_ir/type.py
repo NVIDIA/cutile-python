@@ -8,7 +8,7 @@ import os
 from dataclasses import dataclass
 from enum import EnumMeta
 from types import ModuleType, FunctionType, BuiltinFunctionType, MethodType, MappingProxyType, \
-    CoroutineType
+    CoroutineType, NotImplementedType
 from typing import Any, Callable, Optional, Sequence, Tuple, Iterator, Mapping
 from functools import reduce
 import operator
@@ -352,6 +352,7 @@ class DataclassInfo:
     field_names: Sequence[str]
     field_name_to_idx: Mapping[str, int]
     init_signature: inspect.Signature | None
+    post_init: Callable | NotImplementedType
 
 
 @dataclass

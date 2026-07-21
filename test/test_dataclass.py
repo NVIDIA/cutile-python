@@ -272,21 +272,22 @@ def test_reject_custom_init():
         ct.launch(torch.cuda.current_stream(), (1,), kern, ())
 
 
-def test_reject_post_init():
+def test_post_init():
     @dataclass(frozen=True)
     class PostInit:
         foo: int
+        bar: ct.Array
 
         def __post_init__(self):
-            pass
+            ct.scatter(self.bar, (), self.foo)
 
     @ct.kernel
-    def kern():
-        PostInit(3)
+    def kern(x):
+        PostInit(3, x)
 
-    with pytest.raises(TileTypeError,
-                       match="Dataclasses with __post_init__ are not supported"):
-        ct.launch(torch.cuda.current_stream(), (1,), kern, ())
+    x = torch.zeros((), dtype=torch.int32, device="cuda")
+    ct.launch(torch.cuda.current_stream(), (1,), kern, (x,))
+    assert x.item() == 3
 
 
 def test_reject_custom_new():

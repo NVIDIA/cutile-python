@@ -218,9 +218,6 @@ def get_dataclass_info(cls) -> DataclassInfo:
     else:
         init_signature = None
 
-    if hasattr(cls, "__post_init__"):
-        raise TileTypeError("Dataclasses with __post_init__ are not supported")
-
     if find_method(cls, "__new__") is not object.__new__:
         raise TileTypeError("Dataclasses with custom __new__ are not supported")
 
@@ -238,7 +235,8 @@ def get_dataclass_info(cls) -> DataclassInfo:
         field_names.append(f.name)
         field_name_to_idx[f.name] = i
 
-    return DataclassInfo(cls, field_names, field_name_to_idx, init_signature)
+    post_init = find_method(cls, "__post_init__")
+    return DataclassInfo(cls, field_names, field_name_to_idx, init_signature, post_init)
 
 
 def create_dataclass_instance(cls, field_values: Sequence[Any]):

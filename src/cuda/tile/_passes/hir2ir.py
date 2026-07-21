@@ -388,7 +388,10 @@ async def _call_constructor(ty, args, kwargs, builder):
         arg_list = _bind_args(dataclass_info.init_signature, ty.__name__, (None, *args), kwargs)
         assert len(dataclass_info.field_names) + 1 == len(arg_list)
         items = tuple(arg_list[param_names.index(name)] for name in dataclass_info.field_names)
-        return build_dataclass_instance(items, dataclass_info)
+        ret = build_dataclass_instance(items, dataclass_info)
+        if dataclass_info.post_init is not NotImplemented:
+            await call_function(dataclass_info.post_init, ret)
+        return ret
     elif issubclass(ty, Enum):
         if len(args) != 1 or kwargs:
             raise TileTypeError("Enum constructor takes exactly one positional argument")
