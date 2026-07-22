@@ -413,8 +413,9 @@ static LaunchHelperPtr launch_helper_get() {
     if (g_helper_freelist) {
         LaunchHelper* ret = g_helper_freelist;
         g_helper_freelist = ret->next_free;
-        ret->pyarg_types.clear();
-        ret->pyarg_objs.clear();
+        ret->pyarg_types_breadth_first.clear();
+        ret->pyarg_objs_breadth_first.clear();
+        ret->leaf_pyarg_objs.clear();
         return LaunchHelperPtr(ret);
     } else {
         return LaunchHelperPtr(new LaunchHelper());
@@ -507,12 +508,196 @@ static Result<PythonArgKind> classify_arg(PyObject* arg) {
 }
 
 struct LeafAnnotationNode;
+struct ParameterAnnotationNode;
 
-struct PythonArgProfile {
+static Result<Vec<RefPtr<LeafAnnotationNode>>>
+flatten_parameter_annotation_nodes(const Vec<RefPtr<ParameterAnnotationNode>>& nodes,
+                                   const Vec<ParameterKind>& param_kinds);
+
+namespace { struct ExpandAggregates; }
+
+// ProfileMap enables us to quickly find a KernelFamily given the Python types
+// of the kernel arguments (expressed as a sequence of PyTypeObject*).
+// It is organized as a tree, with ProfileMapNode serving as a base class for the node.
+// Each node is either a leaf (PythonArgProfile) or an intermediate node (ExpandAggregates).
+// The tree structure is needed to support unpacking (flattening) aggregate arguments.
+//
+// For example, say the kernel takes two arguments: an `int` and a tuple of two `int`s.
+// Our initial lookup key is therefore (&PyLong_Type, &PyTuple_Type). This is not sufficient
+// information to determine the whole signature, because we don't know yet what's inside the tuple.
+// Thus, the initial lookup will yield an ExpandAggregates node that will intruct us to expand
+// the second argument. Looking inside the tuple will produce the next lookup key
+// (&PyLong_Type, &PyLong_Type) that we will use to search in the ExpandAggregate::children
+// hash map, which will lead us to a leaf PythonArgProfile node. In other words, the depth
+// of the PythonArgProfile leaf matches the nesting depth of the arguments.
+//
+namespace { struct ProfileMapNode : SimpleRefcount<ProfileMapNode> {
+    Vec<PyPtr> arg_types;  // the lookup key for the hash table
+    ExpandAggregates* parent;  // null if and only if depth == 0
+    int depth;  // 0 for top-level node
+    bool leaf;  // if true, this is a PythonArgProfile; else an ExpandAggregates.
+
+    explicit ProfileMapNode(Vec<PyPtr> arg_types,
+                            ExpandAggregates* parent,
+                            int depth,
+                            bool leaf)
+        : arg_types(std::move(arg_types)), parent(parent), depth(depth), leaf(leaf)
+    { }
+
+    virtual ~ProfileMapNode() {}
+}; }
+
+// Wrapper around ProfileMapNode pointer to make it usable as a key of a HashMap.
+namespace { struct ProfileMapKey {
+    RefPtr<ProfileMapNode> node;
+
+    size_t size() const {
+        return node->arg_types.size();
+    }
+
+    PyTypeObject* operator[] (size_t i) const {
+        return reinterpret_cast<PyTypeObject*>(node->arg_types[i].get());
+    }
+}; }
+
+// We use the HashMap as a hash set by providing a dummy value type.
+using ProfileMap = HashMap<ProfileMapKey, int /*dummy*/>;
+
+namespace {struct AggregateArgInfo {
+    size_t breadth_first_index;
+}; }
+
+// Intermediate node of a ProfileMap tree.
+namespace { struct ExpandAggregates : ProfileMapNode {
+    // Indicates which arguments are aggregate (and therefore need to be expanded).
+    // Must be non-empty.
+    Vec<AggregateArgInfo> aggregate_args;
+
+    // Maps the expanded argument types to the next node to follow.
+    ProfileMap children;
+
+    explicit ExpandAggregates(Vec<PyPtr> arg_types,
+                              ExpandAggregates* parent,
+                              int depth,
+                              Vec<AggregateArgInfo> aggregate_args)
+        : ProfileMapNode(std::move(arg_types), parent, depth, false)
+        , aggregate_args(std::move(aggregate_args))
+    {
+        CHECK(!this->aggregate_args.empty());
+    }
+}; }
+
+// Leaf node of a ProfileMap tree.
+namespace { struct PythonArgProfile : ProfileMapNode {
     RefPtr<KernelFamily> family;
+
+    // Indices into `pyarg_objs_breadth_first` to obtain leaf arguments in the depth-first order.
+    Vec<size_t> leaf_pyarg_breadth_first_indices;
+
     Vec<PythonArgKind> arg_kinds;
+
     Vec<RefPtr<LeafAnnotationNode>> flat_param_annotations;
+
+    explicit PythonArgProfile(Vec<PyPtr> arg_types,
+                              ExpandAggregates* parent,
+                              int depth,
+                              KernelFamily* family,
+                              Vec<size_t> leaf_pyarg_breadth_first_indices,
+                              Vec<PythonArgKind> arg_kinds,
+                              Vec<RefPtr<LeafAnnotationNode>> flat_param_annotations)
+        : ProfileMapNode(std::move(arg_types), parent, depth, true)
+        , family(newref(family))
+        , leaf_pyarg_breadth_first_indices(std::move(leaf_pyarg_breadth_first_indices))
+        , arg_kinds(std::move(arg_kinds))
+        , flat_param_annotations(std::move(flat_param_annotations))
+    { }
+}; }
+
+// View into subsequence vec[offset:end_offset] of Vec<PyTypeObject*>.
+// Used as a hash table key during lookup into ProfileMap,
+// in order to avoid materializing a Vec<PyPtr> for the subsequence.
+namespace { struct ProfileMapQuery {
+    Vec<PyTypeObject*>* vec;
+    size_t offset;
+    size_t end_offset;
+
+    PyTypeObject* operator[] (size_t i) const {
+        return (*vec)[offset + i];
+    }
+
+    size_t size() const {
+        return end_offset - offset;
+    }
+
+    void mark_start() {
+        offset = vec->size();
+    }
+
+    void mark_end() {
+        end_offset = vec->size() - 1;  // exclude the last sentinel
+    }
+
+    Vec<PyPtr> to_owned() const {
+        Vec<PyPtr> ret;
+        ret.reserve(size());
+        for (size_t i = offset; i < end_offset; ++i) {
+            PyTypeObject* ty = (*vec)[i];
+            ret.push_back(ty ? newref(reinterpret_cast<PyObject*>(ty)) : PyPtr{});
+        }
+        return ret;
+    }
+}; }
+
+// Compare any combination of ProfileMapQuery and ProfileMapKey.
+// Generic to make sure the logic is consistent for all possible combinations.
+template <typename T1, typename T2>
+static bool profile_map_key_equal(T1&& key1, T2&& key2) {
+    size_t n1 = key1.size();
+    size_t n2 = key2.size();
+    if (n1 != n2) return false;
+    for (size_t i = 0; i < n1; ++i) {
+        if (key1[i] != key2[i])
+            return false;
+    }
+    return true;
+}
+
+namespace { bool operator==(const ProfileMapKey& key1, const ProfileMapKey& key2) {
+    return profile_map_key_equal(key1, key2);
+} }
+
+// Allow heterogeneous lookup for ProfileMap
+template <>
+struct CompareKey <ProfileMapQuery, ProfileMapKey> {
+    static bool equals(const ProfileMapQuery& a, const ProfileMapKey& b) {
+        return profile_map_key_equal(a, b);
+    }
 };
+
+// Compute the hash from ProfileMapQuery or ProfileMapKey.
+// Generic to make sure the logic is consistent for both.
+template <typename T>
+static void profile_map_key_hash(T&& key, Hasher& h) {
+    size_t n = key.size();
+    h.hash(n);
+    for (size_t i = 0; i < n; ++i)
+        Hash<PyTypeObject*>::hash(key[i], h);
+}
+
+template <>
+struct Hash<ProfileMapQuery> {
+    static void hash(const ProfileMapQuery& query, Hasher& h) {
+        profile_map_key_hash(query, h);
+    }
+};
+
+template <>
+struct Hash<ProfileMapKey> {
+    static void hash(const ProfileMapKey& key, Hasher& h) {
+        profile_map_key_hash(key, h);
+    }
+};
+
 
 // Concatenate values of two chars in a single unsigned integer
 static constexpr unsigned char_pair(char x, char y) {
@@ -1619,7 +1804,7 @@ flatten_parameter_annotation_nodes(const Vec<RefPtr<ParameterAnnotationNode>>& n
         if (!flatten_parameter_annotation_node(node.get(), &cursor, &ret))
             return ErrorRaised;
     }
-    CHECK(!cursor.len);
+    CHECK(cursor.len == 1 && cursor.peek() == ParameterKind::TupleEnd);
     return ret;
 }
 
@@ -1725,12 +1910,13 @@ static PyPtr parse_parameter_constraints(
 
     Cursor<ParameterKind> param_cursor(param_kinds);
     Cursor<RefPtr<LeafAnnotationNode>> annotation_cursor(flat_param_annotations);
-    while (param_cursor.len) {
+    while (param_cursor.peek() != ParameterKind::TupleEnd) {
         PyPtr constraint = parse_param_constraint(cursor, &param_cursor, &annotation_cursor);
         if (!constraint) return {};
         if (PyList_Append(param_constraints.get(), constraint.get()))
             return {};
     }
+    CHECK(param_cursor.len == 1);  // only the final sentinel remaining
     CHECK(cursor.len == 0);
     CHECK(annotation_cursor.len == 0);
     return param_constraints;
@@ -1766,22 +1952,6 @@ static PyPtr make_signature(const Vec<int64_t>& constants,
     return steal(PyObject_CallFunctionObjArgs(
             signature_class.get(), parameters.get(), calling_convention.get(), nullptr));
 }
-
-using ProfileMap = HashMap<Vec<PyPtr>, PythonArgProfile>;
-
-// Allow heterogeneous lookup for ProfileMap
-template <>
-struct CompareKey <Vec<PyTypeObject*>, Vec<PyPtr>> {
-    static bool equals(const Vec<PyTypeObject*>& a, const Vec<PyPtr>& b) {
-        size_t n = a.size();
-        if (n != b.size()) return false;
-        for (size_t i = 0; i < n; ++i) {
-            if (reinterpret_cast<PyObject*>(a[i]) != b[i].get())
-                return false;
-        }
-        return true;
-    }
-};
 
 namespace { struct TileContext {
     PyPtr config;
@@ -2085,34 +2255,6 @@ namespace { struct TileDispatcher {
 }; }
 
 
-static Status flatten_pyargs(PyObject* const* pyargs, Py_ssize_t num_pyargs, int depth,
-                             Vec<PyTypeObject*>& pyarg_types, Vec<PyObject*>& pyarg_objs) {
-    for (Py_ssize_t i = 0; i < num_pyargs; ++i) {
-        PyTypeObject* ty = Py_TYPE(pyargs[i]);
-        pyarg_types.push_back(ty);
-        if (ty == &PyTuple_Type) {
-            // Tuple subclasses (e.g. namedtuple) are not exact tuples, so they fall through as
-            // ordinary leaf types and are rejected later by classify_arg(). That keeps the more
-            // expensive PyTuple_Check() off this per-argument hot path (run on every dispatch) and
-            // on the cache-miss path instead.
-            constexpr int kMaxTupleNestingDepth = 64;
-            if (depth >= kMaxTupleNestingDepth)
-                return raise(PyExc_RecursionError,
-                             "Tuple argument nesting exceeds maximum depth of %d",
-                             kMaxTupleNestingDepth);
-            if (!flatten_pyargs(reinterpret_cast<PyTupleObject*>(pyargs[i])->ob_item,
-                                PyTuple_GET_SIZE(pyargs[i]),
-                                depth + 1,
-                                pyarg_types, pyarg_objs))
-                return ErrorRaised;
-            pyarg_types.push_back(kTupleEndType);
-        } else {
-            pyarg_objs.push_back(pyargs[i]);
-        }
-    }
-    return OK;
-}
-
 static Result<TileKernel> compile(const DriverApi* driver,
                                   PyObject* dispatcher_pyobj,
                                   PyObject* signature,
@@ -2394,27 +2536,28 @@ static Status stage_list_args_on_stream(const DriverApi* driver,
     return OK;
 }
 
-static Status get_parameter_and_pyarg_kinds(const Vec<PyTypeObject*>& pyarg_types,
-                                            const Vec<PyObject*>& pyarg_objs,
+static Status get_parameter_and_pyarg_kinds(const Vec<PyTypeObject*>& pyarg_types_depth_first,
+                                            const Vec<PyObject*>& leaf_pyarg_objs,
                                             Vec<ParameterKind>* param_kinds,
                                             Vec<PythonArgKind>* arg_kinds) {
     arg_kinds->clear();
-    arg_kinds->reserve(pyarg_types.size());
+    arg_kinds->reserve(leaf_pyarg_objs.size());
     param_kinds->clear();
-    param_kinds->reserve(pyarg_types.size());
+    param_kinds->reserve(pyarg_types_depth_first.size());
     size_t obj_idx = 0;
-    for (PyTypeObject* pyarg_type : pyarg_types) {
+    for (PyTypeObject* pyarg_type : pyarg_types_depth_first) {
         if (pyarg_type == &PyTuple_Type) {
             param_kinds->push_back(ParameterKind::TupleBegin);
         } else if (pyarg_type == kTupleEndType) {
             param_kinds->push_back(ParameterKind::TupleEnd);
         } else {
-            Result<PythonArgKind> kind = classify_arg(pyarg_objs[obj_idx++]);
+            Result<PythonArgKind> kind = classify_arg(leaf_pyarg_objs[obj_idx++]);
             if (!kind.is_ok()) return ErrorRaised;
             arg_kinds->push_back(*kind);
             param_kinds->push_back(param_kind_from_pyarg_kind(*kind));
         }
     }
+    CHECK(obj_idx == leaf_pyarg_objs.size());
     return OK;
 }
 
@@ -2426,6 +2569,263 @@ static KernelFamily* get_or_create_kernel_family(Vec<RefPtr<KernelFamily>>* fami
     }
     families->push_back(steal(new KernelFamily(std::move(param_kinds))));
     return families->back().get();
+}
+
+static void get_pyarg_objects_and_types(PyObject* const* objects, Py_ssize_t num_objects,
+                                        Vec<PyObject*>* pyarg_objs,
+                                        Vec<PyTypeObject*>* pyarg_types) {
+    for (Py_ssize_t i = 0; i < num_objects; ++i) {
+        pyarg_objs->push_back(objects[i]);
+        pyarg_types->push_back(Py_TYPE(objects[i]));
+    }
+    // Push a sentinel to separate items of different aggregates
+    pyarg_objs->push_back(nullptr);
+    pyarg_types->push_back(nullptr);
+}
+
+static bool is_aggregate_arg(ExpandAggregates* ea, size_t breadth_first_idx) {
+    // Could in theory use binary search, but the array is most likely very small,
+    // and this is the slow path anyway.
+    for (const AggregateArgInfo& info : ea->aggregate_args) {
+        if (info.breadth_first_index == breadth_first_idx)
+            return true;
+    }
+    return false;
+}
+
+// As we walk the ProfileMap in `python_arg_profile_lookup_impl()`, we store the Python arguments
+// and their types in the breadth-first order, in the arrays called `pyarg_objs_breadth_first`
+// and `pyarg_types_breadth_first`, respectively. For example, suppose we have 3 kernel arguments:
+//
+//        (a, b), c, (d, (e, f))   [where a...f are, say, arrays;  t1,t2,t3 are tuples]
+//        ^          ^   ^
+//        `~~~t1     |   `~~~t3
+//                   `~~~~~~~~t2
+//
+// Then the breadth-first order is
+//
+//     0   1  2   3     4  5  6     7  8   9     10 11 12
+//     t1, c, t2, null, a, b, null, d, t3, null, e, f, null
+//     `~~~~~~~~~~~~~'  `---------------------'  `--------'
+//         depth=0              depth=1            depth=2
+//
+// `null`s are sentinels that are inserted at the end of each tuple, as well as the end
+// of the top-level argument list.
+//
+// For further processing of the arguments, it is more convenient to rearrange them in
+// the depth-first order, which matches the order of the parenthesised notation, e.g.
+// (a, b), c, (d, (e, f)). This function does precisely that. For the example above,
+// the depth-first order will be
+//
+//     (         )        (      (         )     )
+//     t1, a, b, null, c, t2, d, t3, e, f, null, null, null
+//               ^                         ^     ^      ^-----end of args
+//               `end of t1                |     `end of t2
+//                                       end of t3
+//
+// Tuples t1, t2, t3 take positions of left parentheses, and null sentinels take positions
+// of right parentheses.
+//
+// In the process, we also build an array `leaf_pyarg_breadth_first_indices` which contains
+// a partial permutation that enables us to quickly extract leaf arguments in the depth-first
+// order from the `pyarg_objs_breadth_first` array in the hot path (see `gather_leaf_pyargs()`).
+// For our example, it will be:
+//
+//     4  5  1  7  10  11
+//    (a  b  c  d  e   f)
+//
+static void pyargs_breadth2depth(int depth,
+                                 size_t leaf_size,
+                                 ExpandAggregates* parent,
+                                 const Vec<PyTypeObject*>& pyarg_types_breadth_first,
+                                 Vec<PyTypeObject*>* pyarg_types_depth_first,
+                                 Vec<size_t>* leaf_pyarg_breadth_first_indices) {
+    // Reconstruct the path to the `profile` by walking the parent links
+    Vec<ExpandAggregates*> path(depth);
+    for (int i = depth - 1; i >= 0; --i) {
+        CHECK(parent);
+        path[i] = parent;
+        parent = parent->parent;
+    }
+
+    // For each node in the path (including the leaf),
+    // calculate the offset into `pyarg_types_breadth_first`.
+    Vec<size_t> offsets;
+    Vec<size_t> end_offsets;
+    offsets.reserve(depth + 1);
+    size_t cumul_offset = 0;
+    size_t total_aggregates = 0;
+    for (ExpandAggregates* ea : path) {
+        offsets.push_back(cumul_offset);
+        cumul_offset += ea->arg_types.size() + 1;  // +1 for the sentinel
+        end_offsets.push_back(cumul_offset);
+        total_aggregates += ea->aggregate_args.size();
+    }
+    offsets.push_back(cumul_offset);
+    end_offsets.push_back(cumul_offset + leaf_size + 1);
+
+    pyarg_types_depth_first->reserve(pyarg_types_breadth_first.size());
+
+    // Calculate number of leaves in order to pre-allocate `leaf_pyarg_breadth_first_indices`.
+    size_t total_aggregates_and_sentinels = total_aggregates * 2 + 1;
+    CHECK(total_aggregates_and_sentinels <= pyarg_types_breadth_first.size());
+    size_t total_leaf_args = pyarg_types_breadth_first.size() - total_aggregates_and_sentinels;
+    leaf_pyarg_breadth_first_indices->reserve(total_leaf_args);
+
+    // Do a depth-first traversal of the tree.
+    size_t cur_depth = 0;
+    while (true) {
+        CHECK(cur_depth < offsets.size());
+        size_t idx = offsets[cur_depth]++;
+        CHECK(idx < end_offsets[cur_depth]);
+        CHECK(idx < pyarg_types_breadth_first.size());
+        pyarg_types_depth_first->push_back(pyarg_types_breadth_first[idx]);
+        if (!pyarg_types_breadth_first[idx]) {
+            // Reached a sentinel? Go back up a level.
+            if (cur_depth-- == 0) break;
+        } else if (cur_depth < path.size() && is_aggregate_arg(path[cur_depth], idx)) {
+            // Found an aggregate? Go a level deeper.
+            ++cur_depth;
+        } else {
+            // Else this is a leaf (non-aggregate) argument: record its source index.
+            leaf_pyarg_breadth_first_indices->push_back(idx);
+        }
+    }
+
+    CHECK(pyarg_types_depth_first->size() == pyarg_types_breadth_first.size());
+    CHECK(leaf_pyarg_breadth_first_indices->size() == total_leaf_args);
+    CHECK(offsets == end_offsets);
+}
+
+// Apply the partial permutation `leaf_pyarg_breadth_first_indices` to get an array
+// of leaf Python arguments from `pyarg_objs_breadth_first`.
+static void gather_leaf_pyargs(const Vec<PyObject*>& pyarg_objs_breadth_first,
+                               const Vec<size_t>& leaf_pyarg_breadth_first_indices,
+                               Vec<PyObject*>* leaf_pyarg_objs) {
+    leaf_pyarg_objs->clear();
+    for (size_t i : leaf_pyarg_breadth_first_indices)
+        leaf_pyarg_objs->push_back(pyarg_objs_breadth_first[i]);
+}
+
+
+static PythonArgProfile* python_arg_profile_lookup_impl(
+        ProfileMap* map,
+        PyObject* const* pyargs,
+        Py_ssize_t num_pyargs,
+        const Vec<RefPtr<ParameterAnnotationNode>>& param_annotations,
+        Vec<RefPtr<KernelFamily>>* kernel_families,
+        Vec<PyObject*>* pyarg_objs_breadth_first,
+        Vec<PyTypeObject*>* pyarg_types_breadth_first,
+        Vec<PyObject*>* leaf_pyarg_objs) {
+    ProfileMapQuery query = {pyarg_types_breadth_first, 0, 0};
+    query.mark_start();
+    get_pyarg_objects_and_types(pyargs, num_pyargs,
+                                pyarg_objs_breadth_first, pyarg_types_breadth_first);
+    query.mark_end();
+    ExpandAggregates* parent = nullptr;
+
+    constexpr int kMaxAggregateNestingDepth = 64;
+    for (int depth = 0; depth <= kMaxAggregateNestingDepth; ++depth) {
+        ProfileMap::Item* item = map->find(query);
+        ExpandAggregates* next = nullptr;
+        if (item) {
+            ProfileMapNode* node = item->key.node.get();
+            if (node->leaf) {
+                // Fastest path possible: at a leaf node (no need to expand aggregates)
+                PythonArgProfile* profile = static_cast<PythonArgProfile*>(node);
+                gather_leaf_pyargs(*pyarg_objs_breadth_first,
+                                   profile->leaf_pyarg_breadth_first_indices, leaf_pyarg_objs);
+                return profile;
+            }
+            // Still fast: expand a known aggregate type such as a tuple and do another lookup.
+            next = static_cast<ExpandAggregates*>(node);
+        } else {
+            // Slower path: allocate a new ProfileMapNode.
+
+            // Determine which arguments are aggregate.
+            Vec<AggregateArgInfo> aggregate_args;
+            for (size_t i = 0; i < query.size(); ++i) {
+                PyTypeObject* ty = query[i];
+                if (ty == &PyTuple_Type)
+                    aggregate_args.push_back({query.offset + i});
+            }
+
+            if (aggregate_args.empty()) {
+                // Need to create a new leaf node (i.e., PythonArgProfile).
+
+                // Transform the breadth-first order of args into depth-first.
+                Vec<PyTypeObject*> pyarg_types_depth_first;
+                Vec<size_t> leaf_pyarg_breadth_first_indices;
+                pyargs_breadth2depth(depth, query.size(), parent, *pyarg_types_breadth_first,
+                                     &pyarg_types_depth_first, &leaf_pyarg_breadth_first_indices);
+                gather_leaf_pyargs(*pyarg_objs_breadth_first, leaf_pyarg_breadth_first_indices,
+                                   leaf_pyarg_objs);
+
+                // Classify the arguments and get the matching KernelFamily.
+                Vec<PythonArgKind> arg_kinds;
+                Vec<ParameterKind> param_kinds;
+                if (!get_parameter_and_pyarg_kinds(pyarg_types_depth_first, *leaf_pyarg_objs,
+                                                   &param_kinds, &arg_kinds))
+                    return nullptr;
+
+                KernelFamily* family = get_or_create_kernel_family(
+                        kernel_families, std::move(param_kinds));
+
+                // Flatten the parameter annotations against this argument structure.
+                Result<Vec<RefPtr<LeafAnnotationNode>>> flat_param_annotations
+                       = flatten_parameter_annotation_nodes(param_annotations, family->param_kinds);
+                if (!flat_param_annotations.is_ok())
+                    return nullptr;
+
+                RefPtr<PythonArgProfile> new_profile = steal(new PythonArgProfile(
+                            query.to_owned(), parent, depth, family,
+                            std::move(leaf_pyarg_breadth_first_indices),
+                            std::move(arg_kinds),
+                            std::move(*flat_param_annotations)));
+                map->insert(ProfileMapKey{new_profile}, 0);
+                return new_profile.get();
+            }
+
+            RefPtr<ExpandAggregates> new_node = steal(new ExpandAggregates(
+                    query.to_owned(), parent, depth, std::move(aggregate_args)));
+            map->insert(ProfileMapKey{new_node}, 0);
+            next = new_node.get();
+        }
+
+        query.mark_start();
+        for (const AggregateArgInfo& agg_info : next->aggregate_args) {
+            PyObject* arg = (*pyarg_objs_breadth_first)[agg_info.breadth_first_index];
+            CHECK(PyTuple_CheckExact(arg));
+            get_pyarg_objects_and_types(reinterpret_cast<PyTupleObject*>(arg)->ob_item,
+                                        PyTuple_GET_SIZE(arg),
+                                        pyarg_objs_breadth_first,
+                                        pyarg_types_breadth_first);
+        }
+        query.mark_end();
+
+        map = &next->children;
+        parent = next;
+    }
+
+    raise(PyExc_RecursionError,
+          "Argument nesting exceeds maximum depth of %d", kMaxAggregateNestingDepth);
+    return nullptr;
+}
+
+static PythonArgProfile* python_arg_profile_lookup(PyObject* const* pyargs,
+                                                   Py_ssize_t num_pyargs,
+                                                   TileDispatcher* dispatcher,
+                                                   LaunchHelper* helper) {
+    TileContextDispatcher* ctx_dispatcher = &dispatcher->default_context_dispatcher;
+    return python_arg_profile_lookup_impl(
+            &ctx_dispatcher->arg_profiles,
+            pyargs,
+            num_pyargs,
+            dispatcher->param_annotations,
+            &ctx_dispatcher->kernel_families,
+            &helper->pyarg_objs_breadth_first,
+            &helper->pyarg_types_breadth_first,
+            &helper->leaf_pyarg_objs);
 }
 
 static Result<PreparedLaunch> prepare_launch(
@@ -2445,68 +2845,28 @@ static Result<PreparedLaunch> prepare_launch(
     if (!stream_context.is_ok()) return ErrorRaised;
     helper->cuda_context = *stream_context;
 
-    if (!flatten_pyargs(pyargs, num_pyargs, 0, helper->pyarg_types, helper->pyarg_objs))
-        return ErrorRaised;
     TileDispatcher& dispatcher = py_unwrap<TileDispatcher>(dispatcher_pyobj);
-    TileContextDispatcher& ctx_dispatcher = dispatcher.default_context_dispatcher;
-    ProfileMap::Item* profile_item = ctx_dispatcher.arg_profiles.find(helper->pyarg_types);
-    if (!profile_item) {
-        // Slower path
-        if (static_cast<size_t>(num_pyargs) != dispatcher.param_annotations.size()) {
-            return raise(PyExc_TypeError, "Kernel expects %zu arguments but %zd %s given",
-                    dispatcher.param_annotations.size(), num_pyargs,
-                    num_pyargs == 1 ? "was" : "were");
-        }
+    PythonArgProfile* profile = python_arg_profile_lookup(
+            pyargs, num_pyargs, &dispatcher, helper.get());
+    if (!profile) return ErrorRaised;
 
-        Vec<PythonArgKind> arg_kinds;
-        Vec<ParameterKind> param_kinds;
-        if (!get_parameter_and_pyarg_kinds(helper->pyarg_types, helper->pyarg_objs,
-                                           &param_kinds, &arg_kinds))
-            return ErrorRaised;
-
-        KernelFamily* family = get_or_create_kernel_family(
-                &ctx_dispatcher.kernel_families, std::move(param_kinds));
-
-        // Flatten the parameter annotations against this argument structure.
-        Result<Vec<RefPtr<LeafAnnotationNode>>> flat_param_annotations
-               = flatten_parameter_annotation_nodes(dispatcher.param_annotations,
-                                                    family->param_kinds);
-        if (!flat_param_annotations.is_ok())
-            return ErrorRaised;
-
-        Vec<PyPtr> typeobj_refs;
-        typeobj_refs.reserve(helper->pyarg_types.size());
-        for (PyTypeObject* typeobj : helper->pyarg_types) {
-            // kTupleEnd is a null sentinel, not a real type object: store an empty PyPtr
-            // (which hashes/compares as null, matching the kTupleEnd entries in the lookup
-            // key) rather than calling newref(nullptr), which would abort.
-            PyObject* obj = reinterpret_cast<PyObject*>(typeobj);
-            typeobj_refs.push_back(obj ? newref(obj) : PyPtr{});
-        }
-
-        profile_item = ctx_dispatcher.arg_profiles.insert(
-                    std::move(typeobj_refs),
-                    PythonArgProfile{newref(family), std::move(arg_kinds),
-                                     std::move(*flat_param_annotations)});
-    }
-
-    if (!extract_cuda_args(driver, helper->pyarg_objs, profile_item->value.arg_kinds,
-                           profile_item->value.flat_param_annotations, *helper)) {
+    if (!extract_cuda_args(driver, helper->leaf_pyarg_objs, profile->arg_kinds,
+                           profile->flat_param_annotations, *helper)) {
         return ErrorRaised;
     }
 
-    KernelMap& kernel_map = profile_item->value.family->kernels_by_constants;
+    KernelMap& kernel_map = profile->family->kernels_by_constants;
     KernelMap::Item* kernel_item = kernel_map.find(helper->constants);
     std::optional<KernelImage> kernel_image;
     if (!kernel_item || capture_kernel_image) {
         PyPtr cconv = get_cconv(minimum_calling_convention(
-                    profile_item->value.family->param_kinds,
-                    profile_item->value.flat_param_annotations));
+                    profile->family->param_kinds,
+                    profile->flat_param_annotations));
         if (!cconv) return ErrorRaised;
 
         PyPtr signature = make_signature(helper->constants,
-                                         profile_item->value.family->param_kinds,
-                                         profile_item->value.flat_param_annotations,
+                                         profile->family->param_kinds,
+                                         profile->flat_param_annotations,
                                          cconv);
         if (!signature) return ErrorRaised;
 
@@ -2988,30 +3348,21 @@ static PyObject* get_parameter_constraints_from_pyargs(PyObject* self, PyObject*
 
     LaunchHelperPtr helper = launch_helper_get();
 
-    if (!flatten_pyargs(kernel_args, num_kernel_args, 0, helper->pyarg_types, helper->pyarg_objs))
-        return nullptr;
-
-    Vec<PythonArgKind> arg_kinds;
-    Vec<ParameterKind> param_kinds;
-    if (!get_parameter_and_pyarg_kinds(helper->pyarg_types, helper->pyarg_objs,
-                                       &param_kinds, &arg_kinds))
-        return nullptr;
+    PythonArgProfile* profile = python_arg_profile_lookup(
+            kernel_args, num_kernel_args, &dispatcher, helper.get());
+    if (!profile) return nullptr;
 
     Result<const DriverApi*> driver = get_driver_api();
     if (!driver.is_ok()) return nullptr;
 
-    Result<Vec<RefPtr<LeafAnnotationNode>>> flat_param_annotations
-        = flatten_parameter_annotation_nodes(dispatcher.param_annotations, param_kinds);
-    if (!flat_param_annotations.is_ok())
-        return nullptr;
-
-    if (!extract_cuda_args(*driver, helper->pyarg_objs, arg_kinds, *flat_param_annotations,
-                           *helper)) {
+    if (!extract_cuda_args(*driver, helper->leaf_pyarg_objs, profile->arg_kinds,
+                           profile->flat_param_annotations, *helper)) {
         return nullptr;
     }
 
-    return parse_parameter_constraints(
-            helper->constants, param_kinds, *flat_param_annotations).release();
+    PyPtr ret = parse_parameter_constraints(
+            helper->constants, profile->family->param_kinds, profile->flat_param_annotations);
+    return ret.release();
 }
 
 static Result<Grid> parse_grid(PyObject* tuple) {

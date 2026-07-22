@@ -35,8 +35,9 @@ struct ListArg {
 };
 
 struct LaunchHelper {
-    Vec<PyTypeObject*> pyarg_types;
-    Vec<PyObject*> pyarg_objs;
+    Vec<PyTypeObject*> pyarg_types_breadth_first;
+    Vec<PyObject*> pyarg_objs_breadth_first;
+    Vec<PyObject*> leaf_pyarg_objs;
     Arena arena;
     Vec<ArenaOffset> cuarg_offsets;  // offsets into `arena`
     Vec<ArenaOffset> array_ptr_arena_offsets;
