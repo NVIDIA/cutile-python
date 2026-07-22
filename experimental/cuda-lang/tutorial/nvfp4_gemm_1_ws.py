@@ -81,11 +81,11 @@ def _to_float16_vector(
 ) -> cl.Vector[cl.float16]:
     return cl.Vector(
         *tuple(
-            cl.float16(values[base + i])
+            values[base + i]
             for i in cl.static_iter(range(count))
         ),
-        dtype=cl.float16,
-    )
+        dtype=cl.float32,
+    ).astype(cl.float16)
 
 
 @cl.kernel

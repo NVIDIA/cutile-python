@@ -8,6 +8,7 @@ from cuda.tile._ir.op_impl import (
     ImplRegistry,
     require_dtype_spec,
 )
+from cuda.tile._ir.arithmetic_ops import astype
 from cuda.tile._ir.cast_ops import implicit_cast
 from cuda.tile._ir.core_ops import bind_method, build_tuple, loosely_typed_const
 from cuda.tile._ir.ops import strictly_typed_const
@@ -173,6 +174,16 @@ def vector_with_item_impl(
     self: Var[VectorTy], index: Var[ScalarTy], value: Var[ScalarTy]
 ) -> Var[VectorTy]:
     return vector_with_item(self, index, value)
+
+
+@impl(getattr, overload=(VectorTy, "astype"))
+def getattr_vector_astype(object: Var[VectorTy], name: Var):
+    return bind_method(object, Vector.astype)
+
+
+@impl(Vector.astype)
+def vector_astype_impl(self: Var[VectorTy], dtype: Var) -> Var[VectorTy]:
+    return astype(self, require_dtype_spec(dtype))
 
 
 @impl(operator.getitem, overload=(VectorTy, WILDCARD))

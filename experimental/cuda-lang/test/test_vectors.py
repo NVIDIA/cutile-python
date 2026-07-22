@@ -73,6 +73,20 @@ def test_vector_apis():
     assert out.cpu().tolist() == [1, 1, 1, 4]
 
 
+def test_astype_on_vector():
+    @cl.kernel
+    def kernel(inp, out):
+        vector = inp.get_base_pointer().load(count=4, alignment=16)
+        halved = vector.astype(cl.float16)
+        out.get_base_pointer().store(halved, alignment=8)
+
+    values = [1.0, 2.0, 3.0, 4.0]
+    inp = torch.tensor(values, dtype=torch.float32).cuda()
+    out = torch.zeros(4, dtype=torch.float16).cuda()
+    cl.launch(torch.cuda.current_stream(), (1,), (1,), kernel, (inp, out))
+    assert out.cpu().tolist() == values
+
+
 @pytest.mark.parametrize('length', (2, 4))
 def test_vector_tuple(length):
     expect = tuple(range(length))

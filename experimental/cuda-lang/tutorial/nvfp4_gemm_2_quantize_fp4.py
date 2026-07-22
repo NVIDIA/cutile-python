@@ -138,9 +138,9 @@ def _as_float32_vector_64(regs):
 
 def _to_float16_vector(values, base, count):
     return cl.Vector(
-        *tuple(cl.float16(values[base + i]) for i in cl.static_iter(range(count))),
-        dtype=cl.float16,
-    )
+        *tuple(values[base + i] for i in cl.static_iter(range(count))),
+        dtype=cl.float32,
+    ).astype(cl.float16)
 
 
 def _pack_fp32x8_to_e2m1x8(values, base):

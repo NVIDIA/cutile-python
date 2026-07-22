@@ -80,11 +80,11 @@ def _to_float16_vector(values, base, vsize):
     """Convert one FP32 vector slice to FP16."""
     return cl.Vector(
         *tuple(
-            cl.float16(values[base + i])
+            values[base + i]
             for i in cl.static_iter(range(vsize))
         ),
-        dtype=cl.float16,
-    )
+        dtype=cl.float32,
+    ).astype(cl.float16)
 
 
 @dataclass(frozen=True)

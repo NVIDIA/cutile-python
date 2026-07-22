@@ -143,6 +143,16 @@ class Vector(Generic[T]):
             value: New value.
         """
 
+    @stub
+    def astype(self, dtype: "DType") -> "Vector":
+        """Convert each element to ``dtype``.
+
+        Returns a new vector of the same length with the given dtype.
+
+        Args:
+            dtype: Target data type of the result vector.
+        """
+
 
 class Pointer(Generic[T]):
     """Typed address into a CUDA memory space with low-level load and store operations."""
