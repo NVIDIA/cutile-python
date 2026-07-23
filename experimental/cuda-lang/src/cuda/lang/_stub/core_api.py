@@ -1087,8 +1087,9 @@ def grid_dependency_control_launch_dependents() -> None:
 
 
 @stub
-def bitcast(x, dtype):
-    """Cast a value to another type of the same bitwidth."""
+def bitcast(x, /, dtype):
+    """Reinterpret a value as being of specified data type.
+    """
 
 
 def assert_(condition, /, message=None) -> None:

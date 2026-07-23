@@ -155,6 +155,46 @@ class Vector(Generic[T]):
         """
 
     @stub
+    def bitcast(self, dtype: "DType") -> "Vector":
+        """Reinterpret each element's bits as ``dtype``.
+
+        The element and target dtype must have the same bitwidth, producing a
+        ``Vector`` of the same length.
+
+        Args:
+            dtype: Target element data type (same bitwidth as the current one).
+        """
+
+    @stub
+    def reinterpret_as_scalar(self, dtype: "DType"):
+        """Reinterpret the whole vector's bits as a single scalar of ``dtype``.
+
+        ``dtype``'s bitwidth must equal the vector's total bitwidth (element
+        bitwidth times length).
+
+        The bytes are packed **little-endian**, as if the vector were stored to
+        memory and loaded back as ``dtype``.
+
+        Args:
+            dtype: Target scalar data type.
+        """
+
+    @stub
+    def reinterpret_as_vector(self, dtype: "DType", length: int) -> "Vector":
+        """Reinterpret the whole vector's bits as ``Vector[dtype, length]``.
+
+        ``length * dtype.bitwidth`` must equal the source vector's total
+        bitwidth.
+
+        The raw bytes are preserved and re-split **little-endian**, as if the
+        vector were stored to memory and loaded back as the new vector type.
+
+        Args:
+            dtype: Target element data type of the result vector.
+            length: Number of elements in the result vector.
+        """
+
+    @stub
     def reduce(
         self,
         op: VectorReduction,

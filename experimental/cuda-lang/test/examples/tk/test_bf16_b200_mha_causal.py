@@ -110,7 +110,9 @@ def probability_vector(values, scale, offset, key_block, m_tile, row, column_bas
         cl._nvvm.ff2bf16x2_rn(exps[2 * i + 1], exps[2 * i])
         for i in cl.static_iter(range(len(exps) // 2))
     )
-    as_i32 = tuple(cl.bitcast(value, cl.int32) for value in cl.static_iter(as_bf16))
+    as_i32 = tuple(
+        value.reinterpret_as_scalar(cl.int32) for value in cl.static_iter(as_bf16)
+    )
     return cl.Vector(*as_i32), total
 
 
@@ -132,7 +134,7 @@ def store_output_pairs(o_smem, values, inv_norm, row, column):
     for i in cl.static_iter(range(len(values) // 2)):
         lo = cl.bitcast(values[2 * i], cl.float32) * inv_norm
         hi = cl.bitcast(values[2 * i + 1], cl.float32) * inv_norm
-        packed = cl.bitcast(cl._nvvm.ff2bf16x2_rn(hi, lo), cl.uint32)
+        packed = cl._nvvm.ff2bf16x2_rn(hi, lo).reinterpret_as_scalar(cl.uint32)
         logical_element = (column // 64) * BLOCK_M * 64 + row * 64 + column % 64 + 2 * i
         byte_offset = logical_element * 2
         swizzled = byte_offset ^ (((byte_offset & 0x380) >> 7) << 4)

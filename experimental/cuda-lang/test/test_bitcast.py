@@ -55,9 +55,9 @@ def test_bitcast_scalars(inp_dtype, out_dtype, check):
 @pytest.mark.parametrize("mspace", cl.MemorySpace._member_map_.values())
 @pytest.mark.parametrize("fail", (True, False))
 def test_bitcast_pointer_vector(mspace, fail):
-    # this is sort-of a nonsensical test because we don't have a way to represent
-    # vectors as dtypes but we need to somehow create a pointer from a vector
-    # and do something with it to prevent dce
+    # reinterpret a whole byte vector as an int, make a pointer from it, then
+    # go back to an int -- exercising the vector -> int -> pointer -> int path
+    # across memory spaces.
 
     ptr_bitwidth = 32 if mspace in MEMORY_SPACE_32B else 64
     dst_dtype = getattr(cl, f"int{ptr_bitwidth}")
@@ -69,7 +69,8 @@ def test_bitcast_pointer_vector(mspace, fail):
     @cl.kernel
     def kernel(out):
         v = out.get_base_pointer().load(count=count)
-        p = cl.bitcast(v, cl.pointer_dtype(cl.float32, mspace))
+        i = v.reinterpret_as_scalar(dst_dtype)
+        p = cl.bitcast(i, cl.pointer_dtype(cl.float32, mspace))
         i = cl.bitcast(p, dst_dtype)
         out[0] = cl.int8(i)
 
@@ -186,14 +187,31 @@ def test_bitcast_from_bool():
         cl.compile_simt(kernel, [KernelSignature([make_symbolic_tensor(1, cl.bool_)])])
 
 
-def test_bitcast_from_vector():
+def test_bitcast_vector_elementwise():
+    @cl.kernel
+    def kernel(inp, out):
+        v = inp.get_base_pointer().load(count=4)
+        r = cl.bitcast(v, cl.float32)
+        out.get_base_pointer().store(r)
+
+    values = torch.tensor([1.5, -2.25, 3.75, 0.5], dtype=torch.float32)
+    inp = values.view(torch.int32).cuda()
+    out = torch.zeros(4, dtype=torch.float32).cuda()
+    cl.launch(torch.cuda.current_stream(), (1,), (1,), kernel, (inp, out))
+    assert out.cpu().tolist() == values.tolist()
+
+
+def test_bitcast_elementwise_width_mismatch_errors():
+
     @cl.kernel
     def kernel(inp, out):
         v = inp.get_base_pointer().load(count=2)
-        out[0] = cl.bitcast(v, cl.int64)
+        out[0] = cl.bitcast(v, cl.int64)[0]
 
-    inp = torch.tensor([1, 2], dtype=torch.int32).cuda()
-    out = torch.zeros(1, dtype=torch.int64).cuda()
-    cl.launch(torch.cuda.current_stream(), (1,), (1,), kernel, (inp, out))
-    got = out.cpu().item()
-    assert got == ((2 << 32) | 1), f"{got:x}"
+    match = "Vector element and target dtype must have the same bitwidth"
+    with pytest.raises(TypeCheckingError, match=match):
+        cl.compile_simt(
+            kernel,
+            [KernelSignature([make_symbolic_tensor(1, cl.int32),
+                              make_symbolic_tensor(1, cl.int64)])],
+        )

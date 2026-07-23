@@ -43,7 +43,6 @@ Pointer Utilities
    pointer_dtype
    opaque_pointer_dtype
    address_space_cast
-   bitcast
    map_shared_to_cluster
    map_shared_to_leader_block
    shared_cluster_leader_bit_mask
@@ -61,6 +60,17 @@ Pointer Utilities
    :template: autosummary/class_no_init.rst
 
    MemorySpace
+
+
+.. _operations-type-casts:
+
+Type Casts
+----------
+.. autosummary::
+   :toctree: generated
+   :nosignatures:
+
+   bitcast
 
 
 SIMT Model

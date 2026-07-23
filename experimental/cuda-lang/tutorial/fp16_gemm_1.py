@@ -49,17 +49,6 @@ _DEFAULT_MNK = (256, 256, 64)
 _DEFAULT_TOLERANCE = 1.0e-1
 
 
-def _as_float32_vector(regs):
-    """Interpret the 32 TMEM load registers as one FP32 vector."""
-    return cl.Vector(
-        *tuple(
-            cl.bitcast(regs[i], cl.float32)
-            for i in cl.static_iter(range(32))
-        ),
-        dtype=cl.float32,
-    )
-
-
 def _to_float16_vector(values, base, vsize):
     """Convert one FP32 vector slice to FP16."""
     return cl.Vector(
@@ -266,7 +255,7 @@ def _kernel(a, b, c, bias, has_bias: cl.Constant[bool]):
         regs = cl.tcgen05_load(
             cl.Tcgen05LoadStoreShape.SHAPE_32X32B, tmem, count=32
         )
-        accumulators = _as_float32_vector(regs)
+        accumulators = regs.bitcast(cl.float32)
         if has_bias:
             accumulators = accumulators + cl.float32(bias[row])
         if row < m:

@@ -133,13 +133,7 @@ def _load_tmem(base, lane_offset, column_offset, repetitions):
         tmem,
         count=repetitions,
     )
-    return cl.Vector(
-        *tuple(
-            cl.bitcast(regs[i], cl.float32)
-            for i in cl.static_iter(range(repetitions * 4))
-        ),
-        dtype=cl.float32,
-    )
+    return regs.bitcast(cl.float32)
 
 
 def _pack_e4m3x4(values, base):

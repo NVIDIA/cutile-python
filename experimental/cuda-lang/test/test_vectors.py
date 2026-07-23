@@ -917,3 +917,79 @@ class TestVectorSlice:
             kernel,
             raises=pytest.raises(Exception, match="slice indices must be integers"),
         )
+
+
+def test_reinterpret_as_scalar():
+    # Whole-vector reinterpret to a single scalar of the total width.
+    @cl.kernel
+    def kernel(inp, out):
+        v = inp.get_base_pointer().load(count=2)
+        out[0] = v.reinterpret_as_scalar(cl.int64)
+
+    inp = torch.tensor([1, 2], dtype=torch.int32).cuda()
+    out = torch.zeros(1, dtype=torch.int64).cuda()
+    cl.launch(torch.cuda.current_stream(), (1,), (1,), kernel, (inp, out))
+    got = out.cpu().item()
+    assert got == ((2 << 32) | 1), f"{got:x}"
+
+
+def test_reinterpret_as_scalar_width_mismatch_errors():
+    # The target scalar's bitwidth must equal the vector's total bitwidth.
+    @cl.kernel
+    def kernel(inp, out):
+        v = inp.get_base_pointer().load(count=2)     # Vector[int32, 2] = 64 bit
+        out[0] = v.reinterpret_as_scalar(cl.int32)   # target is 32 bit != 64
+
+    match = "bitcast requires input value's type and output type to have the same bitwidth"
+    with pytest.raises(TypeCheckingError, match=match):
+        cl.compile_simt(
+            kernel,
+            [KernelSignature([make_symbolic_tensor(1, cl.int32),
+                              make_symbolic_tensor(1, cl.int32)])],
+        )
+
+
+def test_reinterpret_as_vector_reshape():
+    # Whole-vector reinterpret to a differently-shaped vector of the same total
+    # width: Vector[float32, 4] -> Vector[int8, 16].
+    @cl.kernel
+    def kernel(inp, out):
+        v = inp.get_base_pointer().load(count=4)
+        out.get_base_pointer().store(v.reinterpret_as_vector(cl.int8, 16))
+
+    values = torch.tensor([1.5, -2.25, 3.75, 0.5], dtype=torch.float32)
+    inp = values.cuda()
+    out = torch.zeros(16, dtype=torch.int8).cuda()
+    cl.launch(torch.cuda.current_stream(), (1,), (1,), kernel, (inp, out))
+    assert out.cpu().tolist() == values.view(torch.int8).tolist()
+
+
+def test_reinterpret_as_vector_width_mismatch_errors():
+    @cl.kernel
+    def kernel(inp, out):
+        v = inp.get_base_pointer().load(count=4)
+        out.get_base_pointer().store(v.reinterpret_as_vector(cl.int8, 15))
+
+    match = "bitcast requires input value's type and output type to have the same bitwidth"
+    with pytest.raises(TypeCheckingError, match=match):
+        cl.compile_simt(
+            kernel,
+            [KernelSignature([make_symbolic_tensor(1, cl.float32),
+                              make_symbolic_tensor(1, cl.int8)])],
+        )
+
+
+def test_reinterpret_as_vector_rejects_pointer():
+    # A vector's element dtype must be a scalar, not a pointer.
+    @cl.kernel
+    def kernel(inp, out):
+        v = inp.get_base_pointer().load(count=4)
+        v.reinterpret_as_vector(cl.pointer_dtype(cl.float32), 2)
+
+    match = "reinterpret_as_vector only accepts a scalar element dtype"
+    with pytest.raises(TypeCheckingError, match=match):
+        cl.compile_simt(
+            kernel,
+            [KernelSignature([make_symbolic_tensor(1, cl.int32),
+                              make_symbolic_tensor(1, cl.int8)])],
+        )

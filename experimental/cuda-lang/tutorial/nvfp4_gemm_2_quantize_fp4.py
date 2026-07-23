@@ -129,13 +129,6 @@ def _release_clc_response(scheduler_consumed, iteration, count=1):
     )
 
 
-def _as_float32_vector_64(regs):
-    return cl.Vector(
-        *tuple(cl.bitcast(regs[i], cl.float32) for i in cl.static_iter(range(64))),
-        dtype=cl.float32,
-    )
-
-
 def _to_float16_vector(values, base, count):
     return cl.Vector(
         *tuple(values[base + i] for i in cl.static_iter(range(count))),
@@ -692,7 +685,7 @@ def _kernel(
                         acc_empty.get_base_pointer(), 0
                     )
                     cl.mbarrier_arrive(leader_acc_empty, scope=cl.MbarrierScope.BLOCK)
-                accumulators = _as_float32_vector_64(regs)
+                accumulators = regs.bitcast(cl.float32)
 
                 if output_fp4:
                     alpha_value = cl.float32(alpha[tile_l])

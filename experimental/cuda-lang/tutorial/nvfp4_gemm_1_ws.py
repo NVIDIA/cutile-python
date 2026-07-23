@@ -16,7 +16,6 @@ vectorized epilogue used by the CuTe DSL source.
 from __future__ import annotations
 
 import argparse
-from typing import Any
 
 import cuda.lang as cl
 import cuda.tile as ct
@@ -64,16 +63,6 @@ TMEM_BARRIER_THREADS = (EPILOGUE_WARPS + 1) * WARP_SIZE
 
 _DEFAULT_MNKL = (256, 256, 256, 1)
 _DEFAULT_TOLERANCE = 1.0e-1
-
-
-def _as_float32_vector_128(regs: cl.Vector[Any]) -> cl.Vector[cl.float32]:
-    return cl.Vector(
-        *tuple(
-            cl.bitcast(regs[i], cl.float32)
-            for i in cl.static_iter(range(128))
-        ),
-        dtype=cl.float32,
-    )
 
 
 def _to_float16_vector(
@@ -414,7 +403,7 @@ def _kernel(
                 tmem,
                 count=128,
             )
-            accumulators = _as_float32_vector_128(regs)
+            accumulators = regs.bitcast(cl.float32)
 
             for vector_idx in cl.static_iter(range(128 // vsize)):
                 values = _to_float16_vector(

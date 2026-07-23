@@ -22,10 +22,11 @@ from cuda.lang._ir.type_checking_helpers import (
     require_scalar_type,
 )
 from cuda.lang._stub import core_api, cache_policy
+from cuda.lang._stub.types import Vector
 import cuda.lang._datatype as datatype
 from cuda.tile._datatype import int32, opaque_pointer_dtype, pointer_dtype
 from cuda.tile._ir.arithmetic_ops import astype, binary_bitwise_tensorlike
-from cuda.tile._ir.core_ops import strictly_typed_const
+from cuda.tile._ir.core_ops import bind_method, strictly_typed_const
 from cuda.tile._ir.ir import Var, add_operation, add_operation_variadic
 from cuda.tile._ir.op_impl import ImplRegistry, require_constant_int
 
@@ -59,20 +60,19 @@ def read_gridlike_special_register_impl(sreg_name: str, axis: Var) -> Var:
     )
 
 
-def bitcast(x: Var[ScalarTy | PointerTy | VectorTy], dtype: datatype.DType):
+def _reinterpret_to(x: Var, result_ty: VectorTy | ScalarTy | PointerTy):
     x_ty = x.get_type()
     x_dtype = x_ty.tensor_dtype()
-    if isinstance(dtype, VectorTy):
-        # dead code for now - users have no way to construct vector dtypes
-        raise TypeCheckingError("bitcast to vector is not supported")
-    if datatype.bool_ in (dtype, x_dtype):
+    dst_dtype = result_ty.tensor_dtype()
+    if datatype.bool_ in (dst_dtype, x_dtype):
         raise TypeCheckingError("bitcast to or from bool is not supported")
     x_bitwidth = type_bitwidth(x_ty)
-    if x_bitwidth != dtype.bitwidth:
+    dst_bitwidth = type_bitwidth(result_ty)
+    if x_bitwidth != dst_bitwidth:
         raise TypeCheckingError(
             "bitcast requires input value's type and output type to have the "
             f"same bitwidth, but input type is {x_bitwidth} bits and output "
-            f"dtype has {dtype.bitwidth} bits"
+            f"dtype has {dst_bitwidth} bits"
         )
 
     # at the mlir level, we only have bitcast, inttoptr, and ptrtoint. If we
@@ -80,43 +80,108 @@ def bitcast(x: Var[ScalarTy | PointerTy | VectorTy], dtype: datatype.DType):
     # If we are casting *to* a pointer, first cast to int then the real dst
     # type. If both src and dst are pointer types, use a regular bitcast.
     # ir2mlir will use an address space cast.
-
-    src_dtype, dst_dtype = x_dtype, dtype
-    src_is_ptr = datatype.is_pointer_dtype(src_dtype)
+    src_is_ptr = datatype.is_pointer_dtype(x_dtype)
     dst_is_ptr = datatype.is_pointer_dtype(dst_dtype)
-    src_is_int_scalar = isinstance(x_ty, ScalarTy) and datatype.is_integral(src_dtype)
-    dst_is_int_scalar = datatype.is_integral(dst_dtype)
+    src_is_int_scalar = isinstance(x_ty, ScalarTy) and datatype.is_integral(x_dtype)
+    dst_is_int_scalar = isinstance(result_ty, ScalarTy) and datatype.is_integral(dst_dtype)
 
-    def direct_bitcast():
-        res_ty = PointerTy(dtype) if datatype.is_pointer_dtype(dtype) else ScalarTy(dtype)
-        return add_operation(BitCast, res_ty, x=x)
+    def direct():
+        return add_operation(BitCast, result_ty, x=x)
 
-    def bitcast_through_int():
-        intermediate_type = getattr(datatype, f'int{x_bitwidth}')
-        first = bitcast(x, intermediate_type)
-        return bitcast(first, dtype)
+    def through_int():
+        int_ty = ScalarTy(getattr(datatype, f'int{x_bitwidth}'))
+        first = _reinterpret_to(x, int_ty)
+        return _reinterpret_to(first, result_ty)
 
     if src_is_ptr and dst_is_ptr:
-        return direct_bitcast()
-
+        return direct()
     if src_is_ptr:
-        if dst_is_int_scalar:
-            return direct_bitcast()
-        return bitcast_through_int()
-
+        return direct() if dst_is_int_scalar else through_int()
     if dst_is_ptr:
-        if src_is_int_scalar:
-            return direct_bitcast()
-        return bitcast_through_int()
+        return direct() if src_is_int_scalar else through_int()
+    return direct()
 
-    # no pointer involved: direct bitcast
-    return direct_bitcast()
+
+def _scalar_or_pointer_ty(dtype: datatype.DType):
+    return PointerTy(dtype) if datatype.is_pointer_dtype(dtype) else ScalarTy(dtype)
+
+
+def bitcast(x: Var[ScalarTy | PointerTy | VectorTy], dtype: datatype.DType):
+    x_ty = x.get_type()
+    if isinstance(x_ty, VectorTy):
+        elem_dtype = x_ty.element_dtype
+        if datatype.is_pointer_dtype(dtype):
+            raise TypeCheckingError(
+                "bitcast cannot reinterpret vector elements as a pointer dtype"
+            )
+        if elem_dtype.bitwidth != dtype.bitwidth:
+            raise TypeCheckingError(
+                "Vector element and target dtype must have the same bitwidth "
+                f"(element is {elem_dtype.bitwidth} bits, target is {dtype.bitwidth} bits)"
+            )
+        return _reinterpret_to(x, VectorTy(dtype, x_ty.length))
+    return _reinterpret_to(x, _scalar_or_pointer_ty(dtype))
+
+
+def reinterpret_as_scalar(x: Var[VectorTy], dtype: datatype.DType):
+    """Reinterpret a whole vector's bits as a single scalar of ``dtype``, whose
+    bitwidth must equal the vector's total bitwidth. Bytes are packed
+    little-endian."""
+    if datatype.is_pointer_dtype(dtype):
+        raise TypeCheckingError(
+            "reinterpret_as_scalar only accepts a scalar dtype."
+        )
+    return _reinterpret_to(x, ScalarTy(dtype))
+
+
+def reinterpret_as_vector(x: Var[VectorTy], dtype: datatype.DType, length: int):
+    """Reinterpret a whole vector's bits as ``Vector[dtype, length]``, whose
+    total bitwidth must equal the source vector's total bitwidth. Bytes are
+    re-split little-endian."""
+    if datatype.is_pointer_dtype(dtype):
+        raise TypeCheckingError(
+            "reinterpret_as_vector only accepts a scalar element dtype."
+        )
+    return _reinterpret_to(x, VectorTy(dtype, length))
 
 
 @impl(core_api.bitcast)
 def bitcast_impl(x: Var[ScalarTy | PointerTy | VectorTy], dtype: Var[DTypeConstructor]):
-    dtype = require_dtype_spec(dtype)
-    return bitcast(x, dtype)
+    return bitcast(x, require_dtype_spec(dtype))
+
+
+@impl(getattr, overload=(VectorTy, "bitcast"))
+def getattr_vector_bitcast(object: Var[VectorTy], name: Var):
+    return bind_method(object, Vector.bitcast)
+
+
+@impl(Vector.bitcast)
+def vector_bitcast_impl(self: Var[VectorTy], dtype: Var[DTypeConstructor]):
+    return bitcast(self, require_dtype_spec(dtype))
+
+
+@impl(getattr, overload=(VectorTy, "reinterpret_as_scalar"))
+def getattr_vector_reinterpret_as_scalar(object: Var[VectorTy], name: Var):
+    return bind_method(object, Vector.reinterpret_as_scalar)
+
+
+@impl(Vector.reinterpret_as_scalar)
+def vector_reinterpret_as_scalar_impl(self: Var[VectorTy], dtype: Var[DTypeConstructor]):
+    return reinterpret_as_scalar(self, require_dtype_spec(dtype))
+
+
+@impl(getattr, overload=(VectorTy, "reinterpret_as_vector"))
+def getattr_vector_reinterpret_as_vector(object: Var[VectorTy], name: Var):
+    return bind_method(object, Vector.reinterpret_as_vector)
+
+
+@impl(Vector.reinterpret_as_vector)
+def vector_reinterpret_as_vector_impl(
+    self: Var[VectorTy], dtype: Var[DTypeConstructor], length: Var
+):
+    return reinterpret_as_vector(
+        self, require_dtype_spec(dtype), require_constant_int(length)
+    )
 
 
 @impl(core_api.map_shared_to_cluster)
