@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-from typing import TypeVar, Generic, Literal
+from typing import TypeVar, Generic
 
 import cuda.lang as cl
 from cuda.lang._execution import stub, function
@@ -10,7 +10,7 @@ from cuda.lang._exception import TypeCheckingError
 from cuda.tile._stub import Array as TileArray, cdiv as tile_cdiv
 from cuda.tile._memory_model import MemoryOrder, MemoryScope, MemorySpace
 from cuda.lang._datatype import DType
-from .types import Pointer, Scalar, Vector
+from .types import Pointer, Scalar
 
 T = TypeVar("T")
 
@@ -55,96 +55,6 @@ class Array(TileArray, Generic[T]):
 
     @stub
     def __getitem__(self, indices: int | tuple[int, ...]) -> T: ...
-
-    @function()
-    def load_element(
-        self,
-        indices: int | tuple[int, ...],
-        *,
-        count: int | None = None,
-        alignment: int | None = None,
-        volatile: bool = False,
-        memory_order: MemoryOrder | None = None,
-    ) -> "T | Vector[T]":
-        """Load the element at ``indices``.
-
-        Shorthand for ``self.get_element_pointer(indices).load(...)``: the
-        element pointer is derived from ``indices`` and the keyword arguments
-        (``count``, ``alignment``, ``volatile``, ``memory_order``) are forwarded
-        unchanged to :meth:`Pointer.load`, which documents their semantics.
-
-        Args:
-            indices: Scalar or tuple index of the element to load.
-            count: How many elements to load. A value greater than one yields
-                a vector, 1 or None yields a scalar.
-            alignment: Inform the compiler that the address being loaded from
-                is aligned to at least this many bytes.
-                The user is responsible for ensuring aligned loads occur only
-                on appropriately aligned pointers.
-                If alignment is None, do not give the compiler any alignment
-                hints.
-            volatile: If True, the compiler will not modify the number of times
-                this load is performed nor the order of execution with respect
-                to other volatile operations.
-            memory_order: When memory_order is specified, the load is atomic.
-                If alignment is None, the natural alignment of the loaded type
-                (its size in bytes) is used.
-                Atomic loads require a pointee type with a bit width that
-                is a power of two greater than or equal to one byte.
-
-        Returns:
-            The loaded scalar, or a vector of ``count`` elements when ``count``
-            is given.
-        """
-        return self.get_element_pointer(indices).load(
-            count=count,
-            alignment=alignment,
-            volatile=volatile,
-            memory_order=memory_order,
-        )
-
-    @function()
-    def store_element(
-        self,
-        indices: int | tuple[int, ...],
-        value: "T | Vector[T]",
-        *,
-        alignment: int | None = None,
-        volatile: bool = False,
-        memory_order: Literal[MemoryOrder.RELAXED,
-                              MemoryOrder.RELEASE, MemoryOrder.WEAK] | None = None,
-    ) -> None:
-        """Store ``value`` to the element at ``indices``.
-
-        Shorthand for ``self.get_element_pointer(indices).store(value, ...)``:
-        the element pointer is derived from ``indices`` and the keyword
-        arguments (``alignment``, ``volatile``, ``memory_order``) are forwarded
-        unchanged to :meth:`Pointer.store`, which documents their semantics.
-
-        Args:
-            indices: Scalar or tuple index of the element to store to.
-            value: Scalar or vector value to store.
-            alignment: Inform the compiler that the address being loaded from
-                is aligned to at least this many bytes.
-                The user is responsible for ensuring aligned loads occur only
-                on appropriately aligned pointers.
-                If alignment is None, do not give the compiler any alignment
-                hints.
-            volatile: If True, the compiler will not modify the number of times
-                this load is performed nor the order of execution with respect
-                to other volatile operations.
-            memory_order: When memory_order is specified, the load is atomic.
-                If alignment is None, the natural alignment of the loaded type
-                (its size in bytes) is used.
-                Atomic loads require a pointee type with a bit width that
-                is a power of two greater than or equal to one byte.
-        """
-        self.get_element_pointer(indices).store(
-            value,
-            alignment=alignment,
-            volatile=volatile,
-            memory_order=memory_order,
-        )
 
 
 @stub(host=True)

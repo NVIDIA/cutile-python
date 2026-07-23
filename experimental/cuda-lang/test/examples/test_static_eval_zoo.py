@@ -214,7 +214,7 @@ def test_static_overload_selection():
 
     @cl.kernel
     def kernel(out):
-        vector = out.load_element(0, count=2)
+        vector = out.get_element_pointer(0).load(count=2)
         out[0] = overloaded_function(out)  # array
         out[1] = overloaded_function(5)  # constant scalar
         out[2] = overloaded_function(out[0])  # symbolic scalar

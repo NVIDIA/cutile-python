@@ -182,8 +182,6 @@ def _array_get_element_pointer(array: Var, indices: tuple[Var, ...]) -> Var:
 
 @impl(getattr, overload=(ArrayTy, "get_base_pointer"))
 @impl(getattr, overload=(ArrayTy, "get_element_pointer"))
-@impl(getattr, overload=(ArrayTy, "load_element"))
-@impl(getattr, overload=(ArrayTy, "store_element"))
 def getattr_array_method(object: Var, name: Var):
     name = require_constant_str(name)
     unbound_func = getattr(Array, name)

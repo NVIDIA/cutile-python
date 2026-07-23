@@ -240,7 +240,7 @@ def test_store(shape, count, unpack):
         tmem_dtype = cl.pointer_dtype(cl.int8, cl.MemorySpace.TENSOR)
         smem = cl.shared_array(1, tmem_dtype, alignment=4)
         storage = cl.shared_array(256, cl.int32)
-        v = storage.load_element(0, count=register_count)
+        v = storage.get_element_pointer(0).load(count=register_count)
         cl.tcgen05_allocate(smem.get_base_pointer(), 128)
         cl.tcgen05_store(shape, smem[0], v, unpack=unpack, offset=offset)
         cl.tcgen05_wait_store()

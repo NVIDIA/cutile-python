@@ -785,9 +785,9 @@ class TestVectorSlice:
 
         @cl.kernel
         def kernel(inp: cl.Array, out: cl.Array):
-            v = inp.load_element(0, count=8)
+            v = inp.get_element_pointer(0).load(count=8)
             v2 = function(v)
-            out.store_element(0, v2)
+            out.get_element_pointer(0).store(v2)
 
         inp = torch.arange(8, dtype=torch.int8).cuda()
         out = torch.zeros(8, dtype=torch.int8).cuda()

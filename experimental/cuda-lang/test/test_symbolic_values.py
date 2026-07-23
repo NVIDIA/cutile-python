@@ -50,7 +50,7 @@ def test_symbolic_vector():
 
     def k():
         with cl.local_array(4, cl.int32) as arr:
-            vector = arr.load_element(0, count=4)
+            vector = arr.get_element_pointer(0).load(count=4)
             cl.static_eval(checks(vector))
 
     compile_kernel(k)

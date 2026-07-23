@@ -72,7 +72,7 @@ def run_print_vectors():
 
     @cl.kernel
     def kernel(A: cl.Array):
-        v_dyn = A.load_element(0, count=4)
+        v_dyn = A.get_base_pointer().load(count=4)
 
         # CHECK: <0, 1, 2, 3>
         print(v_dyn)
