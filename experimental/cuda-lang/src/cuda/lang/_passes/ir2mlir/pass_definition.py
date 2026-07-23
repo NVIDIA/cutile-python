@@ -927,8 +927,34 @@ def lower_return(context: DeviceLoweringContext, operation: ops.Return) -> Seque
 
 
 @mlir_op_lowering(host=False)
-def lower_printf(context: DeviceLoweringContext, operation: ops.TilePrintf) -> Sequence[mlir.Value]:
-    args = tuple(context.get_var(arg) for arg in operation.args)
+def lower_printf(
+    context: DeviceLoweringContext, operation: ops.TilePrintf
+) -> Sequence[mlir.Value]:
+
+    def extend_lt32b_integral_args(arg):
+        "Sub-32b integral arguments need to be extended for the %d format"
+
+        ty = arg.get_type()
+        value = context.get_var(arg)
+
+        if not isinstance(ty, ir_type.ScalarTy):
+            return value
+        dtype = ty.dtype
+        if datatype.is_boolean(dtype):
+            return mlir.arith.add_ExtUIOp(
+                out_type=T.i32(),
+                in_=value,
+            )
+        if datatype.is_integral(dtype) and dtype.bitwidth < 32:
+            converter = (
+                mlir.arith.add_ExtSIOp
+                if datatype.is_signed(dtype)
+                else mlir.arith.add_ExtUIOp
+            )
+            return converter(out_type=T.i32(), in_=value)
+        return value
+
+    args = tuple(map(extend_lt32b_integral_args, operation.args))
     mlir.gpu.add_PrintfOp(format=operation.format, args=args)
     # printOp returns a token, which is only used in cutile token order pass,
     # to match the number of return vars, we return a dummy value None

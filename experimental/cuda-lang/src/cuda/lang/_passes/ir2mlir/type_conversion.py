@@ -147,6 +147,30 @@ def _get_type_conversion_encoder(
         return lambda x: x
 
     to_mlir_type = ir_type_to_mlir_type(to_type)
+    from_mlir_type = ir_type_to_mlir_type(from_type)
+
+    if datatype.is_boolean(to_dtype):
+        def to_bool(in_):
+            if datatype.is_float(from_dtype):
+                c0 = mlir_constant_of_type(from_mlir_type, 0.0)
+                result = mlir.arith.add_CmpFOp(
+                    predicate=mlir.arith.CmpFPredicate.UNE,
+                    lhs=in_,
+                    rhs=c0,
+                )
+            else:
+                c0 = mlir_constant_of_type(from_mlir_type, 0)
+                result = mlir.arith.add_CmpIOp(
+                    predicate=mlir.arith.CmpIPredicate.ne,
+                    lhs=in_,
+                    rhs=c0,
+                )
+
+            return mlir.arith.add_ExtUIOp(
+                out_type=to_mlir_type,
+                in_=result,
+            )
+        return to_bool
 
     def kind(t):
         if datatype.is_float(t):
