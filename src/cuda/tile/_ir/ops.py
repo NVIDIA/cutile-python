@@ -21,6 +21,7 @@ from cuda.tile._ir.ir import (
     make_aggregate, MemoryEffect, attribute, operand,
     BlockRestriction, add_operation_variadic,
 )
+from cuda.tile._ir.ops_utils import get_ftof_rounding_min_version
 from .aggregate_support import unflatten_aggregates
 from .arithmetic_ops import reshape, broadcast_to, astype, compare_tensorlike, \
     binary_bitwise_tensorlike, bitwise_shift_tensorlike, binary_arithmetic_tensorlike, \
@@ -2810,10 +2811,29 @@ def assert_impl(cond: Var, message: Var) -> None:
 
 
 @impl(ct.astype)
-def astype_impl(x: Var, dtype: Var) -> Var:
-    require_tile_type(x)
+def astype_impl(x: Var, dtype: Var, rounding_mode: Var) -> Var:
+    x_ty = require_tile_type(x)
     dtype = require_dtype_spec(dtype)
-    return astype(x, dtype)
+    rounding_mode = require_optional_constant_enum(rounding_mode, RoundingMode)
+
+    is_ftof = datatype.is_float(x_ty.tensor_dtype()) and datatype.is_float(dtype)
+    if not is_ftof and rounding_mode is not None:
+        raise TileTypeError("rounding_mode is only valid for float to float conversions")
+
+    if x_ty.tensor_dtype() == dtype:
+        return x
+
+    if is_ftof:
+        rounding_mode, min_bc_version = get_ftof_rounding_min_version(x_ty.tensor_dtype(),
+                                                                      dtype, rounding_mode)
+        cur_bc_version = Builder.get_current().ir_ctx.tileiras_version
+        if min_bc_version is not None and cur_bc_version < min_bc_version:
+            raise TileUnsupportedFeatureError(
+                f"The requested conversion and rounding_mode require tileiras "
+                f"{min_bc_version.as_string()} or later. Current version is "
+                f"{cur_bc_version.as_string()}.")
+
+    return astype(x, dtype, rounding_mode=rounding_mode)
 
 
 @dataclass(eq=False)

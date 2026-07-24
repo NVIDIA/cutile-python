@@ -127,24 +127,28 @@ def broadcast_to(x: Var[TensorLikeTy], shape: Sequence[int]) -> Var[TensorLikeTy
 @dataclass(eq=False)
 class TileAsType(Operation, opcode="tile_astype"):
     x: Var = operand()
+    rounding_mode: RoundingMode | None = attribute(default=None)
 
     @override
     def generate_bytecode(self, ctx: BytecodeContext) -> bc.Value:
         value = ctx.get_value(self.x)
-        return convert_dtype(ctx, value, ctx.typeof(self.x), ctx.typeof(self.result_var))
+
+        return convert_dtype(ctx, value, ctx.typeof(self.x), ctx.typeof(self.result_var),
+                             rounding_mode=self.rounding_mode)
 
 
-def astype(x: Var[TensorLikeTy], dtype: DType) -> Var[TensorLikeTy]:
+def astype(x: Var[TensorLikeTy], dtype: DType, *,
+           rounding_mode: RoundingMode | None = None) -> Var[TensorLikeTy]:
     x_ty = x.get_type()
     if x_ty.tensor_dtype() == dtype:
         return x
 
-    if x.is_constant():
+    if x.is_constant() and rounding_mode in (None, RoundingMode.RN):
         val = numeric_dtype_category(dtype).pytype(x.get_constant())
         return strictly_typed_const(val, x.ctx.typing_hooks.get_tensor_like_type(dtype, ()))
 
     result_ty = x.ctx.typing_hooks.get_tensor_like_type(dtype, x_ty.tensor_shape())
-    return add_operation(TileAsType, result_ty, x=x)
+    return add_operation(TileAsType, result_ty, x=x, rounding_mode=rounding_mode)
 
 
 def dtype_constructor(new_dtype: DType, x: Var) -> Var[TensorLikeTy]:

@@ -11,7 +11,7 @@ class RoundingMode(Enum):
     """
 
     RN = "nearest_even"
-    """Rounds the nearest (ties to even)."""
+    """Round to nearest (ties to even)."""
 
     RZ = "zero"
     """Round towards zero (truncate)."""
@@ -21,6 +21,9 @@ class RoundingMode(Enum):
 
     RP = "positive_inf"
     """Round towards positive infinity."""
+
+    RA = "nearest_away"
+    """Round to nearest (ties away from zero)."""
 
     FULL = "full"
     """Full precision rounding mode."""

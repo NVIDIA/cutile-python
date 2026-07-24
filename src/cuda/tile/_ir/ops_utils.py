@@ -4,6 +4,7 @@
 import itertools
 import math
 from contextlib import contextmanager
+from collections import defaultdict
 
 from dataclasses import dataclass, field
 from typing import Optional, Tuple, Dict, Any, Sequence, Literal
@@ -123,6 +124,7 @@ rounding_mode_to_bytecode = {
     RoundingMode.RZ: bc.RoundingMode.ZERO,
     RoundingMode.RM: bc.RoundingMode.NEGATIVE_INF,
     RoundingMode.RP: bc.RoundingMode.POSITIVE_INF,
+    RoundingMode.RA: bc.RoundingMode.NEAREST_AWAY,
     RoundingMode.FULL: bc.RoundingMode.FULL,
     RoundingMode.APPROX: bc.RoundingMode.APPROX,
     RoundingMode.RZI: bc.RoundingMode.NEAREST_INT_TO_ZERO
@@ -223,6 +225,79 @@ def check_shapes_eq(a: TileTy, b: TileTy,
     if a.shape != b.shape:
         raise TileTypeError(f"{a_name} and {b_name} shapes must match, "
                             f"got {a.shape} and {b.shape}", loc)
+
+
+F64 = datatype.float64
+F32 = datatype.float32
+TF32 = datatype.tfloat32
+F16 = datatype.float16
+BF16 = datatype.bfloat16
+F8E5M2 = datatype.float8_e5m2
+F8E8M0FNU = datatype.float8_e8m0fnu
+F8E4M3FN = datatype.float8_e4m3fn
+F4E2M1FN = datatype.float4_e2m1fn
+ALL = (F64, F32, TF32, F16, BF16, F8E5M2, F8E8M0FNU, F8E4M3FN, F4E2M1FN)
+B133 = BytecodeVersion.V_13_3
+B134 = BytecodeVersion.V_13_4
+
+_FTOF_ROUNDING_ROWS = (
+        {(i, F64): (RoundingMode.RN, None) for i in ALL},
+        {(i, F32): (RoundingMode.RN, None) for i in ALL},
+        {(i, TF32): (RoundingMode.RN, None) for i in ALL},
+        {(i, BF16): (RoundingMode.RN, None) for i in ALL},
+        {(i, F16): (RoundingMode.RN, None) for i in ALL},
+        {(i, F8E4M3FN): (RoundingMode.RN, None) for i in ALL},
+        {(i, F8E5M2): (RoundingMode.RN, None) for i in ALL},
+        {(i, F4E2M1FN): (RoundingMode.RN, None) for i in ALL},
+
+        {(i, F64): (RoundingMode.RZ, B134) for i in ALL},
+        {(i, F32): (RoundingMode.RZ, B134) for i in ALL},
+        {(i, TF32): (RoundingMode.RZ, B134) for i in ALL},
+        {(i, F16): (RoundingMode.RZ, B134) for i in ALL},
+        {(i, BF16): (RoundingMode.RZ, B134) for i in ALL},
+        {(i, F8E8M0FNU): (RoundingMode.RZ, B133) for i in ALL if i not in {F64, F8E5M2, F8E4M3FN}},
+        {(i, F8E8M0FNU): (RoundingMode.RZ, B134) for i in (F64, F8E5M2, F8E4M3FN)},
+
+        {(i, F64): (RoundingMode.RM, B134) for i in ALL},
+        {(i, F32): (RoundingMode.RM, B134) for i in ALL if i not in {F8E8M0FNU}},
+        {(i, F16): (RoundingMode.RM, B134) for i in ALL if i not in {F64, F32, TF32, F8E8M0FNU}},
+        {(i, F64): (RoundingMode.RP, B134) for i in ALL},
+        {(i, F32): (RoundingMode.RP, B134) for i in ALL if i not in {F8E8M0FNU}},
+        {(i, F16): (RoundingMode.RP, B134) for i in ALL if i not in {F64, F32, TF32, F8E8M0FNU}},
+        {(i, F8E8M0FNU): (RoundingMode.RP, B133) for i in ALL if i not in {F64, F8E5M2, F8E4M3FN}},
+        {(i, F8E8M0FNU): (RoundingMode.RP, B134) for i in (F64, F8E5M2, F8E4M3FN)},
+
+        {(i, F64): (RoundingMode.RA, B134) for i in ALL},
+        {(i, F32): (RoundingMode.RA, B134) for i in ALL if i not in {F64, F8E8M0FNU}},
+        {(i, TF32): (RoundingMode.RA, B134) for i in ALL if i not in {F64, F8E8M0FNU}},
+        {(i, F16): (RoundingMode.RA, B134) for i in ALL if i not in {F64, F32, TF32, F8E8M0FNU}}
+)
+
+# {(from, to): {RoundingMode_1: BC_Version, RoundingMode_2: BC_Version}}
+FTOF_ROUNDING_REGISTRY = defaultdict(dict)
+for row in _FTOF_ROUNDING_ROWS:
+    for from_to, (mode, version) in row.items():
+        FTOF_ROUNDING_REGISTRY[from_to][mode] = version
+
+
+def get_ftof_rounding_min_version(from_dtype: datatype.DType, to_dtype: datatype.DType,
+                                  rounding_mode: RoundingMode | None
+                                  ) -> tuple[RoundingMode, BytecodeVersion | None]:
+
+    conversion_pair = (from_dtype, to_dtype)
+    supported = FTOF_ROUNDING_REGISTRY.get(conversion_pair, None)
+    if supported is None:
+        raise TileTypeError(f"float conversion from {from_dtype} to {to_dtype} "
+                            "is not supported")
+
+    rounding_mode = RoundingMode.RN if rounding_mode is None else rounding_mode
+    if rounding_mode not in supported:
+        raise TileTypeError(
+            f"rounding_mode={rounding_mode} is not supported "
+            f"for conversion from {from_dtype} to {to_dtype}, "
+            f"supported rounding modes for this conversion are {tuple(supported.keys())}")
+
+    return (rounding_mode, supported[rounding_mode])
 
 
 class CompareOrdering(Enum):

@@ -5,14 +5,18 @@
 import numpy as np
 import pytest
 from math import ceil
+from io import BytesIO
 
 import torch
 from torch.testing import make_tensor
 
 import cuda.tile as ct
 from util import assert_close, assert_equal, torch_to_tf32
-from cuda.tile._exception import TileTypeError
+from cuda.tile._exception import TileTypeError, TileUnsupportedFeatureError
+from cuda.tile._cext import CallingConvention
 from conftest import float_dtypes, int_dtypes, bool_dtypes, dtype_id
+from cuda.tile._bytecode.version import BytecodeVersion
+from conftest import requires_tileiras
 
 
 @pytest.fixture
@@ -44,6 +48,159 @@ def test_astype(shape, tile, use_method):
     grid = (ceil(shape[0] / tile), 1, 1)
     ct.launch(torch.cuda.current_stream(), grid, array_astype_to_float32, (x, y, tile, use_method))
     assert_equal(y, ref)
+
+
+def make_astype_to_f32_kernel(rounding_mode):
+    @ct.kernel
+    def kernel(x, y, TILE: ct.Constant[int], use_method: ct.Constant[bool]):
+        bid = ct.bid(0)
+        tx = ct.load(x, index=(bid,), shape=(TILE,))
+        if use_method:
+            ty = tx.astype(np.float32, rounding_mode=rounding_mode)
+        else:
+            ty = ct.astype(tx, np.float32, rounding_mode=rounding_mode)
+        ct.store(y, index=(bid,), tile=ty)
+    return kernel
+
+
+@pytest.mark.parametrize("use_method", [True, False])
+@pytest.mark.parametrize("rounding_mode", [None,
+                                           ct.RoundingMode.RN,
+                                           pytest.param(
+                                                ct.RoundingMode.RM,
+                                                marks=requires_tileiras(BytecodeVersion.V_13_4)),
+                                           pytest.param(
+                                                ct.RoundingMode.RP,
+                                                marks=requires_tileiras(BytecodeVersion.V_13_4)),
+                                           pytest.param(
+                                                ct.RoundingMode.RZ,
+                                                marks=requires_tileiras(BytecodeVersion.V_13_4))])
+def test_astype_rounding_mode_f64_f32(use_method, rounding_mode):
+    low = np.float32(1)
+    high = np.nextafter(low, np.float32(2))
+    val = np.float64(low) + np.float64(high - low) * 0.6
+    x = torch.tensor([-val, val], dtype=torch.float64, device='cuda')
+
+    match rounding_mode:
+        case ct.RoundingMode.RN | None: ref = [-high, high]
+        case ct.RoundingMode.RM: ref = [-high, low]
+        case ct.RoundingMode.RP: ref = [-low, high]
+        case ct.RoundingMode.RZ: ref = [-low, low]
+    ref = torch.tensor(ref, dtype=torch.float32, device='cuda')
+
+    y = torch.zeros_like(ref)
+    grid = (1,)
+    kernel = make_astype_to_f32_kernel(rounding_mode)
+    ct.launch(torch.cuda.current_stream(), grid, kernel, (x, y, 2, use_method))
+    assert_equal(y, ref)
+
+
+def make_astype_to_tf32_kernel(rounding_mode):
+    @ct.kernel
+    def kernel(x, y, TILE: ct.Constant[int], use_method: ct.Constant[bool]):
+        bid = ct.bid(0)
+        tx = ct.load(x, index=(bid,), shape=(TILE,))
+        if use_method:
+            ty = tx.astype(ct.tfloat32, rounding_mode=rounding_mode)
+        else:
+            ty = ct.astype(tx, ct.tfloat32, rounding_mode=rounding_mode)
+        ty = ct.astype(ty, y.dtype)  # because we cannot implicitly cast tfloat32 to float32
+        ct.store(y, index=(bid,), tile=ty)
+    return kernel
+
+
+@pytest.mark.parametrize("use_method", [True, False])
+@pytest.mark.parametrize("rounding_mode",
+                         [None,
+                          ct.RoundingMode.RN,
+                          pytest.param(
+                              ct.RoundingMode.RA,
+                              marks=requires_tileiras(BytecodeVersion.V_13_4)),
+                          pytest.param(
+                              ct.RoundingMode.RZ,
+                              marks=requires_tileiras(BytecodeVersion.V_13_4))])
+def test_astype_rounding_mode_f32_tf32(use_method, rounding_mode):
+    low = np.float32(1)
+    high = np.float32(1 + 2**-10)
+    val = np.float32(1 + 2**-11)
+    x = torch.tensor([-val, val], dtype=torch.float32, device='cuda')
+
+    match rounding_mode:
+        case ct.RoundingMode.RN | None: ref = [-low, low]
+        case ct.RoundingMode.RA: ref = [-high, high]
+        case ct.RoundingMode.RZ: ref = [-low, low]
+    ref = torch.tensor(ref, dtype=torch.float32, device='cuda')
+
+    y = torch.zeros_like(ref)
+    grid = (1,)
+    kernel = make_astype_to_tf32_kernel(rounding_mode)
+    ct.launch(torch.cuda.current_stream(), grid, kernel, (x, y, 2, use_method))
+    assert_equal(y, ref)
+
+
+def make_astype_to_kernel(rounding_mode, from_dtype, to_dtype):
+    @ct.kernel
+    def kernel(y):
+        ty = ct.ones((2,), dtype=from_dtype)
+        ty = ty.astype(to_dtype, rounding_mode=rounding_mode)
+        ty = ty.astype(y.dtype)
+        ct.store(y, index=(0,), tile=ty)
+    return kernel
+
+
+@pytest.mark.parametrize("rounding_mode", [ct.RoundingMode.RN,
+                                           ct.RoundingMode.RA,
+                                           ct.RoundingMode.RM,
+                                           ct.RoundingMode.RP,
+                                           ct.RoundingMode.RZ])
+def test_reject_astype_rounding_mode_i32_f32(rounding_mode):
+    y = torch.zeros((2,), dtype=torch.int32, device='cuda')
+    kernel = make_astype_to_kernel(rounding_mode, y.dtype, ct.float32)
+
+    with pytest.raises(TileTypeError, match="rounding_mode is only valid for float "
+                                            "to float conversions"):
+        ct.launch(torch.cuda.current_stream(), (1,), kernel, (y,))
+
+
+def compile_with(kernel, args, arch: str, version: str):
+    sig = ct.compilation.KernelSignature.from_kernel_args(
+            kernel, args, CallingConvention.cutile_python_v1())
+    ct.compilation.export_kernel(kernel, [sig], output_file=BytesIO(), gpu_code=arch,
+                                 output_format="cubin", bytecode_version=version)
+
+
+@pytest.mark.parametrize("to_dtype", [ct.float32, ct.float16])
+@pytest.mark.parametrize("rounding_mode", [ct.RoundingMode.RA,
+                                           ct.RoundingMode.RM,
+                                           ct.RoundingMode.RP])
+def test_reject_astype_rounding_mode_from_float8_e8m0fnu(to_dtype, rounding_mode):
+    from_dtype = ct.float8_e8m0fnu
+    y = torch.zeros((2,), dtype=torch.float32, device='cuda')
+    kernel = make_astype_to_kernel(rounding_mode, from_dtype, to_dtype)
+
+    with pytest.raises(TileTypeError, match=f"rounding_mode={rounding_mode} is "
+                                            f"not supported for conversion "
+                                            f"from {from_dtype} to {to_dtype}"):
+        ct.launch(torch.cuda.current_stream(), (1,), kernel, (y,))
+
+
+@requires_tileiras(BytecodeVersion.V_13_4)
+@pytest.mark.parametrize("from_dtype", [ct.float32, ct.tfloat32, ct.float8_e5m2,
+                                        ct.float16, ct.bfloat16, ct.float8_e4m3fn,
+                                        ct.float8_e8m0fnu, ct.float4_e2m1fn])
+@pytest.mark.parametrize("rounding_mode", [ct.RoundingMode.RA,
+                                           ct.RoundingMode.RM,
+                                           ct.RoundingMode.RP,
+                                           ct.RoundingMode.RZ])
+def test_reject_astype_rounding_mode_bc_version(from_dtype, rounding_mode):
+    to_dtype = ct.float64
+    y = torch.zeros((2,), dtype=torch.float32, device='cuda')
+    kernel = make_astype_to_kernel(rounding_mode, from_dtype, to_dtype)
+
+    with pytest.raises(TileUnsupportedFeatureError,
+                       match="The requested conversion and rounding_mode "
+                             "require tileiras 13.4 or later. Current version is 13.3."):
+        compile_with(kernel, (y,), "sm_100", "13.3")
 
 
 @ct.kernel

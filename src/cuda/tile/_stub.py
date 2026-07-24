@@ -605,9 +605,9 @@ class Tile:
         """See :py:func:`transpose`."""
         return transpose(self, axis0, axis1)
 
-    def astype(self, dtype) -> "Tile":
+    def astype(self, dtype, *, rounding_mode: Optional[RoundingMode] = None) -> "Tile":
         """See :py:func:`astype`."""
-        return astype(self, dtype)
+        return astype(self, dtype, rounding_mode=rounding_mode)
 
     @function
     def __index__(self) -> int:
@@ -2559,12 +2559,15 @@ def transpose(x, /, axis0=None, axis1=None) -> Tile:
 
 
 @stub
-def astype(x, dtype, /) -> Tile:
+def astype(x, dtype, /, *, rounding_mode: Optional[RoundingMode] = None) -> Tile:
     """Converts a tile to the specified data type.
 
     Args:
         x (Tile): input tile.
         dtype (DType): target data type.
+        rounding_mode (RoundingMode): optional rounding mode for explicit float to
+                                      float conversions. Default is round to nearest
+                                      with ties to even.
 
     Returns:
         Tile:

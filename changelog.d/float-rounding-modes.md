@@ -1,0 +1,1 @@
+Added support for specifying IEEE rounding modes in float to float `astype` conversions.

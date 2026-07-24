@@ -18,6 +18,7 @@ from cuda.tile import DType
 import cuda.tile._bytecode as bc
 from cuda.tile._compiler_options import CompilerOptions
 from cuda.tile._exception import TileInternalError, TileError, FunctionDesc
+from cuda.tile._numeric_semantics import RoundingMode
 from cuda.tile._ir.ir import Block, Loc, Var, IRContext
 from cuda.tile._ir.ops_utils import (
     padding_mode_to_bytecode, rounding_mode_to_bytecode,
@@ -130,7 +131,8 @@ def _flatten_bools(value) -> tuple[bool]:
     return sum((_flatten_bools(v) for v in value), start=())
 
 
-def _get_type_conversion_encoder(from_dtype: Type, to_dtype: Type):
+def _get_type_conversion_encoder(from_dtype: Type, to_dtype: Type, *,
+                                 rounding_mode: RoundingMode | None = None):
 
     def kind(t):
         if datatype.is_float(t):
@@ -140,11 +142,16 @@ def _get_type_conversion_encoder(from_dtype: Type, to_dtype: Type):
         raise TileInternalError(f'Unsupported dtype: {t}')
 
     from_kind, to_kind = kind(from_dtype), kind(to_dtype)
+
+    if rounding_mode is not None:
+        rounding_mode = rounding_mode_to_bytecode[rounding_mode]
+    else:
+        rounding_mode = bc.RoundingMode.NEAREST_EVEN
+
     round_to_float = rounding_mode_to_bytecode[get_default_rounding_mode()]
     partial = functools.partial
     match from_kind, to_kind:
-        case 'f', 'f': return partial(bc.encode_FToFOp,
-                                      rounding_mode=bc.RoundingMode.NEAREST_EVEN)
+        case 'f', 'f': return partial(bc.encode_FToFOp, rounding_mode=rounding_mode)
         case 'f', 'si': return partial(bc.encode_FToIOp,
                                        signedness=bc.Signedness.Signed,
                                        rounding_mode=bc.RoundingMode.NEAREST_INT_TO_ZERO,
@@ -171,8 +178,8 @@ def _get_type_conversion_encoder(from_dtype: Type, to_dtype: Type):
     raise NotImplementedError(f"Type coversion from {from_dtype} to {to_dtype} not implemented")
 
 
-def convert_dtype(ctx: "BytecodeContext", val: bc.Value,
-                  fromty: Type, toty: Type) -> bc.Value:
+def convert_dtype(ctx: "BytecodeContext", val: bc.Value, fromty: Type,
+                  toty: Type, *, rounding_mode: RoundingMode | None = None) -> bc.Value:
     from_dtype = fromty.dtype if isinstance(fromty, TileTy) else fromty
     to_dtype = toty.dtype if isinstance(toty, TileTy) else toty
     toty_id = typeid(ctx.type_table, toty)
@@ -188,7 +195,7 @@ def convert_dtype(ctx: "BytecodeContext", val: bc.Value,
             comparison_predicate=bc.ComparisonPredicate.NOT_EQUAL,
             signedness=datatype.get_signedness(from_dtype))
     else:
-        encoder = _get_type_conversion_encoder(from_dtype, to_dtype)
+        encoder = _get_type_conversion_encoder(from_dtype, to_dtype, rounding_mode=rounding_mode)
         return encoder(ctx.builder, toty_id, val)
 
 

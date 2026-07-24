@@ -23,7 +23,7 @@ def test_flatten_ifelse():
             A[0] = 0
 
     # BEFORE: $[[ITEM:[0-9]+]]: int32 = load_pointer
-    # BEFORE: $[[ITEM_CASTED:[0-9]+]]: bool_ = tile_astype(x=$[[ITEM]])
+    # BEFORE: $[[ITEM_CASTED:[0-9]+]]: bool_ = tile_astype(x=$[[ITEM]], rounding_mode=None)
     # BEFORE: if(cond=$[[ITEM_CASTED]])
     # BEFORE: then
     # BEFORE:   store_pointer
@@ -37,7 +37,7 @@ def test_flatten_ifelse():
 
     # AFTER: ^entry({{.+}}):
     # AFTER:   $[[ITEM:[0-9]+]]: int32 = load_pointer
-    # AFTER:   $[[ITEM_CASTED:[0-9]+]]: bool_ = tile_astype(x=$[[ITEM]])
+    # AFTER:   $[[ITEM_CASTED:[0-9]+]]: bool_ = tile_astype(x=$[[ITEM]], rounding_mode=None)
     # AFTER:   cond_br $[[ITEM_CASTED]]: bool_ ^then() ^else()
     # AFTER: ^then():
     # AFTER:   store_pointer
@@ -87,7 +87,7 @@ def test_flatten_ifelse_nested():
 def test_flatten_ifelse_phi_merge():
     def test_kernel(A):
         # CHECK: $[[ITEM:[0-9]+]]: int32 = load_pointer
-        # CHECK: $[[ITEM_BOOL:[0-9]+]]: bool_ = tile_astype(x=$[[ITEM]])
+        # CHECK: $[[ITEM_BOOL:[0-9]+]]: bool_ = tile_astype(x=$[[ITEM]], rounding_mode=None)
         # CHECK: cond_br $[[ITEM_BOOL]]: bool_ ^then() ^else()
         if A[0]:
             # CHECK: $[[ITEM_1:[0-9]+]]: int32 = load_pointer
