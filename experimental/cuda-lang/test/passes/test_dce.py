@@ -50,27 +50,6 @@ class TestOpsSurviveDCE:
 
         assert not kernel.has_op(LoadPointer)
 
-    def test_dead_volatile_load_is_kept(self):
-        @ir_wrapper
-        def kernel(A, n):
-            A.get_base_pointer().load(volatile=True)
-
-        assert kernel.has_op(LoadPointer)
-
-    def test_dead_acquire_load_is_kept(self):
-        @ir_wrapper
-        def kernel(A, n):
-            A.get_base_pointer().load(memory_order=cl.MemoryOrder.ACQUIRE)
-
-        assert kernel.has_op(LoadPointer)
-
-    def test_dead_relaxed_load_is_removed(self):
-        @ir_wrapper
-        def kernel(A, n):
-            A.get_base_pointer().load(memory_order=cl.MemoryOrder.RELAXED)
-
-        assert not kernel.has_op(LoadPointer)
-
     def test_unused_atomic_result_is_kept(self):
         @ir_wrapper
         def kernel(A, n):

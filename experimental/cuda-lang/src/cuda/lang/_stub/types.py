@@ -2,9 +2,9 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-from typing import Generic, TypeVar, Literal
+from typing import Generic, TypeVar
 
-from cuda.tile import MemoryOrder, DType
+from cuda.tile import DType
 from cuda.tile._execution import stub
 from cuda.tile._memory_model import MemorySpace
 from .._enums import VectorReduction
@@ -229,8 +229,6 @@ class Pointer(Generic[T]):
         *,
         count: int | None = None,
         alignment: int | None = None,
-        volatile: bool = False,
-        memory_order: MemoryOrder | None = None,
     ) -> T | Vector[T]:
         """Load one or more consecutive values from this address.
 
@@ -244,15 +242,7 @@ class Pointer(Generic[T]):
             alignment: Minimum byte alignment that the compiler can assume.
                 The value must be a positive power of two. The address must
                 have this alignment. If the value is ``None``, the compiler
-                does not get an alignment hint. For an atomic load, the
-                default is the natural alignment of the pointee data type.
-            volatile: If ``True``, the compiler preserves this load and its
-                order relative to other volatile operations.
-            memory_order: Memory order for the load. ``None`` and
-                ``MemoryOrder.WEAK`` select a non-atomic load.
-                ``MemoryOrder.RELAXED`` and ``MemoryOrder.ACQUIRE`` select an
-                atomic load. An atomic load must load one value. The pointee
-                size must be a power-of-two number of bytes.
+                does not get an alignment hint.
         """
 
     @stub
@@ -261,11 +251,6 @@ class Pointer(Generic[T]):
         value: T | Vector[T],
         *,
         alignment: int | None = None,
-        volatile: bool = False,
-        memory_order: Literal[
-            MemoryOrder.RELAXED, MemoryOrder.RELEASE, MemoryOrder.WEAK
-        ]
-        | None = None,
     ) -> None:
         """Store one or more consecutive values at this address.
 
@@ -278,15 +263,7 @@ class Pointer(Generic[T]):
             alignment: Minimum byte alignment that the compiler can assume.
                 The value must be a positive power of two. The address must
                 have this alignment. If the value is ``None``, the compiler
-                does not get an alignment hint. For an atomic store, the
-                default is the natural alignment of the pointee data type.
-            volatile: If ``True``, the compiler preserves this store and its
-                order relative to other volatile operations.
-            memory_order: Memory order for the store. ``None`` and
-                ``MemoryOrder.WEAK`` select a non-atomic store.
-                ``MemoryOrder.RELAXED`` and ``MemoryOrder.RELEASE`` select an
-                atomic store. An atomic store must store one value. The pointee
-                size must be a power-of-two number of bytes.
+                does not get an alignment hint.
         """
 
     @property

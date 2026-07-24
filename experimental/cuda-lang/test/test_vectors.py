@@ -14,7 +14,6 @@ from cuda.lang._exception import TypeCheckingError, InvalidValueError
 from cuda.lang.compilation import KernelSignature, ScalarConstraint
 
 
-@pytest.mark.parametrize("volatile", [True, False])
 @pytest.mark.parametrize("element_count", [2, 4, 8])
 @pytest.mark.parametrize(
     "dtype",
@@ -29,7 +28,7 @@ from cuda.lang.compilation import KernelSignature, ScalarConstraint
         cl.bool_,
     ],
 )
-def test_pointer_vector_ldst(volatile, element_count, dtype):
+def test_pointer_vector_ldst(element_count, dtype):
     assert (element_count & (element_count - 1)) == 0
     alignment = (dtype.bitwidth // 8) * element_count
     values = tuple(i % 2 if dtype is cl.bool_ else i for i in range(element_count))
@@ -42,12 +41,10 @@ def test_pointer_vector_ldst(volatile, element_count, dtype):
             v = larr.get_base_pointer().load(
                 count=element_count,
                 alignment=alignment,
-                volatile=volatile,
             )
         A.get_base_pointer().store(
             v,
             alignment=alignment,
-            volatile=volatile,
         )
 
     A = torch.zeros(element_count, dtype=to_torch_dtype(dtype)).cuda()

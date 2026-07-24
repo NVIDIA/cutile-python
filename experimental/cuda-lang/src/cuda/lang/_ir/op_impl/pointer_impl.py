@@ -23,7 +23,6 @@ from cuda.lang._ir.type_checking_helpers import (
     require_optional_alignment,
     require_array_indices,
     require_pointer_type,
-    require_pointer_memory_order,
     require_scalar_type,
 )
 from cuda.tile._datatype import (
@@ -41,7 +40,6 @@ from cuda.tile._ir.op_impl import (
     ImplRegistry,
     WILDCARD,
     require_array_type,
-    require_constant_bool,
     require_constant_enum,
     require_constant_int_tuple,
     require_constant_pointer_info,
@@ -50,7 +48,6 @@ from cuda.tile._ir.op_impl import (
     require_optional_constant_int,
 )
 from cuda.tile._ir.ops import PointerOffset
-from cuda.tile._memory_model import MemoryOrder
 from ..._stub import core_api
 from ..._stub.core_api import Array
 from ..._stub.types import Pointer
@@ -206,9 +203,7 @@ def pointer_getitem(object: Var[PointerTy], key: Var[Type]):
         LoadPointer,
         ScalarTy(ptr_ty.pointee_dtype),
         pointer=pointer,
-        volatile=False,
         alignment=None,
-        memory_order=None,
     )
 
 
@@ -223,8 +218,6 @@ def pointer_setitem(object: Var[PointerTy], key: Var[Type], value: Var[Type]):
         pointer=pointer,
         value=value,
         alignment=None,
-        volatile=False,
-        memory_order=None,
     )
 
 
@@ -238,7 +231,6 @@ def array_getitem(object: Var, key: Var) -> Var:
         PointerTy(array_ty.dtype) if is_pointer_dtype(array_ty.dtype) else ScalarTy(array_ty.dtype),
         pointer=pointer,
         alignment=None,
-        volatile=False,
     )
 
 
@@ -255,53 +247,26 @@ def array_setitem(object: Var, key: Var, value: Var):
         pointer=pointer,
         value=value,
         alignment=None,
-        volatile=False,
-        memory_order=None,
     )
-
-
-def _require_atomic_scalar_dtype(dtype: datatype.DType, operation: str) -> None:
-    """Atomic accesses operate on a single value of power-of-two byte size."""
-    total_bytes, remainder = divmod(dtype.bitwidth, 8)
-    if remainder or (total_bytes & (total_bytes - 1)):
-        raise TypeCheckingError(
-            f"Type {dtype} cannot be accessed atomically; atomic {operation}s "
-            f"require a pointee whose size is a power-of-two number of bytes"
-        )
 
 
 def pointer_load(
     pointer: Var,
     count: Var,
     alignment: Var,
-    volatile: Var,
-    memory_order: Var,
 ) -> Var:
     pointee_dtype = require_pointer_type(pointer).pointee_dtype
     count = require_optional_constant_int(count)
-    volatile = require_constant_bool(volatile)
     alignment = require_optional_alignment(alignment)
-    memory_order = require_pointer_memory_order(LoadPointer, memory_order)
-    is_atomic = memory_order not in (None, MemoryOrder.WEAK)
     if count is None or count == 1:
-        if is_atomic:
-            _require_atomic_scalar_dtype(pointee_dtype, "load")
-            if alignment is None:
-                alignment = pointee_dtype.bitwidth // 8
         result_ty = ScalarTy(pointee_dtype)
     else:
-        if is_atomic:
-            raise TypeCheckingError(
-                "Atomic loads must be scalar; a vector load (count > 1) cannot be atomic"
-            )
         result_ty = VectorTy(pointee_dtype, count)
     return add_operation(
         LoadPointer,
         result_ty,
         pointer=pointer,
-        volatile=volatile,
         alignment=alignment,
-        memory_order=memory_order,
     )
 
 
@@ -309,36 +274,20 @@ def pointer_store(
     pointer: Var,
     value: Var,
     alignment: Var,
-    volatile: Var,
-    memory_order: Var,
 ) -> None:
     pointer_ty = require_pointer_type(pointer)
-    volatile = require_constant_bool(volatile)
     alignment = require_optional_alignment(alignment)
-    memory_order = require_pointer_memory_order(StorePointer, memory_order)
 
     pointee_dtype = pointer_ty.pointee_dtype
     value = implicit_cast(value, pointee_dtype,
                           "Stored value type is incompatible with pointer type")
-
-    is_atomic = memory_order not in (None, MemoryOrder.WEAK)
-    if is_atomic:
-        if isinstance(value.get_type(), VectorTy):
-            raise TypeCheckingError(
-                "Atomic stores must be scalar; a vector value cannot be stored atomically"
-            )
-        _require_atomic_scalar_dtype(pointee_dtype, "store")
-        if alignment is None:
-            alignment = pointee_dtype.bitwidth // 8
 
     add_operation_variadic(
         StorePointer,
         (),
         pointer=pointer,
         value=value,
-        volatile=volatile,
         alignment=alignment,
-        memory_order=memory_order,
     )
 
 
@@ -386,10 +335,8 @@ def pointer_load_impl(
     self: Var,
     count: Var,
     alignment: Var,
-    volatile: Var,
-    memory_order: Var,
 ) -> Var:
-    return pointer_load(self, count, alignment, volatile, memory_order)
+    return pointer_load(self, count, alignment)
 
 
 @impl(Pointer.store)
@@ -397,10 +344,8 @@ def pointer_store_impl(
     self: Var,
     value: Var,
     alignment: Var,
-    volatile: Var,
-    memory_order: Var,
 ) -> None:
-    pointer_store(self, value, alignment, volatile, memory_order)
+    pointer_store(self, value, alignment)
 
 
 @impl(core_api.address_space_cast)

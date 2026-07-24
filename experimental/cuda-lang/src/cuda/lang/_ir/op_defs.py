@@ -7,7 +7,6 @@ from typing import Optional
 from enum import Enum, auto
 
 import cuda.lang._mlir as mlir
-from cuda.tile._memory_model import MemoryOrder
 from cuda.tile._ir.ir import MemoryEffect
 import cuda.lang._datatype as datatype
 from cuda.lang._enums import VectorReduction
@@ -79,34 +78,12 @@ class StorePointer(Operation, opcode="store_pointer", memory_effect=MemoryEffect
     pointer: Var = operand()
     value: Var = operand()
     alignment: Optional[int] = attribute()
-    volatile: bool = attribute(default=False)
-    memory_order: Optional[MemoryOrder] = attribute(default=None)
-
-    valid_memory_orders = (
-        None,
-        MemoryOrder.WEAK,
-        MemoryOrder.RELAXED,
-        MemoryOrder.RELEASE,
-    )
 
 
 @dataclass(eq=False)
 class LoadPointer(Operation, opcode="load_pointer", memory_effect=MemoryEffect.LOAD):
     pointer: Var = operand()
     alignment: Optional[int] = attribute()
-    volatile: bool = attribute(default=False)
-    memory_order: Optional[MemoryOrder] = attribute(default=None)
-
-    valid_memory_orders = (
-        None,
-        MemoryOrder.WEAK,
-        MemoryOrder.RELAXED,
-        MemoryOrder.ACQUIRE,
-    )
-
-    @property
-    def has_observable_effect(self) -> bool:
-        return self.volatile or self.memory_order in (MemoryOrder.ACQUIRE, )
 
 
 @dataclass(eq=False)

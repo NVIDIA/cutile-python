@@ -1100,7 +1100,6 @@ def lower_load_pointer(
     context: DeviceLoweringContext, operation: ops.LoadPointer
 ) -> Sequence[mlir.Value]:
     ptr_dtype = operation.pointer.get_type().pointer_dtype
-    ordering = _get_llvm_memory_ordering(operation.memory_order)
     info = PointerInfo(ptr_dtype)
     assert not info.opaque, f"Expected a typed pointer, got {ptr_dtype}"
     result_type = ir_type_to_mlir_type(operation.result_var.get_type())
@@ -1109,8 +1108,6 @@ def lower_load_pointer(
         res_type=result_type,
         addr=pointer,
         alignment=operation.alignment,
-        volatile_=operation.volatile,
-        ordering=ordering,
     )
     return [result]
 
@@ -1120,14 +1117,11 @@ def lower_store_pointer(
     context: DeviceLoweringContext, operation: ops.StorePointer
 ) -> Sequence[mlir.Value]:
     pointer = context.get_var(operation.pointer)
-    ordering = _get_llvm_memory_ordering(operation.memory_order)
     value = context.get_var(operation.value)
     mlir.llvm.add_StoreOp(
         value=value,
         addr=pointer,
         alignment=operation.alignment,
-        volatile_=operation.volatile,
-        ordering=ordering,
     )
     return []
 

@@ -7,16 +7,14 @@ from typing import Any, Callable
 import cuda.lang._datatype as datatype
 from cuda.lang._enums import TMALoadMode
 from cuda.lang._ir.ir import add_operation
-from cuda.lang._ir.op_defs import LoadPointer, StorePointer, TensorMapAsOpaquePtr
+from cuda.lang._ir.op_defs import TensorMapAsOpaquePtr
 from cuda.lang._ir.type import MemorySpace, ScalarTy, TensorMapTy, VectorTy, PointerTy
 from cuda.lang._exception import TypeCheckingError
 from cuda.tile import DType
-from cuda.tile._memory_model import MemoryOrder
 from cuda.tile._ir.ir import Var
 from cuda.tile._ir.op_impl import (  # noqa: F401
     make_type_checking_error,
     require_array_type,
-    require_optional_constant_enum,
     require_optional_constant_int,
     require_dtype_spec,
     require_constant_enum,
@@ -231,24 +229,6 @@ def require_optional_alignment(alignment: Var) -> int | None:
         raise make_type_checking_error("alignment must be a positive power of two")
 
     return alignment
-
-
-def require_pointer_memory_order(
-    operation: type[LoadPointer] | type[StorePointer],
-    memory_order_var: Var,
-):
-    memory_order = require_optional_constant_enum(memory_order_var, MemoryOrder)
-    if memory_order in operation.valid_memory_orders:
-        return memory_order
-
-    formatted_expected = ", ".join(
-        "None" if order is None else str(order) for order in operation.valid_memory_orders
-    )
-    operation_name = "load" if operation is LoadPointer else "store"
-    raise make_type_checking_error(
-        f"Invalid memory order for Pointer.{operation_name}. "
-        f"Got {memory_order}, expected one of {formatted_expected}"
-    )
 
 
 def require_mbarrier_ptr(
