@@ -266,6 +266,8 @@ from ._datatype import (
     clusterlaunchcontrol_token,
 )
 
+from . import _debug
+
 __all__ = (
     "dtype_of",
     "pointer_dtype",
@@ -480,4 +482,5 @@ __all__ = (
     "MatrixLoadShape",
     "MatrixLoadSourceFormat",
     "MatrixStoreShape",
+    "_debug",
 )
