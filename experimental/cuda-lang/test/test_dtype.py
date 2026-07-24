@@ -33,6 +33,12 @@ def test_dtype_of():
         cl.static_assert(float_dtype == cl.float32)
         cl.static_assert(float_dtype.bitwidth == 32)
 
+        vec = cl.Vector(1, 2, 3, 4, dtype=cl.int8)
+        cl.static_assert(cl.dtype_of(vec) == cl.int8)
+        vec_dtype = cl.dtype_of(vec)
+        cl.static_assert(vec_dtype == cl.int8)
+        cl.static_assert(vec_dtype.bitwidth == 8)
+
     x = torch.zeros(10, dtype=torch.int32, device="cuda")
     cl.launch(torch.cuda.current_stream(), (1,), (1,), kern, (x,))
 

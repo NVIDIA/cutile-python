@@ -10,7 +10,7 @@ from cuda.lang._exception import TypeCheckingError
 from cuda.tile._stub import Array as TileArray, cdiv as tile_cdiv
 from cuda.tile._memory_model import MemoryOrder, MemoryScope, MemorySpace
 from cuda.lang._datatype import DType
-from .types import Pointer, Scalar
+from .types import Pointer, Scalar, Vector
 
 T = TypeVar("T")
 
@@ -74,20 +74,16 @@ class Array(TileArray, Generic[T]):
 @stub(host=True)
 def dtype_of(value, /) -> DType:
     """
-    Returns the data type of a scalar or pointer value.
+    Returns the data type of a scalar, pointer, or vector value.
     """
-    if isinstance(value, Scalar):
-        # We expect SymbolicScalar here
-        return value._var.get_type().dtype
-    elif isinstance(value, Pointer):
-        # Similarly, we expect SymbolicPointer here
-        return value._var.get_type().pointer_dtype
+    if isinstance(value, Scalar | Pointer | Vector):
+        return value._var.get_type().tensor_dtype()
     elif isinstance(value, bool | int | float):
         from cuda.tile._ir.typing_support import dtype_of_constant_scalar
         return dtype_of_constant_scalar(value)
     else:
         raise TypeCheckingError(
-            f"dtype_of() expects a scalar or a pointer as the argument,"
+            f"dtype_of() expects a scalar, pointer, or vector as the argument,"
             f" got {type(value)}"
         )
 

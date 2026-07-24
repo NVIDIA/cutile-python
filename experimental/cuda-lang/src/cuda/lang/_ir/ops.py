@@ -186,13 +186,11 @@ impl = cuda_lang_impl_registry.impl
 @impl(core_api.dtype_of)
 def dtype_of_impl(value: Var):
     ty = value.get_type()
-    if isinstance(ty, ScalarTy):
-        dtype = ty.dtype
-    elif isinstance(ty, PointerTy):
-        dtype = ty.pointer_dtype
+    if isinstance(ty, (ScalarTy, PointerTy, VectorTy)):
+        dtype = ty.tensor_dtype()
     else:
         raise TypeCheckingError(
-            f"dtype_of() expects a scalar or a pointer as the argument, got {ty}"
+            f"dtype_of() expects a scalar, pointer, or vector as the argument, got {ty}"
         )
     return loosely_typed_const(dtype)
 
