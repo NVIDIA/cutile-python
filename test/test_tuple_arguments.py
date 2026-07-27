@@ -299,6 +299,28 @@ def test_nested_tuple_different_structures():
     assert out[0] == 3
 
 
+def test_two_top_level_tuple_args():
+    @ct.kernel
+    def k(out, t1, t2):
+        ct.scatter(out, (0,), t1[0] + t2[0])
+        ct.scatter(out, (1,), t1[1] + t2[1])
+
+    out = torch.zeros(2, dtype=torch.int32, device="cuda")
+    ct.launch(torch.cuda.current_stream(), (1,), k, (out, (1, 2), (10, 20)))
+    assert out.tolist() == [11, 22]
+
+
+def test_tuple_of_two_tuples_arg():
+    @ct.kernel
+    def k(out, t):
+        ct.scatter(out, (0,), t[0][0] + t[1][0])
+        ct.scatter(out, (1,), t[0][1] + t[1][1])
+
+    out = torch.zeros(2, dtype=torch.int32, device="cuda")
+    ct.launch(torch.cuda.current_stream(), (1,), k, (out, ((1, 2), (10, 20))))
+    assert out.tolist() == [11, 22]
+
+
 def test_tuple_with_variable_length_annotation():
     @ct.kernel
     def k(out, addends: tuple[ct.Constant[int], ...]):

@@ -691,11 +691,13 @@ def dict_get_impl(self: Var, key: Var, default: Var):
 # Dataclass
 # ===========================================================================================
 
-def build_dataclass_instance(items: tuple[Var, ...], info: DataclassInfo) -> Var:
+def build_dataclass_instance(items: tuple[Var, ...], info: DataclassInfo,
+                             result_var: Var | None = None) -> Var:
     cls = info.cls
     ty = DataclassTy(cls, tuple(x.get_type() for x in items))
     loose_ty = DataclassTy(cls, tuple(x.get_loose_type() for x in items))
-    res = make_aggregate(DataclassValue(items, info), ty, loose_ty)
+    val = DataclassValue(items, info)
+    res = Builder.get_current().make_aggregate(val, ty, loose_ty, result_var=result_var)
     if all(x.is_constant() for x in items):
         items_values = [x.get_constant() for x in items]
         const_val = create_dataclass_instance(cls, items_values)

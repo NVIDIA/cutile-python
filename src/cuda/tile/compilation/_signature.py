@@ -5,12 +5,12 @@
 import dataclasses
 import struct
 from collections import defaultdict
-from dataclasses import dataclass
-from typing import Sequence, Iterator, TypeAlias, Any
+from dataclasses import dataclass, is_dataclass
+from typing import Sequence, Iterator, TypeAlias, Any, Protocol, ClassVar
 
 from cuda.tile._execution import kernel
 from cuda.tile._cext import CallingConvention, get_parameter_constraints_from_pyargs, \
-    classify_constant
+    classify_constant, cconv_v3_enabled
 from cuda.tile._datatype import DType, int32, int64, uint32
 
 
@@ -232,9 +232,58 @@ class TupleConstraint:
     """
     items: "tuple[ParameterConstraint, ...]"
 
-    def __init__(self, items: "Sequence[ParameterConstraint]"):
+    def __init__(self, items: "Sequence[ParameterConstraintLike]"):
         items = tuple(_to_constraint(x) for x in items)
         object.__setattr__(self, "items", items)
+
+
+@dataclass(frozen=True, init=False)
+class DataclassConstraint:
+    """
+    Describes a dataclass kernel parameter.
+
+    Args:
+        cls (type):
+            The dataclass type. Only frozen dataclasses are supported.
+        fields (Sequence[ParameterConstraint]):
+            Per-field constraints, in the order the fields are declared on ``cls``.
+    """
+    cls: type
+    fields: tuple["ParameterConstraint", ...]
+
+    def __init__(self, cls: type, fields: "Sequence[ParameterConstraintLike]"):
+        if not cconv_v3_enabled():
+            raise NotImplementedError("DataclassConstraint is a development-only feature")
+
+        if not isinstance(cls, type) or not is_dataclass(cls):
+            raise TypeError("DataclassConstraint.cls must be a dataclass type")
+        fields = tuple(_to_constraint(f) for f in fields)
+        dataclass_field_count = len(dataclasses.fields(cls))
+        if len(fields) != dataclass_field_count:
+            raise TypeError("Number of fields in DataclassConstraint doesn't match"
+                            f" the number of fields of dataclass '{cls.__qualname__}'"
+                            f" ({len(fields)} vs {dataclass_field_count})")
+
+        object.__setattr__(self, "cls", cls)
+        object.__setattr__(self, "fields", fields)
+
+    @staticmethod
+    def create(cls: type, /, **fields: "ParameterConstraintLike") -> "DataclassConstraint":
+        if not isinstance(cls, type) or not is_dataclass(cls):
+            raise TypeError("`cls` must be a dataclass type")
+
+        field_list = []
+        for field in dataclasses.fields(cls):
+            if field.name not in fields:
+                raise TypeError(f"Missing field '{field.name}' of dataclass '{cls.__qualname__}'")
+            field_constraint = fields.pop(field.name)
+            field_list.append(_to_constraint(field_constraint))
+
+        if len(fields) > 0:
+            field_name = next(iter(fields))
+            raise TypeError(f"No such field '{field_name}' in dataclass '{cls.__qualname__}'")
+
+        return DataclassConstraint(cls, field_list)
 
 
 ConstantValue: TypeAlias = bool | int | float
@@ -272,16 +321,28 @@ class ConstantConstraint:
 
 
 ParameterConstraint: TypeAlias = (ScalarConstraint | ArrayConstraint | ListConstraint
-                                  | TupleConstraint | ConstantConstraint)
+                                  | TupleConstraint | DataclassConstraint | ConstantConstraint)
 
 
-def _to_constraint(c: ParameterConstraint | ConstantValue | tuple) -> ParameterConstraint:
+class DataclassInstance(Protocol):
+    __dataclass_fields__: ClassVar[dict]
+
+
+ParameterConstraintLike = ParameterConstraint | ConstantValue | tuple | DataclassInstance
+
+
+def _to_constraint(c: ParameterConstraintLike) -> ParameterConstraint:
     if isinstance(c, ParameterConstraint):
         return c
     elif classify_constant(c) is not None:
         return ConstantConstraint(c)
     elif isinstance(c, tuple):
-        return TupleConstraint(c)
+        return TupleConstraint(tuple(_to_constraint(x) for x in c))
+    elif is_dataclass(c) and not isinstance(c, type):
+        cls = type(c)
+        fields = tuple(_to_constraint(getattr(c, f.name))
+                       for f in dataclasses.fields(cls))
+        return DataclassConstraint(cls, fields)
     else:
         raise TypeError(f"Can't interpret {c!r} as a parameter constraint")
 
@@ -298,7 +359,7 @@ class KernelSignature:
 
             Possible constraint classes are: :py:class:`ScalarConstraint`,
             :py:class:`ArrayConstraint`, :py:class:`ListConstraint`, :py:class:`TupleConstraint`,
-            :py:class:`ConstantConstraint`.
+            :py:class:`ConstantConstraint`, :py:class:`DataclassConstraint`.
 
             A plain :py:class:`ConstantValue` (for example, a literal ``10``), can be used
             as shorthand for :py:class:`ConstantConstraint` wrapping the given value.
@@ -322,7 +383,7 @@ class KernelSignature:
     symbol: str | None
 
     def __init__(self,
-                 parameters: Sequence[ParameterConstraint | ConstantValue | tuple],
+                 parameters: Sequence[ParameterConstraintLike],
                  calling_convention: CallingConvention,
                  symbol: str | None = None):
         if symbol is not None and not isinstance(symbol, str):
@@ -525,6 +586,12 @@ def _validate_constraint_support(constraint: ParameterConstraint, cconv: Calling
             raise ValueError(f"Tuple parameters are not supported by calling convention"
                              f" {cconv.name}; version >= 2 is required")
         for x in constraint.items:
+            _validate_constraint_support(x, cconv)
+    elif isinstance(constraint, DataclassConstraint):
+        if cconv.version < 3:
+            raise ValueError(f"Dataclass parameters are not supported by calling convention"
+                             f" {cconv.name}; version >= 3 is required")
+        for x in constraint.fields:
             _validate_constraint_support(x, cconv)
     elif isinstance(constraint, ConstantConstraint):
         pass

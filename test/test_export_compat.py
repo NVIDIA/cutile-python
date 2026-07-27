@@ -3,6 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import ctypes
+import dataclasses
 import re
 from ctypes import (c_char_p, POINTER, c_void_p, c_int, c_uint64, pointer, CFUNCTYPE, c_uint,
                     c_int32, c_float, byref)
@@ -12,6 +13,7 @@ import pytest
 import torch.cuda
 
 import cuda.tile as ct
+from cuda.tile._cext import cconv_v3_enabled
 from cuda.tile._compile import get_sm_arch
 from cuda.tile._exception import TileUnsupportedFeatureError
 from util import get_bytecode
@@ -75,7 +77,7 @@ def kernel_1(c1: ct.Constant, s1, c2: ct.Constant, s2,
         ct.scatter(a2, (7 - i, i + 2, i), c2 * 1000.0 + s2 * 10 + i)
 
 
-def _build_kernel_args(runtime_pyargs, is_v2=False) -> list:
+def _build_kernel_args(runtime_pyargs) -> list:
     args = []
     for x in runtime_pyargs:
         if isinstance(x, torch.Tensor):
@@ -84,7 +86,7 @@ def _build_kernel_args(runtime_pyargs, is_v2=False) -> list:
                 args.append(c_int32(s))
             for s in x.stride():
                 args.append(c_int32(s))
-        elif is_v2 and isinstance(x, tuple):
+        elif isinstance(x, tuple):
             for elem in x:
                 if isinstance(elem, int):
                     args.append(c_int32(elem))
@@ -92,6 +94,9 @@ def _build_kernel_args(runtime_pyargs, is_v2=False) -> list:
                     args.append(c_float(elem))
                 else:
                     assert False, f"Unsupported tuple element type: {type(elem)}"
+        elif dataclasses.is_dataclass(x) and not isinstance(x, type):
+            args.extend(_build_kernel_args(
+                (getattr(x, field.name) for field in dataclasses.fields(x))))
         elif isinstance(x, int):
             args.append(c_int32(x))
         elif isinstance(x, float):
@@ -101,14 +106,14 @@ def _build_kernel_args(runtime_pyargs, is_v2=False) -> list:
     return args
 
 
-def _call_kernel(cubin: bytes, kernel_name: str, runtime_pyargs, is_v2=False):
+def _call_kernel(cubin: bytes, kernel_name: str, runtime_pyargs):
     driver = CudaDriver()
     library = driver.cuLibraryLoadData(cubin)
     kernel = driver.cuLibraryGetKernel(library, kernel_name)
     stream = torch.cuda.current_stream()
     driver.cuLaunchKernel(kernel, (1, 1, 1), (1, 1, 1), 0,
                           c_void_p(stream.cuda_stream),
-                          _build_kernel_args(runtime_pyargs, is_v2))
+                          _build_kernel_args(runtime_pyargs))
 
 
 def test_export_compat_cutile_python_v1():
@@ -203,8 +208,59 @@ def test_export_compat_cutile_python_v2():
     ct.compilation.export_kernel(kernel_2, [sig], gpu_code=get_sm_arch(), output_file=io,
                                  output_format="cubin")
     out = torch.zeros((), dtype=torch.int32, device="cuda")
-    _call_kernel(io.getvalue(), "kernel_2_Kt2_T2Si32Si32_T1I10_A0i32", ((3, 7), out), is_v2=True)
+    _call_kernel(io.getvalue(), "kernel_2_Kt2_T2Si32Si32_T1I10_A0i32", ((3, 7), out))
     assert out.item() == 20
+
+
+@dataclasses.dataclass(frozen=True)
+class Kernel3Args:
+    mul: int
+    add: float
+
+
+@ct.kernel
+def kernel_3(args, out):
+    ct.scatter(out, (), args.mul * 10 + args.add)
+
+
+@pytest.mark.skipif(not cconv_v3_enabled(), reason="Requires cconv3 enabled")
+def test_export_compat_cutile_python_v3_dataclass():
+    sig = ct.compilation.KernelSignature(
+        parameters=[
+            ct.compilation._signature.DataclassConstraint.create(
+                Kernel3Args,
+                mul=ct.compilation.ScalarConstraint(ct.int32),
+                add=ct.compilation.ScalarConstraint(ct.float32)),
+            ct.compilation.ArrayConstraint(ct.float32, 0, index_dtype=ct.int32,
+                                           stride_lower_bound_incl=0,
+                                           alias_groups=(), may_alias_internally=False),
+        ],
+        calling_convention=ct.compilation.CallingConvention.cutile_python_v3(),
+    )
+
+    io = BytesIO()
+    ct.compilation.export_kernel(kernel_3, [sig], gpu_code=get_sm_arch(), output_file=io,
+                                 output_format="cubin")
+    out = torch.zeros((), dtype=torch.float32, device="cuda")
+    _call_kernel(io.getvalue(),
+                 "kernel_3_Kt3_Dtest__export__compat_e_kernel3Args_e2Si32Sf32_A0f32",
+                 (Kernel3Args(3, 7.5), out))
+    assert out.item() == 37.5
+
+
+@pytest.mark.skipif(not cconv_v3_enabled(), reason="Requires cconv3 enabled")
+def test_dataclass_constraint_shorthand():
+    cconv = ct.compilation.CallingConvention.cutile_python_v3()
+    signature = ct.compilation.KernelSignature(
+        [Kernel3Args(3, 7.5)],
+        cconv)
+
+    assert signature.parameters == (
+        ct.compilation._signature.DataclassConstraint(
+            Kernel3Args,
+            [ct.compilation.ConstantConstraint(3),
+             ct.compilation.ConstantConstraint(7.5)]),
+    )
 
 
 def test_static_shape_with_v1_raises():
@@ -226,6 +282,41 @@ def test_tuple_with_v1_raises():
                                  " cutile_python_v1; version >= 2 is required")
     with pytest.raises(ValueError, match=expected_message):
         ct.compilation.KernelSignature([(ct.compilation.ScalarConstraint(ct.int32),)], cconv)
+
+
+@pytest.mark.parametrize("cconv,version", [
+    (ct.compilation.CallingConvention.cutile_python_v1(), "cutile_python_v1"),
+    (ct.compilation.CallingConvention.cutile_python_v2(), "cutile_python_v2"),
+])
+@pytest.mark.skipif(not cconv_v3_enabled(), reason="Requires cconv3 enabled")
+def test_dataclass_with_old_cconv_raises(cconv, version):
+    expected_message = re.escape(f"Dataclass parameters are not supported by calling convention"
+                                 f" {version}; version >= 3 is required")
+    with pytest.raises(ValueError, match=expected_message):
+        ct.compilation.KernelSignature(
+            [ct.compilation._signature.DataclassConstraint(
+                Kernel3Args,
+                [ct.compilation.ScalarConstraint(ct.int32),
+                 ct.compilation.ScalarConstraint(ct.float32)])],
+            cconv)
+
+
+@pytest.mark.skipif(not cconv_v3_enabled(), reason="Requires cconv3 enabled")
+def test_dataclass_with_invalid_field_constraint():
+    sig = ct.compilation.KernelSignature(
+        [
+            ct.compilation._signature.DataclassConstraint(
+                Kernel3Args,
+                [ct.compilation.ScalarConstraint(ct.int32), 123]),
+            ct.compilation.ScalarConstraint(ct.int32),
+        ],
+        ct.compilation.CallingConvention.cutile_python_v3())
+    io = BytesIO()
+    expected_msg = re.escape("Invalid field 'add' of kernel parameter 'args': ConstantConstraint"
+                             " is only valid for parameters annotated as Constant.")
+    with pytest.raises(TypeError, match=expected_msg):
+        ct.compilation.export_kernel(kernel_3, [sig], gpu_code=get_sm_arch(), output_file=io,
+                                     output_format="cubin")
 
 
 @ct.kernel

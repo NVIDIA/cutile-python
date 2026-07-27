@@ -37,6 +37,7 @@ static PyObject* g_cooperative_pyunicode;
 static PyObject* g_block_in_cluster_count_pyunicode;
 static PyObject* g_preferred_block_in_cluster_count_pyunicode;
 static PyObject* g_programmatic_dependent_launch_pyunicode;
+static PyObject* g___dataclass_fields___pyunicode;
 
 static PyTypeObject* g_torch_Tensor_type;
 static PyTypeObject* g_torch_cuda_Stream_type;
@@ -250,7 +251,6 @@ static PyMethodDef CallingConvention_methods[] = {
        "cutile_python_v3()\n"
         "--\n\n"
         "Returns the ``cutile_python_v3`` calling convention.\n\n"
-
     },
 #endif
     {}  // sentinel
@@ -430,6 +430,7 @@ static LaunchHelper* g_helper_freelist;  // protected by the GIL or g_launch_mut
 
 namespace { struct LaunchHelperDeleter {
     void operator() (LaunchHelper* helper) const {
+        helper->pyarg_refs.clear();
         helper->next_free = g_helper_freelist;
         g_helper_freelist = helper;
     }
@@ -455,18 +456,37 @@ static LaunchHelperPtr launch_helper_get() {
     }
 }
 
+
+namespace { struct DataclassInfo : SimpleRefcount<DataclassInfo> {
+    PyPtr dataclass;
+    Vec<PyPtr> field_names;
+
+    DataclassInfo(PyPtr dataclass, Vec<PyPtr> field_names)
+        : dataclass(std::move(dataclass)), field_names(std::move(field_names))
+    { }
+}; }
+
+
 struct AggregateArgType {
     enum Kind {
-        Tuple
+        Tuple,
+#ifdef ENABLE_CCONV_V3
+        Dataclass
+#endif
     };
 
     Kind kind;
+    RefPtr<DataclassInfo> dataclass_info;
 
     bool operator== (const AggregateArgType& other) const {
         if (kind != other.kind) return false;
         switch (kind) {
         case Kind::Tuple:
             return true;
+#ifdef ENABLE_CCONV_V3
+        case Kind::Dataclass:
+            return dataclass_info->dataclass == other.dataclass_info->dataclass;
+#endif
         }
         CHECK(false);
     }
@@ -712,6 +732,44 @@ namespace { struct ProfileMapKey {
 
 // We use the HashMap as a hash set by providing a dummy value type.
 using ProfileMap = HashMap<ProfileMapKey, int /*dummy*/>;
+
+
+
+#ifdef ENABLE_CCONV_V3
+static Status get_dataclass_field_names(PyObject* cls, Vec<PyPtr>* field_names) {
+    PyPtr fields = steal(PyObject_GetAttr(cls, g___dataclass_fields___pyunicode));
+    if (!fields) return ErrorRaised;
+
+    PyPtr field_iter = steal(PyObject_GetIter(fields.get()));
+    if (!field_iter) return ErrorRaised;
+
+    while (PyPtr name = steal(PyIter_Next(field_iter.get()))) {
+        field_names->push_back(std::move(name));
+    }
+    if (PyErr_Occurred())
+        return ErrorRaised;
+    return OK;
+}
+
+
+static RefPtr<DataclassInfo> get_dataclass_info(PyTypeObject* ty) {
+    static HashMap<PyPtr, RefPtr<DataclassInfo>>* cache;
+    if (!cache) cache = new HashMap<PyPtr, RefPtr<DataclassInfo>>();
+
+    PyPtr cls_ref = newref(reinterpret_cast<PyObject*>(ty));
+    HashMap<PyPtr, RefPtr<DataclassInfo>>::Item* cached = cache->find(cls_ref);
+    if (cached) return cached->value;
+
+    Vec<PyPtr> field_names;
+    if (!get_dataclass_field_names(cls_ref.get(), &field_names))
+        return {};
+
+    RefPtr<DataclassInfo> info = newref(new DataclassInfo(cls_ref, std::move(field_names)));
+    cache->insert(cls_ref, info);
+    return info;
+}
+#endif  // ENABLE_CCONV_V3
+
 
 namespace {struct AggregateArgInfo {
     size_t breadth_first_index;
@@ -2151,10 +2209,21 @@ static PyPtr create_tuple_constraint(PyObject* items_list) {
     return steal(PyObject_CallOneArg(constraint_class.get(), items_list));
 }
 
+#ifdef ENABLE_CCONV_V3
+static PyPtr create_dataclass_constraint(PyObject* dataclass, PyObject* items_list) {
+    PyObject* signature_module = get_signature_module();
+    if (!signature_module) return {};
+    PyPtr constraint_class = getattr(signature_module, "DataclassConstraint");
+    if (!constraint_class) return {};
+    return steal(PyObject_CallFunctionObjArgs(constraint_class.get(),
+                                              dataclass, items_list, nullptr));
+}
+#endif
+
 static PyPtr parse_param_constraint(ConstantCursor& cursor,
                                     Cursor<ParameterKind>* param_cursor,
                                     Cursor<RefPtr<LeafAnnotationNode>>* annotation_cursor) {
-    ParameterKind pk = param_cursor->next();
+    const ParameterKind& pk = param_cursor->next();
     if (pk.category == ParameterKind::AggregateBegin) {
         PyPtr items_list = steal(PyList_New(0));
         if (!items_list) return {};
@@ -2169,6 +2238,11 @@ static PyPtr parse_param_constraint(ConstantCursor& cursor,
         switch (pk.agg_type.kind) {
         case AggregateArgType::Tuple:
             return create_tuple_constraint(items_list.get());
+#ifdef ENABLE_CCONV_V3
+        case AggregateArgType::Dataclass:
+            return create_dataclass_constraint(pk.agg_type.dataclass_info->dataclass.get(),
+                                               items_list.get());
+#endif
         }
         CHECK(false);
     }
@@ -2209,6 +2283,11 @@ static CallConvVersion minimum_calling_convention(
             case AggregateArgType::Tuple:
                 require(CallConvVersion::CutilePython_V2);
                 break;
+#ifdef ENABLE_CCONV_V3
+            case AggregateArgType::Dataclass:
+                require(CallConvVersion::CutilePython_V3);
+                break;
+#endif
             }
         }
     }
@@ -2832,9 +2911,24 @@ static Status stage_list_args_on_stream(const DriverApi* driver,
     return OK;
 }
 
+#ifdef ENABLE_CCONV_V3
+static bool is_dataclass(PyTypeObject* ty) {
+    return PyObject_HasAttr(reinterpret_cast<PyObject*>(ty),
+                            g___dataclass_fields___pyunicode);
+}
+#endif
+
 static Result<std::optional<AggregateArgType>> classify_aggregate_type(PyTypeObject* ty) {
-    if (ty == &PyTuple_Type) {
-        return {{{ AggregateArgType::Tuple }}};
+    if (ty == nullptr) {
+        return {std::nullopt};
+    } else if (ty == &PyTuple_Type) {
+        return {{{ AggregateArgType::Tuple, {} }}};
+#ifdef ENABLE_CCONV_V3
+    } else if (is_dataclass(ty)) {
+        RefPtr<DataclassInfo> info = get_dataclass_info(ty);
+        if (!info) return ErrorRaised;
+        return {{{ AggregateArgType::Dataclass, std::move(info) }}};
+#endif
     } else {
         return {std::nullopt};
     }
@@ -2884,6 +2978,13 @@ static ErrorRaised_t raise_invalid_kernel_arg_type_impl(
         case AggregateArgType::Tuple:
             new_str = steal(PyUnicode_FromFormat("%Uitem #%zu of ", ret.get(), path[i].item_idx));
             break;
+#ifdef ENABLE_CCONV_V3
+        case AggregateArgType::Dataclass:
+            CHECK(path[i].item_idx < agg_type->dataclass_info->field_names.size());
+            new_str = steal(PyUnicode_FromFormat("%Ufield '%U' of ", ret.get(),
+                    agg_type->dataclass_info->field_names[path[i].item_idx].get()));
+            break;
+#endif
         }
         if (!new_str) return {};
         ret = std::move(new_str);
@@ -3125,11 +3226,30 @@ static void gather_leaf_pyargs(const Vec<PyObject*>& pyarg_objs_breadth_first,
         leaf_pyarg_objs->push_back(pyarg_objs_breadth_first[i]);
 }
 
+#ifdef ENABLE_CCONV_V3
+static Status expand_dataclass_instance(PyObject* arg, const DataclassInfo& info,
+                                        Vec<PyObject*>* pyarg_objs_breadth_first,
+                                        Vec<PyTypeObject*>* pyarg_types_breadth_first,
+                                        Vec<PyPtr>* pyarg_refs) {
+    for (const PyPtr& name : info.field_names) {
+        PyPtr value = steal(PyObject_GetAttr(arg, name.get()));
+        if (!value) return ErrorRaised;
+        pyarg_objs_breadth_first->push_back(value.get());
+        pyarg_types_breadth_first->push_back(Py_TYPE(value.get()));
+        pyarg_refs->push_back(std::move(value));
+    }
+    pyarg_objs_breadth_first->push_back(nullptr);
+    pyarg_types_breadth_first->push_back(nullptr);
+    return OK;
+}
+#endif
+
 static Status expand_aggregate_arg(
         PyObject* arg,
         const AggregateArgType& agg_type,
         Vec<PyObject*>* pyarg_objs_breadth_first,
-        Vec<PyTypeObject*>* pyarg_types_breadth_first) {
+        Vec<PyTypeObject*>* pyarg_types_breadth_first,
+        Vec<PyPtr>* pyarg_refs) {
     switch (agg_type.kind) {
     case AggregateArgType::Tuple:
         CHECK(PyTuple_CheckExact(arg));
@@ -3138,6 +3258,11 @@ static Status expand_aggregate_arg(
                                     pyarg_objs_breadth_first,
                                     pyarg_types_breadth_first);
         return OK;
+#ifdef ENABLE_CCONV_V3
+    case AggregateArgType::Dataclass:
+        return expand_dataclass_instance(arg, *agg_type.dataclass_info,
+                pyarg_objs_breadth_first, pyarg_types_breadth_first, pyarg_refs);
+#endif
     }
     CHECK(false);
 }
@@ -3150,7 +3275,8 @@ static PythonArgProfile* python_arg_profile_lookup_impl(
         Vec<RefPtr<KernelFamily>>* kernel_families,
         Vec<PyObject*>* pyarg_objs_breadth_first,
         Vec<PyTypeObject*>* pyarg_types_breadth_first,
-        Vec<PyObject*>* leaf_pyarg_objs) {
+        Vec<PyObject*>* leaf_pyarg_objs,
+        Vec<PyPtr>* pyarg_refs) {
     ProfileMapQuery query = {pyarg_types_breadth_first, 0, 0};
     query.mark_start();
     get_pyarg_objects_and_types(pyargs, num_pyargs,
@@ -3248,7 +3374,8 @@ static PythonArgProfile* python_arg_profile_lookup_impl(
         for (const AggregateArgInfo& agg_info : next->aggregate_args) {
             PyObject* arg = (*pyarg_objs_breadth_first)[agg_info.breadth_first_index];
             if (!expand_aggregate_arg(arg, agg_info.type,
-                                      pyarg_objs_breadth_first, pyarg_types_breadth_first))
+                                      pyarg_objs_breadth_first, pyarg_types_breadth_first,
+                                      pyarg_refs))
                 return nullptr;
         }
         query.mark_end();
@@ -3275,7 +3402,8 @@ static PythonArgProfile* python_arg_profile_lookup(PyObject* const* pyargs,
             &ctx_dispatcher->kernel_families,
             &helper->pyarg_objs_breadth_first,
             &helper->pyarg_types_breadth_first,
-            &helper->leaf_pyarg_objs);
+            &helper->leaf_pyarg_objs,
+            &helper->pyarg_refs);
 }
 
 static Result<PreparedLaunch> prepare_launch(
@@ -4537,6 +4665,7 @@ Status tile_kernel_init(PyObject* m) {
     INIT_STRING_CONSTANT(block_in_cluster_count);
     INIT_STRING_CONSTANT(preferred_block_in_cluster_count);
     INIT_STRING_CONSTANT(programmatic_dependent_launch);
+    INIT_STRING_CONSTANT(__dataclass_fields__);
 
     g_constant_kind_enum = define_constant_kind_enum().release();
     if (!g_constant_kind_enum) return ErrorRaised;

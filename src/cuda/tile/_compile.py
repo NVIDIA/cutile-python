@@ -38,10 +38,12 @@ from cuda.tile._exception import (
     TileCompilerTimeoutError, FunctionDesc, Loc
 )
 from cuda.tile._ir import ir, hir
+from cuda.tile._ir.core_ops import build_dataclass_instance
 from cuda.tile._ir.ir import TypingHooks
 from cuda.tile._ir.aggregate_support import flatten_block_parameters
 from cuda.tile._ir.ops import loosely_typed_const, tile_impl_registry, build_tuple
 from cuda.tile._ir.type import TileTy, ArrayTy, ListTy
+from cuda.tile._ir.typing_support import get_dataclass_info
 from cuda.tile._passes.ast2hir import get_function_hir, HirMode
 from cuda.tile._passes.for_loop_break import lower_for_with_break
 from cuda.tile._passes.code_motion import hoist_loop_invariants
@@ -70,7 +72,8 @@ from cuda.tile._ir2bytecode import generate_bytecode_for_kernel
 from cuda.tile._version import __version__ as cutile_version
 import cuda.tile._bytecode as bc
 from cuda.tile.compilation._signature import KernelSignature, ParameterConstraint, \
-    ScalarConstraint, ArrayConstraint, ListConstraint, TupleConstraint, ConstantConstraint
+    ScalarConstraint, ArrayConstraint, ListConstraint, TupleConstraint, ConstantConstraint, \
+    DataclassConstraint
 
 logger = logging.getLogger(__name__)
 
@@ -155,10 +158,10 @@ def _create_kernel_parameters(parameter_constraints: Sequence[ParameterConstrain
 @dataclass
 class ParameterPath:
     name: str
-    tuple_indices: tuple[int, ...]
+    tuple_indices_or_field_names: tuple[int | str, ...]
 
-    def tuple_item(self, index: int) -> "ParameterPath":
-        return ParameterPath(self.name, self.tuple_indices + (index,))
+    def with_item(self, index_or_field_name: int | str) -> "ParameterPath":
+        return ParameterPath(self.name, self.tuple_indices_or_field_names + (index_or_field_name,))
 
 
 def _create_parameter(
@@ -202,7 +205,7 @@ def _create_parameter(
         item_vars = []
         for i, (item, node) in enumerate(zip(constraint.items, item_nodes, strict=True)):
             item_var = var.ctx.make_var(var.name + f"_{i}", var.loc)
-            _create_parameter(item, node, path.tuple_item(i), item_var, nonconstant_flat_vars)
+            _create_parameter(item, node, path.with_item(i), item_var, nonconstant_flat_vars)
             item_vars.append(item_var)
         build_tuple(item_vars, result_var=var)
         return
@@ -210,8 +213,20 @@ def _create_parameter(
     if not isinstance(annotation, LeafAnnotationNode):
         raise _make_constraint_error("Non-tuple parameter is annotated as a tuple.", path)
 
+    if isinstance(constraint, DataclassConstraint):
+        info = get_dataclass_info(constraint.cls)
+        field_vars = []
+        for i, (field_constraint, field_name) in enumerate(zip(
+                constraint.fields, info.field_names, strict=True)):
+            field_var = var.ctx.make_var(var.name + f"_{i}", var.loc)
+            _create_parameter(field_constraint, annotation, path.with_item(field_name), field_var,
+                              nonconstant_flat_vars)
+            field_vars.append(field_var)
+        build_dataclass_instance(field_vars, info, result_var=var)
+        return
+
     if annotation.constant and not isinstance(constraint, ConstantConstraint):
-        raise _make_constraint_error("Expected a scalar/tuple constant,"
+        raise _make_constraint_error("Expected a scalar/tuple/dataclass constant,"
                                      " as implied by the Constant annotation.", path)
 
     if isinstance(constraint, ConstantConstraint):
@@ -245,8 +260,12 @@ def _create_parameter(
 
 def _make_constraint_error(message: str, path: ParameterPath):
     what = f"kernel parameter '{path.name}'"
-    for tuple_index in path.tuple_indices:
-        what = f"item #{tuple_index} of {what}"
+    for tuple_index_or_field_name in path.tuple_indices_or_field_names:
+        if isinstance(tuple_index_or_field_name, int):
+            what = f"item #{tuple_index_or_field_name} of {what}"
+        else:
+            assert isinstance(tuple_index_or_field_name, str)
+            what = f"field '{tuple_index_or_field_name}' of {what}"
     return TypeError(f"Invalid {what}: {message}")
 
 

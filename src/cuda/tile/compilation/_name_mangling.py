@@ -1,41 +1,84 @@
 # SPDX-FileCopyrightText: Copyright (c) <2026> NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 #
 # SPDX-License-Identifier: Apache-2.0
-
 import re
 import struct
 from collections import defaultdict, OrderedDict
 from dataclasses import dataclass
-from typing import Sequence
+from typing import Sequence, Protocol, Iterable, TypeVar
 
 from ._signature import ArrayConstraint, ParameterConstraint, ListConstraint, TupleConstraint, \
-    ScalarConstraint, KernelSignature, _collect_alias_groups, ConstantConstraint
+    ScalarConstraint, KernelSignature, _collect_alias_groups, ConstantConstraint, \
+    DataclassConstraint
 from cuda.tile._datatype import DType, bool_, uint8, uint16, uint32, uint64, int64, int32, int16, \
     int8, float16, float32, float64, bfloat16, float8_e4m3fn, float8_e5m2, float8_e8m0fnu, \
     tfloat32
-from .._cext import CallingConvention, classify_constant, ConstantKind
+from .._cext import CallingConvention, classify_constant, ConstantKind, cconv_v3_enabled
 
 
 def mangle_kernel_name(function_name: str,
                        kernel_signature: KernelSignature) -> str:
     alias_group_map, alias_group_names = _map_alias_groups(kernel_signature.parameters)
     cconv = kernel_signature.calling_convention
+    collected_globals = _CollectedGlobals(dataclasses=set())
     ret = (function_name + f"_K{cconv.code}"
-           + "".join("_" + _mangle_constraint(p, alias_group_map, cconv)
+           + "".join("_" + _mangle_constraint(p, alias_group_map, collected_globals)
                      for p in kernel_signature.parameters))
-    parsed_function_name, parsed_sig = _demangle_kernel_name(ret, alias_group_names)
+    parsed_function_name, parsed_sig = _demangle_kernel_name(
+            ret, alias_group_names, allowed_dataclasses=collected_globals.dataclasses)
     assert function_name == parsed_function_name
     assert kernel_signature.parameters == parsed_sig.parameters, \
         f"Failed to round-trip mangled name {ret}"
     return ret
 
 
+T = TypeVar("T")
+
+
+class GlobalProvider(Protocol[T]):
+    def __call__(self, module_name: str, qualname: str) -> T:
+        ...
+
+
 def demangle_kernel_name(symbol: str) -> tuple[str, KernelSignature]:
-    return _demangle_kernel_name(symbol, None)
+    return _demangle_kernel_name(symbol, None, allowed_dataclasses=[])
+
+
+@dataclass(frozen=True)
+class _CollectedGlobals:
+    dataclasses: set[type]
+
+
+@dataclass(frozen=True)
+class _AllowedGlobals:
+    dataclasses: GlobalProvider[type]
+
+
+def _to_global_provider(iterable_or_provider: Iterable[T] | GlobalProvider[T],
+                        list_name: str) -> GlobalProvider[T]:
+    if callable(iterable_or_provider):
+        return iterable_or_provider
+
+    allowed = tuple(iterable_or_provider)
+
+    def provider(module_name: str, class_qualname: str) -> type:
+        for c in allowed:
+            if c.__module__ == module_name and c.__qualname__ == class_qualname:
+                return c
+        raise ValueError(f"Global '{module_name}.{class_qualname}' not found in"
+                         f" the '{list_name}' list; refusing to demangle the name.")
+
+    return provider
 
 
 def _demangle_kernel_name(symbol: str,
-                          alias_group_names: Sequence[str] | None) -> tuple[str, KernelSignature]:
+                          alias_group_names: Sequence[str] | None,
+                          allowed_dataclasses: Iterable[type] | GlobalProvider[type]
+                          ) -> tuple[str, KernelSignature]:
+    allowed_globals = _AllowedGlobals(
+        dataclasses=_to_global_provider(allowed_dataclasses, "allowed_dataclasses")
+    )
+
     pos = symbol.rfind("_K")
     if pos < 0:
         raise ValueError(f"`{symbol}` is not a mangled kernel name")
@@ -48,7 +91,7 @@ def _demangle_kernel_name(symbol: str,
     parameters = []
     while len(cursor.remaining) > 0:
         cursor.expect("_", "Expected an underscore")
-        constraint = _demangle_constraint(cursor, alias_group_demangler, cconv)
+        constraint = _demangle_constraint(cursor, alias_group_demangler, allowed_globals)
         parameters.append(constraint)
     sig = KernelSignature(parameters, cconv, symbol)
     return function_name, sig
@@ -137,14 +180,16 @@ def _demangle_calling_convention(cursor: _Cursor) -> CallingConvention:
 
 
 def _mangle_constraint(p: ParameterConstraint, alias_group_map: dict[str, int],
-                       cconv: CallingConvention) -> str:
+                       collected_globals: _CollectedGlobals) -> str:
     if isinstance(p, ArrayConstraint):
-        return "A" + _mangle_array_constraint(p, alias_group_map, cconv)
+        return "A" + _mangle_array_constraint(p, alias_group_map)
     elif isinstance(p, ListConstraint):
         assert isinstance(p.element, ArrayConstraint)
-        return "L" + _mangle_list_constraint(p, alias_group_map, cconv)
+        return "L" + _mangle_list_constraint(p, alias_group_map, collected_globals)
     elif isinstance(p, TupleConstraint):
-        return "T" + _mangle_tuple_constraint(p, alias_group_map, cconv)
+        return "T" + _mangle_tuple_constraint(p, alias_group_map, collected_globals)
+    elif isinstance(p, DataclassConstraint):
+        return "D" + _mangle_dataclass_constraint(p, alias_group_map, collected_globals)
     elif isinstance(p, ScalarConstraint):
         return "S" + _mangle_dtype(p.dtype)
     elif isinstance(p, ConstantConstraint):
@@ -167,15 +212,17 @@ def _mangle_constraint(p: ParameterConstraint, alias_group_map: dict[str, int],
 
 def _demangle_constraint(cursor: _Cursor,
                          alias_group_demangler: _AliasGroupDemangler,
-                         cconv: CallingConvention) -> ParameterConstraint:
+                         allowed_globals: _AllowedGlobals) -> ParameterConstraint:
     orig_cursor = cursor.clone()
     c = cursor.expect("[A-Z]", "Expected a constraint starting with a capital letter")
     if c == "A":
-        return _demangle_array_constraint(cursor, alias_group_demangler, cconv)
+        return _demangle_array_constraint(cursor, alias_group_demangler)
     elif c == "L":
-        return _demangle_list_constraint(cursor, alias_group_demangler, cconv)
+        return _demangle_list_constraint(cursor, alias_group_demangler, allowed_globals)
     elif c == "T":
-        return _demangle_tuple_constraint(cursor, alias_group_demangler, cconv)
+        return _demangle_tuple_constraint(cursor, alias_group_demangler, allowed_globals)
+    elif c == "D" and cconv_v3_enabled():
+        return _demangle_dataclass_constraint(cursor, alias_group_demangler, allowed_globals)
     elif c == "S":
         dtype = _demangle_dtype(cursor)
         return ScalarConstraint(dtype)
@@ -192,8 +239,7 @@ def _demangle_constraint(cursor: _Cursor,
 
 
 def _mangle_array_constraint(a: ArrayConstraint,
-                             alias_group_map: dict[str, int],
-                             cconv: CallingConvention) -> str:
+                             alias_group_map: dict[str, int]) -> str:
     ret = f"{a.ndim}{_mangle_dtype(a.dtype)}"
 
     # NOTE: since we encode axis masks as hex, letters a-f can't be used for predicates
@@ -234,8 +280,7 @@ def _mangle_array_constraint(a: ArrayConstraint,
 
 
 def _demangle_array_constraint(cursor: _Cursor,
-                               alias_group_demangler: _AliasGroupDemangler,
-                               cconv: CallingConvention) -> ArrayConstraint:
+                               alias_group_demangler: _AliasGroupDemangler) -> ArrayConstraint:
     orig_cursor = cursor.clone()
     ndim = int(cursor.expect("[0-9]+", "Expected ndim integer"))
     dtype = _demangle_dtype(cursor)
@@ -356,40 +401,120 @@ def _demangle_array_constraint(cursor: _Cursor,
 
 
 def _mangle_list_constraint(constraint: ListConstraint, alias_group_map: dict[str, int],
-                            cconv: CallingConvention) -> str:
+                            collected_globals: _CollectedGlobals) -> str:
     ret = ""
     for group_id in sorted((alias_group_map[ag] for ag in constraint.alias_groups)):
         ret += f"g{group_id:x}"
     if constraint.elements_may_alias:
         ret += "i"
-    return ret + _mangle_constraint(constraint.element, alias_group_map, cconv)
+    return ret + _mangle_constraint(constraint.element, alias_group_map, collected_globals)
 
 
 def _demangle_list_constraint(cursor: _Cursor,
                               alias_group_demangler: _AliasGroupDemangler,
-                              cconv: CallingConvention) -> ListConstraint:
+                              allowed_globals: _AllowedGlobals) -> ListConstraint:
     alias_groups = alias_group_demangler.demangle_group_ids(cursor)
     elements_may_alias = cursor.read("i") is not None
     old_cursor = cursor.clone()
-    element = _demangle_constraint(cursor, alias_group_demangler, cconv)
+    element = _demangle_constraint(cursor, alias_group_demangler, allowed_globals)
     if not isinstance(element, ArrayConstraint):
         raise old_cursor.make_error("Expected an ArrayConstraint")
     return ListConstraint(element, alias_groups=alias_groups, elements_may_alias=elements_may_alias)
 
 
 def _mangle_tuple_constraint(constraint: TupleConstraint, alias_group_map: dict[str, int],
-                             cconv: CallingConvention) -> str:
+                             collected_globals: _CollectedGlobals) -> str:
     # Format: {count}{item0_mangling}{item1_mangling}...
     return f"{len(constraint.items)}" + "".join(
-        _mangle_constraint(e, alias_group_map, cconv) for e in constraint.items)
+        _mangle_constraint(e, alias_group_map, collected_globals) for e in constraint.items)
 
 
 def _demangle_tuple_constraint(cursor: _Cursor,
                                alias_group_demangler: _AliasGroupDemangler,
-                               cconv: CallingConvention) -> TupleConstraint:
+                               allowed_globals: _AllowedGlobals) -> TupleConstraint:
     count = int(cursor.expect("[0-9]+", "Expected element count"))
-    items = [_demangle_constraint(cursor, alias_group_demangler, cconv) for _ in range(count)]
+    items = [_demangle_constraint(cursor, alias_group_demangler, allowed_globals)
+             for _ in range(count)]
     return TupleConstraint(items)
+
+
+def _mangle_dataclass_constraint(constraint: DataclassConstraint,
+                                 alias_group_map: dict[str, int],
+                                 collected_globals: _CollectedGlobals) -> str:
+    collected_globals.dataclasses.add(constraint.cls)
+
+    # Format: {module_name}{qualname}{field count}{field0_mangling}{field1_mangling}...
+    return (
+        _mangle_string(constraint.cls.__module__)
+        + _mangle_string(constraint.cls.__qualname__)
+        + str(len(constraint.fields))
+        + "".join(_mangle_constraint(f, alias_group_map, collected_globals)
+                  for f in constraint.fields)
+    )
+
+
+def _demangle_dataclass_constraint(cursor: _Cursor,
+                                   alias_group_demangler: _AliasGroupDemangler,
+                                   allowed_globals: _AllowedGlobals) -> DataclassConstraint:
+    module_name = _demangle_string(cursor)
+    qualname = _demangle_string(cursor)
+    cls = allowed_globals.dataclasses(module_name, qualname)
+
+    field_count = int(cursor.expect("[1-9][0-9]*", "Expected field count"))
+    items = [_demangle_constraint(cursor, alias_group_demangler, allowed_globals)
+             for _ in range(field_count)]
+    return DataclassConstraint(cls, items)
+
+
+def _mangle_string(s: str) -> str:
+    chunks = []
+    start = 0
+    # Escape all characters that are not alphanumeric ASCII. "K" is escaped as well, so that a
+    # mangled string can never produce the "_K" sequence that separates the function name from
+    # the signature.
+    for m in re.finditer("[^a-zA-JL-Z0-9]|$", s):
+        match_start, match_end = m.span()
+        if match_start > start:
+            chunks.append(s[start:match_start])
+        start = match_end
+        match m.group(0):
+            case "_": chunks.append("__")
+            case "K": chunks.append("_k")
+            case ".": chunks.append("_d")  # for "dot"
+            case "<": chunks.append("_l")  # for "less", for supporting "<locals>" in __qualname__
+            case ">": chunks.append("_g")  # for "greater"
+            case "": break
+            case c if ord(c) <= 0xff_ff: chunks.append(f"_u{ord(c):04x}")
+            case c: chunks.append(f"_U{ord(c):08x}")
+    assert start == len(s)
+    chunks.append("_e")  # for "end"
+    return "".join(chunks)
+
+
+def _demangle_string(cursor: _Cursor) -> str:
+    chunks = []
+    while True:
+        # Read any unescaped ASCII chars in bulk ("K" is always escaped, see _mangle_string)
+        alphanumeric_chunk = cursor.read("[a-zA-JL-Z0-9]+")
+        if alphanumeric_chunk is not None:
+            chunks.append(alphanumeric_chunk)
+
+        cursor.expect("_", "Expected an underscore")
+        match cursor.expect("[_kdlgeuU]", "Expected a valid character escape"):
+            case "_": chunks.append("_")
+            case "k": chunks.append("K")
+            case "d": chunks.append(".")
+            case "l": chunks.append("<")
+            case "g": chunks.append(">")
+            case "e": break
+            case "u":
+                digits = cursor.expect("[0-9a-f]{4}", "Expected 4 hex digits after '_u' escape")
+                chunks.append(chr(int(digits, base=16)))
+            case "U":
+                digits = cursor.expect("[0-9a-f]{8}", "Expected 8 hex digits after '_u' escape")
+                chunks.append(chr(int(digits, base=16)))
+            case _: assert False
+    return "".join(chunks)
 
 
 def _mangle_dtype(dtype: DType):

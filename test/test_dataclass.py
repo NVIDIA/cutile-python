@@ -13,6 +13,7 @@ import cuda.tile as ct
 import torch
 
 from cuda.tile import TileTypeError
+from cuda.tile._cext import cconv_v3_enabled
 from cuda.tile._exception import TypeCheckingError
 from cuda.tile._execution import static_def
 
@@ -561,3 +562,189 @@ def test_setitem_dunder():
     x = torch.arange(4, dtype=torch.int32, device="cuda")
     ct.launch(torch.cuda.current_stream(), (1,), kern, (x,))
     assert x.tolist() == [0, 50, 2, 3]
+
+
+@pytest.mark.skipif(not cconv_v3_enabled(), reason="Requires cconv3 enabled")
+def test_dataclass_instance_as_kernel_arg():
+    @dataclass(frozen=True)
+    class KernelArg:
+        x: Any
+        idx: Any
+        val: float
+
+    @ct.kernel
+    def kern(d):
+        ct.scatter(d.x, d.idx, d.val)
+
+    x = torch.zeros((3, 3), dtype=torch.float32, device="cuda")
+    d = KernelArg(x=x, idx=(1, 2), val=5)
+    ct.launch(torch.cuda.current_stream(), (1,), kern, (d,))
+    assert x.tolist() == [[0.0, 0.0, 0.0], [0.0, 0.0, 5.0], [0.0, 0.0, 0.0]]
+
+
+@pytest.mark.skipif(not cconv_v3_enabled(), reason="Requires cconv3 enabled")
+def test_dataclass_instance_as_constant_kernel_arg():
+    @dataclass(frozen=True)
+    class ConstKernelArg:
+        idx: Any
+        val: float
+
+    @ct.kernel
+    def kern(x, d: ct.Constant):
+        ct.scatter(x, d.idx, d.val)
+
+    x = torch.zeros((3, 3), dtype=torch.float32, device="cuda")
+    d = ConstKernelArg(idx=(1, 2), val=5)
+    ct.launch(torch.cuda.current_stream(), (1,), kern, (x, d))
+    assert x.tolist() == [[0.0, 0.0, 0.0], [0.0, 0.0, 5.0], [0.0, 0.0, 0.0]]
+
+
+@pytest.mark.skipif(not cconv_v3_enabled(), reason="Requires cconv3 enabled")
+def test_reject_nonfrozen_kernel_arg():
+    @dataclass
+    class NonFrozenArg:
+        val: int
+
+    @ct.kernel
+    def kern(x, d):
+        ct.scatter(x, (), d.val)
+
+    x = torch.zeros((), dtype=torch.int32, device="cuda")
+    with pytest.raises(TileTypeError, match="Only frozen dataclasses are supported"):
+        ct.launch(torch.cuda.current_stream(), (1,), kern, (x, NonFrozenArg(3)))
+
+
+@pytest.mark.skipif(not cconv_v3_enabled(), reason="Requires cconv3 enabled")
+def test_tuple_of_dataclasses_as_kernel_arg():
+    @dataclass(frozen=True)
+    class Arg:
+        a: int
+        b: float
+
+    @ct.kernel
+    def kern(x, t):
+        ct.scatter(x, 0, t[0].a * 10 + t[0].b)
+        ct.scatter(x, 1, t[1].a * 10 + t[1].b)
+
+    x = torch.zeros((2,), dtype=torch.float32, device="cuda")
+    ct.launch(torch.cuda.current_stream(), (1,), kern, (x, (Arg(1, 2.5), Arg(3, 4.5))))
+    assert x.tolist() == [12.5, 34.5]
+
+
+@pytest.mark.skipif(not cconv_v3_enabled(), reason="Requires cconv3 enabled")
+def test_tuple_of_dataclass_and_array_as_kernel_arg():
+    @dataclass(frozen=True)
+    class Arg:
+        a: int
+        b: float
+
+    @ct.kernel
+    def kern(t):
+        item, out = t
+        ct.scatter(out, (), item.a * 10 + item.b)
+
+    x = torch.zeros((), dtype=torch.float32, device="cuda")
+    ct.launch(torch.cuda.current_stream(), (1,), kern, ((Arg(3, 0.5), x),))
+    assert x.item() == 30.5
+
+
+@pytest.mark.skipif(not cconv_v3_enabled(), reason="Requires cconv3 enabled")
+def test_dataclass_with_tuple_component_as_kernel_arg():
+    @dataclass(frozen=True)
+    class Arg:
+        idx: Any
+        n: int
+
+    @ct.kernel
+    def kern(x, d):
+        ct.scatter(x, d.idx, d.n)
+
+    x = torch.zeros((3, 3), dtype=torch.int32, device="cuda")
+    ct.launch(torch.cuda.current_stream(), (1,), kern, (x, Arg(idx=(1, 2), n=7)))
+    assert x.tolist() == [[0, 0, 0], [0, 0, 7], [0, 0, 0]]
+
+
+@pytest.mark.skipif(not cconv_v3_enabled(), reason="Requires cconv3 enabled")
+def test_dataclass_with_list_of_arrays_as_kernel_arg():
+    @dataclass(frozen=True)
+    class Arg:
+        arrays: Any
+        val: float
+
+    @ct.kernel
+    def kern(d):
+        ct.scatter(d.arrays[0], (), d.val)
+        ct.scatter(d.arrays[1], (), d.val * 2)
+
+    x = torch.zeros((), dtype=torch.float32, device="cuda")
+    y = torch.zeros((), dtype=torch.float32, device="cuda")
+    ct.launch(torch.cuda.current_stream(), (1,), kern, (Arg([x, y], 2.5),))
+    assert x.item() == 2.5
+    assert y.item() == 5.0
+
+
+@pytest.mark.skipif(not cconv_v3_enabled(), reason="Requires cconv3 enabled")
+def test_dataclass_with_dataclass_components_as_kernel_arg():
+    # Two sibling dataclasses of *different* types, expanded in the same (nested) round.
+    @dataclass(frozen=True)
+    class Inner1:
+        a: int
+        b: float
+
+    @dataclass(frozen=True)
+    class Inner2:
+        x: float
+        y: int
+        z: int
+
+    @dataclass(frozen=True)
+    class Outer:
+        inner1: Any
+        inner2: Any
+        out: Any
+
+    @ct.kernel
+    def kern(d):
+        ct.scatter(d.out, 0, d.inner1.a * 10 + d.inner1.b)
+        ct.scatter(d.out, 1, d.inner2.x + d.inner2.y * 100 + d.inner2.z * 1000)
+
+    x = torch.zeros((2,), dtype=torch.float32, device="cuda")
+    ct.launch(torch.cuda.current_stream(), (1,), kern,
+              (Outer(Inner1(3, 0.5), Inner2(0.25, 4, 5), x),))
+    assert x.tolist() == [30.5, 5400.25]
+
+
+@pytest.mark.skipif(not cconv_v3_enabled(), reason="Requires cconv3 enabled")
+def test_two_top_level_dataclass_args():
+    @dataclass(frozen=True)
+    class First:
+        a: int
+        b: float
+
+    @dataclass(frozen=True)
+    class Second:
+        x: float
+        y: int
+        z: int
+
+    @ct.kernel
+    def kern(out, d1, d2):
+        ct.scatter(out, 0, d1.a * 10 + d1.b)
+        ct.scatter(out, 1, d2.x + d2.y * 100 + d2.z * 1000)
+
+    x = torch.zeros((2,), dtype=torch.float32, device="cuda")
+    ct.launch(torch.cuda.current_stream(), (1,), kern,
+              (x, First(3, 0.5), Second(0.25, 4, 5)))
+    assert x.tolist() == [30.5, 5400.25]
+
+
+@pytest.mark.skipif(not cconv_v3_enabled(), reason="Requires cconv3 enabled")
+def test_unsupported_type_in_dataclass_field():
+    @ct.kernel
+    def kern(x):
+        print(x)
+
+    d = FooBar(foo=123, bar=iter([]))
+    with pytest.raises(TypeError, match="Invalid field 'bar' of kernel argument #0:"
+                                        " Objects of type 'list_iterator' are not supported"):
+        ct.launch(torch.cuda.current_stream(), (1,), kern, (d,))

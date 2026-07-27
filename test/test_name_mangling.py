@@ -2,15 +2,24 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+from dataclasses import dataclass
+from typing import Any
+
 import pytest
 
+from cuda.tile._cext import cconv_v3_enabled
 from cuda.tile.compilation import mangle_kernel_name, demangle_kernel_name
 from cuda.tile.compilation import (KernelSignature, ScalarConstraint, ArrayConstraint,
                                    ListConstraint, TupleConstraint, CallingConvention)
+
+# FIXME: import from `cuda.tile.compilation` when cconv_v3_enabled() guard is removed
+from cuda.tile.compilation._signature import DataclassConstraint
+
 from cuda.tile._datatype import (bool_, uint8, uint16, uint32, uint64, int8, int16, int32, int64,
                                  float16, float32, float64, bfloat16, tfloat32,
                                  float8_e4m3fn, float8_e5m2, float8_e8m0fnu)
-
+from cuda.tile.compilation._name_mangling import _mangle_string, _demangle_string, _Cursor, \
+    _demangle_kernel_name
 
 _SIMPLE_2D = ArrayConstraint(float32, 2, index_dtype=int32, stride_lower_bound_incl=0,
                              alias_groups=(), may_alias_internally=False)
@@ -278,4 +287,174 @@ def test_demangle_tuple_with_v1_raises():
 def test_demangle_static_shape_with_v1_raises():
     symbol = "my_kernel_Kt1_A1f32_1s8l0"
     with pytest.raises(ValueError, match="version >= 2"):
+        demangle_kernel_name(symbol)
+
+
+@pytest.mark.parametrize("s, expected", [
+    ("", "_e"),
+    ("0123foobarBAZQUX456", "0123foobarBAZQUX456_e"),
+    ("a_b", "a__b_e"),
+    ("_.<>", "___d_l_g_e"),
+    ("буквы 🤔", "_u0431_u0443_u043a_u0432_u044b_u0020_U0001f914_e"),
+    ("A_BC.DEF<G>HIJ", "A__BC_dDEF_lG_gHIJ_e"),
+    ("K", "_k_e"),  # make sure to escape "K" because "_K" is used to separate the mangled name
+    ("Kk", "_kk_e"),
+    ("kK", "k_k_e"),
+])
+def test_mangle_string(s, expected):
+    mangled = _mangle_string(s)
+    assert mangled == expected
+    cursor = _Cursor(mangled, mangled, 0)
+    demangled = _demangle_string(cursor)
+    assert s == demangled
+    assert cursor.remaining == ""
+
+
+@dataclass(frozen=True)
+class DClassTwoFields:
+    x: Any
+    y: Any
+
+
+@dataclass(frozen=True)
+class DClassOneField:
+    v: Any
+
+
+class First:
+    @dataclass(frozen=True)
+    class Second:
+        v: int
+
+    @dataclass(frozen=True)
+    class Third:
+        v: "First.Second"
+
+
+def _make_local_dclass():
+    # Defined inside a function so that __qualname__ contains "<locals>".
+    @dataclass(frozen=True)
+    class Local_K_Class:
+        v: int
+    return Local_K_Class
+
+
+_LOCAL_DCLASS = _make_local_dclass()
+
+_MOD = "test__name__mangling_e"
+
+
+@pytest.mark.parametrize("parameters, expected_suffix", [
+    # Simple dataclass: two scalar fields.
+    pytest.param(
+        [DataclassConstraint(DClassTwoFields, [ScalarConstraint(int32),
+                                               ScalarConstraint(float32)])],
+        f"_D{_MOD}DClassTwoFields_e2Si32Sf32",
+        id="dataclass_simple",
+    ),
+
+    # A nested class has a dotted qualname, encoded with "_d".
+    pytest.param(
+        [DataclassConstraint(First.Third,
+                             [DataclassConstraint(First.Second, [ScalarConstraint(int32)])])],
+        f"_D{_MOD}First_dThird_e1D{_MOD}First_dSecond_e1Si32",
+        id="dataclass_qualname_dotted",
+    ),
+
+    # Every escape of _mangle_string() in a single qualname:
+    # "_"->"__", "."->"_d", "<"->"_l", ">"->"_g", "K"->"_k".
+    pytest.param(
+        [DataclassConstraint(_LOCAL_DCLASS, [ScalarConstraint(int32)])],
+        f"_D{_MOD}__make__local__dclass_d_llocals_g_dLocal___k__Class_e1Si32",
+        id="dataclass_qualname_all_escapes",
+    ),
+
+    # Array and scalar fields.
+    pytest.param(
+        [DataclassConstraint(DClassTwoFields, [_SIMPLE_2D, ScalarConstraint(int32)])],
+        f"_D{_MOD}DClassTwoFields_e2A2f32_3l0Si32",
+        id="dataclass_array_and_scalar_fields",
+    ),
+
+    # List-of-arrays and constant fields.
+    pytest.param(
+        [DataclassConstraint(DClassTwoFields,
+                             [ListConstraint(_SIMPLE_2D, alias_groups=(),
+                                             elements_may_alias=False),
+                              42])],
+        f"_D{_MOD}DClassTwoFields_e2LA2f32_3l0I42",
+        id="dataclass_list_and_constant_fields",
+    ),
+
+    # Tuple field inside a dataclass.
+    pytest.param(
+        [DataclassConstraint(DClassOneField,
+                             [TupleConstraint([ScalarConstraint(int32),
+                                               ScalarConstraint(float32)])])],
+        f"_D{_MOD}DClassOneField_e1T2Si32Sf32",
+        id="dataclass_containing_tuple",
+    ),
+
+    # Dataclass field inside a dataclass.
+    pytest.param(
+        [DataclassConstraint(DClassOneField,
+                             [DataclassConstraint(DClassOneField, [ScalarConstraint(int32)])])],
+        f"_D{_MOD}DClassOneField_e1D{_MOD}DClassOneField_e1Si32",
+        id="dataclass_nested",
+    ),
+
+    # Two sibling dataclasses of different types inside a tuple.
+    pytest.param(
+        [TupleConstraint([DataclassConstraint(DClassOneField, [ScalarConstraint(int32)]),
+                          DataclassConstraint(DClassTwoFields, [ScalarConstraint(int32),
+                                                                ScalarConstraint(float32)])])],
+        f"_T2D{_MOD}DClassOneField_e1Si32D{_MOD}DClassTwoFields_e2Si32Sf32",
+        id="tuple_of_two_dataclasses",
+    ),
+
+    # Two top-level dataclass parameters of different types.
+    pytest.param(
+        [DataclassConstraint(DClassOneField, [ScalarConstraint(int32)]),
+         DataclassConstraint(DClassTwoFields, [ScalarConstraint(int32),
+                                               ScalarConstraint(float32)])],
+        f"_D{_MOD}DClassOneField_e1Si32_D{_MOD}DClassTwoFields_e2Si32Sf32",
+        id="two_top_level_dataclasses",
+    ),
+
+    # Dataclass alongside other parameter kinds.
+    pytest.param(
+        [_SIMPLE_2D,
+         DataclassConstraint(DClassOneField, [ScalarConstraint(int32)]),
+         ScalarConstraint(float32)],
+        f"_A2f32_3l0_D{_MOD}DClassOneField_e1Si32_Sf32",
+        id="dataclass_among_other_params",
+    ),
+] if cconv_v3_enabled() else [])
+@pytest.mark.skipif(not cconv_v3_enabled(), reason="Requires cconv3 enabled")
+def test_name_mangling_cutile_python_v3(parameters, expected_suffix):
+    func_name = "my_kernel"
+    cconv = CallingConvention.cutile_python_v3()
+    sig = KernelSignature(parameters, cconv)
+    expected = func_name + "_K" + cconv.code + expected_suffix
+    mangled = mangle_kernel_name(func_name, sig)
+    assert mangled == expected, f"Expected {expected!r}, got {mangled!r}"
+    # TODO: change to public demangle_kernel_name() once cconv_v3_enabled() guard is removed
+    allowed_dataclasses = [DClassTwoFields, DClassOneField,
+                           First.Second, First.Third, _LOCAL_DCLASS]
+    demangled_name, demangled_sig = _demangle_kernel_name(mangled, None, allowed_dataclasses)
+    assert demangled_name == func_name
+    assert demangled_sig.parameters == sig.parameters
+
+
+@pytest.mark.skipif(not cconv_v3_enabled(), reason="Requires cconv3 enabled")
+def test_demangle_dataclass_with_v2_raises():
+    symbol = f"my_kernel_Kt2_D{_MOD}DClassOneField_e1Si32"
+    with pytest.raises(ValueError, match="version >= 3"):
+        _demangle_kernel_name(symbol, None, allowed_dataclasses=[DClassOneField])
+
+
+@pytest.mark.skipif(not cconv_v3_enabled(), reason="Requires cconv3 enabled")
+def test_demangle_dataclass_class_not_allowed_raises():
+    symbol = f"my_kernel_Kt2_D{_MOD}DClassOneField_e1Si32"
+    with pytest.raises(ValueError, match="not found in the 'allowed_dataclasses' list"):
         demangle_kernel_name(symbol)
