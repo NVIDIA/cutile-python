@@ -455,6 +455,49 @@ def test_math_exp2(dtype):
     assert out[0].item() == approx_float(expected, dtype)
 
 
+@pytest.mark.parametrize("flush_to_zero", (False, True))
+@pytest.mark.parametrize("vector", (False, True))
+def test_math_exp2_ptx(flush_to_zero, vector):
+    def kernel():
+        arr = cl.shared_array(1, cl.float32)
+        ptr = arr.get_base_pointer()
+        if vector:
+            value = ptr.load(count=2)
+            result = device_math.exp2(value, flush_to_zero=flush_to_zero)
+            ptr.store(result)
+        else:
+            arr[0] = device_math.exp2(arr[0], flush_to_zero=flush_to_zero)
+
+    ftz = ".ftz" if flush_to_zero else ""
+    nftz = "" if flush_to_zero else ".ftz"
+    instruction = f"ex2.approx{ftz}.f32"
+    other_instruction = f"ex2.approx{nftz}.f32"
+
+    ptx_checks = f'CHECK-COUNT-{2 if vector else 1}: {instruction}'
+    compile_kernel(
+        kernel,
+        filecheck_ptx=ptx_checks,
+        assert_not_in_ptx=other_instruction,
+    )
+
+
+@pytest.mark.parametrize(
+    "dtype", (datatype.float16, datatype.bfloat16, datatype.float64)
+)
+def test_math_exp2_flush_to_zero_requires_float32(dtype):
+    def kernel():
+        arr = cl.shared_array(1, dtype)
+        arr[0] = device_math.exp2(arr[0], flush_to_zero=True)
+
+    compile_kernel(
+        kernel,
+        raises=pytest.raises(
+            TypeCheckingError,
+            match="Flush to zero for exp2 requires float32 operands",
+        ),
+    )
+
+
 def test_math_vector_splat():
     vector_dtype = cl.float32
     scalar_dtype = cl.float64

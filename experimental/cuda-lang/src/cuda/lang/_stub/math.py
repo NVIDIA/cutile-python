@@ -75,8 +75,13 @@ def exp(x, /, *, approx=False):
 
 
 @stub
-def exp2(x, /):
-    """Compute ``2`` raised to the power ``x``."""
+def exp2(x, /, *, flush_to_zero=False):
+    """Compute ``2`` raised to the power ``x``.
+
+    Args:
+        flush_to_zero: If true, flush subnormal inputs and results to
+            sign-preserving zero. This option requires ``float32`` operands.
+    """
     ...
 
 

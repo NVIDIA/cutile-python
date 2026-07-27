@@ -209,8 +209,39 @@ def math_negative_impl(x: Var):
     return unary("neg", UNARY_INT_FLOAT, x)
 
 
+@impl(cl_math.exp2)
+def math_exp2_impl(x: Var, flush_to_zero: Var):
+    x_ty = require_scalar_or_vector_float_type(x)
+    if not require_constant_bool(flush_to_zero):
+        return add_operation(
+            RawMLIROperation,
+            x_ty,
+            op_name="math.exp2",
+            operands_=(x,),
+        )
+
+    dtype = x_ty.tensor_dtype()
+    if dtype != datatype.float32:
+        raise TypeCheckingError(
+            "Flush to zero for exp2 requires float32 operands, "
+            f"but got {dtype}"
+        )
+
+    def exp2_ftz(value):
+        return add_operation(
+            RawMLIROperation,
+            ScalarTy(datatype.float32),
+            op_name="nvvm.ex2",
+            operands_=(value,),
+            mlir_attributes=(("ftz", mlir.BoolAttr(value=True)),),
+        )
+
+    if isinstance(x_ty, ScalarTy):
+        return exp2_ftz(x)
+    return vector_elementwise_apply(exp2_ftz, x)
+
+
 @impl(cl_math.ceil, fixed_args=["math.ceil"])
-@impl(cl_math.exp2, fixed_args=["math.exp2"])
 @impl(cl_math.sinh, fixed_args=["math.sinh"])
 @impl(cl_math.cosh, fixed_args=["math.cosh"])
 @impl(cl_math.tanh, fixed_args=["math.tanh"])
