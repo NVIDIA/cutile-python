@@ -795,12 +795,111 @@ def test_cdiv(dtype, lhs_values, rhs_values, mode):
 
 
 @pytest.mark.parametrize(
+    "dtype,lhs_values,rhs_values,expected",
+    (
+        (
+            cl.int32,
+            (-5, 5, -5, 5),
+            (3, -3, -3, 3),
+            (-2, 2, -2, 2),
+        ),
+        (
+            cl.uint32,
+            (5, 6, 8, 9),
+            (3, 3, 4, 5),
+            (2, 0, 0, 4),
+        ),
+    ),
+)
+@pytest.mark.parametrize("vector", (False, True))
+def test_integer_remainder(dtype, lhs_values, rhs_values, expected, vector):
+    count = 4 if vector else 1
+
+    @cl.kernel
+    def kernel(lhs, rhs, out):
+        if vector:
+            lhs_value = lhs.get_base_pointer().load(count=4)
+            rhs_value = rhs.get_base_pointer().load(count=4)
+            out.get_base_pointer().store(
+                cl.integer_remainder(lhs_value, rhs_value)
+            )
+        else:
+            out[0] = cl.integer_remainder(lhs[0], rhs[0])
+
+    torch_dtype = datatype.to_torch_dtype(dtype)
+    lhs = torch.tensor(lhs_values[:count], dtype=torch_dtype, device="cuda")
+    rhs = torch.tensor(rhs_values[:count], dtype=torch_dtype, device="cuda")
+    out = torch.zeros(count, dtype=torch_dtype, device="cuda")
+
+    cl.launch(torch.cuda.current_stream(), (1,), (1,), kernel, (lhs, rhs, out))
+
+    assert out.cpu().tolist() == list(expected[:count])
+
+
+@pytest.mark.parametrize("vector_side", ("lhs", "rhs"))
+def test_integer_remainder_broadcast(vector_side):
+    lhs_vector = vector_side == "lhs"
+    lhs_values = (-5, 5, -7, 7) if lhs_vector else (-5,)
+    rhs_values = (3,) if lhs_vector else (3, -3, 2, -2)
+    expected = (-2, 2, -1, 1) if lhs_vector else (-2, -2, -1, -1)
+
+    @cl.kernel
+    def kernel(lhs, rhs, out):
+        lhsp, rhsp = lhs.get_base_pointer(), rhs.get_base_pointer()
+        lhs_value = lhsp.load(count=4) if lhs_vector else lhs[0]
+        rhs_value = rhs[0] if lhs_vector else rhsp.load(count=4)
+        result = cl.integer_remainder(lhs_value, rhs_value)
+        out.get_base_pointer().store(result)
+
+    lhs = torch.tensor(lhs_values, dtype=torch.int32, device="cuda")
+    rhs = torch.tensor(rhs_values, dtype=torch.int32, device="cuda")
+    out = torch.zeros(4, dtype=torch.int32, device="cuda")
+
+    cl.launch(torch.cuda.current_stream(), (1,), (1,), kernel, (lhs, rhs, out))
+
+    assert out.cpu().tolist() == list(expected)
+
+
+def test_integer_remainder_constants():
+    @cl.kernel
+    def kernel(out):
+        out[0] = cl.integer_remainder(-5, 3)
+        out[1] = cl.integer_remainder(5, -3)
+        out[2] = cl.integer_remainder(-5, -3)
+        out[3] = cl.integer_remainder(6, 3)
+
+    out = torch.zeros(4, dtype=torch.int32, device="cuda")
+    cl.launch(torch.cuda.current_stream(), (1,), (1,), kernel, (out,))
+
+    assert out.cpu().tolist() == [-2, 2, -2, 0]
+
+
+@pytest.mark.parametrize(
+    "lhs_dtype,rhs_dtype",
+    (
+        (cl.float32, cl.float32),
+        (cl.int32, cl.float32),
+        (cl.float32, cl.int32),
+        (cl.bool_, cl.bool_),
+    ),
+)
+def test_integer_remainder_requires_integer(lhs_dtype, rhs_dtype):
+    def kernel():
+        cl.integer_remainder(lhs_dtype(5), rhs_dtype(3))
+
+    err = pytest.raises(TypeCheckingError, match="constraint is_integral")
+    compile_kernel(kernel, raises=err)
+
+
+@pytest.mark.parametrize(
     "operation,dtype,check",
     (
         (operator.floordiv, cl.float32, ("arith.divf", "math.floor")),
         (operator.mod, cl.float32, "callee = @__nv_fmodf"),
         (cl.cdiv, cl.int32, "arith.ceildivsi"),
         (cl.cdiv, cl.uint32, "arith.ceildivui"),
+        (cl.integer_remainder, cl.int32, "arith.remsi"),
+        (cl.integer_remainder, cl.uint32, "arith.remui"),
     ),
 )
 def test_division_mlir(operation, dtype, check):

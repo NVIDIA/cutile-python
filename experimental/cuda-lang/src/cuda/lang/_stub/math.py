@@ -47,6 +47,13 @@ def mod(x, y, /):
 
 
 @stub(static_eval_ok=True)
+def integer_remainder(x, y, /):
+    """Compute the remainder of integer division following C truncation rules.
+    """
+    ...
+
+
+@stub(static_eval_ok=True)
 def divmod(x, y, /):
     """Compute divmod(x, y)."""
 
@@ -319,6 +326,7 @@ __all__ = (
     "truediv",
     "floordiv",
     "mod",
+    "integer_remainder",
     "negative",
     "ceil",
     "exp",

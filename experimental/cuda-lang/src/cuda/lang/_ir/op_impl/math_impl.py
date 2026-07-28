@@ -35,6 +35,7 @@ from cuda.tile._ir.arithmetic_ops import (
     UNARY_INT_FLOAT,
     astype,
     binary_arithmetic_tensorlike,
+    binary_arithmetic_tensorlike_raw,
     binary_bitwise_tensorlike,
     compare_tensorlike,
     mod_tensorlike,
@@ -195,6 +196,16 @@ def math_mod_impl(x: Var, y: Var):
         value = vector_elementwise_apply(scalar_fn, call_x, call_y)
     value = astype(value, dtype)
     return float_modulo_with_corrected_sign(value, y)
+
+
+@impl(cl_math.integer_remainder)
+def math_integer_remainder_impl(x: Var, y: Var):
+    require_scalar_or_vector_type(x, is_integral)
+    require_scalar_or_vector_type(y, is_integral)
+    ty = common_type(x, y)
+    x = promote_and_broadcast_to(x, ty)
+    y = promote_and_broadcast_to(y, ty)
+    return binary_arithmetic_tensorlike_raw("c_mod", x, y)
 
 
 @impl(cl_math.divmod)
