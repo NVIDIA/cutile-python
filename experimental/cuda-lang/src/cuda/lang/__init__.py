@@ -112,6 +112,10 @@ from ._stub.copy_async import (
     copy_async_bulk_commit_group,
     copy_async_bulk_wait_group,
 )
+from ._stub.store_async import (
+    store_async_cluster,
+    store_async_global,
+)
 from ._stub.core_api import (
     cdiv,
     dtype_of,
@@ -425,6 +429,8 @@ __all__ = (
     "copy_async_bulk_tensor_global_to_shared",
     "copy_async_bulk_commit_group",
     "copy_async_bulk_wait_group",
+    "store_async_cluster",
+    "store_async_global",
     "add",
     "sub",
     "mul",

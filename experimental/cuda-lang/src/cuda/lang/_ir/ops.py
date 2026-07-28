@@ -160,6 +160,7 @@ from .op_impl.mbarrier_impl import mbarrier_impl_registry
 from .op_impl.inline_ptx_impl import inline_ptx_impl_registry
 from .op_impl.matrix_impl import matrix_impl_registry
 from .op_impl.printing_impl import printing_impl_registry
+from .op_impl.store_async_impl import store_async_impl_registry
 
 cuda_lang_impl_registry = ImplRegistry()
 cuda_lang_impl_registry.update(core_impl_registry())
@@ -179,6 +180,7 @@ cuda_lang_impl_registry.update(barrier_impl_registry())
 cuda_lang_impl_registry.update(mbarrier_impl_registry())
 cuda_lang_impl_registry.update(matrix_impl_registry())
 cuda_lang_impl_registry.update(printing_impl_registry())
+cuda_lang_impl_registry.update(store_async_impl_registry())
 
 impl = cuda_lang_impl_registry.impl
 
