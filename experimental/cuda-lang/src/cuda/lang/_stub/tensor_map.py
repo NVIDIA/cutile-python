@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 from typing import Literal
 
-from cuda.lang._enums import SwizzleMode, TMALoadMode
+from cuda.lang._enums import SwizzleMode, TensorMapL2Promotion, TMALoadMode
 from cuda.lang._execution import stub
 
 
@@ -44,14 +44,18 @@ def tensor_map_tiled(array,
                      tile_shape: int | tuple[int, ...],
                      *,
                      order: tuple[int, ...] | Literal["C", "F"] = "C",
-                     swizzle: SwizzleMode = SwizzleMode.SWIZZLE_NONE) -> TensorMap:
+                     swizzle: SwizzleMode = SwizzleMode.SWIZZLE_NONE,
+                     l2_promotion: TensorMapL2Promotion =
+                     TensorMapL2Promotion.NONE) -> TensorMap:
     """
     Creates a tiled tensor-map descriptor for TMA access to a global `array`.
 
     `array` must be a global :class:`Array` passed as a kernel parameter. Its
     element type, base address, shape, and strides supply the corresponding
-    tensor-map fields. `tile_shape`, `order`, and `swizzle` must be compile-time
-    constants.
+    tensor-map fields. `tile_shape`, `order`, `swizzle`, and `l2_promotion` must
+    be compile-time constants.
+
+    `l2_promotion` controls the L2-promotion size encoded in the descriptor.
 
     `order` maps tensor-map descriptor axes to `array` axes. If ``order[i] == j``,
     descriptor axis ``i`` describes array axis ``j``. ``order="C"`` is equivalent

@@ -19,6 +19,15 @@ class SwizzleMode(Enum):
     SWIZZLE_128B_ATOM_64B = _cext.CU_TENSOR_MAP_SWIZZLE_128B_ATOM_64B
 
 
+class TensorMapL2Promotion(Enum):
+    """L2-promotion size encoded in a tensor-map descriptor."""
+
+    NONE = _cext.CU_TENSOR_MAP_L2_PROMOTION_NONE
+    L2_64B = _cext.CU_TENSOR_MAP_L2_PROMOTION_L2_64B
+    L2_128B = _cext.CU_TENSOR_MAP_L2_PROMOTION_L2_128B
+    L2_256B = _cext.CU_TENSOR_MAP_L2_PROMOTION_L2_256B
+
+
 class MbarrierScope(Enum):
     """Scope of the threads that observe an mbarrier operation."""
 
@@ -174,6 +183,7 @@ __all__ = (
     "MemoryScope",
     "MemoryOrder",
     "SwizzleMode",
+    "TensorMapL2Promotion",
     "MbarrierScope",
     "TMALoadMode",
     "TMAStoreMode",

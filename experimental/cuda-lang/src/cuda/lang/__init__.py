@@ -179,6 +179,7 @@ from cuda.lang._stub import nvvm as _nvvm  # noqa: F401
 
 from cuda.lang._stub.tensor_map import (
     SwizzleMode,
+    TensorMapL2Promotion,
     TensorMap,
     tensor_map_tiled,
 )
@@ -361,6 +362,7 @@ __all__ = (
     "fence_proxy_release",
     "compile_simt",
     "SwizzleMode",
+    "TensorMapL2Promotion",
     "TensorMap",
     "tensor_map_tiled",
     "CTAGroup",

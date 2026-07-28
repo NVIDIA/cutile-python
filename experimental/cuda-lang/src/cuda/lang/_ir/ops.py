@@ -137,7 +137,7 @@ from .ir import (
 )
 from .._stub.cluster_launch_control import clusterlaunchcontrol_try_cancel, \
     clusterlaunchcontrol_is_canceled, clusterlaunchcontrol_get_first_block_index
-from .._enums import SwizzleMode, TMALoadMode
+from .._enums import SwizzleMode, TensorMapL2Promotion, TMALoadMode
 from .._stub import (
     foreign_function,
     core_api,
@@ -684,7 +684,13 @@ class CreateTensorMap(Operation, opcode="create_tensor_map"):
 
 
 @impl(tensor_map.tensor_map_tiled)
-def tensor_map_tiled_impl(array: Var, tile_shape: Var, order: Var, swizzle: Var) -> Var:
+def tensor_map_tiled_impl(
+    array: Var,
+    tile_shape: Var,
+    order: Var,
+    swizzle: Var,
+    l2_promotion: Var,
+) -> Var:
     array_ty = require_array_type(array)
     array_val = array.get_aggregate()
     assert isinstance(array_val, ArrayValue)
@@ -692,11 +698,13 @@ def tensor_map_tiled_impl(array: Var, tile_shape: Var, order: Var, swizzle: Var)
     tile_shape = require_constant_int_tuple(tile_shape, allow_single_int=True)
     order = require_constant_axis_order(order, array_ty.ndim)
     swizzle = require_constant_enum(swizzle, SwizzleMode)
+    l2_promotion = require_constant_enum(l2_promotion, TensorMapL2Promotion)
     data_type = dtype_to_tensor_map_type(array_ty.dtype)
     map_ty = TensorMapTy(data_type=data_type,
                          element_bitwidth=array_ty.dtype.bitwidth,
                          tile_shape=tile_shape,
-                         swizzle=swizzle)
+                         swizzle=swizzle,
+                         l2_promotion=l2_promotion)
     return add_operation(CreateTensorMap, map_ty,
                          base_ptr=array_val.base_ptr,
                          array_shape=tuple(array_val.shape[i] for i in order),

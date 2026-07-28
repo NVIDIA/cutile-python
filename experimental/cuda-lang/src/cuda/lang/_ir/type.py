@@ -7,7 +7,7 @@ from typing import Sequence
 from typing_extensions import override
 
 from cuda.lang._ir.ir import LocalArrayContextManagerValue
-from cuda.lang._enums import SwizzleMode
+from cuda.lang._enums import SwizzleMode, TensorMapL2Promotion
 from cuda.lang._stub.types import Scalar, Pointer, Vector
 from cuda.tile._ir.type import (
     Type,
@@ -278,6 +278,7 @@ class TensorMapTy(Type):
     element_bitwidth: int
     tile_shape: tuple[int, ...]
     swizzle: SwizzleMode
+    l2_promotion: TensorMapL2Promotion
 
 
 class LangTypingHooks(TypingHooks):

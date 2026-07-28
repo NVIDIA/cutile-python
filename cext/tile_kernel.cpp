@@ -2075,7 +2075,11 @@ static Result<HostProgram> host_program_parse(PyObject* prog_pyobj, int expected
     X(CU_TENSOR_MAP_SWIZZLE_128B) \
     X(CU_TENSOR_MAP_SWIZZLE_128B_ATOM_32B) \
     X(CU_TENSOR_MAP_SWIZZLE_128B_ATOM_32B_FLIP_8B) \
-    X(CU_TENSOR_MAP_SWIZZLE_128B_ATOM_64B)
+    X(CU_TENSOR_MAP_SWIZZLE_128B_ATOM_64B) \
+    X(CU_TENSOR_MAP_L2_PROMOTION_NONE) \
+    X(CU_TENSOR_MAP_L2_PROMOTION_L2_64B) \
+    X(CU_TENSOR_MAP_L2_PROMOTION_L2_128B) \
+    X(CU_TENSOR_MAP_L2_PROMOTION_L2_256B)
 
 #define INTEGER_CONSTANT_ENTRY(name) {name, #name},
 
@@ -2175,8 +2179,16 @@ static Result<HoistedTensorMap> hoisted_tensor_map_parse(PyObject* map_pyobj) {
     ret.swizzle = static_cast<CUtensorMapSwizzle>(pylong_as<long>(py_swizzle_val));
     if (PyErr_Occurred()) return ErrorRaised;
 
+    // L2 promotion
+    PyPtr py_l2_promotion = getattr(map_pyobj, "l2_promotion");
+    if (!py_l2_promotion) return ErrorRaised;
+    PyPtr py_l2_promotion_val = getattr(py_l2_promotion, "_value_");
+    if (!py_l2_promotion_val) return ErrorRaised;
+    ret.l2_promotion = static_cast<CUtensorMapL2promotion>(
+            pylong_as<long>(py_l2_promotion_val));
+    if (PyErr_Occurred()) return ErrorRaised;
+
     ret.interleave = CU_TENSOR_MAP_INTERLEAVE_NONE;
-    ret.l2_promotion = CU_TENSOR_MAP_L2_PROMOTION_NONE;
     ret.oob_fill = CU_TENSOR_MAP_FLOAT_OOB_FILL_NONE;
     return ret;
 }

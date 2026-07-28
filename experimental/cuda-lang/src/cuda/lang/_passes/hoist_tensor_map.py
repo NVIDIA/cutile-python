@@ -5,7 +5,7 @@
 from dataclasses import dataclass
 from typing import Mapping
 
-from cuda.lang._enums import SwizzleMode
+from cuda.lang._enums import SwizzleMode, TensorMapL2Promotion
 from cuda.lang._ir import ir
 from cuda.lang._ir._host_program import HostProgram
 from cuda.lang._ir.ops import CreateTensorMap
@@ -24,6 +24,7 @@ class HoistedTensorMap:
     shape_stride_program: HostProgram
     tile_shape: tuple[int, ...]
     swizzle: SwizzleMode
+    l2_promotion: TensorMapL2Promotion
 
 
 def hoist_tensor_maps(kernel_body: ir.Block,
@@ -72,7 +73,8 @@ def hoist_tensor_maps(kernel_body: ir.Block,
                     base_ptr_param=param_idx(op.base_ptr),
                     shape_stride_program=shape_stride_program,
                     tile_shape=map_ty.tile_shape,
-                    swizzle=map_ty.swizzle))
+                    swizzle=map_ty.swizzle,
+                    l2_promotion=map_ty.l2_promotion))
 
     removed_count = kernel_body.remove_if(lambda op: isinstance(op, CreateTensorMap))
     assert removed_count == len(ops)

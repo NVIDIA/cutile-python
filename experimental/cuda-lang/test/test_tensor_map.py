@@ -7,7 +7,7 @@ import pytest
 import torch
 
 import cuda.lang as cl
-from cuda.lang._datatype import float4_e2m1fn
+from cuda.lang._datatype import float4_e2m1fn, to_torch_dtype
 from cuda.lang._exception import TypeCheckingError
 from cuda.lang._ir.ops import CreateTensorMap
 from cuda.tile import _cext
@@ -62,6 +62,114 @@ def test_tmadesc_byte_types(dtype):
     cres = cl.compile_simt(kernel, [sig], gpu_name="sm_100a", arch="compute_100a")
     assert len(cres.hoisted_tensor_maps) == 1
     assert cres.hoisted_tensor_maps[0].data_type == _cext.CU_TENSOR_MAP_DATA_TYPE_UINT8
+
+
+@require_hopper_or_newer()
+@pytest.mark.parametrize("l2_promotion", tuple(cl.TensorMapL2Promotion))
+def test_tensor_map_l2_promotion_metadata(l2_promotion):
+    def kernel(x):
+        tmap = cl.tensor_map_tiled(
+            x,
+            (16, 16),
+            order="F",
+            l2_promotion=l2_promotion,
+        )
+        cl.prefetch_tensor_map(tmap)
+
+    sig = KernelSignature([make_symbolic_tensor((1, 1), cl.float16)])
+    result = cl.compile_simt(
+        kernel,
+        [sig],
+        gpu_name="sm_100a",
+        arch="compute_100a",
+    )
+    assert len(result.hoisted_tensor_maps) == 1
+    assert result.hoisted_tensor_maps[0].l2_promotion is l2_promotion
+
+
+@require_hopper_or_newer()
+@pytest.mark.parametrize(
+    "cl_dtype",
+    (
+        cl.uint8,
+        cl.int8,
+        cl.float8_e4m3fn,
+        cl.float8_e5m2,
+        cl.float8_e8m0fnu,
+    ),
+)
+def test_tensor_map_byte_types_l2_promotion_launch(cl_dtype):
+    torch_dtype = to_torch_dtype(cl_dtype)
+    tile_height, tile_width = 8, 32
+
+    @cl.kernel
+    def kernel(
+        x,
+        y,
+        row,
+        column,
+        tile_height: cl.Constant[int],
+        tile_width: cl.Constant[int],
+    ):
+        tmap = cl.tensor_map_tiled(
+            x,
+            (tile_width, tile_height),
+            order="F",
+            l2_promotion=cl.TensorMapL2Promotion.L2_128B,
+        )
+        smem = cl.shared_array(
+            tile_height * tile_width,
+            cl.uint8,
+            alignment=128,
+        )
+        mbar = cl.shared_array(1, cl.mbarrier, alignment=8).get_base_pointer()
+
+        if cl.thread_index(0) == 0:
+            cl.mbarrier_initialize(mbar, cl.thread_count(0))
+            cl.fence_mbarrier_initialize()
+
+        cl.barrier_sync_block()
+        if cl.elect_sync():
+            cl.copy_async_bulk_tensor_global_to_shared(
+                tmap,
+                (column, row),
+                smem.get_base_pointer(),
+                mbar,
+            )
+            token = cl.mbarrier_arrive_expect_transaction(
+                mbar,
+                tmap.get_transaction_bytes(),
+            )
+        else:
+            token = cl.mbarrier_arrive(mbar)
+
+        cl.mbarrier_wait(mbar, token, time_hint=10_000)
+        index = cl.thread_index(0)
+        y[index] = smem[index]
+
+    byte_values = (
+        torch.arange(37 * 48, dtype=torch.int32, device="cuda")
+        .remainder(256)
+        .to(torch.uint8)
+        .reshape((37, 48))
+        .contiguous()
+    )
+    x = byte_values if torch_dtype is torch.uint8 else byte_values.view(torch_dtype)
+
+    for row, column in ((0, 0), (1, 16)):
+        y = torch.zeros(tile_height * tile_width, dtype=torch.uint8, device="cuda")
+        cl.launch(
+            torch.cuda.current_stream(),
+            (1,),
+            (tile_height * tile_width,),
+            kernel,
+            (x, y, row, column, tile_height, tile_width),
+        )
+        expected = byte_values[
+            row:row + tile_height,
+            column:column + tile_width,
+        ]
+        torch.testing.assert_close(y.reshape((tile_height, tile_width)), expected)
 
 
 @require_hopper_or_newer()
