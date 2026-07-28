@@ -11,6 +11,7 @@ from cuda.lang._exception import (
     InvalidValueError,
 )
 import cuda.lang._stub.nvvm_mlir_interfaces as nvvm
+import re
 import torch
 
 from ..util import require_hopper_or_newer, compile_kernel
@@ -77,22 +78,6 @@ def test_cp_async_bulk_tensor_mlir_interface():
     torch.testing.assert_close(dst.reshape((8, 8)), src)
 
 
-def test_mlir_interface_error_on_non_constant_enum():
-    @cl.kernel
-    def kernel(cond):
-        if cond:
-            dyn_kind = cl.FenceProxyKind.GENERIC
-        else:
-            dyn_kind = cl.FenceProxyKind.TENSORMAP
-        nvvm.fence_proxy(kind=dyn_kind)
-
-    with pytest.raises(
-        TypeCheckingError,
-        match="Expected FenceProxyKind constant, but given value is not constant",
-    ):
-        cl.launch(torch.cuda.current_stream(), (1,), (1,), kernel, (False,))
-
-
 def test_mlir_interface_error_on_non_constant_attr():
     # cluster arrive takes a bool attr, so the value must be known at compile-time
     @cl.kernel
@@ -117,7 +102,8 @@ def test_wrong_enum_class():
 
     with pytest.raises(
         TypeCheckingError,
-        match=r"Expected MemoryScope, but given value has type Enum\[MemScopeKind\]",
+        match=re.escape("Expected MemoryScope,"
+                        " but given value has type <enum constant MemScopeKind.CLUSTER>"),
     ):
         cl.launch(torch.cuda.current_stream(), (1,), (1,), kernel, ())
 

@@ -169,7 +169,7 @@ def type_of_constant_python_value(val, typing_hooks: TypingHooks) -> Type:
     if isinstance(val, bool | int | float):
         return typing_hooks.get_tensor_like_type(dtype_of_constant_scalar(val), ())
     if isinstance(val, Enum):
-        return EnumTy(type(val))
+        return EnumTy(val)
     if isinstance(val, str):
         return StringTy(val)
     if val is Ellipsis:

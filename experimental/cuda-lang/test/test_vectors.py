@@ -730,24 +730,6 @@ def test_vector_reduce_rejects_wrong_enum():
     )
 
 
-def test_vector_reduce_requires_constant_op():
-    @cl.kernel
-    def kernel(condition):
-        if condition:
-            op = cl.VectorReduction.max
-        else:
-            op = cl.VectorReduction.min
-        cl.Vector(1, 2).reduce(op)
-
-    compile_kernel(
-        kernel,
-        signature=KernelSignature([ScalarConstraint(cl.bool_)]),
-        raises=pytest.raises(
-            TypeCheckingError, match="Expected VectorReduction constant"
-        ),
-    )
-
-
 def test_vector_reduce_requires_constant_propagate_nan():
     @cl.kernel
     def kernel(propagate_nan):

@@ -415,7 +415,7 @@ def require_constant_enum(var: Var, enum: EnumMeta):
             f" but given value is not constant", var
         )
     ty = var.get_type()
-    if not isinstance(ty, EnumTy) or ty.enum_ty is not enum:
+    if not isinstance(ty, EnumTy) or type(ty.value) is not enum:
         raise make_type_checking_error(
             f"Expected {enum.__name__}, but given value has type {ty}", var
         )

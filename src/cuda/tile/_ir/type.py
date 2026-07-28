@@ -6,7 +6,6 @@ import inspect
 import dataclasses
 import os
 from dataclasses import dataclass
-from enum import EnumMeta
 from types import ModuleType, FunctionType, BuiltinFunctionType, MethodType, MappingProxyType, \
     CoroutineType, NotImplementedType
 from typing import Any, Callable, Optional, Sequence, Tuple, Iterator, Mapping
@@ -944,10 +943,10 @@ class BoundMethodValue(AggregateValue):
 
 @dataclass(frozen=True)
 class EnumTy(Type):
-    enum_ty: EnumMeta
+    value: Any
 
     def __str__(self) -> str:
-        return f"Enum[{self.enum_ty.__name__}]"
+        return f"<enum constant {type(self.value).__name__}.{self.value._name_}>"
 
 
 class ContextManagerLifecycle(enum.IntEnum):

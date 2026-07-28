@@ -10,7 +10,8 @@ import cuda.tile as ct
 import re
 
 from cuda.tile._cext import CallingConvention
-from cuda.tile._exception import TileTypeError, TileValueError, UnsupportedCallError
+from cuda.tile._exception import TileTypeError, TileValueError, UnsupportedCallError, \
+    TypeCheckingError
 from cuda.tile._compile import get_sm_arch
 
 from util import is_hopper_or_newer, is_blackwell_or_newer, raises_if
@@ -521,4 +522,21 @@ def test_unsupported_class_constructor():
     with pytest.raises(UnsupportedCallError,
                        match=re.escape('Creating instances of type "Foo"'
                                        ' is not supported in device code')):
+        ct.launch(torch.cuda.current_stream(), (1,), kernel, ())
+
+
+def test_enum_in_branch():
+    @ct.kernel
+    def kernel():
+        if ct.bid(0) == 0:
+            val = ct.MemoryOrder.RELAXED
+        else:
+            val = ct.MemoryOrder.WEAK
+
+        print(val == ct.MemoryOrder.WEAK)
+
+    with pytest.raises(TypeCheckingError,
+                       match='Type of `val` depends on path taken:'
+                             ' <enum constant MemoryOrder[.]WEAK> .*'
+                             ' vs[.] <enum constant MemoryOrder[.]RELAXED>'):
         ct.launch(torch.cuda.current_stream(), (1,), kernel, ())
