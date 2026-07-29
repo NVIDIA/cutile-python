@@ -9,7 +9,8 @@ from dataclasses import dataclass
 from typing import Sequence, Iterator, TypeAlias, Any
 
 from cuda.tile._execution import kernel
-from cuda.tile._cext import CallingConvention, get_parameter_constraints_from_pyargs
+from cuda.tile._cext import CallingConvention, get_parameter_constraints_from_pyargs, \
+    classify_constant
 from cuda.tile._datatype import DType, int32, int64, uint32
 
 
@@ -236,6 +237,9 @@ class TupleConstraint:
         object.__setattr__(self, "items", items)
 
 
+ConstantValue: TypeAlias = bool | int | float
+
+
 @dataclass(frozen=False, eq=False)
 class ConstantConstraint:
     """
@@ -243,13 +247,13 @@ class ConstantConstraint:
     marked with :py:class:`ct.Constant <cuda.tile.Constant>`.
 
     Args:
-        value (bool | int | float):
+        value (ConstantValue):
             The value of the compile-time constant.
     """
-    value: bool | int | float
+    value: ConstantValue
 
     def __post_init__(self):
-        if not isinstance(self.value, bool | int | float):
+        if classify_constant(self.value) is None:
             raise TypeError(f"Unexpected constant value type {type(self.value)}")
 
     def __eq__(self, other):
@@ -271,10 +275,10 @@ ParameterConstraint: TypeAlias = (ScalarConstraint | ArrayConstraint | ListConst
                                   | TupleConstraint | ConstantConstraint)
 
 
-def _to_constraint(c: ParameterConstraint | bool | int | float | tuple) -> ParameterConstraint:
+def _to_constraint(c: ParameterConstraint | ConstantValue | tuple) -> ParameterConstraint:
     if isinstance(c, ParameterConstraint):
         return c
-    elif isinstance(c, bool | int | float):
+    elif classify_constant(c) is not None:
         return ConstantConstraint(c)
     elif isinstance(c, tuple):
         return TupleConstraint(c)
@@ -288,7 +292,7 @@ class KernelSignature:
     Signature of a compiled kernel.
 
     Args:
-        parameters (Sequence[ParameterConstraint | bool | int | float | tuple]):
+        parameters (Sequence[ParameterConstraint | ConstantValue | tuple]):
             For each parameter of the kernel's Python function, a corresponding
             :py:class:`ParameterConstraint` instance.
 
@@ -296,16 +300,15 @@ class KernelSignature:
             :py:class:`ArrayConstraint`, :py:class:`ListConstraint`, :py:class:`TupleConstraint`,
             :py:class:`ConstantConstraint`.
 
-            A plain ``bool``, ``int`` or ``float`` value can be used as shorthand for
-            :py:class:`ConstantConstraint` wrapping the given value.
+            A plain :py:class:`ConstantValue` (for example, a literal ``10``), can be used
+            as shorthand for :py:class:`ConstantConstraint` wrapping the given value.
             Similarly, a plain ``tuple`` is shorthand for a :py:class:`TupleConstraint` .
 
             Each constraint must be compatible with annotations on the corresponding kernel
             parameter. For example, if a parameter is marked with
             :py:class:`ct.Constant <cuda.tile.Constant>`, then the corresponding constraint must be
             a :py:class:`ConstantConstraint`, or a nested :py:class:`TupleConstraint` thereof
-            (or a plain ``bool``, ``int``, ``float`` or ``tuple``, according to the shorthand
-            notation described above).
+            (or a plain value according to the shorthand notation described above).
         calling_convention (CallingConvention):
             |Calling convention| to use.
         symbol (str | None):
@@ -319,7 +322,7 @@ class KernelSignature:
     symbol: str | None
 
     def __init__(self,
-                 parameters: Sequence[ParameterConstraint | bool | int | float | tuple],
+                 parameters: Sequence[ParameterConstraint | ConstantValue | tuple],
                  calling_convention: CallingConvention,
                  symbol: str | None = None):
         if symbol is not None and not isinstance(symbol, str):

@@ -4,7 +4,7 @@
 
 from .._cext import CallingConvention
 from ._signature import (ScalarConstraint, ArrayConstraint, ListConstraint, TupleConstraint,
-                         ConstantConstraint, ParameterConstraint, KernelSignature)
+                         ConstantConstraint, ParameterConstraint, KernelSignature, ConstantValue)
 from ._export import export_kernel
 from ._name_mangling import mangle_kernel_name, demangle_kernel_name
 
@@ -16,6 +16,7 @@ __all__ = [
     "ConstantConstraint",
 
     "ParameterConstraint",
+    "ConstantValue",
     "KernelSignature",
 
     "CallingConvention",

@@ -17,6 +17,7 @@ from .type import DataclassInfo, PointerInfoTy
 
 from .type import Type, DTypeConstructor, DTypeSpec, NONE, StringTy, \
     ELLIPSIS, SLICE, ModuleTy, FunctionTy, EnumTy, TypeTy, LooselyTypedScalar
+from .._cext import classify_constant, ConstantKind
 from .._execution import is_function_wrapper
 
 # Store mapping from 3rd party dtype objects
@@ -164,10 +165,15 @@ def dtype_of_constant_scalar(val: bool | int | float) -> DType:
 
 
 def type_of_constant_python_value(val, typing_hooks: TypingHooks) -> Type:
+    kind = classify_constant(val)
+    match kind:
+        case None: pass
+        case ConstantKind.Bool | ConstantKind.Int | ConstantKind.Float:
+            return typing_hooks.get_tensor_like_type(dtype_of_constant_scalar(val), ())
+        case _: assert False
+
     if val is None:
         return NONE
-    if isinstance(val, bool | int | float):
-        return typing_hooks.get_tensor_like_type(dtype_of_constant_scalar(val), ())
     if isinstance(val, Enum):
         return EnumTy(val)
     if isinstance(val, str):

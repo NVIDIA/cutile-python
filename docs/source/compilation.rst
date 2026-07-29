@@ -57,6 +57,8 @@ constraint:
 
 .. autoclass:: cuda.tile.compilation.ConstantConstraint
 
+.. autoclass:: cuda.tile.compilation.ConstantValue
+
 
 .. _compilation-callconv:
 
