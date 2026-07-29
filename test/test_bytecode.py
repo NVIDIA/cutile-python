@@ -119,7 +119,7 @@ class _HackKernel(_cext.TileDispatcher):
         leaf = LeafAnnotationNode(constant=False)
         super().__init__((leaf, leaf, leaf))
 
-    def _compile(self, signature, ctx):
+    def _compile(self, signature, ctx, compute_capability):
         assert len(signature.parameters) == 3
         for x in signature.parameters:
             assert x.ndim == 1

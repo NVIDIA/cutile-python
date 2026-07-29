@@ -427,7 +427,12 @@ def test_ampere_fp8_error(dtype):
     A = torch.randn((16, 16), device="cuda").to(dtype)
     B = torch.randn((16, 16), device="cuda").to(dtype)
     C = torch.zeros((16, 16), dtype=torch.float16, device="cuda")
-    with patch("cuda.tile._compile.get_sm_arch", return_value="sm_80"):
+    original_compile = ct.kernel._compile
+
+    def compile_as_sm80(self, signature, context, compute_capability):
+        return original_compile(self, signature, context, (8, 0))
+
+    with patch.object(ct.kernel, "_compile", compile_as_sm80):
         with pytest.raises(TileUnsupportedFeatureError,
                            match="is not supported on sm_80"):
             ct.launch(torch.cuda.current_stream(), (1,), mma_kernel,

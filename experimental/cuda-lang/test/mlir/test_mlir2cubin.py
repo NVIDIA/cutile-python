@@ -23,7 +23,7 @@ class _HackKernel(_cext.TileDispatcher):
         annotations = tuple(LeafAnnotationNode(constant=False) for _ in range(arity))
         super().__init__(annotations)
 
-    def _compile(self, signature, ctx):
+    def _compile(self, signature, ctx, compute_capability):
         return self._cubin, self._func_name, None, []
 
 

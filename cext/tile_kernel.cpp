@@ -1108,6 +1108,10 @@ struct Cursor {
         : data(vec.data()), len(vec.size())
     {}
 
+    Cursor(const T* data, size_t len)
+        : data(data), len(len)
+    {}
+
     const T& peek() const {
         CHECK(len);
         return *data;
@@ -2173,10 +2177,9 @@ static PyPtr parse_param_constraint(ConstantCursor& cursor,
 }
 
 static PyPtr parse_parameter_constraints(
-        const Vec<int64_t>& constants,
+        ConstantCursor cursor,
         const Vec<ParameterKind>& param_kinds,
         const Vec<RefPtr<LeafAnnotationNode>>& flat_param_annotations) {
-    ConstantCursor cursor(constants);
     PyPtr param_constraints = steal(PyList_New(0));
     if (!param_constraints) return {};
 
@@ -2216,7 +2219,7 @@ static CallConvVersion minimum_calling_convention(
     return version;
 }
 
-static PyPtr make_signature(const Vec<int64_t>& constants,
+static PyPtr make_signature(ConstantCursor constants,
                             const Vec<ParameterKind>& param_kinds,
                             const Vec<RefPtr<LeafAnnotationNode>>& flat_param_annotations,
                             const PyPtr& calling_convention) {
@@ -2551,10 +2554,11 @@ static Result<TileKernel> compile(const DriverApi* driver,
                                   PyObject* dispatcher_pyobj,
                                   PyObject* signature,
                                   PyObject* py_tile_context,
-                                  KernelImage* image) {
+                                  KernelImage* image,
+                                  PyObject* py_compute_capability) {
     PyPtr compile_result = steal(PyObject_CallMethod(
-            dispatcher_pyobj, "_compile", "(OO)",
-            signature, py_tile_context));
+            dispatcher_pyobj, "_compile", "(OOO)",
+            signature, py_tile_context, py_compute_capability));
     if (!compile_result) return ErrorRaised;
 
     if (!PyTuple_Check(compile_result.get()))
@@ -3301,6 +3305,24 @@ static Result<PreparedLaunch> prepare_launch(
         return ErrorRaised;
     }
 
+    if (!ctx_guard.switch_to(helper->cuda_context))
+        return ErrorRaised;
+
+    // Get the compute capability of the device this launch targets.
+    // Devices with the same compute capability can share a compiled kernel.
+    CUdevice dev;
+    CUresult dev_res = driver->cuCtxGetDevice(&dev);
+    if (dev_res != CUDA_SUCCESS) {
+        return raise(PyExc_RuntimeError, "Failed to get current CUDA device: %s",
+                     get_cuda_error(driver, dev_res));
+    }
+
+    Result<ComputeCapability> compute_capability = get_device_compute_capability(driver, dev);
+    if (!compute_capability.is_ok()) return ErrorRaised;
+
+    // Append the compute capability to the constants so that it takes part in the cache key.
+    helper->constants.push_back(compute_capability->as_key());
+
     KernelMap& kernel_map = profile->family->kernels_by_constants;
     KernelMap::Item* kernel_item = kernel_map.find(helper->constants);
     std::optional<KernelImage> kernel_image;
@@ -3310,23 +3332,28 @@ static Result<PreparedLaunch> prepare_launch(
                     profile->flat_param_annotations));
         if (!cconv) return ErrorRaised;
 
-        PyPtr signature = make_signature(helper->constants,
-                                         profile->family->param_kinds,
-                                         profile->flat_param_annotations,
-                                         cconv);
+        // The last constant is the compute capability. Construct a cursor that skips it.
+        ConstantCursor constants_cursor(helper->constants.data(), helper->constants.size() - 1);
+        PyPtr signature = make_signature(
+                constants_cursor,
+                profile->family->param_kinds,
+                profile->flat_param_annotations,
+                cconv);
         if (!signature) return ErrorRaised;
+
+        PyPtr py_compute_capability = steal(Py_BuildValue(
+                "(ii)", compute_capability->major, compute_capability->minor));
+        if (!py_compute_capability) return ErrorRaised;
 
         KernelImage* image = capture_kernel_image ? &kernel_image.emplace() : nullptr;
         Result<TileKernel> res = compile(driver, dispatcher_pyobj, signature.get(),
-                                         g_default_tile_context, image);
+                                         g_default_tile_context, image,
+                                         py_compute_capability.get());
         if (!res.is_ok()) return ErrorRaised;
 
         if (!kernel_item)
             kernel_item = kernel_map.insert(std::move(helper->constants), std::move(*res));
     }
-
-    if (!ctx_guard.switch_to(helper->cuda_context))
-        return ErrorRaised;
 
     if (stage_list_args
             && !stage_list_args_on_stream(driver, launch_stream, helper->cuda_context,

@@ -4,6 +4,9 @@
 
 #include "cuda_helper.h"
 #include "cuda_loader.h"
+#include "vec.h"
+
+#include <utility>
 
 
 const char* get_cuda_error(const DriverApi* driver, CUresult res) {
@@ -57,27 +60,76 @@ PyObject* get_max_grid_size(PyObject *self, PyObject *args) {
     return Py_BuildValue("(iii)", max_grid_size[0], max_grid_size[1], max_grid_size[2]);
 }
 
-PyObject* get_compute_capability(PyObject *self, PyObject *Py_UNUSED(ignored)) {
-    int major, minor;
-    CUdevice dev;
+static constexpr int32_t kDeviceCapabilityUnavailable = -1;
+
+static const Vec<ComputeCapability>* get_compute_capability_by_device(const DriverApi* driver) {
+    // Protected by the GIL or g_compute_capability_mutex
+    static Vec<ComputeCapability>* cached;
+#ifdef Py_GIL_DISABLED
+    static PyMutex g_compute_capability_mutex = {0};
+    PyCriticalSectionGuard guard(&g_compute_capability_mutex);
+#endif
+    if (cached) return cached;
+
+    int device_count = 0;
+    CUresult res = driver->cuDeviceGetCount(&device_count);
+    if (res != CUDA_SUCCESS) {
+        PyErr_Format(PyExc_RuntimeError, "cuDeviceGetCount: %s", get_cuda_error(driver, res));
+        return nullptr;
+    }
+
+    Vec<ComputeCapability> table(device_count);
+    for (int i = 0; i < device_count; ++i) {
+        table[i].major = kDeviceCapabilityUnavailable;
+
+        CUdevice dev;
+        if (driver->cuDeviceGet(&dev, i) != CUDA_SUCCESS) continue;
+
+        int major, minor;
+        if (driver->cuDeviceGetAttribute(
+                &major, CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MAJOR, dev) != CUDA_SUCCESS)
+            continue;
+        if (driver->cuDeviceGetAttribute(
+                &minor, CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MINOR, dev) != CUDA_SUCCESS)
+            continue;
+        table[i].major = major;
+        table[i].minor = minor;
+    }
+
+    cached = new Vec<ComputeCapability>(std::move(table));
+    return cached;
+}
+
+Result<ComputeCapability> get_device_compute_capability(const DriverApi* driver, int device_id) {
+    const Vec<ComputeCapability>* compute_capability_by_device =
+            get_compute_capability_by_device(driver);
+    if (!compute_capability_by_device) return ErrorRaised;
+
+    size_t device_count = compute_capability_by_device->size();
+    if (device_id < 0 || static_cast<size_t>(device_id) >= device_count) {
+        return raise(PyExc_RuntimeError, "invalid device ordinal %d (%zu device(s) present)",
+                     device_id, device_count);
+    }
+
+    const ComputeCapability& entry = (*compute_capability_by_device)[device_id];
+    if (entry.major == kDeviceCapabilityUnavailable) {
+        return raise(PyExc_RuntimeError,
+                     "Failed to query the compute capability of device %d", device_id);
+    }
+    return entry;
+}
+
+PyObject* get_compute_capability(PyObject *self, PyObject *args) {
+    int device_id = 0;
+    if (!PyArg_ParseTuple(args, "|i", &device_id)) return nullptr;
 
     Result<const DriverApi*> driver_result = get_driver_api();
     if (!driver_result.is_ok()) return nullptr;
-    const DriverApi* d = *driver_result;
 
-    CUresult res = d->cuDeviceGet(&dev, 0);
-    if (res != CUDA_SUCCESS) {
-        return PyErr_Format(PyExc_RuntimeError, "cuDeviceGet: %s", get_cuda_error(d, res));
-    }
-    res = d->cuDeviceGetAttribute(&major, CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MAJOR, dev);
-    if (res != CUDA_SUCCESS) {
-        return PyErr_Format(PyExc_RuntimeError, "cuDeviceGetAttribute: %s", get_cuda_error(d, res));
-    }
-    res = d->cuDeviceGetAttribute(&minor, CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MINOR, dev);
-    if (res != CUDA_SUCCESS) {
-        return PyErr_Format(PyExc_RuntimeError, "cuDeviceGetAttribute: %s", get_cuda_error(d, res));
-    }
-    return Py_BuildValue("(ii)", major, minor);
+    Result<ComputeCapability> computeCapability =
+            get_device_compute_capability(*driver_result, device_id);
+    if (!computeCapability.is_ok()) return nullptr;
+    return Py_BuildValue("(ii)", computeCapability->major, computeCapability->minor);
 }
 
 PyObject* get_driver_version(PyObject *self, PyObject *Py_UNUSED(ignored)) {
@@ -207,8 +259,8 @@ static PyObject* spy_on_cuLaunchKernel_end(PyObject* self, PyObject* arg) {
 }
 
 static PyMethodDef functions[] = {
-    {"get_compute_capability", get_compute_capability, METH_NOARGS,
-        "Get compute capability of the default CUDA device"},
+    {"get_compute_capability", get_compute_capability, METH_VARARGS,
+        "Get compute capability of a CUDA device, given device id (default 0)"},
     {"get_driver_version", get_driver_version, METH_NOARGS,
         "Get the cuda driver version"},
     {"_get_max_grid_size", get_max_grid_size, METH_VARARGS,

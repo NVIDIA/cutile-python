@@ -184,14 +184,17 @@ class kernel(_cext.TileDispatcher):
         self._arch = arch
         self._gpu_name = gpu_name
 
-    def _compile(self, signature: KernelSignature, ctx: ir.IRContext):
-        from cuda.lang._compile import compile_simt
+    def _compile(self, signature: KernelSignature, ctx: ir.IRContext,
+                 compute_capability: tuple[int, int] | None = None):
+        from cuda.lang._compile import ComputeCapability, compile_simt
 
         result = compile_simt(
             self._annotated_function,
             (signature,),
             arch=self._arch,
             gpu_name=self._gpu_name,
+            compute_capability=(ComputeCapability(*compute_capability)
+                                if compute_capability is not None else None),
             compiler_options=self._compiler_options,
             ctx=None,  # the launcher currently provides a cutile context
         )

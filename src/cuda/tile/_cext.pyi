@@ -33,7 +33,7 @@ def launch_extended(stream,
     ...
 
 
-def get_compute_capability():
+def get_compute_capability(device_id: int = 0) -> tuple[int, int]:
     ...
 
 

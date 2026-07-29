@@ -9,7 +9,7 @@ from types import FunctionType
 from typing import TYPE_CHECKING
 
 from cuda.tile._by_target import ByTarget
-from cuda.tile._cext import TileDispatcher, TileContext
+from cuda.tile._cext import TileDispatcher, TileContext, get_compute_capability
 from cuda.tile._dispatch_mode import DispatchMode
 
 if TYPE_CHECKING:
@@ -122,10 +122,16 @@ class kernel(TileDispatcher):
         self._annotated_function = ann_func
         self._compiler_options = compiler_options
 
-    def _compile(self, signature: KernelSignature, context: TileContext):
-        from cuda.tile._compile import compile_tile, get_sm_arch
-        result = compile_tile(self._annotated_function, (signature,),
-                              get_sm_arch(), self._compiler_options, context)
+    def _compile(self, signature: KernelSignature, context: TileContext,
+                 compute_capability: tuple[int, int] | None = None):
+        from cuda.tile._compile import compile_tile, format_sm_arch
+
+        result = compile_tile(
+            self._annotated_function,
+            (signature,),
+            format_sm_arch(*(compute_capability or get_compute_capability())),
+            self._compiler_options,
+            context)
         [kernel_sig] = result.kernel_signatures
         return result.cubin, kernel_sig.symbol, None, []
 

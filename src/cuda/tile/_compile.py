@@ -861,10 +861,13 @@ def _get_compiler_version_string() -> str | None:
     return version
 
 
-@cache
-def get_sm_arch() -> str:
-    major, minor = get_compute_capability()
+def format_sm_arch(major: int, minor: int) -> str:
     return f'sm_{major}{minor}'
+
+
+@cache
+def get_sm_arch(device_id: int = 0) -> str:
+    return format_sm_arch(*get_compute_capability(device_id))
 
 
 def compile_cubin(

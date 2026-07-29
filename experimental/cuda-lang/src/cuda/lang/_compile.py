@@ -222,6 +222,7 @@ def compile_simt(
     signatures: Sequence[KernelSignature],
     gpu_name: str | None = None,
     arch: str | None = None,
+    compute_capability: ComputeCapability | None = None,
     compiler_options: CompilerOptions = CompilerOptions(),
     ctx: ir.IRContext | None = None,
     keep_hir: bool = False,
@@ -289,7 +290,7 @@ def compile_simt(
         _dump("MLIR", mlir_text)
 
     if gpu_name is None or arch is None:
-        cc = get_compute_capability()
+        cc = compute_capability or get_compute_capability()
         suffix = "a" if cc >= (9, 0) else ""
         gpu_name = gpu_name or cc.gpu_name + suffix
         arch = arch or cc.arch + suffix
