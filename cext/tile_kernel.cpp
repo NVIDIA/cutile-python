@@ -422,14 +422,44 @@ static LaunchHelperPtr launch_helper_get() {
     }
 }
 
-enum class ParameterKind {
-    Array,
-    Boolean,
-    Integer,
-    Float,
-    List,
-    TupleBegin,
-    TupleEnd,
+struct AggregateArgType {
+    enum Kind {
+        Tuple
+    };
+
+    Kind kind;
+
+    bool operator== (const AggregateArgType& other) const {
+        if (kind != other.kind) return false;
+        switch (kind) {
+        case Kind::Tuple:
+            return true;
+        }
+        CHECK(false);
+    }
+};
+
+struct ParameterKind {
+    enum Category {
+        Array,
+        Boolean,
+        Integer,
+        Float,
+        List,
+        AggregateBegin,
+        AggregateEnd,
+    };
+    Category category;
+    AggregateArgType agg_type;  // Only set when `category == AggregateBegin`
+
+    bool operator== (const ParameterKind& other) const {
+        if (category != other.category) return false;
+        return category == AggregateBegin ? agg_type == other.agg_type : true;
+    }
+
+    bool operator!= (const ParameterKind& other) const {
+        return !(*this == other);
+    }
 };
 
 struct KernelFamily : SimpleRefcount<KernelFamily> {
@@ -457,7 +487,7 @@ enum class PythonArgKind {
     PyList,
 };
 
-static ParameterKind param_kind_from_pyarg_kind(PythonArgKind k) {
+static ParameterKind::Category param_category_from_pyarg_kind(PythonArgKind k) {
     switch (k) {
     case PythonArgKind::TorchTensorDlpack: return ParameterKind::Array;
     case PythonArgKind::DlpackArray: return ParameterKind::Array;
@@ -565,6 +595,7 @@ using ProfileMap = HashMap<ProfileMapKey, int /*dummy*/>;
 
 namespace {struct AggregateArgInfo {
     size_t breadth_first_index;
+    AggregateArgType type;
 }; }
 
 // Intermediate node of a ProfileMap tree.
@@ -1603,7 +1634,7 @@ static Status extract_py_list(const DriverApi* driver, PyObject* pyobj,
     Result<PythonArgKind> first_item_res = classify_arg(first_item);
     if (!first_item_res.is_ok()) return ErrorRaised;
 
-    if (param_kind_from_pyarg_kind(*first_item_res) != ParameterKind::Array) {
+    if (param_category_from_pyarg_kind(*first_item_res) != ParameterKind::Array) {
         return raise(PyExc_TypeError, "Expected list items to be arrays, got %s",
                      Py_TYPE(first_item)->tp_name);
     }
@@ -1698,8 +1729,9 @@ static PyPtr parse_list_constraint(ConstantCursor& cursor, const Vec<int64_t>& s
 struct ParameterAnnotationNode : SimpleRefcount<ParameterAnnotationNode> {
     enum Kind { Leaf, HomogeneousTuple, HeterogeneousTuple };
     virtual Kind kind() const = 0;
-    virtual Status flatten_tuple(Cursor<ParameterKind>* cursor,
-                                 Vec<RefPtr<LeafAnnotationNode>>* out) = 0;
+    virtual Status flatten_aggregate(Cursor<ParameterKind>* cursor,
+                                     const AggregateArgType& agg_type,
+                                     Vec<RefPtr<LeafAnnotationNode>>* out) = 0;
     virtual ~ParameterAnnotationNode() {}
 };
 
@@ -1717,9 +1749,11 @@ struct LeafAnnotationNode : ParameterAnnotationNode {
 
     virtual Kind kind() const { return Leaf; }
 
-    virtual Status flatten_tuple(Cursor<ParameterKind>* cursor,
-                                 Vec<RefPtr<LeafAnnotationNode>>* out) override {
-        for (size_t item_idx = 0; cursor->peek() != ParameterKind::TupleEnd; ++item_idx) {
+    virtual Status flatten_aggregate(Cursor<ParameterKind>* cursor,
+                                     const AggregateArgType& agg_type,
+                                     Vec<RefPtr<LeafAnnotationNode>>* out) override {
+        for (size_t item_idx = 0;
+                cursor->peek().category != ParameterKind::AggregateEnd; ++item_idx) {
             if (!flatten_parameter_annotation_node(this, cursor, out))
                 return ErrorRaised;
         }
@@ -1733,9 +1767,14 @@ struct HomogeneousTupleNode : ParameterAnnotationNode {
 
     virtual Kind kind() const { return HomogeneousTuple; }
 
-    virtual Status flatten_tuple(Cursor<ParameterKind>* cursor,
-                                 Vec<RefPtr<LeafAnnotationNode>>* out) override {
-        for (size_t item_idx = 0; cursor->peek() != ParameterKind::TupleEnd; ++item_idx) {
+    virtual Status flatten_aggregate(Cursor<ParameterKind>* cursor,
+                                     const AggregateArgType& agg_type,
+                                     Vec<RefPtr<LeafAnnotationNode>>* out) override {
+        if (agg_type.kind != AggregateArgType::Tuple)
+            return raise(PyExc_TypeError,
+                         "Received a non-tuple argument for a parameter annotated as a tuple");
+        for (size_t item_idx = 0;
+                cursor->peek().category != ParameterKind::AggregateEnd; ++item_idx) {
             if (!flatten_parameter_annotation_node(each.get(), cursor, out))
                 return ErrorRaised;
         }
@@ -1749,12 +1788,17 @@ struct HeterogeneousTupleNode : ParameterAnnotationNode {
 
     virtual Kind kind() const { return HeterogeneousTuple; }
 
-    virtual Status flatten_tuple(Cursor<ParameterKind>* cursor,
-                                 Vec<RefPtr<LeafAnnotationNode>>* out) override {
+    virtual Status flatten_aggregate(Cursor<ParameterKind>* cursor,
+                                     const AggregateArgType& agg_type,
+                                     Vec<RefPtr<LeafAnnotationNode>>* out) override {
+        if (agg_type.kind != AggregateArgType::Tuple)
+            return raise(PyExc_TypeError,
+                         "Received a non-tuple argument for a parameter annotated as a tuple");
+
         LeafAnnotationNode default_node;
 
         size_t item_idx = 0;
-        while (cursor->peek() != ParameterKind::TupleEnd) {
+        while (cursor->peek().category != ParameterKind::AggregateEnd) {
             ParameterAnnotationNode* item_node;
             if (item_idx < items.size()) {
                 item_node = items[item_idx].get();
@@ -1779,12 +1823,12 @@ struct HeterogeneousTupleNode : ParameterAnnotationNode {
 static Status flatten_parameter_annotation_node(ParameterAnnotationNode* node,
                                                 Cursor<ParameterKind>* cursor,
                                                 Vec<RefPtr<LeafAnnotationNode>>* out) {
-    ParameterKind kind = cursor->next();
-    if (kind == ParameterKind::TupleBegin) {
-        if (!node->flatten_tuple(cursor, out))
+    const ParameterKind& kind = cursor->next();
+    if (kind.category == ParameterKind::AggregateBegin) {
+        if (!node->flatten_aggregate(cursor, kind.agg_type, out))
             return ErrorRaised;
-        ParameterKind tuple_end = cursor->next();
-        CHECK(tuple_end == ParameterKind::TupleEnd);
+        const ParameterKind& end = cursor->next();
+        CHECK(end.category == ParameterKind::AggregateEnd);
     } else {
         if (node->kind() != ParameterAnnotationNode::Leaf)
             return raise(PyExc_TypeError,
@@ -1804,7 +1848,7 @@ flatten_parameter_annotation_nodes(const Vec<RefPtr<ParameterAnnotationNode>>& n
         if (!flatten_parameter_annotation_node(node.get(), &cursor, &ret))
             return ErrorRaised;
     }
-    CHECK(cursor.len == 1 && cursor.peek() == ParameterKind::TupleEnd);
+    CHECK(cursor.len == 1 && cursor.peek().category == ParameterKind::AggregateEnd);
     return ret;
 }
 
@@ -1853,9 +1897,9 @@ static Status extract_cuda_args(const DriverApi* driver,
     return OK;
 }
 
-static PyPtr parse_element_constraint(ConstantCursor& cursor, ParameterKind kind,
+static PyPtr parse_element_constraint(ConstantCursor& cursor, ParameterKind::Category category,
                                       const LeafAnnotationNode& annotation) {
-    switch (kind) {
+    switch (category) {
     case ParameterKind::Array:
         return parse_array_constraint(cursor, annotation.array.static_shape_dims);
     case ParameterKind::Boolean:
@@ -1866,38 +1910,45 @@ static PyPtr parse_element_constraint(ConstantCursor& cursor, ParameterKind kind
         return parse_pyfloat_constraint(cursor, annotation.constant);
     case ParameterKind::List:
         return parse_list_constraint(cursor, annotation.list.element.static_shape_dims);
-    case ParameterKind::TupleBegin:
-    case ParameterKind::TupleEnd:
+    case ParameterKind::AggregateBegin:
+    case ParameterKind::AggregateEnd:
         CHECK_UNREACHABLE;  // Should be handled before parse_element_constraint
-        return {};
     }
     CHECK_UNREACHABLE;
     return {};
+}
+
+static PyPtr create_tuple_constraint(PyObject* items_list) {
+    PyObject* signature_module = get_signature_module();
+    if (!signature_module) return {};
+    PyPtr constraint_class = getattr(signature_module, "TupleConstraint");
+    if (!constraint_class) return {};
+    return steal(PyObject_CallOneArg(constraint_class.get(), items_list));
 }
 
 static PyPtr parse_param_constraint(ConstantCursor& cursor,
                                     Cursor<ParameterKind>* param_cursor,
                                     Cursor<RefPtr<LeafAnnotationNode>>* annotation_cursor) {
     ParameterKind pk = param_cursor->next();
-    if (pk == ParameterKind::TupleBegin) {
+    if (pk.category == ParameterKind::AggregateBegin) {
         PyPtr items_list = steal(PyList_New(0));
         if (!items_list) return {};
-        while (param_cursor->peek() != ParameterKind::TupleEnd) {
+        while (param_cursor->peek().category != ParameterKind::AggregateEnd) {
             PyPtr item = parse_param_constraint(cursor, param_cursor, annotation_cursor);
             if (!item) return {};
             if (PyList_Append(items_list.get(), item.get()) < 0) return {};
         }
-        ParameterKind tuple_end = param_cursor->next();
-        CHECK(tuple_end == ParameterKind::TupleEnd);
+        const ParameterKind& aggregate_end = param_cursor->next();
+        CHECK(aggregate_end.category == ParameterKind::AggregateEnd);
 
-        PyObject* signature_module = get_signature_module();
-        if (!signature_module) return {};
-        PyPtr constraint_class = getattr(signature_module, "TupleConstraint");
-        if (!constraint_class) return {};
-        return steal(PyObject_CallOneArg(constraint_class.get(), items_list.get()));
+        switch (pk.agg_type.kind) {
+        case AggregateArgType::Tuple:
+            return create_tuple_constraint(items_list.get());
+        }
+        CHECK(false);
     }
     LeafAnnotationNode* annotation = annotation_cursor->next().get();
-    return parse_element_constraint(cursor, pk, *annotation);
+    return parse_element_constraint(cursor, pk.category, *annotation);
 }
 
 static PyPtr parse_parameter_constraints(
@@ -1910,7 +1961,7 @@ static PyPtr parse_parameter_constraints(
 
     Cursor<ParameterKind> param_cursor(param_kinds);
     Cursor<RefPtr<LeafAnnotationNode>> annotation_cursor(flat_param_annotations);
-    while (param_cursor.peek() != ParameterKind::TupleEnd) {
+    while (param_cursor.peek().category != ParameterKind::AggregateEnd) {
         PyPtr constraint = parse_param_constraint(cursor, &param_cursor, &annotation_cursor);
         if (!constraint) return {};
         if (PyList_Append(param_constraints.get(), constraint.get()))
@@ -1925,15 +1976,23 @@ static PyPtr parse_parameter_constraints(
 static CallConvVersion minimum_calling_convention(
         const Vec<ParameterKind>& param_kinds,
         const Vec<RefPtr<LeafAnnotationNode>>& flat_param_annotations) {
-    for (ParameterKind pk : param_kinds) {
-        if (pk == ParameterKind::TupleBegin)
-            return CallConvVersion::CutilePython_V2;
+    CallConvVersion version = CallConvVersion::CutilePython_V1;
+    auto require = [&] (CallConvVersion u) { if (u > version) version = u; };
+
+    for (const ParameterKind& pk : param_kinds) {
+        if (pk.category == ParameterKind::AggregateBegin) {
+            switch (pk.agg_type.kind) {
+            case AggregateArgType::Tuple:
+                require(CallConvVersion::CutilePython_V2);
+                break;
+            }
+        }
     }
     for (const RefPtr<LeafAnnotationNode>& f : flat_param_annotations) {
         if (!f->array.static_shape_dims.empty() || !f->list.element.static_shape_dims.empty())
-            return CallConvVersion::CutilePython_V2;
+            require(CallConvVersion::CutilePython_V2);
     }
-    return CallConvVersion::CutilePython_V1;
+    return version;
 }
 
 static PyPtr make_signature(const Vec<int64_t>& constants,
@@ -2548,7 +2607,16 @@ static Status stage_list_args_on_stream(const DriverApi* driver,
     return OK;
 }
 
+static Result<std::optional<AggregateArgType>> classify_aggregate_type(PyTypeObject* ty) {
+    if (ty == &PyTuple_Type) {
+        return {{{ AggregateArgType::Tuple }}};
+    } else {
+        return {std::nullopt};
+    }
+}
+
 static Status get_parameter_and_pyarg_kinds(const Vec<PyTypeObject*>& pyarg_types_depth_first,
+                                            const Vec<std::optional<AggregateArgType>>& agg_types,
                                             const Vec<PyObject*>& leaf_pyarg_objs,
                                             Vec<ParameterKind>* param_kinds,
                                             Vec<PythonArgKind>* arg_kinds) {
@@ -2557,16 +2625,20 @@ static Status get_parameter_and_pyarg_kinds(const Vec<PyTypeObject*>& pyarg_type
     param_kinds->clear();
     param_kinds->reserve(pyarg_types_depth_first.size());
     size_t obj_idx = 0;
-    for (PyTypeObject* pyarg_type : pyarg_types_depth_first) {
-        if (pyarg_type == &PyTuple_Type) {
-            param_kinds->push_back(ParameterKind::TupleBegin);
-        } else if (pyarg_type == kTupleEndType) {
-            param_kinds->push_back(ParameterKind::TupleEnd);
+    for (size_t depth_first_idx = 0;
+            depth_first_idx < pyarg_types_depth_first.size(); ++depth_first_idx) {
+        if (pyarg_types_depth_first[depth_first_idx] == nullptr) {
+            param_kinds->push_back({ParameterKind::AggregateEnd, {}});
+            continue;
+        }
+        const std::optional<AggregateArgType>& agg_ty = agg_types[depth_first_idx];
+        if (agg_ty.has_value()) {
+            param_kinds->push_back({ParameterKind::AggregateBegin, *agg_ty});
         } else {
             Result<PythonArgKind> kind = classify_arg(leaf_pyarg_objs[obj_idx++]);
             if (!kind.is_ok()) return ErrorRaised;
             arg_kinds->push_back(*kind);
-            param_kinds->push_back(param_kind_from_pyarg_kind(*kind));
+            param_kinds->push_back({param_category_from_pyarg_kind(*kind), {}});
         }
     }
     CHECK(obj_idx == leaf_pyarg_objs.size());
@@ -2595,14 +2667,15 @@ static void get_pyarg_objects_and_types(PyObject* const* objects, Py_ssize_t num
     pyarg_types->push_back(nullptr);
 }
 
-static bool is_aggregate_arg(ExpandAggregates* ea, size_t breadth_first_idx) {
+static const AggregateArgType* get_aggregate_arg_type(ExpandAggregates* ea,
+                                                      size_t breadth_first_idx) {
     // Could in theory use binary search, but the array is most likely very small,
     // and this is the slow path anyway.
     for (const AggregateArgInfo& info : ea->aggregate_args) {
         if (info.breadth_first_index == breadth_first_idx)
-            return true;
+            return &info.type;
     }
-    return false;
+    return nullptr;
 }
 
 // As we walk the ProfileMap in `python_arg_profile_lookup_impl()`, we store the Python arguments
@@ -2651,7 +2724,8 @@ static void pyargs_breadth2depth(int depth,
                                  ExpandAggregates* parent,
                                  const Vec<PyTypeObject*>& pyarg_types_breadth_first,
                                  Vec<PyTypeObject*>* pyarg_types_depth_first,
-                                 Vec<size_t>* leaf_pyarg_breadth_first_indices) {
+                                 Vec<size_t>* leaf_pyarg_breadth_first_indices,
+                                 Vec<std::optional<AggregateArgType>>* aggregate_types) {
     // Reconstruct the path to the `profile` by walking the parent links
     Vec<ExpandAggregates*> path(depth);
     for (int i = depth - 1; i >= 0; --i) {
@@ -2684,6 +2758,8 @@ static void pyargs_breadth2depth(int depth,
     size_t total_leaf_args = pyarg_types_breadth_first.size() - total_aggregates_and_sentinels;
     leaf_pyarg_breadth_first_indices->reserve(total_leaf_args);
 
+    aggregate_types->reserve(pyarg_types_breadth_first.size());
+
     // Do a depth-first traversal of the tree.
     size_t cur_depth = 0;
     while (true) {
@@ -2692,19 +2768,25 @@ static void pyargs_breadth2depth(int depth,
         CHECK(idx < end_offsets[cur_depth]);
         CHECK(idx < pyarg_types_breadth_first.size());
         pyarg_types_depth_first->push_back(pyarg_types_breadth_first[idx]);
+        const AggregateArgType* agg_type;
         if (!pyarg_types_breadth_first[idx]) {
             // Reached a sentinel? Go back up a level.
+            aggregate_types->push_back({});
             if (cur_depth-- == 0) break;
-        } else if (cur_depth < path.size() && is_aggregate_arg(path[cur_depth], idx)) {
+        } else if (cur_depth < path.size()
+                && (agg_type = get_aggregate_arg_type(path[cur_depth], idx)) != nullptr) {
             // Found an aggregate? Go a level deeper.
             ++cur_depth;
+            aggregate_types->push_back(*agg_type);
         } else {
             // Else this is a leaf (non-aggregate) argument: record its source index.
             leaf_pyarg_breadth_first_indices->push_back(idx);
+            aggregate_types->push_back({});
         }
     }
 
     CHECK(pyarg_types_depth_first->size() == pyarg_types_breadth_first.size());
+    CHECK(aggregate_types->size() == pyarg_types_breadth_first.size());
     CHECK(leaf_pyarg_breadth_first_indices->size() == total_leaf_args);
     CHECK(offsets == end_offsets);
 }
@@ -2719,6 +2801,22 @@ static void gather_leaf_pyargs(const Vec<PyObject*>& pyarg_objs_breadth_first,
         leaf_pyarg_objs->push_back(pyarg_objs_breadth_first[i]);
 }
 
+static Status expand_aggregate_arg(
+        PyObject* arg,
+        const AggregateArgType& agg_type,
+        Vec<PyObject*>* pyarg_objs_breadth_first,
+        Vec<PyTypeObject*>* pyarg_types_breadth_first) {
+    switch (agg_type.kind) {
+    case AggregateArgType::Tuple:
+        CHECK(PyTuple_CheckExact(arg));
+        get_pyarg_objects_and_types(reinterpret_cast<PyTupleObject*>(arg)->ob_item,
+                                    PyTuple_GET_SIZE(arg),
+                                    pyarg_objs_breadth_first,
+                                    pyarg_types_breadth_first);
+        return OK;
+    }
+    CHECK(false);
+}
 
 static PythonArgProfile* python_arg_profile_lookup_impl(
         ProfileMap* map,
@@ -2767,8 +2865,11 @@ static PythonArgProfile* python_arg_profile_lookup_impl(
             Vec<AggregateArgInfo> aggregate_args;
             for (size_t i = 0; i < query.size(); ++i) {
                 PyTypeObject* ty = query[i];
-                if (ty == &PyTuple_Type)
-                    aggregate_args.push_back({query.offset + i});
+                Result<std::optional<AggregateArgType>> aggty = classify_aggregate_type(ty);
+                if (!aggty.is_ok()) return nullptr;
+
+                if (*aggty)
+                    aggregate_args.push_back({query.offset + i, **aggty});
             }
 
             if (aggregate_args.empty()) {
@@ -2777,16 +2878,18 @@ static PythonArgProfile* python_arg_profile_lookup_impl(
                 // Transform the breadth-first order of args into depth-first.
                 Vec<PyTypeObject*> pyarg_types_depth_first;
                 Vec<size_t> leaf_pyarg_breadth_first_indices;
+                Vec<std::optional<AggregateArgType>> aggregate_types;
                 pyargs_breadth2depth(depth, query.size(), parent, *pyarg_types_breadth_first,
-                                     &pyarg_types_depth_first, &leaf_pyarg_breadth_first_indices);
+                                     &pyarg_types_depth_first, &leaf_pyarg_breadth_first_indices,
+                                     &aggregate_types);
                 gather_leaf_pyargs(*pyarg_objs_breadth_first, leaf_pyarg_breadth_first_indices,
                                    leaf_pyarg_objs);
 
                 // Classify the arguments and get the matching KernelFamily.
                 Vec<PythonArgKind> arg_kinds;
                 Vec<ParameterKind> param_kinds;
-                if (!get_parameter_and_pyarg_kinds(pyarg_types_depth_first, *leaf_pyarg_objs,
-                                                   &param_kinds, &arg_kinds))
+                if (!get_parameter_and_pyarg_kinds(pyarg_types_depth_first, aggregate_types,
+                                                   *leaf_pyarg_objs, &param_kinds, &arg_kinds))
                     return nullptr;
 
                 KernelFamily* family = get_or_create_kernel_family(
@@ -2816,11 +2919,9 @@ static PythonArgProfile* python_arg_profile_lookup_impl(
         query.mark_start();
         for (const AggregateArgInfo& agg_info : next->aggregate_args) {
             PyObject* arg = (*pyarg_objs_breadth_first)[agg_info.breadth_first_index];
-            CHECK(PyTuple_CheckExact(arg));
-            get_pyarg_objects_and_types(reinterpret_cast<PyTupleObject*>(arg)->ob_item,
-                                        PyTuple_GET_SIZE(arg),
-                                        pyarg_objs_breadth_first,
-                                        pyarg_types_breadth_first);
+            if (!expand_aggregate_arg(arg, agg_info.type,
+                                      pyarg_objs_breadth_first, pyarg_types_breadth_first))
+                return nullptr;
         }
         query.mark_end();
 
