@@ -467,7 +467,7 @@ static ParameterKind param_kind_from_pyarg_kind(PythonArgKind k) {
     case PythonArgKind::PyFloat: return ParameterKind::Float;
     case PythonArgKind::PyList: return ParameterKind::List;
     }
-    CHECK(false);
+    CHECK_UNREACHABLE;
 }
 
 static constexpr PyTypeObject* kTupleEndType = nullptr;
@@ -1540,7 +1540,7 @@ static PyPtr parse_pylong_constraint(ConstantCursor& cursor, bool is_constant, u
         } else if (format == static_cast<int64_t>(PylongConstantEncoding::U64)) {
             value = steal(PyLong_FromUnsignedLongLong(cursor.next()));
         } else {
-            CHECK(false);
+            CHECK_UNREACHABLE;
         }
         if (!value) return {};
         return make_constant_constraint(value.get());
@@ -1829,7 +1829,7 @@ static Status extract_arg(const DriverApi* driver, PyObject* obj, PythonArgKind 
     }
     // Unsupported types are already rejected by classify_arg, so an unhandled kind here
     // is an internal logic error (a new PythonArgKind, or a tuple kind that leaked through).
-    CHECK(false);
+    CHECK_UNREACHABLE;
 }
 
 static Status extract_cuda_args(const DriverApi* driver,
@@ -1868,10 +1868,10 @@ static PyPtr parse_element_constraint(ConstantCursor& cursor, ParameterKind kind
         return parse_list_constraint(cursor, annotation.list.element.static_shape_dims);
     case ParameterKind::TupleBegin:
     case ParameterKind::TupleEnd:
-        CHECK(false);  // Should be handled before parse_element_constraint
+        CHECK_UNREACHABLE;  // Should be handled before parse_element_constraint
         return {};
     }
-    CHECK(false);
+    CHECK_UNREACHABLE;
     return {};
 }
 

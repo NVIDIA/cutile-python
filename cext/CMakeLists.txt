@@ -31,6 +31,8 @@ else()
     endif()
     set(cext_link_flags ${cext_compile_flags})
     set(nostdlib_flags -nostdlib -DNDEBUG -fno-builtin)
+    # Strip the absolute path from __FILE__
+    list(APPEND cext_compile_flags "-fmacro-prefix-map=${CMAKE_SOURCE_DIR}/=")
 endif()
 
 
