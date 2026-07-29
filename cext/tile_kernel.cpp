@@ -542,7 +542,8 @@ struct ParameterAnnotationNode;
 
 static Result<Vec<RefPtr<LeafAnnotationNode>>>
 flatten_parameter_annotation_nodes(const Vec<RefPtr<ParameterAnnotationNode>>& nodes,
-                                   const Vec<ParameterKind>& param_kinds);
+                                   const Vec<PyTypeObject*>& pyarg_types_depth_first,
+                                   const Vec<std::optional<AggregateArgType>>& agg_types);
 
 namespace { struct ExpandAggregates; }
 
@@ -976,7 +977,7 @@ struct Cursor {
     const T* data;
     size_t len;
 
-    explicit Cursor(const Vec<T>& vec)
+    /* implicit */ Cursor(const Vec<T>& vec)
         : data(vec.data()), len(vec.size())
     {}
 
@@ -1726,10 +1727,24 @@ static PyPtr parse_list_constraint(ConstantCursor& cursor, const Vec<int64_t>& s
     return steal(PyObject_Call(constraint_class.get(), args.get(), kwargs.get()));
 }
 
+struct AggregateCursor {
+    Cursor<PyTypeObject*> pytype_cursor;
+    Cursor<std::optional<AggregateArgType>> agg_cursor;
+
+    bool at_aggregate_end() const {
+        return pytype_cursor.peek() == nullptr;
+    }
+
+    const std::optional<AggregateArgType>& next() {
+        pytype_cursor.next();
+        return agg_cursor.next();
+    }
+};
+
 struct ParameterAnnotationNode : SimpleRefcount<ParameterAnnotationNode> {
     enum Kind { Leaf, HomogeneousTuple, HeterogeneousTuple };
     virtual Kind kind() const = 0;
-    virtual Status flatten_aggregate(Cursor<ParameterKind>* cursor,
+    virtual Status flatten_aggregate(AggregateCursor* cursor,
                                      const AggregateArgType& agg_type,
                                      Vec<RefPtr<LeafAnnotationNode>>* out) = 0;
     virtual ~ParameterAnnotationNode() {}
@@ -1737,7 +1752,7 @@ struct ParameterAnnotationNode : SimpleRefcount<ParameterAnnotationNode> {
 
 
 static Status flatten_parameter_annotation_node(ParameterAnnotationNode* node,
-                                                Cursor<ParameterKind>* cursor,
+                                                AggregateCursor* cursor,
                                                 Vec<RefPtr<LeafAnnotationNode>>* out);
 
 
@@ -1749,11 +1764,10 @@ struct LeafAnnotationNode : ParameterAnnotationNode {
 
     virtual Kind kind() const { return Leaf; }
 
-    virtual Status flatten_aggregate(Cursor<ParameterKind>* cursor,
+    virtual Status flatten_aggregate(AggregateCursor* cursor,
                                      const AggregateArgType& agg_type,
                                      Vec<RefPtr<LeafAnnotationNode>>* out) override {
-        for (size_t item_idx = 0;
-                cursor->peek().category != ParameterKind::AggregateEnd; ++item_idx) {
+        for (size_t item_idx = 0; !cursor->at_aggregate_end(); ++item_idx) {
             if (!flatten_parameter_annotation_node(this, cursor, out))
                 return ErrorRaised;
         }
@@ -1767,14 +1781,13 @@ struct HomogeneousTupleNode : ParameterAnnotationNode {
 
     virtual Kind kind() const { return HomogeneousTuple; }
 
-    virtual Status flatten_aggregate(Cursor<ParameterKind>* cursor,
+    virtual Status flatten_aggregate(AggregateCursor* cursor,
                                      const AggregateArgType& agg_type,
                                      Vec<RefPtr<LeafAnnotationNode>>* out) override {
         if (agg_type.kind != AggregateArgType::Tuple)
             return raise(PyExc_TypeError,
                          "Received a non-tuple argument for a parameter annotated as a tuple");
-        for (size_t item_idx = 0;
-                cursor->peek().category != ParameterKind::AggregateEnd; ++item_idx) {
+        for (size_t item_idx = 0; !cursor->at_aggregate_end(); ++item_idx) {
             if (!flatten_parameter_annotation_node(each.get(), cursor, out))
                 return ErrorRaised;
         }
@@ -1788,7 +1801,7 @@ struct HeterogeneousTupleNode : ParameterAnnotationNode {
 
     virtual Kind kind() const { return HeterogeneousTuple; }
 
-    virtual Status flatten_aggregate(Cursor<ParameterKind>* cursor,
+    virtual Status flatten_aggregate(AggregateCursor* cursor,
                                      const AggregateArgType& agg_type,
                                      Vec<RefPtr<LeafAnnotationNode>>* out) override {
         if (agg_type.kind != AggregateArgType::Tuple)
@@ -1798,7 +1811,7 @@ struct HeterogeneousTupleNode : ParameterAnnotationNode {
         LeafAnnotationNode default_node;
 
         size_t item_idx = 0;
-        while (cursor->peek().category != ParameterKind::AggregateEnd) {
+        while (!cursor->at_aggregate_end()) {
             ParameterAnnotationNode* item_node;
             if (item_idx < items.size()) {
                 item_node = items[item_idx].get();
@@ -1821,14 +1834,14 @@ struct HeterogeneousTupleNode : ParameterAnnotationNode {
 };
 
 static Status flatten_parameter_annotation_node(ParameterAnnotationNode* node,
-                                                Cursor<ParameterKind>* cursor,
+                                                AggregateCursor* cursor,
                                                 Vec<RefPtr<LeafAnnotationNode>>* out) {
-    const ParameterKind& kind = cursor->next();
-    if (kind.category == ParameterKind::AggregateBegin) {
-        if (!node->flatten_aggregate(cursor, kind.agg_type, out))
+    const std::optional<AggregateArgType>& agg_type = cursor->next();
+    if (agg_type.has_value()) {
+        if (!node->flatten_aggregate(cursor, *agg_type, out))
             return ErrorRaised;
-        const ParameterKind& end = cursor->next();
-        CHECK(end.category == ParameterKind::AggregateEnd);
+        CHECK(cursor->at_aggregate_end());
+        cursor->next();
     } else {
         if (node->kind() != ParameterAnnotationNode::Leaf)
             return raise(PyExc_TypeError,
@@ -1840,15 +1853,18 @@ static Status flatten_parameter_annotation_node(ParameterAnnotationNode* node,
 
 static Result<Vec<RefPtr<LeafAnnotationNode>>>
 flatten_parameter_annotation_nodes(const Vec<RefPtr<ParameterAnnotationNode>>& nodes,
-                                   const Vec<ParameterKind>& param_kinds) {
+                                   const Vec<PyTypeObject*>& pyarg_types_depth_first,
+                                   const Vec<std::optional<AggregateArgType>>& agg_types) {
     Vec<RefPtr<LeafAnnotationNode>> ret;
-    ret.reserve(param_kinds.size());
-    Cursor<ParameterKind> cursor(param_kinds);
+    ret.reserve(pyarg_types_depth_first.size());
+    AggregateCursor cursor{{pyarg_types_depth_first}, {agg_types}};
     for (const RefPtr<ParameterAnnotationNode>& node : nodes) {
         if (!flatten_parameter_annotation_node(node.get(), &cursor, &ret))
             return ErrorRaised;
     }
-    CHECK(cursor.len == 1 && cursor.peek().category == ParameterKind::AggregateEnd);
+    CHECK(cursor.pytype_cursor.len == 1);
+    CHECK(cursor.agg_cursor.len == 1);
+    CHECK(cursor.at_aggregate_end());
     return ret;
 }
 
@@ -2885,6 +2901,13 @@ static PythonArgProfile* python_arg_profile_lookup_impl(
                 gather_leaf_pyargs(*pyarg_objs_breadth_first, leaf_pyarg_breadth_first_indices,
                                    leaf_pyarg_objs);
 
+                // Flatten the parameter annotations against this argument structure.
+                Result<Vec<RefPtr<LeafAnnotationNode>>> flat_param_annotations
+                       = flatten_parameter_annotation_nodes(
+                           param_annotations, pyarg_types_depth_first, aggregate_types);
+                if (!flat_param_annotations.is_ok())
+                    return nullptr;
+
                 // Classify the arguments and get the matching KernelFamily.
                 Vec<PythonArgKind> arg_kinds;
                 Vec<ParameterKind> param_kinds;
@@ -2894,12 +2917,6 @@ static PythonArgProfile* python_arg_profile_lookup_impl(
 
                 KernelFamily* family = get_or_create_kernel_family(
                         kernel_families, std::move(param_kinds));
-
-                // Flatten the parameter annotations against this argument structure.
-                Result<Vec<RefPtr<LeafAnnotationNode>>> flat_param_annotations
-                       = flatten_parameter_annotation_nodes(param_annotations, family->param_kinds);
-                if (!flat_param_annotations.is_ok())
-                    return nullptr;
 
                 RefPtr<PythonArgProfile> new_profile = steal(new PythonArgProfile(
                             query.to_owned(), parent, depth, family,
