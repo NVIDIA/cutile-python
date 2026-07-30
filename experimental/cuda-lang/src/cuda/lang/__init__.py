@@ -171,7 +171,8 @@ from cuda.tile._stub import (
     Constant,
     static_eval,
     static_assert,
-    static_iter
+    static_iter,
+    ensure_constant
 )
 
 from cuda.lang._stub import libdevice as _libdevice  # noqa: F401
@@ -470,6 +471,7 @@ __all__ = (
     "static_assert",
     "static_eval",
     "static_iter",
+    "ensure_constant",
     "bitwise_and",
     "bitwise_or",
     "bitwise_xor",

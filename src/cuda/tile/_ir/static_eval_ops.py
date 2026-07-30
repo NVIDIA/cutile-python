@@ -1,10 +1,11 @@
 # SPDX-FileCopyrightText: Copyright (c) <2026> NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 #
 # SPDX-License-Identifier: Apache-2.0
-from cuda.tile import TileSyntaxError, TileError, TileStaticEvalError, TileStaticAssertionError, \
+from cuda.tile import TileSyntaxError, TileError, TileStaticEvalError, \
     TileTypeError
 from cuda.tile._datatype import is_boolean
 from cuda.tile._dispatch_mode import StaticEvalMode
+from cuda.tile._exception import StaticAssertionError
 from cuda.tile._ir import hir_stubs, hir
 from cuda.tile._ir.core_ops import loosely_typed_const, build_tuple, sym2var
 from cuda.tile._ir.ir import Var
@@ -130,7 +131,7 @@ async def do_static_assert_impl(condition: Var, message_block: hir.Block) -> Non
     [message] = jump.outputs
     message = message.get_constant()
     assert isinstance(message, str)
-    raise TileStaticAssertionError(message)
+    raise StaticAssertionError(message)
 
 
 @impl(hir_stubs.static_foreach)
@@ -144,3 +145,10 @@ async def static_foreach_impl(body: hir.Block, items: Var):
         scope.hir2ir_varmap[body.params[0].id] = item
         from .._passes.hir2ir import dispatch_hir_block
         await dispatch_hir_block(body)
+
+
+@impl(ct.ensure_constant)
+def ensure_constant_impl(value: Var):
+    if not value.is_constant():
+        raise StaticAssertionError("Argument of ensure_constant() is not a compile-time constant")
+    return value

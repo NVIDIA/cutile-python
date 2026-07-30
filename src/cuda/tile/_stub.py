@@ -4526,6 +4526,41 @@ def static_iter(iterable):
 
 
 @stub
+def ensure_constant(value, /):
+    """
+    Asserts that the argument is a compile-time constant and returns it.
+
+    For example, this can be used to ensure that an `if` statement is folded at compile time:
+
+    .. testcode::
+        :template: kernel_wrapper.py
+
+        if ct.ensure_constant(2 > 1):
+             print("Two is greater than one.")
+        else:
+             ct.static_assert(False)  # This branch will be discarded
+
+    .. testoutput::
+
+        Two is greater than one.
+
+    :py:class:`StaticAssertionError` is raised if the argument is not a compile-time constant:
+
+    .. testcode::
+        :template: kernel_wrapper.py
+
+        ct.ensure_constant(ct.bid(0))
+
+    .. testoutput::
+        :options: +ELLIPSIS, +IGNORE_EXCEPTION_DETAIL
+
+        Traceback (most recent call last):
+            ...
+        StaticAssertionError: Argument of ensure_constant() is not a compile-time constant
+    """
+
+
+@stub
 def grid_dependency_control_wait() -> None:
     """
     Wait for the preceding kernel in a programmatic dependent launch to finish.

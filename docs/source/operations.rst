@@ -228,10 +228,10 @@ Metaprogramming Support
    :toctree: generated
    :nosignatures:
 
+   ensure_constant
    static_assert
    static_eval
    static_iter
-
 
 .. _operations-classes:
 

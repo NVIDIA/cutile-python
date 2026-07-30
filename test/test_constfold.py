@@ -370,3 +370,24 @@ def test_strictly_typed_unsigned_float_constant_from_negative():
     with pytest.raises(ct.TileValueError,
                        match="Negative values cannot be represented in an unsigned float format"):
         ct.launch(torch.cuda.current_stream(), (1,), kernel, ())
+
+
+def test_ensure_constant_ok():
+    @ct.kernel
+    def kernel(x, c: ct.Constant):
+        c2 = ct.ensure_constant(c + 1)
+        ct.scatter(x, (), c2)
+
+    x = torch.zeros((), dtype=torch.int64, device="cuda")
+    ct.launch(torch.cuda.current_stream(), (1,), kernel, (x, 4))
+    assert x.item() == 5
+
+
+def test_ensure_constant_fail():
+    @ct.kernel
+    def kernel():
+        ct.ensure_constant(ct.bid(0))
+
+    with pytest.raises(ct.TileStaticAssertionError,
+                       match="is not a compile-time constant"):
+        ct.launch(torch.cuda.current_stream(), (1,), kernel, ())
