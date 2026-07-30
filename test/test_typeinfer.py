@@ -165,7 +165,7 @@ def test_invalid_tile_arg():
         ct.permute(x, (1, 0))
 
     msg = re.escape('Invalid argument #1 of permute(): '
-                    'Expected a tile, but given value has type Array[float32,(?,?):(?,1)]')
+                    'Expected a tile, but given value has type Array[float32,(?,?):(?,?)]')
     with pytest.raises(TileTypeError, match=msg):
         compile(kernel, (nd_tensor(2),))
 
@@ -376,6 +376,25 @@ def test_control_flow_type_mismatch(kernel):
     msg = re.escape('Type of `a` depends on path taken')
     with pytest.raises(TileTypeError, match=msg):
         compile(kernel, (x, ))
+
+
+def test_array_inferred_strides_unify_in_control_flow():
+    def kernel(x, y, out):
+        if ct.bid(0) == 0:
+            a = x
+        else:
+            a = y
+        ct.store(out, (0, 0), ct.load(a, (0, 0), shape=(4, 4)))
+
+    x = torch.rand((4, 4), device="cuda")
+    y = torch.rand((4, 4), device="cuda").T
+    out = torch.empty_like(x)
+    assert x.stride() == (4, 1)
+    assert y.stride() == (1, 4)
+
+    # Inferred unit strides are lowering facts, not part of ArrayTy, so the two arrays have the
+    # same user-visible type and can meet at a control-flow join.
+    compile(kernel, (x, y, out))
 
 
 def test_unused_type_mismatch_inside_loop():

@@ -59,9 +59,10 @@ from cuda.tile._debug import (
     EXPERIMENTAL_CUDA_TILE_DEBUG_BUILD,
 )
 
-from cuda.tile._passes.dataflow_analysis import dataflow_analysis
+from cuda.tile._passes.dataflow_analysis import DataflowResult, dataflow_analysis
 from cuda.tile._passes.check_dtype_support import check_dtype_support
 from cuda.tile._passes.dce import dead_code_elimination_pass
+from cuda.tile._passes.materialize_constants import materialize_constants_pass
 from cuda.tile._passes.propagate_divby import add_divby_pass
 from cuda.tile._passes.token_order import token_order_pass
 from cutile_cache._cache import MetadataV1, cache_key, cache_lookup, cache_store, evict_lru
@@ -96,11 +97,14 @@ def global_compiler_lock(func):
 
 def _transform_ir(func_body: ir.Block,
                   bytecode_version: bc.BytecodeVersion,
-                  param_constraints: Sequence[tuple[tuple[ir.Var, ...], ParameterConstraint]]):
+                  param_constraints: Sequence[tuple[tuple[ir.Var, ...], ParameterConstraint]]
+                  ) -> DataflowResult:
     eliminate_assign_ops(func_body)
     lower_for_with_break(func_body)
     dead_code_elimination_pass(func_body)
     dataflow_result = dataflow_analysis(func_body, param_constraints)
+
+    materialize_constants_pass(func_body, dataflow_result)
 
     if not CUDA_TILE_TESTING_DISABLE_DIV:
         add_divby_pass(func_body, dataflow_result)
@@ -121,6 +125,8 @@ def _transform_ir(func_body: ir.Block,
 
     split_loops(func_body)
     dead_code_elimination_pass(func_body)
+
+    return dataflow_result
 
 
 @dataclass
@@ -244,20 +250,37 @@ def _make_constraint_error(message: str, path: ParameterPath):
     return TypeError(f"Invalid {what}: {message}")
 
 
-def _resolve_static_shape_axes(array_ann: ArrayAnnotation,
-                               ndim: int,
-                               path: ParameterPath) -> list[bool]:
-    static_shape_mask: list[bool] = [False] * ndim
-    for axis in array_ann.static_shape_dims:
+def _resolve_static_axes(axes: tuple[int, ...],
+                         ndim: int,
+                         field_name: str,
+                         path: ParameterPath) -> list[bool]:
+    mask: list[bool] = [False] * ndim
+    for axis in axes:
         if not -ndim <= axis < ndim:
-            raise _make_constraint_error(f"Axis {axis} found in `static_shape_dims`"
+            raise _make_constraint_error(f"Axis {axis} found in `{field_name}`"
                                          f" is out of range for an array of rank {ndim}.", path)
         normalized = axis + ndim if axis < 0 else axis
-        if static_shape_mask[normalized]:
+        if mask[normalized]:
             raise _make_constraint_error(
-                    f"Axis {axis} appears more than once in `static_shape_dims`.", path)
-        static_shape_mask[normalized] = True
-    return static_shape_mask
+                    f"Axis {axis} appears more than once in `{field_name}`.", path)
+        mask[normalized] = True
+    return mask
+
+
+def _select_annotated(mask: list[bool],
+                      constants: tuple[int | None, ...],
+                      field_name: str,
+                      what: str,
+                      path: ParameterPath) -> tuple[int | None, ...]:
+    """Keep the constant value on annotated axes (validating it exists), None elsewhere."""
+    result: list[int | None] = []
+    for axis, (annotated, value) in enumerate(zip(mask, constants, strict=True)):
+        if annotated and value is None:
+            raise _make_constraint_error(
+                f"Axis {axis} is annotated in `{field_name}`, but no "
+                f"constant {what} value is available there.", path)
+        result.append(value if annotated else None)
+    return tuple(result)
 
 
 def _get_array_ty(param: ArrayConstraint,
@@ -275,24 +298,19 @@ def _get_array_ty(param: ArrayConstraint,
             raise _make_constraint_error("Negative strides are currently not supported:"
                                          " please specify stride_lower_bound_incl=0", path)
 
-    static_shape_mask = _resolve_static_shape_axes(array_ann, param.ndim, path)
-    array_ty_shape = []
-    for axis, (annotated_as_static, constraint_size) in enumerate(
-            zip(static_shape_mask, param.shape_constant, strict=True)):
-        if annotated_as_static:
-            if constraint_size is None:
-                raise _make_constraint_error(
-                    f"Axis {axis} is annotated as static, but no "
-                    "constant shape value is available there.", path)
-            array_ty_shape.append(constraint_size)
-        else:
-            array_ty_shape.append(None)
+    static_shape_mask = _resolve_static_axes(
+            array_ann.static_shape_dims, param.ndim, "static_shape_dims", path)
+    array_ty_shape = _select_annotated(static_shape_mask, param.shape_constant,
+                                       "static_shape_dims", "shape", path)
 
-    # TODO: `strides` still leaks the dispatcher's stride specialization into the user-visible
-    # type.
+    static_stride_mask = _resolve_static_axes(
+            array_ann.static_stride_dims, param.ndim, "static_stride_dims", path)
+    array_ty_strides = _select_annotated(static_stride_mask, param.stride_constant,
+                                         "static_stride_dims", "stride", path)
+
     return ArrayTy(param.dtype,
-                   shape=tuple(array_ty_shape),
-                   strides=param.stride_constant,
+                   shape=array_ty_shape,
+                   strides=array_ty_strides,
                    index_dtype=param.index_dtype,
                    typing_hooks=typing_hooks)
 
@@ -381,6 +399,7 @@ class _IrKeeper:
         self.sm_arch = sm_arch
         self._log_cutile_ir = log_cutile_ir
         self.final_ir: list[ir.Block | None] | None = [None] * len(signatures) if keep_all else None
+        self._dataflow_results: list[DataflowResult | None] = [None] * len(signatures)
 
     @property
     def num_signatures(self):
@@ -406,7 +425,10 @@ class _IrKeeper:
             func_body.params = sum((vars for vars, _ in params.nonconstant_flat_vars), ())
             func_body.extend(ir_builder.ops)
 
-            _transform_ir(func_body, self.bytecode_version, params.nonconstant_flat_vars)
+            dataflow_result = _transform_ir(
+                func_body, self.bytecode_version, params.nonconstant_flat_vars
+            )
+            self._dataflow_results[signature_index] = dataflow_result
 
             if self._log_cutile_ir:
                 code = (f"==== CuTile IR for {self._func_hir.desc.name}==== \n\n"
@@ -419,6 +441,11 @@ class _IrKeeper:
         else:
             return self.final_ir[signature_index]
 
+    def get_dataflow_result(self, signature_index: int) -> DataflowResult:
+        dataflow_result = self._dataflow_results[signature_index]
+        assert dataflow_result is not None
+        return dataflow_result
+
 
 def _get_bytecode(ir_keeper: _IrKeeper,
                   compiler_options: CompilerOptions,
@@ -429,9 +456,12 @@ def _get_bytecode(ir_keeper: _IrKeeper,
                            buf=bytecode_buf, version=ir_keeper.bytecode_version) as writer:
         for i in range(ir_keeper.num_signatures):
             func_body = ir_keeper.get_final_ir(i)
+            dataflow_result = ir_keeper.get_dataflow_result(i)
             symbol = ir_keeper.signatures[i].symbol
-            generate_bytecode_for_kernel(func_body, symbol, compiler_options, ir_keeper.sm_arch,
-                                         writer, anonymize_debug_attr=anonymize_debug_info)
+            generate_bytecode_for_kernel(
+                func_body, dataflow_result, symbol, compiler_options, ir_keeper.sm_arch, writer,
+                anonymize_debug_attr=anonymize_debug_info
+            )
     return bytecode_buf
 
 

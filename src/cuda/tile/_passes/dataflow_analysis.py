@@ -8,13 +8,13 @@ from math import gcd
 from typing import Dict, Sequence, TypeVar, Generic, Any
 
 from cuda.tile._ir.ops_utils import get_dtype
-from cuda.tile._ir.type import ListValue, TileTy
+from cuda.tile._ir.type import ListValue, TensorLikeTy, TileTy
 from cuda.tile._datatype import is_integral, PointerInfo
 from cuda.tile._ir.ir import Var, Block
 from cuda.tile._ir.arithmetic_ops import (
     TileBroadcast, TileAsType, RawBinaryArithmeticOperation
 )
-from cuda.tile._ir.core_ops import TypedConst, Assign
+from cuda.tile._ir.core_ops import TypedConst, Assign, canonicalize_const_value_for_type
 from cuda.tile._ir.arithmetic_ops import Unary
 from cuda.tile._ir.ops import GetArrayListItem, \
     EndBranch, PointerOffset, \
@@ -34,12 +34,16 @@ class DataPredicate:
     alias_set: AliasSet
     div_by: int
     may_alias_internally: bool
+    const_value: int | None = None
 
     def unify(self, other: "DataPredicate") -> "DataPredicate":
         return DataPredicate(
                 alias_set=self.alias_set | other.alias_set,
                 div_by=gcd(self.div_by, other.div_by),
-                may_alias_internally=self.may_alias_internally | other.may_alias_internally
+                may_alias_internally=self.may_alias_internally | other.may_alias_internally,
+                # A constant survives only if both agree on it.
+                const_value=(self.const_value
+                             if self.const_value == other.const_value else None),
                 )
 
     def replace(self, **key_value_pairs) -> "DataPredicate":
@@ -52,6 +56,10 @@ class DataflowResult:
 
     def __getitem__(self, var_name: str) -> DataPredicate:
         return self.predicates[var_name]
+
+    def constant_value(self, var: Var) -> int | None:
+        pred = self.predicates.get(var.name)
+        return None if pred is None else pred.const_value
 
 
 def _register_leaf_param(state, constraint: ArrayConstraint | ScalarConstraint,
@@ -130,22 +138,14 @@ def _get_array_predicates(constraint: ArrayConstraint, alias_set_mapper: "_Alias
                          div_by=constraint.base_addr_divisible_by,
                          may_alias_internally=constraint.may_alias_internally)]
 
-    # Shape predicates. A static shape value is folded into a divisibility fact so the optimizer
-    # benefits from it.
-    for static, div_by in zip(constraint.shape_constant, constraint.shape_divisible_by,
-                              strict=True):
-        if static is not None:
-            div_by = static
+    # Shape and stride predicates.
+    for static_value, div_by in itertools.chain(
+            zip(constraint.shape_constant, constraint.shape_divisible_by, strict=True),
+            zip(constraint.stride_constant, constraint.stride_divisible_by, strict=True)):
+        if static_value is not None:
+            div_by = static_value
         ret.append(DataPredicate(alias_set=ALIAS_UNIVERSE, div_by=div_by,
-                                 may_alias_internally=True))
-
-    # Stride predicates
-    for static, div_by in zip(constraint.stride_constant,
-                              constraint.stride_divisible_by, strict=True):
-        if static is not None:
-            div_by = static
-        ret.append(DataPredicate(alias_set=ALIAS_UNIVERSE, div_by=div_by,
-                                 may_alias_internally=True))
+                                 may_alias_internally=True, const_value=static_value))
     return ret
 
 
@@ -321,15 +321,28 @@ def _analyze_aliases_in_block(block: Block,
                 div_by = gcd(div_by, 1 << result_dtype.bitwidth)
             else:
                 div_by = 1
-            pred = state.tracker[op.x].replace(div_by=div_by)
+            const_value = state.tracker[op.x].const_value
+            if const_value is not None:
+                if is_integral(orig_dtype) and is_integral(result_dtype):
+                    const_value = canonicalize_const_value_for_type(
+                        const_value, op.result_var.get_type())
+                else:
+                    const_value = None
+            pred = state.tracker[op.x].replace(div_by=div_by, const_value=const_value)
             state.tracker.update(op.result_var, pred)
             state.list_array_tracker.update(op.result_var, ALWAYS_TRUE_AGG_PREDICATE)
         elif isinstance(op, TypedConst):
             if isinstance(op.value, int):
                 div_by = abs(op.value)
-                state.tracker.update(op.result_var, DataPredicate(alias_set=ALIAS_UNIVERSE,
-                                                                  div_by=div_by,
-                                                                  may_alias_internally=True))
+                # `const_value` is a *scalar* constant fact (a stride/shape/offset). A rank>=1 tile
+                # constant carries a scalar `op.value` too (it is a splat), but "the value is N" is
+                # only literally true for a rank-0 result.
+                result_ty = op.result_var.get_type()
+                is_scalar = (isinstance(result_ty, TensorLikeTy)
+                             and result_ty.tensor_shape() == ())
+                state.tracker.update(op.result_var, DataPredicate(
+                    alias_set=ALIAS_UNIVERSE, div_by=div_by, may_alias_internally=True,
+                    const_value=op.value if is_scalar else None))
                 state.list_array_tracker.update(op.result_var, ALWAYS_TRUE_AGG_PREDICATE)
             else:
                 state.set_always_true(op.result_var)

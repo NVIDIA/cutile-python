@@ -65,6 +65,10 @@ ListWithStaticShape = Annotated[
     list, ct.ListAnnotation(element=ct.ArrayAnnotation(static_shape_dims=(0, 1)))
 ]
 
+ListWithStaticStride = Annotated[
+    list, ct.ListAnnotation(element=ct.ArrayAnnotation(static_stride_dims=(0,)))
+]
+
 
 @ct.kernel
 def add_int64_index_arrays(
@@ -115,6 +119,39 @@ def test_add_list_static_shape_mismatch():
     ]
     out = torch.zeros((16, 16), dtype=torch.int32, device="cuda")
     with pytest.raises(ValueError, match="vary in static shape at axis 0"):
+        ct.launch(torch.cuda.current_stream(), (1,), k, (arrays, out))
+
+
+@ct.kernel
+def add_static_stride_arrays(arrays: ListWithStaticStride, out):
+    a = arrays[0]
+    ct.static_assert(a.strides[0] == 10)
+    res = ct.zeros((4, 8), dtype=out.dtype)
+    for i in range(len(arrays)):
+        t = ct.load(arrays[i], (0, 0), (4, 8))
+        res += t
+    ct.store(out, (0, 0), res)
+
+
+def _padded(pitch, fill):
+    return torch.full((4, pitch), fill, dtype=torch.int32, device="cuda")[:, :8]
+
+
+def test_add_list_static_stride():
+    k = cuda.tile.kernel(add_static_stride_arrays._pyfunc)
+    arrays = [_padded(10, v) for v in (1, 2, 3)]
+    out = torch.zeros((4, 8), dtype=torch.int32, device="cuda")
+    ct.launch(torch.cuda.current_stream(), (1,), k, (arrays, out))
+    assert_equal(out, sum(arrays))
+
+
+def test_add_list_static_stride_mismatch():
+    k = cuda.tile.kernel(add_static_stride_arrays._pyfunc)
+
+    # Items disagree on the annotated row stride.
+    arrays = [_padded(10, 1), _padded(12, 2)]
+    out = torch.zeros((4, 8), dtype=torch.int32, device="cuda")
+    with pytest.raises(ValueError, match="vary in static stride at axis 0"):
         ct.launch(torch.cuda.current_stream(), (1,), k, (arrays, out))
 
 

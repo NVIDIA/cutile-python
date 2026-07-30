@@ -67,7 +67,7 @@ from cuda.tile._datatype import (
     DType, is_integral, is_float, is_signed, is_boolean, PointerInfo,
 )
 from cuda.tile._ir2bytecode import (
-    BytecodeContext, typeid,
+    BytecodeContext, typeid, view_typeid,
     generate_bytecode_for_block, get_list_item_repr_size_in_words,
     get_list_partition_view_tile_size, tensor_view_typeid, tensor_view_typeid_for_list, dtype_typeid
 )
@@ -594,23 +594,38 @@ def bid_impl(axis: Var) -> Var:
     return bid(axis)
 
 
+def _static_extent(ctx: BytecodeContext, var: Var) -> int | None:
+    """The value to bake into a tensor-view type for a shape/stride operand, or None to keep the
+    operand dynamic because TileIR only accepts strictly positive constants in a tensor-view type.
+    """
+    value = ctx.get_known_constant_value(var)
+    if isinstance(value, int) and value > 0:
+        return value
+    return None
+
+
 @dataclass(eq=False)
 class MakeTensorView(Operation, opcode="make_tensor_view"):
     base_ptr: Var = operand()
     shape: tuple[Var, ...] = operand()
-    dynamic_strides: tuple[Var, ...] = operand()
+    strides: tuple[Var, ...] = operand()
 
     @override
     def generate_bytecode(self, ctx: BytecodeContext) -> bc.Value:
         array_ty: ArrayTy = self.result_var.get_type()
-        view_type_id = tensor_view_typeid(ctx.type_table, array_ty)
+        shape_values = tuple(_static_extent(ctx, s) for s in self.shape)
+        stride_values = tuple(_static_extent(ctx, s) for s in self.strides)
+        view_type_id = tensor_view_typeid(ctx.type_table, array_ty, shape_values, stride_values)
+        ctx.set_array_tv_id(self.result_var, view_type_id)
         base_ptr = ctx.get_value(self.base_ptr)
-        shape = tuple(ctx.get_value(x) for x in self.shape)
-        dynamic_strides = tuple(ctx.get_value(x) for x in self.dynamic_strides)
+        dynamic_shape = tuple(ctx.get_value(s) for s, v in zip(self.shape, shape_values)
+                              if v is None)
+        dynamic_strides = tuple(ctx.get_value(s) for s, v in zip(self.strides, stride_values)
+                                if v is None)
         return bc.encode_MakeTensorViewOp(ctx.builder,
                                           result_type=view_type_id,
                                           base=base_ptr,
-                                          dynamicShape=shape,
+                                          dynamicShape=dynamic_shape,
                                           dynamicStrides=dynamic_strides)
 
 
@@ -757,13 +772,7 @@ def array_slice_impl(self: Var, axis: Var, start: Var, stop: Var) -> Var:
 
     array_val = self.get_aggregate()
     assert isinstance(array_val, ArrayValue)
-    static_stride = array_ty.strides[const_axis]
-    if static_stride == 1:
-        offset = start  # skip multiplication for unit stride
-    elif static_stride is not None:
-        offset = binary_arithmetic_tensorlike("mul", start, loosely_typed_const(static_stride))
-    else:
-        offset = binary_arithmetic_tensorlike("mul", start, array_val.strides[const_axis])
+    offset = binary_arithmetic_tensorlike("mul", start, array_val.strides[const_axis])
 
     new_base_ptr = pointer_offset(array_val.base_ptr, astype(offset, datatype.uint64))
     axis_new_shape = astype(binary_arithmetic_tensorlike("sub", stop, start), array_ty.index_dtype)
@@ -795,7 +804,8 @@ class MakePartitionView(Operation, opcode="make_partition_view"):
     def generate_bytecode(self, ctx: BytecodeContext) -> bc.Value:
         partition_view_ty = self.result_var.get_type()
         return bc.encode_MakePartitionViewOp(ctx.builder,
-                                             typeid(ctx.type_table, partition_view_ty),
+                                             view_typeid(ctx.type_table, partition_view_ty,
+                                                         ctx.get_array_tv_id(self.array)),
                                              ctx.get_value(self.array))
 
 
@@ -818,7 +828,8 @@ class MakeStridedView(Operation, opcode="make_strided_view"):
     def generate_bytecode(self, ctx: BytecodeContext) -> bc.Value:
         strided_view_ty = self.result_var.get_type()
         return bc.encode_MakeStridedViewOp(ctx.builder,
-                                           typeid(ctx.type_table, strided_view_ty),
+                                           view_typeid(ctx.type_table, strided_view_ty,
+                                                       ctx.get_array_tv_id(self.array)),
                                            ctx.get_value(self.array))
 
 
@@ -859,7 +870,8 @@ class MakeGatherScatterView(Operation, opcode="make_gather_scatter_view"):
     def generate_bytecode(self, ctx: BytecodeContext) -> bc.Value:
         gs_view_ty = self.result_var.get_type()
         return bc.encode_MakeGatherScatterViewOp(ctx.builder,
-                                                 typeid(ctx.type_table, gs_view_ty),
+                                                 view_typeid(ctx.type_table, gs_view_ty,
+                                                             ctx.get_array_tv_id(self.array)),
                                                  ctx.get_value(self.array))
 
 
@@ -1398,15 +1410,8 @@ def _gather_scatter_pointer_and_mask(
             else:
                 mask = binary_bitwise_tensorlike("and_", mask, dim_mask)
 
-        static_stride = array_ty.strides[dim]
-        if static_stride == 1:
-            offset_delta = ind
-        else:
-            if static_stride is None:
-                stride = astype(array_val.strides[dim], datatype.uint64)
-            else:
-                stride = loosely_typed_const(static_stride)
-            offset_delta = binary_arithmetic_tensorlike("mul", ind, stride)
+        stride = astype(array_val.strides[dim], datatype.uint64)
+        offset_delta = binary_arithmetic_tensorlike("mul", ind, stride)
 
         if offset is None:
             offset = offset_delta
@@ -3493,26 +3498,22 @@ def grid_dependency_control_launch_dependents_impl():
 def _unflatten_aggregate_array_impl(val: ArrayValue, ty: ArrayTy, result_var: Var):
     assert isinstance(val, ArrayValue)
     base_ptr = val.base_ptr
-    all_shape = []
-    dynamic_shape = []
-    for x, s in zip(val.shape, ty.shape, strict=True):
-        if s is None:
-            x = assume_bounded(x, 0, None)
-            dynamic_shape.append(x)
-        else:
-            x = strictly_typed_const(s, TileTy(ty.index_dtype))
-        all_shape.append(x)
 
-    all_strides = []
-    dynamic_strides = []
-    for x, s in zip(val.strides, ty.strides, strict=True):
-        if s is None:
-            x = assume_bounded(x, 0, None)
-            dynamic_strides.append(x)
-        all_strides.append(x)
+    def get_all_shape_or_strides(val_shape_or_strides, ty_shape_or_strides):
+        shape_or_strides = []
+        for x, s in zip(val_shape_or_strides, ty_shape_or_strides, strict=True):
+            if s is None:
+                x = assume_bounded(x, 0, None)
+            else:
+                x = strictly_typed_const(s, TileTy(ty.index_dtype))
+            shape_or_strides.append(x)
+        return shape_or_strides
 
-    operands = dict(base_ptr=base_ptr, shape=tuple(dynamic_shape),
-                    dynamic_strides=tuple(dynamic_strides))
+    all_shape = get_all_shape_or_strides(val.shape, ty.shape)
+    all_strides = get_all_shape_or_strides(val.strides, ty.strides)
+
+    operands = dict(base_ptr=base_ptr, shape=tuple(all_shape),
+                    strides=tuple(all_strides))
     ret = Builder.get_current().add_operation(MakeTensorView, ty, operands, result_var)
     ret.set_aggregate(ArrayValue(base_ptr, tuple(all_shape), tuple(all_strides)))
     return ret

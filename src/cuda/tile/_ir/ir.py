@@ -271,17 +271,29 @@ class BlockRestriction:
 
 
 class Mapper:
-    def __init__(self, ctx: IRContext, preserve_vars: bool = False):
+    """Maps operands and definitions while cloning IR.
+
+    Operand uses always honor explicit mappings. When ``preserve_vars`` is true, definitions use
+    explicit mappings too unless ``remap_uses_only`` is enabled.
+    """
+
+    def __init__(self,
+                 ctx: IRContext,
+                 preserve_vars: bool = False,
+                 remap_uses_only: bool = False):
+        assert preserve_vars or not remap_uses_only, \
+            "remap_uses_only requires preserve_vars=True"
         self._ctx = ctx
         self._var_map: Dict[str, Var] = dict()
         self._preserve_vars = preserve_vars
+        self._remap_uses_only = remap_uses_only
 
     def is_empty(self):
         return len(self._var_map) == 0
 
     def clone_var(self, var: Var) -> Var:
         if self._preserve_vars:
-            return self.get_var(var)
+            return var if self._remap_uses_only else self.get_var(var)
         else:
             new_var = self._ctx.make_var_like(var)
             self._var_map[var.name] = new_var
@@ -798,6 +810,13 @@ class Block:
             for b in op.nested_blocks:
                 yield from b.traverse()
             yield op
+
+    def all_defined_vars(self) -> Iterator[Var]:
+        yield from self.params
+        for op in self:
+            yield from op.result_vars
+            for block in op.nested_blocks:
+                yield from block.all_defined_vars()
 
     def remove_if(self, predicate: Callable[[Operation], bool]):
         to_remove = {i for i, op in enumerate(self) if predicate(op)}

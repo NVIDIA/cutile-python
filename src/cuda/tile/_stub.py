@@ -1037,6 +1037,11 @@ class ArrayAnnotation:
             stride values exceed the range of a 32-bit integer.
         static_shape_dims: Shape dimensions to specialize to their launch-time values,
             making them compile-time constants inside the kernel.
+        static_stride_dims: Stride dimensions to specialize to their launch-time values,
+            making them compile-time constants inside the kernel. This is the sole source
+            of static strides for the array: once any dimension is listed, the dispatcher
+            stops inferring ``stride == 1`` for *every* dimension of it, so list the
+            contiguous dimension explicitly to keep it a compile-time constant.
 
     Example::
 
@@ -1044,9 +1049,11 @@ class ArrayAnnotation:
         def my_kernel(
             x: Annotated[ct.Array, ct.ArrayAnnotation(static_shape_dims=(0,))],
             y: Annotated[ct.Array, ct.ArrayAnnotation(static_shape_dims=(0, -1))],
+            z: Annotated[ct.Array, ct.ArrayAnnotation(static_stride_dims=(0, -1))],
         ):
             # x.shape[0] is a compile-time constant
             # y.shape[0] and y.shape[-1] are compile-time constants
+            # z.strides[0] and z.strides[-1] are compile-time constants
             ...
 
         # Reusable alias combining int64 indexing with a static dimension:
@@ -1056,16 +1063,19 @@ class ArrayAnnotation:
     """
     index_dtype: DType = int32
     static_shape_dims: tuple[int, ...] = ()
+    static_stride_dims: tuple[int, ...] = ()
 
     def __post_init__(self):
         if self.index_dtype not in (int32, int64):
             raise ValueError(f"`index_dtype` must be int32 or int64, got {self.index_dtype}")
-        if not isinstance(self.static_shape_dims, tuple):
-            raise TypeError("`static_shape_dims` must be a tuple of integers")
-        for i, dim in enumerate(self.static_shape_dims):
-            if isinstance(dim, bool) or not isinstance(dim, int):
-                raise TypeError(
-                    f"Element #{i} of `static_shape_dims` must be int, got {dim}")
+        for field_name in ("static_shape_dims", "static_stride_dims"):
+            dims = getattr(self, field_name)
+            if not isinstance(dims, tuple):
+                raise TypeError(f"`{field_name}` must be a tuple of integers")
+            for i, dim in enumerate(dims):
+                if isinstance(dim, bool) or not isinstance(dim, int):
+                    raise TypeError(
+                        f"Element #{i} of `{field_name}` must be int, got {dim}")
 
 
 @dataclass(frozen=True, kw_only=True)

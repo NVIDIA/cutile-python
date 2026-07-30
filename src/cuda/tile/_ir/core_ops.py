@@ -405,8 +405,7 @@ def _map_nested_tuple(func, value):
             if isinstance(value, tuple) else func(value))
 
 
-def _strictly_typed_const_inner(builder: Builder,
-                                value: Any, ty: Type, result_var: Var | None = None) -> Var:
+def canonicalize_const_value_for_type(value: Any, ty: Type) -> Any:
     if isinstance(ty, TensorLikeTy):
         dtype = ty.tensor_dtype()
         if is_integral(dtype):
@@ -434,6 +433,13 @@ def _strictly_typed_const_inner(builder: Builder,
                 return float_from_bits(bits, bc_type)
 
             value = _map_nested_tuple(round_float, value)
+
+    return value
+
+
+def _strictly_typed_const_inner(builder: Builder,
+                                value: Any, ty: Type, result_var: Var | None = None) -> Var:
+    value = canonicalize_const_value_for_type(value, ty)
 
     ret = builder.add_operation(TypedConst, ty, dict(value=value), result=result_var)
     if not isinstance(ty, TensorLikeTy) or ty.tensor_shape() == ():

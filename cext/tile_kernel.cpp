@@ -1026,7 +1026,8 @@ static Status fill_row_major_strides(unsigned index_bitwidth, Word* repr, size_t
 }
 
 static ArraySpecializationBits compute_array_specialization_bits(
-        const Word* array_repr, size_t ndim, unsigned dtype_bitwidth, unsigned index_bitwidth) {
+        const Word* array_repr, size_t ndim, unsigned dtype_bitwidth, unsigned index_bitwidth,
+        bool set_stride_one) {
 
     ArraySpecializationBits ret = {};
     void* data_ptr = array_repr[0].device_ptr;
@@ -1051,10 +1052,14 @@ static ArraySpecializationBits compute_array_specialization_bits(
             // alignment specialization used by layout/vectorization analysis.
             bool is_singleton_stride_one = shape == 1 && stride == 1;
             if ((is_stride_byte_aligned && is_stride_16_byte_divisible) ||
-                    is_singleton_stride_one)
+                    (set_stride_one && is_singleton_stride_one))
                 ret.stride_16byte_divisible |= 1u << i;
 
-            if (stride == 1 && !is_singleton_stride_one)
+            // A `static_stride_dims` annotation makes stride *values* authoritative, so the
+            // dispatcher must not infer stride==1 for any dim (annotated dims get their exact
+            // value pushed as a constant; the rest stay dynamic). Divisibility above is a
+            // separate assumption and is unaffected.
+            if (set_stride_one && stride == 1 && !is_singleton_stride_one)
                 ret.stride_one |= 1u << i;
 
             if (is_shape_byte_aligned && is_shape_divisible_by_16)
@@ -1118,14 +1123,14 @@ struct Cursor {
 
 using ConstantCursor = Cursor<int64_t>;
 
-static Result<size_t> normalize_dim(int64_t signed_dim, size_t ndim) {
+static Result<size_t> normalize_dim(int64_t signed_dim, size_t ndim, const char* annotation) {
     int64_t ndim_i64 = static_cast<int64_t>(ndim);
     if (signed_dim < 0)
         signed_dim += ndim_i64;
     if (signed_dim < 0 || signed_dim >= ndim_i64)
         return raise(PyExc_ValueError,
-                     "static_shape_dims contains axis %lld, but array rank is %zu",
-                     static_cast<long long>(signed_dim), ndim);
+                     "%s contains axis %lld, but array rank is %zu",
+                     annotation, static_cast<long long>(signed_dim), ndim);
     return static_cast<size_t>(signed_dim);
 }
 
@@ -1133,64 +1138,122 @@ static Result<size_t> normalize_dim(int64_t signed_dim, size_t ndim) {
 struct ArrayTypeConstantBuilder {
     void* device_ptr = nullptr;
     uint64_t bits = -1;
-    const Word* first_array_shape = nullptr;
+    bool has_first_array = false;
+    ArenaOffset first_array_repr = 0;
 
-    Status update(const Arena& arena, const ArrayRepr& ar, const Vec<int64_t>& static_shape_dims) {
-        const Word* repr = arena.data() + ar.repr;
-        device_ptr = repr[0].device_ptr;
-        bits &= compute_array_specialization_bits(
-                    repr, ar.arrty.ndim, ar.arrty.dtype.bits * ar.arrty.dtype.lanes,
-                    ar.arrty.index_bitwidth).u64;
+    // Verify that `words` (the current array's shape or stride words) agree with the
+    // first array's homologous words at every annotated dim. `word_offset` is the repr
+    // offset of the first word (1 for shape, 1 + ndim for stride).
+    Status check_agreement(const Arena& arena,
+                           const Word* words, size_t ndim, size_t word_offset,
+                           const Vec<int64_t>& dims, const char* annotation,
+                           const char* what) const {
+        const Word* first_words = arena.data() + first_array_repr + word_offset;
+        for (int64_t dim : dims) {
+            Result<size_t> normalized_dim = normalize_dim(dim, ndim, annotation);
+            if (!normalized_dim.is_ok()) return ErrorRaised;
 
-
-        const Word* shape_words = repr + 1;
-        if (!first_array_shape) {
-            first_array_shape = shape_words;
-        } else {
-            // When several arrays share one constraint (e.g. the items of a
-            // list), the kernel is specialized to a single set of compile-time
-            // shape values, so every array must agree on those dims.
-            for (int64_t dim : static_shape_dims) {
-                Result<size_t> normalized_dim = normalize_dim(dim, ar.arrty.ndim);
-                if (!normalized_dim.is_ok()) return ErrorRaised;
-
-                int64_t expected = first_array_shape[*normalized_dim].i64;
-                int64_t actual = shape_words[*normalized_dim].i64;
-                if (expected != actual)
-                    return raise(PyExc_ValueError,
-                                 "Arrays in list vary in static shape at axis %zu (%lld vs %lld)",
-                                 *normalized_dim,
-                                 static_cast<long long>(expected),
-                                 static_cast<long long>(actual));
-            }
+            int64_t expected = first_words[*normalized_dim].i64;
+            int64_t actual = words[*normalized_dim].i64;
+            if (expected != actual)
+                return raise(PyExc_ValueError,
+                             "Arrays in list vary in static %s at axis %zu (%lld vs %lld)",
+                             what, *normalized_dim,
+                             static_cast<long long>(expected),
+                             static_cast<long long>(actual));
         }
         return OK;
     }
 
-    void finalize(const DriverApi* driver, const ArrayType& arrty,
+    Status update(const Arena& arena, const ArrayRepr& ar,
                   const Vec<int64_t>& static_shape_dims,
-                  LaunchHelper& helper) {
-        CHECK(first_array_shape);
-        // Written as [packed_array_type, specialization_bits, static_shape_value...];
-        // parse_array_constraint() must read in the same order.
+                  const Vec<int64_t>& static_stride_dims) {
+        const Word* repr = arena.data() + ar.repr;
+        device_ptr = repr[0].device_ptr;
+        bits &= compute_array_specialization_bits(
+                    repr, ar.arrty.ndim, ar.arrty.dtype.bits * ar.arrty.dtype.lanes,
+                    ar.arrty.index_bitwidth,
+                    /*set_stride_one=*/static_stride_dims.empty()).u64;
+
+        if (!has_first_array) {
+            has_first_array = true;
+            first_array_repr = ar.repr;
+        } else {
+            // When several arrays share one constraint (e.g. the items of a
+            // list), the kernel is specialized to a single set of compile-time
+            // shape/stride values, so every array must agree on those dims.
+            const Word* shape_words = repr + 1;
+            const Word* stride_words = shape_words + ar.arrty.ndim;
+            if (!check_agreement(arena, shape_words, ar.arrty.ndim, 1,
+                                 static_shape_dims, "static_shape_dims", "shape"))
+                return ErrorRaised;
+            if (!check_agreement(arena, stride_words, ar.arrty.ndim,
+                                 1 + ar.arrty.ndim, static_stride_dims, "static_stride_dims",
+                                 "stride"))
+                return ErrorRaised;
+        }
+        return OK;
+    }
+
+    // Range-validates each annotated axis against the (runtime) rank -- this is the single
+    // place the annotation is checked, so it returns ErrorRaised (with a Python exception set)
+    // for an out-of-range axis rather than relying on a CHECK invariant established elsewhere.
+    Status finalize(const DriverApi* driver, const ArrayType& arrty,
+                    const Vec<int64_t>& static_shape_dims,
+                    const Vec<int64_t>& static_stride_dims,
+                    LaunchHelper& helper) {
+        CHECK(has_first_array);
+        const Word* repr = helper.arena.data() + first_array_repr;
+        const Word* shape_words = repr + 1;
+        const Word* stride_words = shape_words + arrty.ndim;
+        // Written as [packed_array_type, specialization_bits, static_shape_value...,
+        // static_stride_value...]; parse_array_constraint() must read in the same order.
         helper.constants.push_back(pack_array_type(arrty));
         helper.constants.push_back(bits);
         for (int64_t dim : static_shape_dims) {
-            Result<size_t> normalized_dim = normalize_dim(dim, arrty.ndim);
-            CHECK(normalized_dim.is_ok());
-            helper.constants.push_back(first_array_shape[*normalized_dim].i64);
+            Result<size_t> normalized_dim = normalize_dim(dim, arrty.ndim, "static_shape_dims");
+            if (!normalized_dim.is_ok()) return ErrorRaised;
+            helper.constants.push_back(shape_words[*normalized_dim].i64);
+        }
+        for (int64_t dim : static_stride_dims) {
+            Result<size_t> normalized_dim = normalize_dim(dim, arrty.ndim, "static_stride_dims");
+            if (!normalized_dim.is_ok()) return ErrorRaised;
+            helper.constants.push_back(stride_words[*normalized_dim].i64);
         }
         if (!helper.cuda_context) {
             driver->cuPointerGetAttribute(&helper.cuda_context, CU_POINTER_ATTRIBUTE_CONTEXT,
                     reinterpret_cast<CUdeviceptr>(device_ptr));
         }
+        return OK;
     }
 };
 
 
+static Status read_static_axis_values(const Vec<int64_t>& dims, PyObject* target,
+                                      ConstantCursor& cursor, size_t ndim,
+                                      const char* annotation) {
+    for (int64_t dim : dims) {
+        Result<size_t> axis = normalize_dim(dim, ndim, annotation);
+        CHECK(axis.is_ok());  // finalize() already range-checked this axis
+
+        if (PyList_GET_ITEM(target, *axis) != Py_None)
+            return raise(PyExc_ValueError, "%s contains duplicate axis %lld",
+                         annotation, static_cast<long long>(dim));
+
+        int64_t value = cursor.next();
+        PyPtr value_obj = steal(PyLong_FromLongLong(value));
+        if (!value_obj) return ErrorRaised;
+        if (PySequence_SetItem(target, *axis, value_obj.get()) < 0)
+            return ErrorRaised;
+    }
+    return OK;
+}
+
+
 // Parse the constants generated by ArrayTypeConstantBuilder.finalize()
 // into an ArrayConstraint object.
-static PyPtr parse_array_constraint(ConstantCursor& cursor, const Vec<int64_t>& static_shape_dims) {
+static PyPtr parse_array_constraint(ConstantCursor& cursor, const Vec<int64_t>& static_shape_dims,
+                                    const Vec<int64_t>& static_stride_dims) {
     ArrayType arrty = unpack_array_type(cursor.next());
     ArraySpecializationBits special_bits;
     special_bits.u64 = cursor.next();
@@ -1214,7 +1277,7 @@ static PyPtr parse_array_constraint(ConstantCursor& cursor, const Vec<int64_t>& 
             DLDataType{kDLInt, static_cast<uint8_t>(index_bitwidth), 1});
     if (!index_dtype) return {};
 
-    PyPtr constant_strides = steal(PyTuple_New(arrty.ndim));
+    PyPtr constant_strides = steal(PyList_New(arrty.ndim));
     if (!constant_strides) return {};
 
     PyPtr constant_shape = steal(PyList_New(arrty.ndim));
@@ -1244,7 +1307,7 @@ static PyPtr parse_array_constraint(ConstantCursor& cursor, const Vec<int64_t>& 
 
     for (size_t i = 0; i < arrty.ndim; ++i) {
         PyObject* obj = special_bits.is_stride_one(i) ? one.get() : Py_None;
-        PyTuple_SET_ITEM(constant_strides.get(), i, Py_NewRef(obj));
+        PyList_SET_ITEM(constant_strides.get(), i, Py_NewRef(obj));
 
         obj = special_bits.is_stride_16byte_divisible(i) ? stride_divisor.get() : one.get();
         PyTuple_SET_ITEM(stride_divisible_by.get(), i, Py_NewRef(obj));
@@ -1255,22 +1318,16 @@ static PyPtr parse_array_constraint(ConstantCursor& cursor, const Vec<int64_t>& 
         PyList_SET_ITEM(constant_shape.get(), i, Py_NewRef(Py_None));
     }
 
-    for (int64_t dim : static_shape_dims) {
-        Result<size_t> normalized_dim = normalize_dim(dim, arrty.ndim);
-        CHECK(normalized_dim.is_ok());  // already checked this in extract_array()
-
-        if (PyList_GET_ITEM(constant_shape.get(), *normalized_dim) != Py_None) {
-            raise(PyExc_ValueError,
-                  "static_shape_dims contains duplicate axis %lld", static_cast<long long>(dim));
-            return {};
-        }
-
-        PyPtr size_pylong = steal(PyLong_FromLongLong(cursor.next()));
-        if (!size_pylong) return {};
-
-        if (PySequence_SetItem(constant_shape.get(), *normalized_dim, size_pylong.get()) < 0)
-            return {};
-    }
+    // Read in the same order finalize() pushed them: static_shape_value... then
+    // static_stride_value....
+    if (!read_static_axis_values(static_shape_dims, constant_shape.get(), cursor, arrty.ndim,
+                                 "static_shape_dims"))
+        return {};
+    // When static_stride_dims is set, the stride==1 inference was
+    // skipped, so constant_strides is all-None here and the duplicate check is meaningful.
+    if (!read_static_axis_values(static_stride_dims, constant_strides.get(), cursor, arrty.ndim,
+                                 "static_stride_dims"))
+        return {};
 
     PyPtr kwargs = steal(Py_BuildValue(
             "{sO sI sO sO sO sO s() sO sO sO sO}",
@@ -1583,6 +1640,7 @@ struct ScalarAnnotation {
 struct ArrayAnnotation {
     unsigned index_bitwidth = 32;
     Vec<int64_t> static_shape_dims; // array shape dims specialized to launch-time values.
+    Vec<int64_t> static_stride_dims; // array stride dims specialized to launch-time values.
 };
 
 struct ListAnnotation {
@@ -1606,8 +1664,12 @@ static Status extract_array(const DriverApi* driver, PyObject* pyobj,
         helper.cuarg_offsets.push_back(ar->repr + i);
 
     ArrayTypeConstantBuilder builder;
-    if (!builder.update(helper.arena, *ar, array_ann.static_shape_dims)) return ErrorRaised;
-    builder.finalize(driver, ar->arrty, array_ann.static_shape_dims, helper);
+    if (!builder.update(helper.arena, *ar, array_ann.static_shape_dims,
+                        array_ann.static_stride_dims))
+        return ErrorRaised;
+    if (!builder.finalize(driver, ar->arrty, array_ann.static_shape_dims,
+                          array_ann.static_stride_dims, helper))
+        return ErrorRaised;
     return OK;
 }
 
@@ -1789,7 +1851,8 @@ static Status extract_py_list(const DriverApi* driver, PyObject* pyobj,
     helper.arena[item_offsets].arena_offset = first_repr_res->repr;
 
     ArrayTypeConstantBuilder builder;
-    if (!builder.update(helper.arena, *first_repr_res, list_ann.element.static_shape_dims))
+    if (!builder.update(helper.arena, *first_repr_res, list_ann.element.static_shape_dims,
+                        list_ann.element.static_stride_dims))
         return ErrorRaised;
 
     // Handle the rest of the list
@@ -1816,18 +1879,22 @@ static Status extract_py_list(const DriverApi* driver, PyObject* pyobj,
         if (first_repr_res->arrty.ndim != repr_res->arrty.ndim)
             return raise(PyExc_TypeError, "Arrays in list vary in rank");
 
-        if (!builder.update(helper.arena, *repr_res, list_ann.element.static_shape_dims))
+        if (!builder.update(helper.arena, *repr_res, list_ann.element.static_shape_dims,
+                            list_ann.element.static_stride_dims))
             return ErrorRaised;
     }
 
     // TODO: If we accept lists of things other than arrays, then to disambiguate,
     //       we need to push another constant here that specifies the type of the list element .
-    builder.finalize(driver, first_repr_res->arrty, list_ann.element.static_shape_dims, helper);
+    if (!builder.finalize(driver, first_repr_res->arrty, list_ann.element.static_shape_dims,
+                          list_ann.element.static_stride_dims, helper))
+        return ErrorRaised;
     return OK;
 }
 
-static PyPtr parse_list_constraint(ConstantCursor& cursor, const Vec<int64_t>& static_shape_dims) {
-    PyPtr element = parse_array_constraint(cursor, static_shape_dims);
+static PyPtr parse_list_constraint(ConstantCursor& cursor, const Vec<int64_t>& static_shape_dims,
+                                   const Vec<int64_t>& static_stride_dims) {
+    PyPtr element = parse_array_constraint(cursor, static_shape_dims, static_stride_dims);
     if (!element) return {};
 
     PyObject* signature_module = get_signature_module();
@@ -2053,7 +2120,8 @@ static PyPtr parse_element_constraint(ConstantCursor& cursor, ParameterKind::Cat
     case ParameterKind::ConstantFloat:
         return parse_float_constant_constraint(cursor);
     case ParameterKind::Array:
-        return parse_array_constraint(cursor, annotation.array.static_shape_dims);
+        return parse_array_constraint(cursor, annotation.array.static_shape_dims,
+                                      annotation.array.static_stride_dims);
     case ParameterKind::Boolean:
         return make_scalar_constraint(DLDataType{kDLBool, 8, 1});
     case ParameterKind::Integer:
@@ -2062,7 +2130,8 @@ static PyPtr parse_element_constraint(ConstantCursor& cursor, ParameterKind::Cat
     case ParameterKind::Float:
         return make_scalar_constraint(DLDataType{kDLFloat, 32, 1});
     case ParameterKind::List:
-        return parse_list_constraint(cursor, annotation.list.element.static_shape_dims);
+        return parse_list_constraint(cursor, annotation.list.element.static_shape_dims,
+                                     annotation.list.element.static_stride_dims);
     case ParameterKind::AggregateBegin:
     case ParameterKind::AggregateEnd:
         CHECK_UNREACHABLE;  // Should be handled before parse_element_constraint
@@ -3484,6 +3553,25 @@ static Status parse_scalar_annotation(PyObject* py_scalar_annotation, ScalarAnno
 }
 
 
+// Extract a tuple-of-ints attribute (e.g. `static_shape_dims`) into `dst`.
+static Status extract_dim_tuple_attr(PyObject* py_array_annotation, const char* attr_name,
+                                     Vec<int64_t>* dst) {
+    PyPtr dims = getattr(py_array_annotation, attr_name);
+    if (!dims) return ErrorRaised;
+
+    if (!PyTuple_Check(dims.get()))
+        return raise(PyExc_TypeError, "`ArrayAnnotation.%s` must be a tuple, got %s",
+                     attr_name, Py_TYPE(dims.get())->tp_name);
+    Py_ssize_t nd = PyTuple_GET_SIZE(dims.get());
+
+    dst->reserve(nd);
+    for (Py_ssize_t i = 0; i < nd; ++i) {
+        dst->push_back(pylong_as<int64_t>(PyTuple_GET_ITEM(dims.get(), i)));
+        if (PyErr_Occurred()) return ErrorRaised;
+    }
+    return OK;
+}
+
 // Parse a Python ArrayAnnotation into its C++ equivalent.
 static Status parse_array_annotation(PyObject* py_array_annotation, ArrayAnnotation* dst) {
     if (py_array_annotation == Py_None)
@@ -3497,20 +3585,11 @@ static Status parse_array_annotation(PyObject* py_array_annotation, ArrayAnnotat
 
     dst->index_bitwidth = *index_bitwidth_res;
 
-    PyPtr static_shape_dims = getattr(py_array_annotation, "static_shape_dims");
-    if (!static_shape_dims) return ErrorRaised;
-
-    if (!PyTuple_Check(static_shape_dims.get()))
-        return raise(PyExc_TypeError, "`ArrayAnnotation.static_shape_dims` must be a tuple, got %s",
-                     Py_TYPE(static_shape_dims.get())->tp_name);
-    Py_ssize_t nd = PyTuple_GET_SIZE(static_shape_dims.get());
-
-    dst->static_shape_dims.reserve(nd);
-    for (Py_ssize_t i = 0; i < nd; ++i) {
-        dst->static_shape_dims.push_back(
-                pylong_as<int64_t>(PyTuple_GET_ITEM(static_shape_dims.get(), i)));
-        if (PyErr_Occurred()) return ErrorRaised;
-    }
+    if (!extract_dim_tuple_attr(py_array_annotation, "static_shape_dims", &dst->static_shape_dims))
+        return ErrorRaised;
+    if (!extract_dim_tuple_attr(py_array_annotation, "static_stride_dims",
+                                &dst->static_stride_dims))
+        return ErrorRaised;
 
     return OK;
 }

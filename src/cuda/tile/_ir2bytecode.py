@@ -6,7 +6,7 @@ import functools
 import os
 import re
 from contextlib import contextmanager
-from typing import Dict, Tuple, Any, Optional
+from typing import Dict, Tuple, Any, Optional, TYPE_CHECKING
 import warnings
 
 from cuda.tile import _datatype as datatype
@@ -30,6 +30,9 @@ from cuda.tile._ir.type import (
     ArrayTy, size_to_bytecode,
 )
 
+if TYPE_CHECKING:
+    from cuda.tile._passes.dataflow_analysis import DataflowResult
+
 
 def dtype_typeid(tt: bc.TypeTable, dtype: datatype.DType) -> bc.TypeId:
     if is_pointer_dtype(dtype):
@@ -39,17 +42,38 @@ def dtype_typeid(tt: bc.TypeTable, dtype: datatype.DType) -> bc.TypeId:
     return tt.simple(dtype_simple_bytecode_type(dtype))
 
 
-def tensor_view_typeid(tt: bc.TypeTable, array_ty: ArrayTy) -> bc.TypeId:
+def tensor_view_typeid(tt: bc.TypeTable, array_ty: ArrayTy,
+                       shape: tuple[int | None, ...],
+                       strides: tuple[int | None, ...]) -> bc.TypeId:
     dtype = dtype_typeid(tt, array_ty.dtype)
-    shape = [size_to_bytecode(x) for x in array_ty.shape]
-    strides = [size_to_bytecode(x) for x in array_ty.strides]
-    return tt.tensor_view(dtype, shape, strides, bc.PtrAttr.Missing)
+    shape_bc = [size_to_bytecode(x) for x in shape]
+    strides_bc = [size_to_bytecode(x) for x in strides]
+    return tt.tensor_view(dtype, shape_bc, strides_bc, bc.PtrAttr.Missing)
 
 
 def tensor_view_typeid_for_list(tt: bc.TypeTable, item_size_words: int) -> bc.TypeId:
     shape = [bc.DYNAMIC_SHAPE, item_size_words]
     strides = [item_size_words, 1]
     return tt.tensor_view(tt.I64, shape, strides, bc.PtrAttr.Missing)
+
+
+def view_typeid(tt: bc.TypeTable, ty: Type, array_tv_id: bc.TypeId) -> bc.TypeId:
+    """Lower a view type on top of `array_tv_id`, the tensor-view id its array was lowered to.
+
+    A view never recomputes that id from `ty.array_ty`: the array's static shape and strides are
+    carried by the operands of its MakeTensorView, not by `ArrayTy` alone.
+    """
+    padding_value = padding_mode_to_bytecode[ty.padding_mode]
+    assert isinstance(ty.array_ty, ArrayTy)
+    if isinstance(ty, StridedViewTy):
+        return tt.strided_view(ty.tile_shape, ty.traversal_steps, array_tv_id,
+                               ty.order, padding_value)
+    elif isinstance(ty, PartitionViewTy):
+        return tt.partition_view(ty.tile_shape, array_tv_id, ty.order, padding_value)
+    elif isinstance(ty, GatherScatterViewTy):
+        return tt.gather_scatter_view(ty.tile_shape, array_tv_id, ty.sparse_dim, padding_value)
+    else:
+        raise NotImplementedError(f"Lowering view type '{ty}' is not supported")
 
 
 def typeid(tt: bc.TypeTable, ty: Type) -> bc.TypeId:
@@ -59,20 +83,6 @@ def typeid(tt: bc.TypeTable, ty: Type) -> bc.TypeId:
         return tt.tile(dtype, shape)
     elif isinstance(ty, TokenTy):
         return tt.Token
-    elif isinstance(ty, PartitionViewTy) or isinstance(ty, StridedViewTy):
-        padding_value = padding_mode_to_bytecode[ty.padding_mode]
-        assert isinstance(ty.array_ty, ArrayTy)
-        tv_id = tensor_view_typeid(tt, ty.array_ty)
-        if isinstance(ty, StridedViewTy):
-            return tt.strided_view(ty.tile_shape, ty.traversal_steps, tv_id,
-                                   ty.order, padding_value)
-        else:
-            return tt.partition_view(ty.tile_shape, tv_id, ty.order, padding_value)
-    elif isinstance(ty, GatherScatterViewTy):
-        padding_value = padding_mode_to_bytecode[ty.padding_mode]
-        assert isinstance(ty.array_ty, ArrayTy)
-        tv_id = tensor_view_typeid(tt, ty.array_ty)
-        return tt.gather_scatter_view(ty.tile_shape, tv_id, ty.sparse_dim, padding_value)
     else:
         raise NotImplementedError(f"Lowering type '{ty}' is not supported")
 
@@ -358,6 +368,7 @@ class BytecodeContext:
                  debug_attr_map: DebugAttrMap,
                  global_section: bc.GlobalSection,
                  ir_ctx: IRContext,
+                 dataflow_result: "DataflowResult",
                  sm_arch: str | None) -> None:
         self.builder = builder
         self.type_table = type_table
@@ -365,8 +376,11 @@ class BytecodeContext:
         self.global_section = global_section
         self._typemap: Dict[str, Type] = ir_ctx.typemap
         self._constants: Dict[str, Any] = ir_ctx.constants
+        self._dataflow_result = dataflow_result
         self._value_map: Dict[str, bc.Value] = {}
         self._array_base_ptr: Dict[str, bc.Value] = {}
+        # Tensor-view TypeId computed by each array's MakeTensorView, keyed by the array var name.
+        self._array_tv_id: Dict[str, bc.TypeId] = {}
         self._list_partition_views: Dict[str, bc.Value] = {}
         self.sm_arch = sm_arch
         self.innermost_loop = None
@@ -400,6 +414,15 @@ class BytecodeContext:
 
     def get_constant_or_default(self, var: Var, default=None):
         return self._constants.get(var.name, default)
+
+    def get_known_constant_value(self, var: Var) -> int | None:
+        return self._dataflow_result.constant_value(var)
+
+    def set_array_tv_id(self, var: Var, tv_id: bc.TypeId) -> None:
+        self._array_tv_id[var.name] = tv_id
+
+    def get_array_tv_id(self, var: Var) -> bc.TypeId:
+        return self._array_tv_id[var.name]
 
     def get_value(self, var: Var) -> bc.Value:
         return self._value_map[var.name]
@@ -514,6 +537,7 @@ def _resolve_num_worker_warps(num_worker_warps: Optional[int],
 
 
 def generate_bytecode_for_kernel(func_body: Block,
+                                 dataflow_result: "DataflowResult",
                                  symbol: str,
                                  compiler_options: CompilerOptions,
                                  sm_arch: str | None,
@@ -556,6 +580,7 @@ def generate_bytecode_for_kernel(func_body: Block,
                               debug_attr_map=debug_attr_map,
                               global_section=writer.global_section,
                               ir_ctx=func_body.ctx,
+                              dataflow_result=dataflow_result,
                               sm_arch=sm_arch)
 
         for var, value in zip(func_body.params, param_values, strict=True):

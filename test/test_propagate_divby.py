@@ -27,7 +27,7 @@ def flattened_inputs(op):
     if isinstance(op, MakeTensorView):
         yield ('base_ptr', op.base_ptr)
         yield from ((f'shape[{i}]', s) for i, s in enumerate(op.shape))
-        yield from ((f'stride[{i}]', s) for i, s in enumerate(op.dynamic_strides))
+        yield from ((f'stride[{i}]', s) for i, s in enumerate(op.strides))
     elif isinstance(op, StorePointer):
         yield ('base_ptr', op.pointer)
     else:
@@ -107,7 +107,8 @@ def test_static_shape_seed_from_array_arg():
     body = get_ir(kernel, (array_arg(ndim=2, shape_const=(16, None), stride_const=(None, 1)),))
     [view] = [op for op in body.traverse() if isinstance(op, MakeTensorView)]
     static_dim = view.result_var.get_aggregate().shape[0]
-    assert len(view.shape) == 1
+    # All shapes are operands; the static one is a (front-end) constant operand.
+    assert len(view.shape) == 2
     assert static_dim.is_constant()
     assert static_dim.get_constant() == 16
 
