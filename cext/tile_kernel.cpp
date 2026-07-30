@@ -3412,11 +3412,47 @@ struct LaunchArgs {
     Py_ssize_t num_kernel_args;
 };
 
+
+static Result<unsigned> parse_tile_launch_kwargs(PyObject *const *args,
+                                                 Py_ssize_t nargs, PyObject *kwargs,
+                                                 CUlaunchAttribute launch_attrs[kMaxCUlaunchAttrs]
+                                                ) {
+    if (kwargs == nullptr)
+        return 0;
+
+    CHECK(PyTuple_Check(kwargs) &&
+          "Keyword argument tuple is nonnull and not a tuple");
+
+    const auto nkwargs = PyTuple_GET_SIZE(kwargs);
+    size_t num_attrs = 0;
+
+    for (Py_ssize_t i = 0; i < nkwargs; i++) {
+        PyObject *keyword = PyTuple_GET_ITEM(kwargs, i);
+        PyObject *kwarg = args[nargs + i];
+        CHECK(keyword && kwarg);
+
+        if (PyUnicode_Compare(keyword, g_programmatic_dependent_launch_pyunicode) == 0) {
+            if (!PyBool_Check(kwarg))
+                return raise(PyExc_TypeError,
+                             "expected argument %U to have type bool", keyword);
+            CUlaunchAttribute *attr = &launch_attrs[num_attrs++];
+            attr->id = CU_LAUNCH_ATTRIBUTE_PROGRAMMATIC_STREAM_SERIALIZATION;
+            attr->value.programmaticStreamSerializationAllowed = Py_IsTrue(kwarg);
+        } else {
+            return raise(PyExc_RuntimeError, "Unexpected keyword argument %U",
+                         keyword);
+        }
+    }
+
+    return num_attrs;
+}
+
 // Parse extra keyword arguments accepted by the extended launch api into
 // launch attributes.
-static Result<unsigned> parse_launch_kwargs(PyObject *const *args,
-                                            Py_ssize_t nargs, PyObject *kwargs,
-                                            CUlaunchAttribute launch_attrs[kMaxCUlaunchAttrs]) {
+static Result<unsigned> parse_lang_launch_kwargs(PyObject *const *args,
+                                                 Py_ssize_t nargs, PyObject *kwargs,
+                                                 CUlaunchAttribute launch_attrs[kMaxCUlaunchAttrs]
+                                                ) {
     if (kwargs == nullptr)
         return 0;
 
@@ -3546,7 +3582,11 @@ static PyObject* launch_impl(PyObject* const* args, Py_ssize_t nargs,
         return nullptr;
 
     CUlaunchAttribute launch_attrs[kMaxCUlaunchAttrs];
-    const auto num_attrs = parse_launch_kwargs(args, nargs, kwargs, launch_attrs);
+
+    const auto num_attrs = with_block
+                           ? parse_lang_launch_kwargs(args, nargs, kwargs, launch_attrs)
+                           : parse_tile_launch_kwargs(args, nargs, kwargs, launch_attrs);
+
     if (!num_attrs.is_ok())
         return nullptr;
 
@@ -3561,10 +3601,13 @@ static PyObject* launch_impl(PyObject* const* args, Py_ssize_t nargs,
     return Py_NewRef(Py_None);
 }
 
-#define LAUNCH_SIGNATURE "launch(stream, grid, kernel, kernel_args, /)"
+#define LAUNCH_SIGNATURE \
+  "launch(stream, grid, kernel, kernel_args, /, *, " \
+  "programmatic_dependent_launch=False)"
 
-static PyObject* cuda_tile_launch(PyObject*, PyObject* const* args, Py_ssize_t nargs) {
-  return launch_impl(args, nargs, nullptr, LAUNCH_SIGNATURE,
+static PyObject* cuda_tile_launch(PyObject*, PyObject* const* args, Py_ssize_t nargs,
+                                  PyObject* kwargs) {
+  return launch_impl(args, nargs, kwargs, LAUNCH_SIGNATURE,
                      /*with_block=*/false);
 }
 
@@ -3936,8 +3979,8 @@ static void try_get_cuda_bindings_globals() {
 }
 
 static PyMethodDef functions[] = {
-    {"launch", reinterpret_cast<PyCFunction>(cuda_tile_launch), METH_FASTCALL,
-        LAUNCH_SIGNATURE "\n"
+    {"launch", reinterpret_cast<PyCFunction>(cuda_tile_launch),
+        METH_FASTCALL | METH_KEYWORDS, LAUNCH_SIGNATURE "\n"
         "--\n\n"
         "Launch a cuTile kernel.\n\n"
         "Args:\n"

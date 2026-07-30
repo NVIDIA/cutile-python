@@ -3452,6 +3452,43 @@ def store_advanced_impl(array: Var, indices: Var, tile: Var,
                   latency=latency_val, allow_tma=allow_tma_val)
 
 
+@dataclass(eq=False)
+class GridDependencyControlWait(Operation, opcode="grid_dependency_control_wait",
+                                memory_effect=MemoryEffect.STORE):
+    token: Optional[Var] = operand(default=None)
+
+    @override
+    def generate_bytecode(self, ctx: BytecodeContext) -> bc.Value:
+        return bc.encode_GdcWaitTkoOp(
+            ctx.builder,
+            result_token_type=ctx.type_table.Token,
+            token=None if self.token is None else ctx.get_value(self.token))
+
+
+@impl(ct.grid_dependency_control_wait, min_version=BytecodeVersion.V_13_4)
+def grid_dependency_control_wait_impl():
+    add_operation(GridDependencyControlWait, TokenTy())
+
+
+@dataclass(eq=False)
+class GridDependencyControlLaunchDependents(Operation,
+                                            opcode="grid_dependency_control_launch_dependents",
+                                            memory_effect=MemoryEffect.STORE):
+    token: Optional[Var] = operand(default=None)
+
+    @override
+    def generate_bytecode(self, ctx: BytecodeContext) -> bc.Value:
+        return bc.encode_GdcLaunchDependentsTkoOp(
+            ctx.builder,
+            result_token_type=ctx.type_table.Token,
+            token=None if self.token is None else ctx.get_value(self.token))
+
+
+@impl(ct.grid_dependency_control_launch_dependents, min_version=BytecodeVersion.V_13_4)
+def grid_dependency_control_launch_dependents_impl():
+    add_operation(GridDependencyControlLaunchDependents, TokenTy())
+
+
 @tile_impl_registry.unflatten_aggregate_impl(ArrayTy)
 def _unflatten_aggregate_array_impl(val: ArrayValue, ty: ArrayTy, result_var: Var):
     assert isinstance(val, ArrayValue)

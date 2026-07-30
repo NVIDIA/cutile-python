@@ -17,7 +17,8 @@ from cuda.tile._ir.ops import (
     JoinTokens, MakeToken,
     TileAtomicCAS, TileAtomicRMW, LoadPointer, TileAtomicRedView,
     TileLoad, StorePointer,
-    TileStore, TileAssert, TilePrintf,
+    TileStore, TileAssert, TilePrintf, GridDependencyControlWait,
+    GridDependencyControlLaunchDependents,
 )
 from cuda.tile._ir.ops_utils import memory_order_has_acquire, memory_order_has_release
 from cuda.tile._passes.dataflow_analysis import ALIAS_UNIVERSE, DataflowResult, AliasSet
@@ -132,8 +133,13 @@ def _get_block_memory_effects(block: Block,
             return EMPTY_MEMORY_EFFECTS
 
         if isinstance(cur_op, TilePrintf):
-
             return MemoryEffects(OrderedDict([(ALIAS_UNIVERSE, effect)]), False)
+
+        if isinstance(cur_op, GridDependencyControlWait):
+            return MemoryEffects(OrderedDict([(ALIAS_UNIVERSE, MemoryEffect.STORE)]), True)
+
+        if isinstance(cur_op, GridDependencyControlLaunchDependents):
+            return MemoryEffects(OrderedDict([(ALIAS_UNIVERSE, MemoryEffect.STORE)]), False)
 
         has_acquire_order = False
         if isinstance(cur_op, (TileAtomicCAS, TileAtomicRMW, TileAtomicRedView,
@@ -356,7 +362,8 @@ def _to_token_order_in_block(block: Block,
             new_end_branch_op = dataclasses.replace(op, outputs=tuple(op.outputs) + tokens)
             operations.append(new_end_branch_op)
 
-        elif isinstance(op, TilePrintf):
+        elif isinstance(op, (TilePrintf, GridDependencyControlWait,
+                             GridDependencyControlLaunchDependents)):
             # Use ALIAS_UNIVERSE here to order print. This is a conservative solution that will use
             # the existing boop/branch token plumbing to preserve token order. Doing so could order
             # unrelated memory chains, which is acceptable for now.
@@ -373,6 +380,9 @@ def _to_token_order_in_block(block: Block,
             token_map[last_op_key] = result_tok
             token_map[last_store_key] = result_tok
             operations.append(dataclasses.replace(op, token=input_tok))
+
+            if isinstance(op, GridDependencyControlWait):
+                token_map[ACQUIRE_TOKEN_KEY] = result_tok
         else:
             operations.append(op)
 

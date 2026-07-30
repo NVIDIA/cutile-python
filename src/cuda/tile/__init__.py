@@ -164,6 +164,8 @@ from cuda.tile._stub import (
     unpack_from_bytes,
     where,
     zeros,
+    grid_dependency_control_wait,
+    grid_dependency_control_launch_dependents,
 )
 
 from cuda.tile._context import compiler_timeout
@@ -329,6 +331,9 @@ __all__ = [
     "unpack_from_bytes",
     "where",
     "zeros",
+
+    "grid_dependency_control_wait",
+    "grid_dependency_control_launch_dependents",
 
     "compiler_timeout",
 

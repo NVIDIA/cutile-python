@@ -4523,3 +4523,23 @@ def static_iter(iterable):
         ([0, 0, 0, 0], [1, 1, 1, 1], [2, 2, 2, 2], [3, 3, 3, 3])
         ([1, 1, 1, 1], [3, 3, 3, 3], [5, 5, 5, 5], [3, 3, 3, 3])
     """
+
+
+@stub
+def grid_dependency_control_wait() -> None:
+    """
+    Wait for the preceding kernel in a programmatic dependent launch to finish.
+
+    After the wait completes, predecessor-produced memory is visible to
+    subsequent operations in the dependent kernel.
+    """
+
+
+@stub
+def grid_dependency_control_launch_dependents() -> None:
+    """
+    Allow a programmatically dependent successor kernel to begin scheduling.
+
+    This operation does not imply that the producer has completed or that its
+    memory writes are visible to the dependent kernel.
+    """

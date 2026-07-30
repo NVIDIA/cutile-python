@@ -14,7 +14,8 @@ def launch(stream,
            grid: Dim3,
            kernel,
            kernel_args: tuple[Any, ...],
-           /):
+           /, *,
+           programmatic_dependent_launch: bool = False):
     ...
 
 
