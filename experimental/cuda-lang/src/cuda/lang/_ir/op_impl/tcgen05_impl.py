@@ -28,7 +28,7 @@ from cuda.lang._enums import (
     Tcgen05CopySourceFormat,
 )
 from cuda.lang._exception import TypeCheckingError, InvalidValueError
-from cuda.lang._ir.type import PointerTy
+from cuda.lang._ir.type import PointerTy, type_bitwidth
 from cuda.lang._stub import tcgen05 as tcgen05_stub
 from cuda.lang._ir.ir import Var, add_operation
 from cuda.lang._ir.ops import (
@@ -45,6 +45,7 @@ from cuda.lang._ir.enum_to_mlir import cl_enum_to_mlir_attribute
 from cuda.lang._ir.type_checking_helpers import (
     is_none,
     make_type_checking_error,
+    require_dtype_spec,
     require_integral_scalar_type,
     require_mbarrier_ptr,
     require_pointer_in_memory_space,
@@ -57,7 +58,7 @@ from cuda.tile._ir.op_impl import (
     require_constant_int,
 )
 import cuda.lang._mlir as mlir
-from .core_api_impl import bitcast
+from .core_api_impl import bitcast, reinterpret_to
 
 
 _registry = ImplRegistry()
@@ -68,7 +69,7 @@ def tcgen05_impl_registry() -> ImplRegistry:
     return _registry
 
 
-TCGEN05_VALID_COUNTS_BY_SHAPE = {
+TCGEN05_VALID_NUMS_BY_SHAPE = {
     Tcgen05LoadStoreShape.SHAPE_16X64B: (1, 2, 4, 8, 16, 32, 64, 128),
     Tcgen05LoadStoreShape.SHAPE_16X128B: (1, 2, 4, 8, 16, 32, 64),
     Tcgen05LoadStoreShape.SHAPE_16X256B: (1, 2, 4, 8, 16, 32),
@@ -76,13 +77,34 @@ TCGEN05_VALID_COUNTS_BY_SHAPE = {
     Tcgen05LoadStoreShape.SHAPE_16X32BX2: (1, 2, 4, 8, 16, 32, 64, 128),
 }
 
-TCGEN05_REGISTERS_PER_COUNT = {
+TCGEN05_REGISTERS_PER_REPETITION = {
     Tcgen05LoadStoreShape.SHAPE_16X64B: 1,
     Tcgen05LoadStoreShape.SHAPE_16X128B: 2,
     Tcgen05LoadStoreShape.SHAPE_16X256B: 4,
     Tcgen05LoadStoreShape.SHAPE_32X32B: 1,
     Tcgen05LoadStoreShape.SHAPE_16X32BX2: 1,
 }
+
+TCGEN05_REGISTER_BITS = 32
+
+
+def _tcgen05_register_type(register_count: int) -> ScalarTy | VectorTy:
+    if register_count == 1:
+        return ScalarTy(datatype.int32)
+    return VectorTy(datatype.int32, register_count)
+
+
+def _tcgen05_result_type(dtype: datatype.DType, element_count: int):
+    if datatype.is_pointer_dtype(dtype):
+        raise TypeCheckingError(
+            "tcgen05 load/store dtype must be a scalar data type, not a "
+            f"pointer data type, but got {dtype}"
+        )
+    if dtype is datatype.bool_:
+        raise TypeCheckingError("tcgen05 load/store dtype cannot be bool")
+    if element_count == 1:
+        return ScalarTy(dtype)
+    return VectorTy(dtype, element_count)
 
 
 @impl(tcgen05_stub.tcgen05_allocate)
@@ -235,8 +257,8 @@ def tcgen05_store_impl(
 ):
     require_pointer_in_memory_space(tensor_memory_address, (MemorySpace.TENSOR,))
     shape_value = require_constant_enum(shape, Tcgen05LoadStoreShape)
-    valid_counts = TCGEN05_VALID_COUNTS_BY_SHAPE[shape_value]
-    registers_per_count = TCGEN05_REGISTERS_PER_COUNT[shape_value]
+    valid_nums = TCGEN05_VALID_NUMS_BY_SHAPE[shape_value]
+    registers_per_repetition = TCGEN05_REGISTERS_PER_REPETITION[shape_value]
     value_type = value.get_type()
     if is_none(offset):
         offset = None
@@ -245,36 +267,38 @@ def tcgen05_store_impl(
         offset = astype(offset, datatype.int64)
     require_constant_bool(unpack)
 
-    def type_error(dtype, count):
-        message = (
-            "Expected scalar 32-bit integer or vector of 32-bit integers "
-            f"but got {count=} and {dtype=}"
-        )
-        raise TypeCheckingError(message)
-
     match value_type:
-        case ScalarTy() as st:
-            count = 1
-            if st.dtype != datatype.int32:
-                type_error(st.dtype, count)
-        case VectorTy() as vt:
-            count = vt.length
-            if vt.element_dtype != datatype.int32:
-                type_error(vt.element_dtype, count)
+        case ScalarTy() | VectorTy():
+            value_dtype = value_type.tensor_dtype()
         case _:
-            raise TypeCheckingError("Expected scalar or vector with datatype int32")
+            raise TypeCheckingError(
+                f"Expected a scalar or vector value to store, but got {value_type}"
+            )
+    if value_dtype is datatype.bool_ or datatype.is_pointer_dtype(value_dtype):
+        raise TypeCheckingError(
+            "tcgen05_store value must have a non-bool scalar data type, but "
+            f"got {value_dtype}"
+        )
+
+    total_bits = type_bitwidth(value_type)
+    if total_bits % TCGEN05_REGISTER_BITS != 0:
+        raise InvalidValueError(
+            f"tcgen05_store value occupies {total_bits} bits, which is not a "
+            f"multiple of the {TCGEN05_REGISTER_BITS}-bit register size."
+        )
+    register_count = total_bits // TCGEN05_REGISTER_BITS
 
     valid_register_counts = tuple(
-        valid_count * registers_per_count for valid_count in valid_counts
+        valid_num * registers_per_repetition for valid_num in valid_nums
     )
-    if count not in valid_register_counts:
-        valid = ", ".join(str(count) for count in valid_register_counts)
+    if register_count not in valid_register_counts:
+        valid = ", ".join(str(valid) for valid in valid_register_counts)
         raise InvalidValueError(
             f"Expected register count for {shape_value.name} to be one of "
-            f"{valid}, got {count}"
+            f"{valid}, got {register_count}"
         )
 
-    count_value = count // registers_per_count
+    num = register_count // registers_per_repetition
     needs_offset = shape_value == Tcgen05LoadStoreShape.SHAPE_16X32BX2
     has_offset = offset is not None
     if needs_offset != has_offset:
@@ -283,13 +307,17 @@ def tcgen05_store_impl(
             "Tcgen05LoadStoreShape.SHAPE_16X32BX2"
         )
 
+    register_type = _tcgen05_register_type(register_count)
+    if value_type != register_type:
+        value = reinterpret_to(value, register_type)
+
     operands = (
         tensor_memory_address,
         *([offset] if offset is not None else []),
         value,
         unpack,
     )
-    intrinsic = f"llvm.nvvm.tcgen05.st.{shape_value.value}.x{count_value}"
+    intrinsic = f"llvm.nvvm.tcgen05.st.{shape_value.value}.x{num}"
     add_operation_variadic(
         RawNVVMIntrinsic,
         (),
@@ -302,18 +330,45 @@ def tcgen05_store_impl(
 def tcgen05_load_impl(
     shape: Var,
     tensor_memory_address: Var,
-    count: Var,
+    element_count: Var,
+    dtype: Var,
     pack: Var,
     offset: Var,
 ) -> Var:
     require_pointer_in_memory_space(tensor_memory_address, (MemorySpace.TENSOR,))
     shape_value = require_constant_enum(shape, Tcgen05LoadStoreShape)
-    count_value = require_constant_int(count)
-    valid_counts = TCGEN05_VALID_COUNTS_BY_SHAPE[shape_value]
-    if count_value not in valid_counts:
-        valid = ", ".join(str(value) for value in valid_counts)
+    element_count_value = require_constant_int(element_count)
+    if element_count_value <= 0:
         raise InvalidValueError(
-            f"Expected count for {shape_value.name} to be one of {valid}, got {count_value}"
+            "tcgen05_load element_count must be positive, got "
+            f"{element_count_value}"
+        )
+    result_dtype = (
+        datatype.int32 if is_none(dtype) else require_dtype_spec(dtype)
+    )
+    result_type = _tcgen05_result_type(result_dtype, element_count_value)
+    total_bits = element_count_value * result_dtype.bitwidth
+    if total_bits % TCGEN05_REGISTER_BITS != 0:
+        raise InvalidValueError(
+            f"tcgen05_load result requires {total_bits} bits, which is not a "
+            f"multiple of the {TCGEN05_REGISTER_BITS}-bit register size."
+        )
+    register_count = total_bits // TCGEN05_REGISTER_BITS
+    registers_per_repetition = TCGEN05_REGISTERS_PER_REPETITION[shape_value]
+    if register_count % registers_per_repetition != 0:
+        raise InvalidValueError(
+            f"tcgen05_load result requires {register_count} register(s), which "
+            f"is not a multiple of the {registers_per_repetition} register(s) "
+            f"per repetition for {shape_value.name}"
+        )
+    num_value = register_count // registers_per_repetition
+    valid_nums = TCGEN05_VALID_NUMS_BY_SHAPE[shape_value]
+    if num_value not in valid_nums:
+        valid = ", ".join(str(value) for value in valid_nums)
+        raise InvalidValueError(
+            f"element_count={element_count_value} with dtype {result_dtype} "
+            f"requires PTX num={num_value} for {shape_value.name}; expected num "
+            f"to be one of {valid}"
         )
 
     has_offset = not is_none(offset)
@@ -338,20 +393,18 @@ def tcgen05_load_impl(
         )
         operands.append(pack)
 
-    intrinsic = f"llvm.nvvm.tcgen05.ld.{shape_value.value}.x{count_value}"
-    total_registers = count_value * TCGEN05_REGISTERS_PER_COUNT[shape_value]
-    result_type = (
-        ScalarTy(datatype.int32)
-        if total_registers == 1
-        else VectorTy(datatype.int32, total_registers)
-    )
+    intrinsic = f"llvm.nvvm.tcgen05.ld.{shape_value.value}.x{num_value}"
+    register_type = _tcgen05_register_type(register_count)
 
     [result] = add_operation_variadic(
         RawNVVMIntrinsic,
-        (result_type,),
+        (register_type,),
         intrinsic=intrinsic,
         operands_=tuple(operands),
     )
+
+    if result_type != register_type:
+        result = reinterpret_to(result, result_type)
     return result
 
 

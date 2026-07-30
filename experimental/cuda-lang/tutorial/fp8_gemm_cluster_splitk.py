@@ -38,6 +38,7 @@ TILE_K = 128
 MMA_K = 32
 
 WARP_SIZE = 32
+TMEM_LOAD_ROWS = 16
 EPILOGUE_WARPS = 4
 MMA_WARP = 4
 TMA_WARP = 5
@@ -119,18 +120,18 @@ def _compute_schedule(
     )
 
 
-def _load_tmem(base, lane_offset, column_offset, repetitions):
+def _load_tmem(base, lane_offset, column_offset, element_count):
     tmem = cl.tcgen05_tmem_offset(
         base,
         lane_offset=lane_offset,
         column_offset=column_offset,
     )
-    regs = cl.tcgen05_load(
+    return cl.tcgen05_load(
         cl.Tcgen05LoadStoreShape.SHAPE_16X256B,
         tmem,
-        count=repetitions,
+        element_count=element_count,
+        dtype=cl.float32,
     )
-    return regs.bitcast(cl.float32)
 
 
 def _pack_e4m3x4(values):
@@ -148,13 +149,13 @@ def _store_fp8_stmatrix(
     values,
     m_base,
     tile_m,
-    repetitions,
+    element_count,
     swizzle_mask,
     swizzle_shift,
     lane,
 ):
     """Convert one LDTM pass to E4M3 and store the matrix fragments."""
-    if repetitions == 4:
+    if element_count == 16:
         r0 = _pack_e4m3x4(values[0:4])
         r1 = _pack_e4m3x4(values[4:8])
         r2 = _pack_e4m3x4(values[8:12])
@@ -168,7 +169,7 @@ def _store_fp8_stmatrix(
             shape=cl.MatrixStoreShape.M16N8,
             transpose=True,
         )
-    elif repetitions == 2:
+    elif element_count == 8:
         r0 = _pack_e4m3x4(values[0:4])
         r1 = _pack_e4m3x4(values[4:8])
         n_in_box = lane % 16
@@ -305,8 +306,9 @@ def _kernel(
     num_epilogue_passes = rows_per_warp // 16
     epilogue_tile_elems = tile_m * epilogue_subtile_n
     subtile_count = cl.cdiv(tile_n, epilogue_subtile_n)
-    tmem_repetitions = epilogue_subtile_n // 8
-    tmem_registers = tmem_repetitions * 4
+    tmem_element_count = (
+        TMEM_LOAD_ROWS * epilogue_subtile_n // WARP_SIZE
+    )
 
     if warp < EPILOGUE_WARPS:
         if warp == 0 and lane < num_ab_stages:
@@ -491,7 +493,7 @@ def _kernel(
                         tmem_base,
                         lane_offset + pass_idx * 16,
                         subtile * epilogue_subtile_n,
-                        tmem_repetitions,
+                        tmem_element_count,
                     )
                     m_base = warp * rows_per_warp + pass_idx * 16
                     _store_fp8_stmatrix(
@@ -499,7 +501,7 @@ def _kernel(
                         values,
                         m_base,
                         tile_m,
-                        tmem_repetitions,
+                        tmem_element_count,
                         swizzle_mask,
                         swizzle_shift,
                         lane,
@@ -543,7 +545,7 @@ def _kernel(
                 if valid_subtiles_raw < subtile_count
                 else subtile_count
             )
-            store_groups = tmem_registers // 4
+            store_groups = tmem_element_count // 4
             group_elems = WARP_SIZE * 4
             if tile_m == 128:
                 warp_base = warp * 2 * store_groups * group_elems
@@ -574,14 +576,14 @@ def _kernel(
                             tmem_base,
                             lane_offset,
                             subtile * epilogue_subtile_n,
-                            tmem_repetitions,
+                            tmem_element_count,
                         )
                         if tile_m == 128:
                             values1 = _load_tmem(
                                 tmem_base,
                                 lane_offset + 16,
                                 subtile * epilogue_subtile_n,
-                                tmem_repetitions,
+                                tmem_element_count,
                             )
 
                         peer_slot = (
@@ -624,14 +626,14 @@ def _kernel(
                         tmem_base,
                         lane_offset,
                         my_subtile * epilogue_subtile_n,
-                        tmem_repetitions,
+                        tmem_element_count,
                     )
                     if tile_m == 128:
                         reduced1 = _load_tmem(
                             tmem_base,
                             lane_offset + 16,
                             my_subtile * epilogue_subtile_n,
-                            tmem_repetitions,
+                            tmem_element_count,
                         )
 
                     if warp == 0 and cl.elect_sync():
@@ -683,7 +685,7 @@ def _kernel(
                             values,
                             m_base,
                             tile_m,
-                            tmem_repetitions,
+                            tmem_element_count,
                             swizzle_mask,
                             swizzle_shift,
                             lane,

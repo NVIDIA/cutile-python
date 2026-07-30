@@ -25,6 +25,7 @@ from .._enums import (
     Tcgen05CopySourceFormat,
 )
 import cuda.lang as cl
+from cuda.lang._datatype import DType
 
 
 @function()
@@ -178,7 +179,8 @@ def tcgen05_load(
     shape: Tcgen05LoadStoreShape,
     tensor_memory_address: P6,
     *,
-    count: int = 1,
+    element_count: int,
+    dtype: DType | None = None,
     pack: bool | None = None,
     offset: int | None = None,
 ) -> Any:
@@ -187,14 +189,20 @@ def tcgen05_load(
     Args:
         shape: Compile-time load shape.
         tensor_memory_address: Pointer to source in tensor memory.
-        count: Operation count. Supported values depend on ``shape``.
+        element_count: Number of logical ``dtype`` elements in the result.
+            The PTX repetition count is inferred from ``shape``, ``dtype``,
+            and ``element_count``.
+        dtype: Element data type of the result. The hardware always moves
+            32-bit register words, so this reinterprets their bits rather than
+            converting them. Defaults to :data:`~cuda.lang.int32`.
         pack: Whether to use the packed 16-bit form.
         offset: Address offset for the second access when the load accesses
            two elements as indicated by the ``x2`` suffix of the ``shape``
            argument.
 
-    Returns: Integer or vector of integers determined by ``count`` and
-        ``shape`` arguments.
+    Returns:
+        The loaded register words reinterpreted as ``dtype``, as a scalar when
+        ``element_count`` is one and a :class:`~cuda.lang.Vector` otherwise.
     """
     ...
 
@@ -239,8 +247,12 @@ def tcgen05_store(
     Args:
         shape: Store shape.
         tensor_memory_address: Pointer in tensor memory (address space 6).
-        value: 32-bit signless integer or vector of 32-bit signless integer
-            values of length 2/4/8/16/32/64/128
+        value: Scalar or vector of any non-``bool`` data type. Its bits are
+            reinterpreted as the 32-bit register words the hardware stores, so
+            its total bit width must be a multiple of 32 and the resulting
+            register count must be valid for ``shape``. This is the inverse of
+            the ``dtype`` and ``element_count`` arguments of
+            :func:`tcgen05_load`.
         unpack: unpack a 32-bit element in the register into two 16-bit
             elements and store them in adjacent columns.
         offset: When shape 16x32bx2 is used, base address of the first access is

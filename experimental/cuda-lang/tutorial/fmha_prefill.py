@@ -1876,7 +1876,7 @@ def _fmha_prefill_kernel(
                         cl.tcgen05_load(
                             cl.Tcgen05LoadStoreShape.SHAPE_32X32B,
                             _tmem_pointer(row_tmem, 0, chunk * 32),
-                            count=32,
+                            element_count=32,
                         )
                         for chunk in cl.static_iter(range(4))
                     )
@@ -2503,7 +2503,7 @@ def _fmha_prefill_kernel(
                         stats = cl.tcgen05_load(
                             cl.Tcgen05LoadStoreShape.SHAPE_32X32B,
                             stats_tmem,
-                            count=2,
+                            element_count=2,
                         )
                         alpha = cl.bitcast(stats[0], cl.float32)
                         should_rescale = True
@@ -2521,7 +2521,7 @@ def _fmha_prefill_kernel(
                                 values = cl.tcgen05_load(
                                     cl.Tcgen05LoadStoreShape.SHAPE_32X32B,
                                     output_tmem,
-                                    count=8,
+                                    element_count=8,
                                 )
                                 values_f32 = cl.Vector(
                                     *tuple(
@@ -2576,7 +2576,7 @@ def _fmha_prefill_kernel(
                 stats = cl.tcgen05_load(
                     cl.Tcgen05LoadStoreShape.SHAPE_32X32B,
                     stats_tmem,
-                    count=2,
+                    element_count=2,
                 )
                 cl.tcgen05_wait_store()
                 row_sum = cl.bitcast(stats[0], cl.float32)
@@ -2605,7 +2605,7 @@ def _fmha_prefill_kernel(
                     values = cl.tcgen05_load(
                         cl.Tcgen05LoadStoreShape.SHAPE_32X32B,
                         output_tmem,
-                        count=32,
+                        element_count=32,
                     )
                     packed_output = _pack_output_values(
                         values, final_scale, output_kind

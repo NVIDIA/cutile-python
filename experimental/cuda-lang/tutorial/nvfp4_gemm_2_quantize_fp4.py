@@ -665,10 +665,11 @@ def _kernel(
                     lane_offset=epi_warp * WARP_SIZE,
                     column_offset=(acc_window * ACC_WINDOW_STRIDE_COLUMNS + column),
                 )
-                regs = cl.tcgen05_load(
+                accumulators = cl.tcgen05_load(
                     cl.Tcgen05LoadStoreShape.SHAPE_32X32B,
                     tmem,
-                    count=EPILOGUE_CHUNK_COLUMNS,
+                    element_count=EPILOGUE_CHUNK_COLUMNS,
+                    dtype=cl.float32,
                 )
                 if block_idx == 0:
                     cl.tcgen05_wait_load()
@@ -676,7 +677,6 @@ def _kernel(
                         acc_empty.get_base_pointer(), 0
                     )
                     cl.mbarrier_arrive(leader_acc_empty, scope=cl.MbarrierScope.BLOCK)
-                accumulators = regs.bitcast(cl.float32)
 
                 if output_fp4:
                     alpha_value = cl.float32(alpha[tile_l])

@@ -573,7 +573,7 @@ def mha_kernel(
                     scores = cl.tcgen05_load(
                         cl.Tcgen05LoadStoreShape.SHAPE_32X32B,
                         cl.tcgen05_tmem_offset(row_tmem, column_offset=column),
-                        count=32,
+                        element_count=32,
                     )
                     cl.tcgen05_wait_load()
                     row_max = max_vector32(
@@ -607,7 +607,7 @@ def mha_kernel(
                     scores = cl.tcgen05_load(
                         cl.Tcgen05LoadStoreShape.SHAPE_32X32B,
                         cl.tcgen05_tmem_offset(row_tmem, column_offset=column),
-                        count=32,
+                        element_count=32,
                     )
                     cl.tcgen05_wait_load()
                     probabilities, quarter_sum = probability_vector(
@@ -702,7 +702,7 @@ def mha_kernel(
                             values = cl.tcgen05_load(
                                 cl.Tcgen05LoadStoreShape.SHAPE_32X32B,
                                 output_row,
-                                count=16,
+                                element_count=16,
                             )
                             cl.tcgen05_wait_load()
                             cl.tcgen05_store(
@@ -747,7 +747,7 @@ def mha_kernel(
                     values = cl.tcgen05_load(
                         cl.Tcgen05LoadStoreShape.SHAPE_32X32B,
                         output_row,
-                        count=16,
+                        element_count=16,
                     )
                     cl.tcgen05_wait_load()
                     store_output_pairs(o_smem, values, inv_norm, lane_in_group, column)

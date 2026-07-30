@@ -250,15 +250,16 @@ def tensor_memory_pointer(base, lane_offset, column_offset):
 
 def store_fp16_tmem_tile(dst, tmem_base, warp, column, row, output_column, n):
     tmem = tensor_memory_pointer(tmem_base, warp * WARP_SIZE, column)
-    regs = cl.tcgen05_load(
+    values = cl.tcgen05_load(
         cl.Tcgen05LoadStoreShape.SHAPE_32X32B,
         tmem,
-        count=16,
+        element_count=16,
+        dtype=cl.float32,
     )
     cl.tcgen05_wait_load()
-    for pair in cl.static_iter(range(len(regs) // 2)):
-        lo = cl.bitcast(regs[pair * 2], cl.float32)
-        hi = cl.bitcast(regs[pair * 2 + 1], cl.float32)
+    for pair in cl.static_iter(range(len(values) // 2)):
+        lo = values[pair * 2]
+        hi = values[pair * 2 + 1]
         packed = cl._nvvm.ff2f16x2_rn(hi, lo)
         (dst + row * n + output_column + pair * 2).store(packed, alignment=4)
 

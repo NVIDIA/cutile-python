@@ -232,10 +232,12 @@ def _kernel(
             lane_offset=warp * WARP_SIZE,
             column_offset=column,
         )
-        regs = cl.tcgen05_load(
-            cl.Tcgen05LoadStoreShape.SHAPE_32X32B, tmem, count=32
+        accumulators = cl.tcgen05_load(
+            cl.Tcgen05LoadStoreShape.SHAPE_32X32B,
+            tmem,
+            element_count=32,
+            dtype=cl.float32,
         )
-        accumulators = regs.bitcast(cl.float32)
         if has_bias:
             accumulators = accumulators + bias_value
         if row < m:

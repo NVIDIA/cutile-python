@@ -55,7 +55,7 @@ def tcgen05_load16_scalars(address):
         "tcgen05.ld.sync.aligned.32x32b.x16.b32 "
         "{%0, %1, %2, %3, %4, %5, %6, %7, "
         "%8, %9, %10, %11, %12, %13, %14, %15}, [%16];",
-        *tuple(("=r", cl.int32) for _ in cl.static_iter(range(16))),
+        *tuple(("=f", cl.float32) for _ in cl.static_iter(range(16))),
         ("r", cl.bitcast(address, cl.int32)),
     )
 
@@ -64,7 +64,8 @@ def tcgen05_load16_vector(address):
     return cl.tcgen05_load(
         cl.Tcgen05LoadStoreShape.SHAPE_32X32B,
         address,
-        count=16,
+        element_count=16,
+        dtype=cl.float32,
     )
 
 
@@ -77,8 +78,7 @@ def tcgen05_load16(address):
 
 def max_vector32(values: cl.Vector, current):
     for i in cl.static_iter(range(len(values))):
-        asf32 = cl.bitcast(values[i], cl.float32)
-        current = cl.maximum(current, asf32)
+        current = cl.maximum(current, values[i])
     return current
 
 
@@ -88,8 +88,8 @@ def probability_vector(values, scale, offset):
     )
     total = cl.float32(0.0)
     for i in cl.static_iter(range(len(probabilities))):
-        lo = cl.exp2(cl.bitcast(values[2 * i], cl.float32) * scale + offset)
-        hi = cl.exp2(cl.bitcast(values[2 * i + 1], cl.float32) * scale + offset)
+        lo = cl.exp2(values[2 * i] * scale + offset)
+        hi = cl.exp2(values[2 * i + 1] * scale + offset)
         total += lo + hi
         packed = cl._nvvm.ff2bf16x2_rn(hi, lo)
         probabilities = probabilities.with_item(
@@ -99,12 +99,7 @@ def probability_vector(values, scale, offset):
 
 
 def scale_vector16(values, scale):
-    floats = tuple(
-        cl.bitcast(value, cl.float32) for value in cl.static_iter(values)
-    )
-    scaled = tuple(value * scale for value in cl.static_iter(floats))
-    ints = tuple(cl.bitcast(value, cl.int32) for value in cl.static_iter(scaled))
-    return cl.Vector(*ints)
+    return cl.Vector(*tuple(value * scale for value in cl.static_iter(values)))
 
 
 def store_output_pairs(o_smem, values, inv_norm, row, column):
@@ -113,8 +108,8 @@ def store_output_pairs(o_smem, values, inv_norm, row, column):
         cl.pointer_dtype(cl.uint32, cl.MemorySpace.SHARED),
     )
     for i in cl.static_iter(range(len(values) // 2)):
-        lo = cl.bitcast(values[2 * i], cl.float32) * inv_norm
-        hi = cl.bitcast(values[2 * i + 1], cl.float32) * inv_norm
+        lo = values[2 * i] * inv_norm
+        hi = values[2 * i + 1] * inv_norm
         packed = cl._nvvm.ff2bf16x2_rn(hi, lo).reinterpret_as_scalar(cl.uint32)
         logical_element = (column // 64) * BLOCK_M * 64 + row * 64 + column % 64 + 2 * i
         byte_offset = logical_element * 2
@@ -563,7 +558,8 @@ def flash_attention_fwd_kernel(
                     cl.tcgen05_load(
                         cl.Tcgen05LoadStoreShape.SHAPE_32X32B,
                         cl.tcgen05_tmem_offset(row_tmem, column_offset=quarter * 32),
-                        count=32,
+                        element_count=32,
+                        dtype=cl.float32,
                     )
                     for quarter in cl.static_iter(range(4))
                 )

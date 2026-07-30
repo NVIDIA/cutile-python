@@ -60,7 +60,10 @@ def read_gridlike_special_register_impl(sreg_name: str, axis: Var) -> Var:
     )
 
 
-def _reinterpret_to(x: Var, result_ty: VectorTy | ScalarTy | PointerTy):
+def reinterpret_to(x: Var, result_ty: VectorTy | ScalarTy | PointerTy):
+    """Reinterpret ``x``'s bits as ``result_ty``, which must have the same total
+    bitwidth. Scalars, vectors, and pointers may be mixed freely on either
+    side; bytes are packed and re-split little-endian."""
     x_ty = x.get_type()
     x_dtype = x_ty.tensor_dtype()
     dst_dtype = result_ty.tensor_dtype()
@@ -90,8 +93,8 @@ def _reinterpret_to(x: Var, result_ty: VectorTy | ScalarTy | PointerTy):
 
     def through_int():
         int_ty = ScalarTy(getattr(datatype, f'int{x_bitwidth}'))
-        first = _reinterpret_to(x, int_ty)
-        return _reinterpret_to(first, result_ty)
+        first = reinterpret_to(x, int_ty)
+        return reinterpret_to(first, result_ty)
 
     if src_is_ptr and dst_is_ptr:
         return direct()
@@ -119,8 +122,8 @@ def bitcast(x: Var[ScalarTy | PointerTy | VectorTy], dtype: datatype.DType):
                 "Vector element and target dtype must have the same bitwidth "
                 f"(element is {elem_dtype.bitwidth} bits, target is {dtype.bitwidth} bits)"
             )
-        return _reinterpret_to(x, VectorTy(dtype, x_ty.length))
-    return _reinterpret_to(x, _scalar_or_pointer_ty(dtype))
+        return reinterpret_to(x, VectorTy(dtype, x_ty.length))
+    return reinterpret_to(x, _scalar_or_pointer_ty(dtype))
 
 
 def reinterpret_as_scalar(x: Var[VectorTy], dtype: datatype.DType):
@@ -131,7 +134,7 @@ def reinterpret_as_scalar(x: Var[VectorTy], dtype: datatype.DType):
         raise TypeCheckingError(
             "reinterpret_as_scalar only accepts a scalar dtype."
         )
-    return _reinterpret_to(x, ScalarTy(dtype))
+    return reinterpret_to(x, ScalarTy(dtype))
 
 
 def reinterpret_as_vector(x: Var[VectorTy], dtype: datatype.DType, length: int):
@@ -142,7 +145,7 @@ def reinterpret_as_vector(x: Var[VectorTy], dtype: datatype.DType, length: int):
         raise TypeCheckingError(
             "reinterpret_as_vector only accepts a scalar element dtype."
         )
-    return _reinterpret_to(x, VectorTy(dtype, length))
+    return reinterpret_to(x, VectorTy(dtype, length))
 
 
 @impl(core_api.bitcast)

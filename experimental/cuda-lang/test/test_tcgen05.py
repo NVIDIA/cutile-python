@@ -207,7 +207,7 @@ def test_tmem_offset_requires_tensor_pointer():
     )
 
 
-STORE_VALID_COUNTS_BY_SHAPE = {
+STORE_VALID_NUMS_BY_SHAPE = {
     cl.Tcgen05LoadStoreShape.SHAPE_16X64B: (1, 2, 4, 8, 16, 32, 64, 128),
     cl.Tcgen05LoadStoreShape.SHAPE_16X128B: (1, 2, 4, 8, 16, 32, 64),
     cl.Tcgen05LoadStoreShape.SHAPE_16X256B: (1, 2, 4, 8, 16, 32),
@@ -215,26 +215,31 @@ STORE_VALID_COUNTS_BY_SHAPE = {
     cl.Tcgen05LoadStoreShape.SHAPE_16X32BX2: (1, 2, 4, 8, 16, 32, 64, 128),
 }
 
+REGISTERS_PER_REPETITION = {
+    cl.Tcgen05LoadStoreShape.SHAPE_16X64B: 1,
+    cl.Tcgen05LoadStoreShape.SHAPE_16X128B: 2,
+    cl.Tcgen05LoadStoreShape.SHAPE_16X256B: 4,
+    cl.Tcgen05LoadStoreShape.SHAPE_32X32B: 1,
+    cl.Tcgen05LoadStoreShape.SHAPE_16X32BX2: 1,
+}
+
+
+def _offset_for_shape(shape):
+    return 1 if shape is cl.Tcgen05LoadStoreShape.SHAPE_16X32BX2 else None
+
 
 @pytest.mark.parametrize(
-    "shape,count",
+    "shape,num",
     [
-        (shape, count)
-        for shape, counts in STORE_VALID_COUNTS_BY_SHAPE.items()
-        for count in counts
+        (shape, num)
+        for shape, nums in STORE_VALID_NUMS_BY_SHAPE.items()
+        for num in nums
     ],
 )
 @pytest.mark.parametrize("unpack", (False, True))
-def test_store(shape, count, unpack):
-    offset = 1 if shape is cl.Tcgen05LoadStoreShape.SHAPE_16X32BX2 else None
-    registers_per_count = {
-        cl.Tcgen05LoadStoreShape.SHAPE_16X64B: 1,
-        cl.Tcgen05LoadStoreShape.SHAPE_16X128B: 2,
-        cl.Tcgen05LoadStoreShape.SHAPE_16X256B: 4,
-        cl.Tcgen05LoadStoreShape.SHAPE_32X32B: 1,
-        cl.Tcgen05LoadStoreShape.SHAPE_16X32BX2: 1,
-    }[shape]
-    register_count = count * registers_per_count
+def test_store_default_int32(shape, num, unpack):
+    offset = _offset_for_shape(shape)
+    register_count = num * REGISTERS_PER_REPETITION[shape]
 
     def kernel():
         tmem_dtype = cl.pointer_dtype(cl.int8, cl.MemorySpace.TENSOR)
@@ -247,14 +252,30 @@ def test_store(shape, count, unpack):
         cl.tcgen05_deallocate(smem[0], 128)
 
     expect = (
-        f"tcgen05.st.sync.aligned.{shape.value}.x{count}"
+        f"tcgen05.st.sync.aligned.{shape.value}.x{num}"
         + (".unpack::16b" if unpack else "")
         + ".b32"
     )
     compile_kernel(kernel, assert_in_ptx=expect)
 
 
-def test_store_rejects_wrong_value_dtype():
+def test_store_accepts_typed_value():
+    def kernel():
+        tmem_dtype = cl.pointer_dtype(cl.int8, cl.MemorySpace.TENSOR)
+        smem = cl.shared_array(1, tmem_dtype, alignment=4)
+        cl.tcgen05_allocate(smem.get_base_pointer(), 128)
+        cl.tcgen05_store(
+            cl.Tcgen05LoadStoreShape.SHAPE_16X64B,
+            smem[0],
+            cl.float32(0),
+        )
+        cl.tcgen05_wait_store()
+        cl.tcgen05_deallocate(smem[0], 128)
+
+    compile_kernel(kernel, assert_in_ptx="tcgen05.st.sync.aligned.16x64b.x1.b32")
+
+
+def test_store_rejects_bool_value():
     @cl.kernel
     def kernel():
         tmem_dtype = cl.pointer_dtype(cl.int8, cl.MemorySpace.TENSOR)
@@ -262,12 +283,51 @@ def test_store_rejects_wrong_value_dtype():
         cl.tcgen05_store(
             cl.Tcgen05LoadStoreShape.SHAPE_16X64B,
             smem[0],
-            cl.float32(0),
+            cl.bool_(True),
         )
 
     compile_kernel(
         kernel,
-        raises=pytest.raises(TypeCheckingError, match="Expected scalar 32-bit integer"),
+        raises=pytest.raises(TypeCheckingError, match="non-bool scalar data type"),
+    )
+
+
+def test_store_rejects_pointer_value():
+    @cl.kernel
+    def kernel():
+        tmem_dtype = cl.pointer_dtype(cl.int8, cl.MemorySpace.TENSOR)
+        smem = cl.shared_array(1, tmem_dtype, alignment=4)
+        cl.tcgen05_store(
+            cl.Tcgen05LoadStoreShape.SHAPE_16X64B,
+            smem[0],
+            smem.get_base_pointer(),
+        )
+
+    compile_kernel(
+        kernel,
+        raises=pytest.raises(
+            TypeCheckingError, match="Expected a scalar or vector value to store"
+        ),
+    )
+
+
+@pytest.mark.parametrize("length", (1, 3))
+def test_store_rejects_partial_register(length):
+    """A payload must tile whole 32-bit register words."""
+
+    @cl.kernel
+    def kernel():
+        tmem_dtype = cl.pointer_dtype(cl.int8, cl.MemorySpace.TENSOR)
+        smem = cl.shared_array(1, tmem_dtype, alignment=4)
+        storage = cl.shared_array(256, cl.float16)
+        value = storage.get_element_pointer(0).load(count=length)
+        cl.tcgen05_store(cl.Tcgen05LoadStoreShape.SHAPE_16X64B, smem[0], value)
+
+    compile_kernel(
+        kernel,
+        raises=pytest.raises(
+            InvalidValueError, match="is not a multiple of the 32-bit register size"
+        ),
     )
 
 
@@ -278,7 +338,7 @@ def test_store_rejects_invalid_register_count():
         smem = cl.shared_array(1, tmem_dtype, alignment=4)
         value = cl.Vector(cl.int32(0), cl.int32(0), cl.int32(0))
 
-        # 16x128b requires 2 * count registers; three is invalid.
+        # 16x128b requires 2 * num registers; three is invalid.
         cl.tcgen05_store(
             cl.Tcgen05LoadStoreShape.SHAPE_16X128B,
             smem[0],
@@ -383,22 +443,30 @@ def test_copy(shape, cta_group, multicast, source_format):
 
 
 @pytest.mark.parametrize("shape", tuple(cl.Tcgen05LoadStoreShape))
-@pytest.mark.parametrize("count", (1, 2, 4, 8, 16, 32, 64, 128))
+@pytest.mark.parametrize("num", (1, 2, 4, 8, 16, 32, 64, 128))
 @pytest.mark.parametrize("pack", (True, False, None))
 @pytest.mark.parametrize("offset", (None, 0, 1))
-def test_load(shape, count, pack, offset):
+def test_load_default_int32(shape, num, pack, offset):
+    element_count = num * REGISTERS_PER_REPETITION[shape]
+
     def kernel():
         tmem_dtype = cl.pointer_dtype(cl.int8, cl.MemorySpace.TENSOR)
         smem = cl.shared_array(1, tmem_dtype, alignment=4)
         cl.tcgen05_allocate(smem.get_base_pointer(), 128)
         tmem_ptr = smem[0]
-        cl.tcgen05_load(shape, tmem_ptr, count=count, pack=pack, offset=offset)
+        cl.tcgen05_load(
+            shape,
+            tmem_ptr,
+            element_count=element_count,
+            pack=pack,
+            offset=offset,
+        )
         cl.tcgen05_deallocate(tmem_ptr, 128)
 
     bad_args = (
         offset is not None and shape is not cl.Tcgen05LoadStoreShape.SHAPE_16X32BX2
     )
-    bad_args |= shape is cl.Tcgen05LoadStoreShape.SHAPE_16X256B and count not in (
+    bad_args |= shape is cl.Tcgen05LoadStoreShape.SHAPE_16X256B and num not in (
         1,
         2,
         4,
@@ -407,7 +475,7 @@ def test_load(shape, count, pack, offset):
         32,
     )
     bad_args |= shape is cl.Tcgen05LoadStoreShape.SHAPE_16X32BX2 and offset is None
-    bad_args |= shape is cl.Tcgen05LoadStoreShape.SHAPE_16X128B and count not in (
+    bad_args |= shape is cl.Tcgen05LoadStoreShape.SHAPE_16X128B and num not in (
         1,
         2,
         4,
@@ -422,6 +490,148 @@ def test_load(shape, count, pack, offset):
         raises=pytest.raises((TypeCheckingError, InvalidValueError))
         if bad_args
         else None,
+    )
+
+
+LOAD_STORE_DTYPES = (
+    cl.int32,
+    cl.uint32,
+    cl.float32,
+    cl.float16,
+    cl.bfloat16,
+    cl.int8,
+)
+
+
+@pytest.mark.parametrize("shape", tuple(cl.Tcgen05LoadStoreShape))
+@pytest.mark.parametrize("dtype", LOAD_STORE_DTYPES)
+def test_load_store_with_dtype(shape, dtype):
+    num = 4
+    registers = num * REGISTERS_PER_REPETITION[shape]
+    element_count = registers * 32 // dtype.bitwidth
+    offset = _offset_for_shape(shape)
+
+    def kernel():
+        tmem_dtype = cl.pointer_dtype(cl.int8, cl.MemorySpace.TENSOR)
+        smem = cl.shared_array(1, tmem_dtype, alignment=4)
+        cl.tcgen05_allocate(smem.get_base_pointer(), 128)
+        tmem_ptr = smem[0]
+        values = cl.tcgen05_load(
+            shape,
+            tmem_ptr,
+            element_count=element_count,
+            dtype=dtype,
+            offset=offset,
+        )
+        cl.tcgen05_wait_load()
+        cl.tcgen05_store(shape, tmem_ptr, values, offset=offset)
+        cl.tcgen05_wait_store()
+        cl.tcgen05_deallocate(tmem_ptr, 128)
+
+    compile_kernel(
+        kernel,
+        assert_in_ptx=(
+            f"tcgen05.ld.sync.aligned.{shape.value}.x{num}.b32",
+            f"tcgen05.st.sync.aligned.{shape.value}.x{num}.b32",
+        ),
+    )
+
+
+@pytest.mark.parametrize("shape", tuple(cl.Tcgen05LoadStoreShape))
+@pytest.mark.parametrize("dtype", LOAD_STORE_DTYPES)
+@pytest.mark.parametrize("num", (1, 4))
+def test_load_dtype_element_count(shape, dtype, num):
+    registers = num * REGISTERS_PER_REPETITION[shape]
+    element_count = registers * 32 // dtype.bitwidth
+    offset = _offset_for_shape(shape)
+
+    def kernel():
+        tmem_dtype = cl.pointer_dtype(cl.int8, cl.MemorySpace.TENSOR)
+        smem = cl.shared_array(1, tmem_dtype, alignment=4)
+        cl.tcgen05_allocate(smem.get_base_pointer(), 128)
+        tmem_ptr = smem[0]
+        values = cl.tcgen05_load(
+            shape,
+            tmem_ptr,
+            element_count=element_count,
+            dtype=dtype,
+            offset=offset,
+        )
+        cl.static_assert(cl.dtype_of(values) is dtype)
+        if cl.static_eval(element_count > 1):
+            cl.static_assert(len(values) == element_count)
+        cl.tcgen05_wait_load()
+        cl.tcgen05_store(shape, tmem_ptr, values, offset=offset)
+        cl.tcgen05_wait_store()
+        cl.tcgen05_deallocate(tmem_ptr, 128)
+
+    compile_kernel(kernel, assert_in_ptx="tcgen05.ld.sync.aligned")
+
+
+@pytest.mark.parametrize("shape", tuple(cl.Tcgen05LoadStoreShape))
+def test_load_packed_16_bit_dtype(shape):
+    num = 4
+    offset = _offset_for_shape(shape)
+    element_count = 2 * num * REGISTERS_PER_REPETITION[shape]
+
+    def kernel():
+        tmem_dtype = cl.pointer_dtype(cl.int8, cl.MemorySpace.TENSOR)
+        smem = cl.shared_array(1, tmem_dtype, alignment=4)
+        cl.tcgen05_allocate(smem.get_base_pointer(), 128)
+        tmem_ptr = smem[0]
+        values = cl.tcgen05_load(
+            shape,
+            tmem_ptr,
+            element_count=element_count,
+            dtype=cl.bfloat16,
+            pack=True,
+            offset=offset,
+        )
+        cl.static_assert(len(values) == element_count)
+        cl.tcgen05_wait_load()
+        cl.tcgen05_store(
+            shape,
+            tmem_ptr,
+            values + cl.bfloat16(1.0),
+            unpack=True,
+            offset=offset,
+        )
+        cl.tcgen05_wait_store()
+        cl.tcgen05_deallocate(tmem_ptr, 128)
+
+    compile_kernel(
+        kernel,
+        assert_in_ptx=(
+            f"tcgen05.ld.sync.aligned.{shape.value}.x{num}.pack::16b.b32",
+            f"tcgen05.st.sync.aligned.{shape.value}.x{num}.unpack::16b.b32",
+            "add.bf16x2",
+        ),
+    )
+
+
+@pytest.mark.parametrize(
+    "dtype,element_count,match",
+    (
+        (cl.float16, 1, "is not a multiple of the 32-bit register size"),
+        (cl.bool_, 4, "dtype cannot be bool"),
+        (cl.pointer_dtype(cl.float32), 4, "must be a scalar data type"),
+    ),
+)
+def test_load_rejects_unusable_dtype(dtype, element_count, match):
+    @cl.kernel
+    def kernel():
+        tmem_dtype = cl.pointer_dtype(cl.int8, cl.MemorySpace.TENSOR)
+        smem = cl.shared_array(1, tmem_dtype, alignment=4)
+        cl.tcgen05_load(
+            cl.Tcgen05LoadStoreShape.SHAPE_32X32B,
+            smem[0],
+            element_count=element_count,
+            dtype=dtype,
+        )
+
+    compile_kernel(
+        kernel,
+        raises=pytest.raises((TypeCheckingError, InvalidValueError), match=match),
     )
 
 

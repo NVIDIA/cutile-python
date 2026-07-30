@@ -122,15 +122,16 @@ def store_bf16_tmem_tile(dst, tmem_base, warp, column, row, output_column, n):
         lane_offset=warp * WARP_SIZE,
         column_offset=column,
     )
-    regs = cl.tcgen05_load(
+    values = cl.tcgen05_load(
         cl.Tcgen05LoadStoreShape.SHAPE_32X32B,
         tmem,
-        count=16,
+        element_count=16,
+        dtype=cl.float32,
     )
     cl.tcgen05_wait_load()
-    for pair in cl.static_iter(range(len(regs) // 2)):
-        lo = cl.bitcast(regs[pair * 2], cl.float32)
-        hi = cl.bitcast(regs[pair * 2 + 1], cl.float32)
+    for pair in cl.static_iter(range(len(values) // 2)):
+        lo = values[pair * 2]
+        hi = values[pair * 2 + 1]
         packed = cl._nvvm.ff2bf16x2_rn(hi, lo)
         (dst + row * n + output_column + pair * 2).store(packed, alignment=4)
 
@@ -142,15 +143,16 @@ def store_bf16_tmem_subtile(dst, tmem_base, warp, column, row, width):
             lane_offset=warp * WARP_SIZE,
             column_offset=column + chunk * 32,
         )
-        regs = cl.tcgen05_load(
+        values = cl.tcgen05_load(
             cl.Tcgen05LoadStoreShape.SHAPE_32X32B,
             tmem,
-            count=32,
+            element_count=32,
+            dtype=cl.float32,
         )
         cl.tcgen05_wait_load()
-        for pair in cl.static_iter(range(len(regs) // 2)):
-            lo = cl.bitcast(regs[pair * 2], cl.float32)
-            hi = cl.bitcast(regs[pair * 2 + 1], cl.float32)
+        for pair in cl.static_iter(range(len(values) // 2)):
+            lo = values[pair * 2]
+            hi = values[pair * 2 + 1]
             packed = cl._nvvm.ff2bf16x2_rn(hi, lo)
             offset = row * width + chunk * 32 + pair * 2
             (dst + offset).store(packed, alignment=4)

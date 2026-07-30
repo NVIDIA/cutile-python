@@ -476,12 +476,12 @@ def _kernel(a, b, c, bias, k: cl.Constant[int], has_bias: cl.Constant[bool]):
                     lane_offset=warp * WARP_SIZE,
                     column_offset=current_acc_stage * TILE_N + column,
                 )
-                regs = cl.tcgen05_load(
+                accumulators = cl.tcgen05_load(
                     cl.Tcgen05LoadStoreShape.SHAPE_32X32B,
                     tmem,
-                    count=32,
+                    element_count=32,
+                    dtype=cl.float32,
                 )
-                accumulators = regs.bitcast(cl.float32)
                 if has_bias:
                     accumulators = accumulators + cl.float32(bias[row])
 

@@ -27,16 +27,17 @@ def epilogue_store_tile(c_ptr, tmem_base, warp, base_col, g_row, g_col, n):
         lane_offset=warp * WARP_SIZE,
         column_offset=base_col,
     )
-    regs = cl.tcgen05_load(
+    values = cl.tcgen05_load(
         cl.Tcgen05LoadStoreShape.SHAPE_32X32B,
         tmem_ptr,
-        count=16,
+        element_count=16,
+        dtype=cl.float32,
     )
     cl.tcgen05_wait_load()
 
-    for pair_idx in cl.static_iter(range(len(regs) // 2)):
-        lo = cl.bitcast(regs[pair_idx * 2], cl.float32)
-        hi = cl.bitcast(regs[pair_idx * 2 + 1], cl.float32)
+    for pair_idx in cl.static_iter(range(len(values) // 2)):
+        lo = values[pair_idx * 2]
+        hi = values[pair_idx * 2 + 1]
         packed = cl._nvvm.ff2bf16x2_rn(hi, lo)
         offset = g_row * n + g_col + pair_idx * 2
         c_ptr.get_element_pointer(offset).store(packed, alignment=4)

@@ -266,16 +266,15 @@ def make_tcgen05_mma_kernel(
                 tmem,
                 lane_offset=warp * WARP_SIZE,
             )
-            registers = cl.tcgen05_load(
+            values = cl.tcgen05_load(
                 cl.Tcgen05LoadStoreShape.SHAPE_32X32B,
                 output_tmem,
-                count=OUTPUT_COLUMNS,
+                element_count=OUTPUT_COLUMNS,
+                dtype=cl.float32,
             )
             cl.tcgen05_wait_load()
-            for column in cl.static_iter(range(len(registers))):
-                output[tid * OUTPUT_COLUMNS + column] = cl.bitcast(
-                    registers[column], cl.float32
-                )
+            for column in cl.static_iter(range(len(values))):
+                output[tid * OUTPUT_COLUMNS + column] = values[column]
 
         cl.barrier_sync_block()
         if warp == 0:
