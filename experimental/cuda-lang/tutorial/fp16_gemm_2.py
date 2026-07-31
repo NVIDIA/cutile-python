@@ -45,13 +45,7 @@ _DEFAULT_TOLERANCE = 1.0e-1
 
 def _slice_float32_vector(values, base, vsize):
     """Build one FP32 vector-store slice."""
-    return cl.Vector(
-        *tuple(
-            values[base + i]
-            for i in cl.static_iter(range(vsize))
-        ),
-        dtype=cl.float32,
-    )
+    return values[base:base + vsize]
 
 
 @cl.kernel

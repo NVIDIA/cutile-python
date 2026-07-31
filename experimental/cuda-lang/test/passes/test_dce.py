@@ -10,7 +10,12 @@ import cuda.lang as cl
 from cuda.lang._compile import _transform_ir
 from cuda.lang._ir.ir import Operation
 from cuda.lang._ir.ops import (
-    AtomicRMW, InlinePTX, AllocStaticSharedMemory, RawNVVMIntrinsic, Return, LoadPointer
+    AtomicRMW,
+    InlinePTX,
+    AllocStaticSharedMemory,
+    RawNVVMIntrinsic,
+    Return,
+    LoadPointer,
 )
 
 from ..util import get_ir, make_symbolic_scalar, make_symbolic_tensor

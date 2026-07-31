@@ -10,9 +10,6 @@ CUDA Lang notes beyond the preceding tutorial samples:
 
 * Public FP32-to-FP8 casts currently fail during IR-to-MLIR lowering. The FP8
   packing helper uses the packed ``ff_to_e4m3x2_rn`` intrinsic.
-* CUDA Lang does not yet expose the DSMEM transaction-counted
-  ``st.async.shared::cluster.mbarrier::complete_tx::bytes.v4.b32`` operation.
-  The split-K handoff helper emits that instruction with ``cl._inline_ptx``.
 * The source guards TMA stores by epilogue warp but omits the required elected
   lane. CUDA Lang's public TMA-store operation follows the single-thread issue
   contract, so this port adds ``elect_sync()``; issuing from all 32 lanes causes
@@ -136,16 +133,12 @@ def _load_tmem(base, lane_offset, column_offset, repetitions):
     return regs.bitcast(cl.float32)
 
 
-def _pack_e4m3x4(values, base):
+def _pack_e4m3x4(values):
     lo = cl.uint32(
-        cl.uint16(
-            cl._nvvm.ff_to_e4m3x2_rn(values[base + 1], values[base])
-        )
+        cl.uint16(cl._nvvm.ff_to_e4m3x2_rn(values[1], values[0]))
     )
     hi = cl.uint32(
-        cl.uint16(
-            cl._nvvm.ff_to_e4m3x2_rn(values[base + 3], values[base + 2])
-        )
+        cl.uint16(cl._nvvm.ff_to_e4m3x2_rn(values[3], values[2]))
     )
     return cl.int32(lo | (hi << 16))
 
@@ -162,10 +155,10 @@ def _store_fp8_stmatrix(
 ):
     """Convert one LDTM pass to E4M3 and store the matrix fragments."""
     if repetitions == 4:
-        r0 = _pack_e4m3x4(values, 0)
-        r1 = _pack_e4m3x4(values, 4)
-        r2 = _pack_e4m3x4(values, 8)
-        r3 = _pack_e4m3x4(values, 12)
+        r0 = _pack_e4m3x4(values[0:4])
+        r1 = _pack_e4m3x4(values[4:8])
+        r2 = _pack_e4m3x4(values[8:12])
+        r3 = _pack_e4m3x4(values[12:16])
         n_in_box = lane
         offset = n_in_box * tile_m + m_base
         offset = offset ^ (((offset >> swizzle_shift) & swizzle_mask) << 4)
@@ -176,8 +169,8 @@ def _store_fp8_stmatrix(
             transpose=True,
         )
     elif repetitions == 2:
-        r0 = _pack_e4m3x4(values, 0)
-        r1 = _pack_e4m3x4(values, 4)
+        r0 = _pack_e4m3x4(values[0:4])
+        r1 = _pack_e4m3x4(values[4:8])
         n_in_box = lane % 16
         offset = n_in_box * tile_m + m_base
         offset = offset ^ (((offset >> swizzle_shift) & swizzle_mask) << 4)
@@ -188,7 +181,7 @@ def _store_fp8_stmatrix(
             transpose=True,
         )
     else:
-        r0 = _pack_e4m3x4(values, 0)
+        r0 = _pack_e4m3x4(values[0:4])
         n_in_box = lane % 16
         offset = n_in_box * tile_m + m_base
         offset = offset ^ (((offset >> swizzle_shift) & swizzle_mask) << 4)
@@ -198,20 +191,6 @@ def _store_fp8_stmatrix(
             shape=cl.MatrixStoreShape.M16N8,
             transpose=True,
         )
-
-
-def _st_async_v4_b32(dst, values, base, mbar):
-    """Send four FP32 registers to peer DSMEM and complete 16 tx bytes."""
-    cl._inline_ptx(
-        "st.async.shared::cluster.mbarrier::complete_tx::bytes.v4.b32 "
-        "[%0], {%1, %2, %3, %4}, [%5];",
-        ("C", dst),
-        ("r", cl.bitcast(values[base], cl.int32)),
-        ("r", cl.bitcast(values[base + 1], cl.int32)),
-        ("r", cl.bitcast(values[base + 2], cl.int32)),
-        ("r", cl.bitcast(values[base + 3], cl.int32)),
-        ("C", mbar),
-    )
 
 
 def _peer_vector(y_accum, base, groups, lane):
@@ -633,10 +612,9 @@ def _kernel(
                                     + group * group_elems
                                     + lane * 4
                                 )
-                                _st_async_v4_b32(
+                                cl.store_async_cluster(
                                     remote_y + dst_offset,
-                                    values,
-                                    group * 4,
+                                    values[group * 4:group * 4 + 4],
                                     remote_full,
                                 )
 

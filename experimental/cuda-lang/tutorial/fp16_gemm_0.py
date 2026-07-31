@@ -76,13 +76,7 @@ _DEFAULT_TOLERANCE = 1.0e-1
 
 def _to_float16_vector(values, base, vsize):
     """Convert one FP32 vector slice to FP16."""
-    return cl.Vector(
-        *tuple(
-            values[base + i]
-            for i in cl.static_iter(range(vsize))
-        ),
-        dtype=cl.float32,
-    ).astype(cl.float16)
+    return values[base:base + vsize].astype(cl.float16)
 
 
 @cl.kernel

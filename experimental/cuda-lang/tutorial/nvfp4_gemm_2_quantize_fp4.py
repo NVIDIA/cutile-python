@@ -130,31 +130,28 @@ def _release_clc_response(scheduler_consumed, iteration, count=1):
 
 
 def _to_float16_vector(values, base, count):
-    return cl.Vector(
-        *tuple(values[base + i] for i in cl.static_iter(range(count))),
-        dtype=cl.float32,
-    ).astype(cl.float16)
+    return values[base:base + count].astype(cl.float16)
 
 
-def _pack_fp32x8_to_e2m1x8(values, base):
+def _pack_fp32x8_to_e2m1x8(values):
     """Pack eight normalized FP32 values into four E2M1 bytes."""
     mask = cl.uint32(0xFF)
     byte0 = cl.uint32(
-        cl.uint16(cl._nvvm.ff_to_e2m1x2_rn_satfinite(values[base + 1], values[base]))
+        cl.uint16(cl._nvvm.ff_to_e2m1x2_rn_satfinite(values[1], values[0]))
     )
     byte1 = cl.uint32(
         cl.uint16(
-            cl._nvvm.ff_to_e2m1x2_rn_satfinite(values[base + 3], values[base + 2])
+            cl._nvvm.ff_to_e2m1x2_rn_satfinite(values[3], values[2])
         )
     )
     byte2 = cl.uint32(
         cl.uint16(
-            cl._nvvm.ff_to_e2m1x2_rn_satfinite(values[base + 5], values[base + 4])
+            cl._nvvm.ff_to_e2m1x2_rn_satfinite(values[5], values[4])
         )
     )
     byte3 = cl.uint32(
         cl.uint16(
-            cl._nvvm.ff_to_e2m1x2_rn_satfinite(values[base + 7], values[base + 6])
+            cl._nvvm.ff_to_e2m1x2_rn_satfinite(values[7], values[6])
         )
     )
     return cl.uint32(
@@ -166,21 +163,15 @@ def _pack_fp32x8_to_e2m1x8(values, base):
 
 
 def _quantize_fp4_block(values, base, alpha):
-    scaled = cl.Vector(
-        *tuple(
-            values[base + i] * alpha
-            for i in cl.static_iter(range(OUTPUT_SCALE_BLOCK_N))
-        ),
-        dtype=cl.float32,
-    )
+    scaled = values[base:base + OUTPUT_SCALE_BLOCK_N] * alpha
     amax = cl.abs(scaled).reduce(cl.VectorReduction.max)
     inv_scale = cl.float32(FP4_MAX) / amax
     normalized = scaled * inv_scale
     scale = cl.truediv(cl.float32(1.0), inv_scale)
     return (
         scale,
-        _pack_fp32x8_to_e2m1x8(normalized, 0),
-        _pack_fp32x8_to_e2m1x8(normalized, 8),
+        _pack_fp32x8_to_e2m1x8(normalized[:8]),
+        _pack_fp32x8_to_e2m1x8(normalized[8:]),
     )
 
 
@@ -701,7 +692,7 @@ def _kernel(
                     scale3, word6, word7 = _quantize_fp4_block(
                         accumulators, 48, alpha_value
                     )
-                    words = (
+                    words = cl.Vector(
                         word0,
                         word1,
                         word2,
@@ -710,6 +701,7 @@ def _kernel(
                         word5,
                         word6,
                         word7,
+                        dtype=cl.uint32,
                     )
                     for store_idx in cl.static_iter(range(2)):
                         logical_byte_offset = (
@@ -724,13 +716,7 @@ def _kernel(
                             cl.pointer_dtype(cl.uint32, cl.MemorySpace.SHARED),
                         )
                         store_ptr.store(
-                            cl.Vector(
-                                *tuple(
-                                    words[store_idx * 4 + i]
-                                    for i in cl.static_iter(range(4))
-                                ),
-                                dtype=cl.uint32,
-                            ),
+                            words[store_idx * 4:store_idx * 4 + 4],
                             alignment=16,
                         )
 
