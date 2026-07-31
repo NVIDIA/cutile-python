@@ -229,11 +229,7 @@ def _materialize_p_fma_window(p_fma, p_window_elems):
 def _exp_p_window(p_fma, p_window_elems):
     cl.static_assert(p_fma.element_count == p_window_elems)
     probabilities = tuple(
-        cl._inline_ptx(
-            "ex2.approx.ftz.f32 %0, %1;",
-            ("=f", cl.float32),
-            ("f", p_fma[item]),
-        )[0]
+        cl.exp2(p_fma[item], flush_to_zero=True)
         for item in cl.static_iter(range(p_window_elems))
     )
     return cl.Vector(*probabilities, dtype=cl.float32)
@@ -771,23 +767,23 @@ def _fmha_prefill_kernel(
     input_swizzle = cl.SwizzleMode.SWIZZLE_128B
     input_l2 = cl.TensorMapL2Promotion.L2_128B
     mma_kind = cl.Tcgen05MMAKind.F16
-    if cl.static_eval(input_kind == ELEMENT_BF16):
+    if cl.ensure_constant(input_kind == ELEMENT_BF16):
         input_dtype = cl.bfloat16
-    if cl.static_eval(input_kind == ELEMENT_E4M3):
+    if cl.ensure_constant(input_kind == ELEMENT_E4M3):
         input_dtype = cl.int8
         input_bits = 8
         k_step = 32
         mma_kind = cl.Tcgen05MMAKind.F8F6F4
-    if cl.static_eval(input_bits == 16 and head_dim == 128):
+    if cl.ensure_constant(input_bits == 16 and head_dim == 128):
         input_tma_slices = 2
         input_tma_granularity = 64
-    if cl.static_eval(input_bits == 16 and head_dim == 32):
+    if cl.ensure_constant(input_bits == 16 and head_dim == 32):
         input_swizzle = cl.SwizzleMode.SWIZZLE_64B
         input_l2 = cl.TensorMapL2Promotion.L2_64B
-    if cl.static_eval(input_bits == 8 and head_dim == 32):
+    if cl.ensure_constant(input_bits == 8 and head_dim == 32):
         input_swizzle = cl.SwizzleMode.SWIZZLE_32B
         input_l2 = cl.TensorMapL2Promotion.NONE
-    if cl.static_eval(input_bits == 8 and head_dim == 64):
+    if cl.ensure_constant(input_bits == 8 and head_dim == 64):
         input_swizzle = cl.SwizzleMode.SWIZZLE_64B
         input_l2 = cl.TensorMapL2Promotion.L2_64B
 
@@ -796,19 +792,19 @@ def _fmha_prefill_kernel(
     output_tma_slices = 1
     output_tma_granularity = head_dim
     output_swizzle = cl.SwizzleMode.SWIZZLE_128B
-    if cl.static_eval(output_kind == ELEMENT_BF16):
+    if cl.ensure_constant(output_kind == ELEMENT_BF16):
         output_dtype = cl.bfloat16
-    if cl.static_eval(output_kind == ELEMENT_E4M3):
+    if cl.ensure_constant(output_kind == ELEMENT_E4M3):
         output_dtype = cl.int8
         output_bits = 8
-    if cl.static_eval(output_bits == 16 and head_dim == 128):
+    if cl.ensure_constant(output_bits == 16 and head_dim == 128):
         output_tma_slices = 2
         output_tma_granularity = 64
-    if cl.static_eval(output_bits == 16 and head_dim == 32):
+    if cl.ensure_constant(output_bits == 16 and head_dim == 32):
         output_swizzle = cl.SwizzleMode.SWIZZLE_64B
-    if cl.static_eval(output_bits == 8 and head_dim == 32):
+    if cl.ensure_constant(output_bits == 8 and head_dim == 32):
         output_swizzle = cl.SwizzleMode.SWIZZLE_32B
-    if cl.static_eval(output_bits == 8 and head_dim == 64):
+    if cl.ensure_constant(output_bits == 8 and head_dim == 64):
         output_swizzle = cl.SwizzleMode.SWIZZLE_64B
 
     q_stage_elements = MMA_M * head_dim
@@ -843,7 +839,7 @@ def _fmha_prefill_kernel(
     # before persistent work.  Keep it absent from non-sink specializations so
     # canonical shared-memory sizing remains identical to sinks=None.
     sinks_smem = None
-    if cl.static_eval(use_sinks):
+    if cl.ensure_constant(use_sinks):
         sinks_smem = cl.shared_array(heads_q, cl.float16, alignment=16)
 
     q_full = cl.shared_array(Q_STAGES, cl.mbarrier, alignment=8)
@@ -1936,10 +1932,8 @@ def _fmha_prefill_kernel(
                     safe_max = row_max
                     if safe_max == cl.float32(-float("inf")):
                         safe_max = cl.float32(0.0)
-                    (alpha,) = cl._inline_ptx(
-                        "ex2.approx.ftz.f32 %0, %1;",
-                        ("=f", cl.float32),
-                        ("f", (old_max - safe_max) * scale_softmax_log2),
+                    alpha = cl.exp2(
+                        (old_max - safe_max) * scale_softmax_log2, flush_to_zero=True
                     )
 
                     # Publish correction alpha before P, exactly as the source
@@ -2645,7 +2639,7 @@ def _fmha_prefill_kernel(
                     if variable_length:
                         lse_index = head * total_q + query_base + query_row
                     lse[lse_index] = (
-                        cl._libdevice.logf(row_sum) + scale_softmax * row_max
+                        cl.log(row_sum) + scale_softmax * row_max
                     )
                 cl.fence_proxy(
                     cl.FenceProxyKind.ASYNC_SHARED,
