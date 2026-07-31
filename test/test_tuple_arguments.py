@@ -411,8 +411,8 @@ def test_constant_tuple_array_element_rejected():
     a = torch.zeros(8, dtype=torch.float32, device="cuda")
     out = torch.zeros(8, dtype=torch.float32, device="cuda")
     expected_message = re.escape(
-        "Invalid item #0 of kernel parameter 'c':"
-        " Expected a scalar/tuple constant, as implied by the Constant annotation."
+        "Invalid item #0 of kernel argument #2:"
+        " Could not interpret object of type 'Tensor' as a constant."
     )
     with pytest.raises(TypeError, match=expected_message):
         ct.launch(torch.cuda.current_stream(), (1,), k, (a, out, (a, 1)))
@@ -460,7 +460,10 @@ def test_namedtuple_rejected():
         ct.scatter(out, (0,), p[0] + p[1])
 
     out = torch.zeros(1, dtype=torch.int32, device="cuda")
-    with pytest.raises(TypeError, match="only plain tuple is accepted, not subclasses"):
+    with pytest.raises(TypeError,
+                       match=re.escape("Invalid kernel argument #1:"
+                                       " 'Point' is a subclass of 'tuple'."
+                                       " Only plain tuples are accepted.")):
         ct.launch(torch.cuda.current_stream(), (1,), k, (out, Point(1, 2)))
 
 
@@ -473,5 +476,8 @@ def test_namedtuple_nested_rejected():
         ct.scatter(out, (0,), pair[0] + pair[1][0])
 
     out = torch.zeros(1, dtype=torch.int32, device="cuda")
-    with pytest.raises(TypeError, match="only plain tuple is accepted, not subclasses"):
+    with pytest.raises(TypeError,
+                       match=re.escape("Invalid item #1 of kernel argument #1:"
+                                       " 'Point' is a subclass of 'tuple'."
+                                       " Only plain tuples are accepted.")):
         ct.launch(torch.cuda.current_stream(), (1,), k, (out, (1, Point(2, 3))))

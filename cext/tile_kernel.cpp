@@ -439,8 +439,61 @@ struct AggregateArgType {
     }
 };
 
+
+// Kinds of constant values that are allowed as kernel arguments.
+// The second argument is the name mangling prefix (mostly for documentation).
+#define FOREACH_CONSTANT_KIND(X) \
+    X(Bool, "B") \
+    X(Int, "I") \
+    X(Float, "F")
+
+#define CONSTANT_KIND_ENTRY(name, _mangling) name,
+
+enum class ConstantKind : uint8_t {
+    FOREACH_CONSTANT_KIND(CONSTANT_KIND_ENTRY)
+};
+
+
+#define CONSTANT_KIND_NAME_STR(name, _mangling) #name,
+static const char* const g_constant_kind_names[] = {
+    FOREACH_CONSTANT_KIND(CONSTANT_KIND_NAME_STR)
+};
+
+#define CONSTANT_KIND_MANGLING(_name, mangling) mangling,
+static const char* const g_constant_kind_manglings[] = {
+    FOREACH_CONSTANT_KIND(CONSTANT_KIND_MANGLING)
+};
+
+static PyObject* g_constant_kind_enum;
+
+static PyPtr define_constant_kind_enum() {
+    constexpr size_t n = std::extent_v<decltype(g_constant_kind_names)>;
+    static_assert(n == std::extent_v<decltype(g_constant_kind_manglings)>);
+
+    PyPtr entries = steal(PyDict_New());
+    if (!entries) return {};
+
+    for (size_t i = 0; i < n; ++i) {
+        PyPtr value = steal(PyUnicode_FromString(g_constant_kind_manglings[i]));
+        if (!value) return {};
+
+        if (PyDict_SetItemString(entries.get(), g_constant_kind_names[i], value.get()))
+            return {};
+    }
+
+    PyPtr enum_mod = steal(PyImport_ImportModule("enum"));
+    if (!enum_mod) return {};
+
+    return steal(PyObject_CallMethod(
+            enum_mod.get(), "Enum", "sO", "ConstantKind", entries.get()));
+}
+
+
+#define PARAMETER_CATEGORY_CONSTANT_ENTRY(name, _mangling) Constant##name,
+
 struct ParameterKind {
-    enum Category {
+    enum Category : uint8_t {
+        FOREACH_CONSTANT_KIND(PARAMETER_CATEGORY_CONSTANT_ENTRY)
         Array,
         Boolean,
         Integer,
@@ -470,7 +523,12 @@ struct KernelFamily : SimpleRefcount<KernelFamily> {
 };
 
 
-enum class PythonArgKind {
+#define CONSTANT_PYTHON_ARG_KIND_ENTRY(name, _mangling) Constant##name,
+
+enum class PythonArgKind : uint8_t {
+    // All kinds of constants go first, so that we could trivially cast
+    // a ConstantKind to a PythonArgKind.
+    FOREACH_CONSTANT_KIND(CONSTANT_PYTHON_ARG_KIND_ENTRY)
     // A torch.Tensor that we can access via torch._C._to_dlpack
     TorchTensorDlpack,
     // An object with __dlpack__ method
@@ -487,8 +545,23 @@ enum class PythonArgKind {
     PyList,
 };
 
+static inline PythonArgKind constant_kind_as_arg_kind(ConstantKind kind) {
+// Verify that ConstantKind values match PythonArgKind values
+#define STATIC_ASSERT_CONSTANT_KIND_EQUALS_ARG_KIND(name, _mangling) \
+    static_assert(static_cast<int>(ConstantKind::name) \
+            == static_cast<int>(PythonArgKind::Constant##name));
+
+    FOREACH_CONSTANT_KIND(STATIC_ASSERT_CONSTANT_KIND_EQUALS_ARG_KIND)
+    return static_cast<PythonArgKind>(kind);
+}
+
+
 static ParameterKind::Category param_category_from_pyarg_kind(PythonArgKind k) {
+#define CONSTANT_ARG_KIND_CASE(name, _mangling) \
+    case PythonArgKind::Constant##name: return ParameterKind::Constant##name;
+
     switch (k) {
+    FOREACH_CONSTANT_KIND(CONSTANT_ARG_KIND_CASE)
     case PythonArgKind::TorchTensorDlpack: return ParameterKind::Array;
     case PythonArgKind::DlpackArray: return ParameterKind::Array;
     case PythonArgKind::CudaArray: return ParameterKind::Array;
@@ -500,14 +573,31 @@ static ParameterKind::Category param_category_from_pyarg_kind(PythonArgKind k) {
     CHECK_UNREACHABLE;
 }
 
-static constexpr PyTypeObject* kTupleEndType = nullptr;
 
-static Result<PythonArgKind> classify_arg(PyObject* arg) {
-    if (PyType_IsSubtype(Py_TYPE(arg), &PyTuple_Type))
-        return raise(PyExc_TypeError,
-            "Unsupported argument type '%s': only plain tuple is accepted, not subclasses",
-            Py_TYPE(arg)->tp_name);
+static std::optional<ConstantKind> classify_constant(PyObject* obj) {
+    if (PyBool_Check(obj))
+        return ConstantKind::Bool;
 
+    if (PyLong_Check(obj))
+        return ConstantKind::Int;
+
+    if (PyFloat_Check(obj))
+        return ConstantKind::Float;
+
+    return std::nullopt;
+}
+
+static PyObject* py_classify_constant(PyObject* self, PyObject* obj) {
+    std::optional<ConstantKind> res = classify_constant(obj);
+    if (!res.has_value())
+        return Py_NewRef(Py_None);
+
+    return PyObject_GetAttrString(g_constant_kind_enum,
+                                  g_constant_kind_names[static_cast<size_t>(*res)]);
+}
+
+
+static std::optional<PythonArgKind> classify_nonconstant_arg(PyObject* arg) {
     if (PyBool_Check(arg))
         return PythonArgKind::PyBool;
 
@@ -534,16 +624,12 @@ static Result<PythonArgKind> classify_arg(PyObject* arg) {
     if (PyObject_HasAttr(arg, g___cuda_array_interface___pyunicode))
         return PythonArgKind::CudaArray;
 
-    return raise(PyExc_TypeError, "Unsupported argument type %s", Py_TYPE(arg)->tp_name);
+    return {};
 }
 
 struct LeafAnnotationNode;
 struct ParameterAnnotationNode;
 
-static Result<Vec<RefPtr<LeafAnnotationNode>>>
-flatten_parameter_annotation_nodes(const Vec<RefPtr<ParameterAnnotationNode>>& nodes,
-                                   const Vec<PyTypeObject*>& pyarg_types_depth_first,
-                                   const Vec<std::optional<AggregateArgType>>& agg_types);
 
 namespace { struct ExpandAggregates; }
 
@@ -642,7 +728,10 @@ namespace { struct PythonArgProfile : ProfileMapNode {
         , leaf_pyarg_breadth_first_indices(std::move(leaf_pyarg_breadth_first_indices))
         , arg_kinds(std::move(arg_kinds))
         , flat_param_annotations(std::move(flat_param_annotations))
-    { }
+    {
+        CHECK(this->leaf_pyarg_breadth_first_indices.size() == this->arg_kinds.size());
+        CHECK(this->arg_kinds.size() == this->flat_param_annotations.size());
+    }
 }; }
 
 // View into subsequence vec[offset:end_offset] of Vec<PyTypeObject*>.
@@ -1494,14 +1583,17 @@ enum class PylongConstantEncoding : int64_t {
     U64
 };
 
-static inline Status extract_py_bool(PyObject* pyobj, bool is_constant, LaunchHelper& helper) {
+static inline Status extract_bool_constant(PyObject* pyobj, Vec<int64_t>* constants) {
     int val = PyObject_IsTrue(pyobj);
     if (val < 0) return ErrorRaised;
+    constants->push_back(val);
+    return OK;
+}
 
-    if (is_constant)
-        helper.constants.push_back(val);
-    else
-        push_single_word_cuarg(helper, {.i32 = val});
+static inline Status extract_py_bool(PyObject* pyobj, LaunchHelper& helper) {
+    int val = PyObject_IsTrue(pyobj);
+    if (val < 0) return ErrorRaised;
+    push_single_word_cuarg(helper, {.i32 = val});
     return OK;
 }
 
@@ -1523,85 +1615,74 @@ static PyPtr make_constant_constraint(PyObject* value) {
     return steal(PyObject_CallMethod(signature_module, "ConstantConstraint", "(O)", value));
 }
 
-static PyPtr parse_pybool_constraint(ConstantCursor& cursor, bool is_constant) {
-    if (is_constant) {
-        int64_t val = cursor.next();
-        return make_constant_constraint(val ? Py_True : Py_False);
-    } else {
-        return make_scalar_constraint(DLDataType{kDLBool, 8, 1});
-    }
+static PyPtr parse_bool_constant_constraint(ConstantCursor& cursor) {
+    int64_t val = cursor.next();
+    return make_constant_constraint(val ? Py_True : Py_False);
 }
 
-static inline Status extract_py_long(PyObject* pyobj, bool is_constant, unsigned bitwidth,
-                                     LaunchHelper& helper) {
-    if (is_constant) {
-        int overflow;
-        int64_t value = pylong_as_overflow_and<int64_t>(pyobj, &overflow);
+static inline Status extract_int_constant(PyObject* pyobj, Vec<int64_t>* constants) {
+    int overflow;
+    int64_t value = pylong_as_overflow_and<int64_t>(pyobj, &overflow);
+    if (PyErr_Occurred()) return ErrorRaised;
+    if (overflow) {
+        // TODO: support big values by extracting all digits
+        constants->push_back(static_cast<int64_t>(PylongConstantEncoding::U64));
+        uint64_t uval = pylong_as<uint64_t>(pyobj);
         if (PyErr_Occurred()) return ErrorRaised;
-        if (overflow) {
-            // TODO: support big values by extracting all digits
-            helper.constants.push_back(static_cast<int64_t>(PylongConstantEncoding::U64));
-            uint64_t uval = pylong_as<uint64_t>(pyobj);
-            if (PyErr_Occurred()) return ErrorRaised;
-            helper.constants.push_back(uval);
-        } else {
-            helper.constants.push_back(static_cast<int64_t>(PylongConstantEncoding::I64));
-            helper.constants.push_back(value);
-        }
+        constants->push_back(uval);
     } else {
-        if (bitwidth == 64) {
-            int64_t value = pylong_as<int64_t>(pyobj);
-            if (PyErr_Occurred()) return ErrorRaised;
-            push_single_word_cuarg(helper, {.i64 = value});
-        } else {
-            CHECK(bitwidth == 32);
-            int32_t value = pylong_as<int32_t>(pyobj);
-            if (PyErr_Occurred()) return ErrorRaised;
-            push_single_word_cuarg(helper, {.i32 = value});
-        }
+        constants->push_back(static_cast<int64_t>(PylongConstantEncoding::I64));
+        constants->push_back(value);
     }
     return OK;
 }
 
-static PyPtr parse_pylong_constraint(ConstantCursor& cursor, bool is_constant, unsigned bitwidth) {
-    if (is_constant) {
-        int64_t format = cursor.next();
-        PyPtr value;
-        if (format == static_cast<int64_t>(PylongConstantEncoding::I64)) {
-            value = steal(PyLong_FromLongLong(cursor.next()));
-        } else if (format == static_cast<int64_t>(PylongConstantEncoding::U64)) {
-            value = steal(PyLong_FromUnsignedLongLong(cursor.next()));
-        } else {
-            CHECK_UNREACHABLE;
-        }
-        if (!value) return {};
-        return make_constant_constraint(value.get());
+static PyPtr parse_int_constant_constraint(ConstantCursor& cursor) {
+    int64_t format = cursor.next();
+    PyPtr value;
+    if (format == static_cast<int64_t>(PylongConstantEncoding::I64)) {
+        value = steal(PyLong_FromLongLong(cursor.next()));
+    } else if (format == static_cast<int64_t>(PylongConstantEncoding::U64)) {
+        value = steal(PyLong_FromUnsignedLongLong(cursor.next()));
     } else {
-        return make_scalar_constraint(DLDataType{kDLInt, static_cast<uint8_t>(bitwidth), 1});
+        CHECK_UNREACHABLE;
     }
+    if (!value) return {};
+    return make_constant_constraint(value.get());
 }
 
-static void extract_py_float(PyObject* pyobj, bool is_constant, LaunchHelper& helper) {
+static inline Status extract_py_long(PyObject* pyobj, unsigned bitwidth, LaunchHelper& helper) {
+    if (bitwidth == 64) {
+        int64_t value = pylong_as<int64_t>(pyobj);
+        if (PyErr_Occurred()) return ErrorRaised;
+        push_single_word_cuarg(helper, {.i64 = value});
+    } else {
+        CHECK(bitwidth == 32);
+        int32_t value = pylong_as<int32_t>(pyobj);
+        if (PyErr_Occurred()) return ErrorRaised;
+        push_single_word_cuarg(helper, {.i32 = value});
+    }
+    return OK;
+}
+
+static void extract_float_constant(PyObject* pyobj, Vec<int64_t>* constants) {
     double value = PyFloat_AS_DOUBLE(pyobj);
-    if (is_constant) {
-        int64_t i64_val = 0;
-        static_assert(sizeof(i64_val) == sizeof(value));
-        mem_copy(&i64_val, &value, sizeof(i64_val));
-        helper.constants.push_back(i64_val);
-    } else {
-        push_single_word_cuarg(helper, {.f32 = static_cast<float>(value)});
-    }
+    int64_t i64_val = 0;
+    static_assert(sizeof(i64_val) == sizeof(value));
+    mem_copy(&i64_val, &value, sizeof(i64_val));
+    constants->push_back(i64_val);
 }
 
-static PyPtr parse_pyfloat_constraint(ConstantCursor& cursor, bool is_constant) {
-    if (is_constant) {
-        union { int64_t i64; double f64; } u;
-        u.i64 = cursor.next();
-        PyPtr value = steal(PyFloat_FromDouble(u.f64));
-        return make_constant_constraint(value.get());
-    } else {
-        return make_scalar_constraint(DLDataType{kDLFloat, 32, 1});
-    }
+static void extract_py_float(PyObject* pyobj, LaunchHelper& helper) {
+    double value = PyFloat_AS_DOUBLE(pyobj);
+    push_single_word_cuarg(helper, {.f32 = static_cast<float>(value)});
+}
+
+static PyPtr parse_float_constant_constraint(ConstantCursor& cursor) {
+    union { int64_t i64; double f64; } u;
+    u.i64 = cursor.next();
+    PyPtr value = steal(PyFloat_FromDouble(u.f64));
+    return make_constant_constraint(value.get());
 }
 
 static Result<ArrayRepr> get_array_repr(PythonArgKind kind, PyObject* pyobj,
@@ -1619,6 +1700,15 @@ static Result<ArrayRepr> get_array_repr(PythonArgKind kind, PyObject* pyobj,
     }
 }
 
+static Result<PythonArgKind> classify_list_item(PyObject* item, size_t index) {
+    std::optional<PythonArgKind> res = classify_nonconstant_arg(item);
+    if (!res.has_value()) {
+        return raise(PyExc_TypeError, "Invalid list item #%zu: unsupported object type '%s'",
+                index, Py_TYPE(item)->tp_name);
+    }
+    return *res;
+}
+
 static Status extract_py_list(const DriverApi* driver, PyObject* pyobj,
                               const ListAnnotation& list_ann, LaunchHelper& helper) {
     size_t len = PyList_GET_SIZE(pyobj);
@@ -1632,7 +1722,7 @@ static Status extract_py_list(const DriverApi* driver, PyObject* pyobj,
     // Handle the first item separately in order to determine the item type
 
     PyObject* first_item = PyList_GET_ITEM(pyobj, 0);
-    Result<PythonArgKind> first_item_res = classify_arg(first_item);
+    Result<PythonArgKind> first_item_res = classify_list_item(first_item, 0);
     if (!first_item_res.is_ok()) return ErrorRaised;
 
     if (param_category_from_pyarg_kind(*first_item_res) != ParameterKind::Array) {
@@ -1674,9 +1764,9 @@ static Status extract_py_list(const DriverApi* driver, PyObject* pyobj,
         PyObject* item = PyList_GET_ITEM(pyobj, i);
         PythonArgKind kind = first_arg_kind;
 
-        // Avoid calling classify_arg() if the object type is the same
+        // Avoid calling classify_list_item() if the object type is the same
         if (first_item_type != item->ob_type) {
-             Result<PythonArgKind> res = classify_arg(item);
+             Result<PythonArgKind> res = classify_list_item(item, i);
              if (!res.is_ok()) return ErrorRaised;
              kind = *res;
         }
@@ -1854,9 +1944,10 @@ static Status flatten_parameter_annotation_node(ParameterAnnotationNode* node,
 static Result<Vec<RefPtr<LeafAnnotationNode>>>
 flatten_parameter_annotation_nodes(const Vec<RefPtr<ParameterAnnotationNode>>& nodes,
                                    const Vec<PyTypeObject*>& pyarg_types_depth_first,
-                                   const Vec<std::optional<AggregateArgType>>& agg_types) {
+                                   const Vec<std::optional<AggregateArgType>>& agg_types,
+                                   size_t num_leaves) {
     Vec<RefPtr<LeafAnnotationNode>> ret;
-    ret.reserve(pyarg_types_depth_first.size());
+    ret.reserve(num_leaves);
     AggregateCursor cursor{{pyarg_types_depth_first}, {agg_types}};
     for (const RefPtr<ParameterAnnotationNode>& node : nodes) {
         if (!flatten_parameter_annotation_node(node.get(), &cursor, &ret))
@@ -1865,12 +1956,20 @@ flatten_parameter_annotation_nodes(const Vec<RefPtr<ParameterAnnotationNode>>& n
     CHECK(cursor.pytype_cursor.len == 1);
     CHECK(cursor.agg_cursor.len == 1);
     CHECK(cursor.at_aggregate_end());
+    CHECK(ret.size() == num_leaves);
     return ret;
 }
 
 static Status extract_arg(const DriverApi* driver, PyObject* obj, PythonArgKind kind,
                           LeafAnnotationNode* annotation, LaunchHelper& helper) {
     switch (kind) {
+    case PythonArgKind::ConstantBool:
+        return extract_bool_constant(obj, &helper.constants);
+    case PythonArgKind::ConstantInt:
+        return extract_int_constant(obj, &helper.constants);
+    case PythonArgKind::ConstantFloat:
+        extract_float_constant(obj, &helper.constants);
+        return OK;
     case PythonArgKind::TorchTensorDlpack:
         return extract_array<arrayrepr_torch_tensor_dlpack>(driver, obj, annotation->array, helper);
     case PythonArgKind::DlpackArray:
@@ -1878,17 +1977,15 @@ static Status extract_arg(const DriverApi* driver, PyObject* obj, PythonArgKind 
     case PythonArgKind::CudaArray:
         return extract_array<arrayrepr_cuda_array_iface>(driver, obj, annotation->array, helper);
     case PythonArgKind::PyBool:
-        return extract_py_bool(obj, annotation->constant, helper);
+        return extract_py_bool(obj, helper);
     case PythonArgKind::PyLong:
-        return extract_py_long(obj, annotation->constant, annotation->scalar.bitwidth, helper);
+        return extract_py_long(obj, annotation->scalar.bitwidth, helper);
     case PythonArgKind::PyFloat:
-        extract_py_float(obj, annotation->constant, helper);
+        extract_py_float(obj, helper);
         return OK;
     case PythonArgKind::PyList:
         return extract_py_list(driver, obj, annotation->list, helper);
     }
-    // Unsupported types are already rejected by classify_arg, so an unhandled kind here
-    // is an internal logic error (a new PythonArgKind, or a tuple kind that leaked through).
     CHECK_UNREACHABLE;
 }
 
@@ -1916,14 +2013,21 @@ static Status extract_cuda_args(const DriverApi* driver,
 static PyPtr parse_element_constraint(ConstantCursor& cursor, ParameterKind::Category category,
                                       const LeafAnnotationNode& annotation) {
     switch (category) {
+    case ParameterKind::ConstantBool:
+        return parse_bool_constant_constraint(cursor);
+    case ParameterKind::ConstantInt:
+        return parse_int_constant_constraint(cursor);
+    case ParameterKind::ConstantFloat:
+        return parse_float_constant_constraint(cursor);
     case ParameterKind::Array:
         return parse_array_constraint(cursor, annotation.array.static_shape_dims);
     case ParameterKind::Boolean:
-        return parse_pybool_constraint(cursor, annotation.constant);
+        return make_scalar_constraint(DLDataType{kDLBool, 8, 1});
     case ParameterKind::Integer:
-        return parse_pylong_constraint(cursor, annotation.constant, annotation.scalar.bitwidth);
+        return make_scalar_constraint(
+                DLDataType{kDLInt, static_cast<uint8_t>(annotation.scalar.bitwidth), 1});
     case ParameterKind::Float:
-        return parse_pyfloat_constraint(cursor, annotation.constant);
+        return make_scalar_constraint(DLDataType{kDLFloat, 32, 1});
     case ParameterKind::List:
         return parse_list_constraint(cursor, annotation.list.element.static_shape_dims);
     case ParameterKind::AggregateBegin:
@@ -1931,7 +2035,6 @@ static PyPtr parse_element_constraint(ConstantCursor& cursor, ParameterKind::Cat
         CHECK_UNREACHABLE;  // Should be handled before parse_element_constraint
     }
     CHECK_UNREACHABLE;
-    return {};
 }
 
 static PyPtr create_tuple_constraint(PyObject* items_list) {
@@ -2631,34 +2734,133 @@ static Result<std::optional<AggregateArgType>> classify_aggregate_type(PyTypeObj
     }
 }
 
-static Status get_parameter_and_pyarg_kinds(const Vec<PyTypeObject*>& pyarg_types_depth_first,
+static ErrorRaised_t raise_invalid_kernel_arg_type_impl(
+        const Vec<PyTypeObject*>& pyarg_types_depth_first,
+        const Vec<std::optional<AggregateArgType>>& agg_types,
+        size_t culprit_leaf_idx,
+        PyObject* message) {
+    CHECK(pyarg_types_depth_first.size() == agg_types.size());
+
+    // Reconstruct the path to the leaf so that we can make a decent error message
+    struct PathItem {
+        size_t depth_first_idx;
+        size_t item_idx;
+    };
+    Vec<PathItem> path = {{SIZE_MAX, SIZE_MAX}};
+    size_t next_leaf_idx = 0;
+    for (size_t depth_first_idx = 0; depth_first_idx < agg_types.size(); ++depth_first_idx) {
+        ++path.back().item_idx;
+        if (agg_types[depth_first_idx].has_value()) {
+            path.push_back(PathItem{depth_first_idx, SIZE_MAX});
+        } else if (pyarg_types_depth_first[depth_first_idx] == nullptr) {
+            path.pop_back();
+            CHECK(!path.empty());
+        } else {
+            if (next_leaf_idx == culprit_leaf_idx)
+                break;
+            ++next_leaf_idx;
+        }
+    }
+    CHECK(next_leaf_idx == culprit_leaf_idx);
+    CHECK(!path.empty());
+    CHECK(path[0].depth_first_idx == SIZE_MAX);
+
+    // Walk the path backwards and build the message
+    PyPtr ret = steal(PyUnicode_FromString("Invalid "));
+    if (!ret) return {};
+
+    for (size_t i = path.size() - 1; i > 0; --i) {
+        const std::optional<AggregateArgType>& agg_type = agg_types[path[i].depth_first_idx];
+        CHECK(agg_type.has_value());
+
+        PyPtr new_str;
+        switch (agg_type->kind) {
+        case AggregateArgType::Tuple:
+            new_str = steal(PyUnicode_FromFormat("%Uitem #%zu of ", ret.get(), path[i].item_idx));
+            break;
+        }
+        if (!new_str) return {};
+        ret = std::move(new_str);
+    }
+    return raise(PyExc_TypeError,
+            "%Ukernel argument #%zu: %U", ret.get(), path[0].item_idx, message);
+}
+
+template <typename... Args>
+ErrorRaised_t raise_invalid_kernel_arg_type(const Vec<PyTypeObject*>& pyarg_types_depth_first,
                                             const Vec<std::optional<AggregateArgType>>& agg_types,
-                                            const Vec<PyObject*>& leaf_pyarg_objs,
-                                            Vec<ParameterKind>* param_kinds,
-                                            Vec<PythonArgKind>* arg_kinds) {
-    arg_kinds->clear();
-    arg_kinds->reserve(leaf_pyarg_objs.size());
-    param_kinds->clear();
-    param_kinds->reserve(pyarg_types_depth_first.size());
-    size_t obj_idx = 0;
+                                            size_t culprit_leaf_idx,
+                                            const char* fmt, Args&&... args) {
+    PyPtr msg = steal(PyUnicode_FromFormat(fmt, std::forward<Args>(args)...));
+    if (!msg) return ErrorRaised;
+
+    return raise_invalid_kernel_arg_type_impl(
+            pyarg_types_depth_first, agg_types, culprit_leaf_idx, msg.get());
+}
+
+static Result<Vec<PythonArgKind>>
+get_pyarg_kinds(const Vec<PyTypeObject*>& pyarg_types_depth_first,
+                const Vec<std::optional<AggregateArgType>>& agg_types,
+                const Vec<PyObject*>& leaf_pyarg_objs,
+                const Vec<RefPtr<LeafAnnotationNode>>& flat_param_annotations) {
+    size_t n = leaf_pyarg_objs.size();
+    CHECK(flat_param_annotations.size() == n);
+    Vec<PythonArgKind> ret;
+    ret.reserve(n);
+    for (size_t i = 0; i < n; ++i) {
+        PyObject* obj = leaf_pyarg_objs[i];
+        if (flat_param_annotations[i]->constant) {
+            std::optional<ConstantKind> kind = classify_constant(obj);
+            if (!kind.has_value()) {
+                return raise_invalid_kernel_arg_type(
+                        pyarg_types_depth_first, agg_types, i,
+                        "Could not interpret object of type '%s' as a constant.",
+                        Py_TYPE(obj)->tp_name);
+            }
+            ret.push_back(constant_kind_as_arg_kind(*kind));
+        } else {
+            std::optional<PythonArgKind> kind = classify_nonconstant_arg(obj);
+            if (!kind.has_value()) {
+                if (PyType_IsSubtype(Py_TYPE(obj), &PyTuple_Type)) {
+                    return raise_invalid_kernel_arg_type(
+                            pyarg_types_depth_first, agg_types, i,
+                            "'%s' is a subclass of 'tuple'. Only plain tuples are accepted.",
+                            Py_TYPE(obj)->tp_name);
+                } else {
+                    return raise_invalid_kernel_arg_type(
+                            pyarg_types_depth_first, agg_types, i,
+                            "Objects of type '%s' are not supported.", Py_TYPE(obj)->tp_name);
+                }
+            }
+            ret.push_back(*kind);
+        }
+    }
+    return ret;
+}
+
+static Vec<ParameterKind>
+get_parameter_kinds(const Vec<PyTypeObject*>& pyarg_types_depth_first,
+                    const Vec<std::optional<AggregateArgType>>& agg_types,
+                    const Vec<PythonArgKind>& pyarg_kinds) {
+    Vec<ParameterKind> ret;
+    ret.reserve(pyarg_types_depth_first.size());
+    size_t leaf_idx = 0;
     for (size_t depth_first_idx = 0;
             depth_first_idx < pyarg_types_depth_first.size(); ++depth_first_idx) {
         if (pyarg_types_depth_first[depth_first_idx] == nullptr) {
-            param_kinds->push_back({ParameterKind::AggregateEnd, {}});
+            ret.push_back({ParameterKind::AggregateEnd, {}});
             continue;
         }
         const std::optional<AggregateArgType>& agg_ty = agg_types[depth_first_idx];
         if (agg_ty.has_value()) {
-            param_kinds->push_back({ParameterKind::AggregateBegin, *agg_ty});
+            ret.push_back({ParameterKind::AggregateBegin, *agg_ty});
         } else {
-            Result<PythonArgKind> kind = classify_arg(leaf_pyarg_objs[obj_idx++]);
-            if (!kind.is_ok()) return ErrorRaised;
-            arg_kinds->push_back(*kind);
-            param_kinds->push_back({param_category_from_pyarg_kind(*kind), {}});
+            PythonArgKind arg_kind = pyarg_kinds[leaf_idx++];
+            ret.push_back({param_category_from_pyarg_kind(arg_kind), {}});
         }
     }
-    CHECK(obj_idx == leaf_pyarg_objs.size());
-    return OK;
+    CHECK(leaf_idx == pyarg_kinds.size());
+    return ret;
 }
 
 static KernelFamily* get_or_create_kernel_family(Vec<RefPtr<KernelFamily>>* families,
@@ -2904,16 +3106,19 @@ static PythonArgProfile* python_arg_profile_lookup_impl(
                 // Flatten the parameter annotations against this argument structure.
                 Result<Vec<RefPtr<LeafAnnotationNode>>> flat_param_annotations
                        = flatten_parameter_annotation_nodes(
-                           param_annotations, pyarg_types_depth_first, aggregate_types);
+                           param_annotations, pyarg_types_depth_first, aggregate_types,
+                           leaf_pyarg_objs->size());
                 if (!flat_param_annotations.is_ok())
                     return nullptr;
 
                 // Classify the arguments and get the matching KernelFamily.
-                Vec<PythonArgKind> arg_kinds;
-                Vec<ParameterKind> param_kinds;
-                if (!get_parameter_and_pyarg_kinds(pyarg_types_depth_first, aggregate_types,
-                                                   *leaf_pyarg_objs, &param_kinds, &arg_kinds))
-                    return nullptr;
+                Result<Vec<PythonArgKind>> arg_kinds = get_pyarg_kinds(
+                        pyarg_types_depth_first, aggregate_types,
+                        *leaf_pyarg_objs, *flat_param_annotations);
+                if (!arg_kinds.is_ok()) return nullptr;
+
+                Vec<ParameterKind> param_kinds = get_parameter_kinds(
+                        pyarg_types_depth_first, aggregate_types, *arg_kinds);
 
                 KernelFamily* family = get_or_create_kernel_family(
                         kernel_families, std::move(param_kinds));
@@ -2921,7 +3126,7 @@ static PythonArgProfile* python_arg_profile_lookup_impl(
                 RefPtr<PythonArgProfile> new_profile = steal(new PythonArgProfile(
                             query.to_owned(), parent, depth, family,
                             std::move(leaf_pyarg_breadth_first_indices),
-                            std::move(arg_kinds),
+                            std::move(*arg_kinds),
                             std::move(*flat_param_annotations)));
                 map->insert(ProfileMapKey{new_profile}, 0);
                 return new_profile.get();
@@ -4118,6 +4323,8 @@ static PyMethodDef functions[] = {
     },
     {"get_parameter_constraints_from_pyargs", get_parameter_constraints_from_pyargs,
       METH_VARARGS, ""},
+    {"classify_constant", py_classify_constant, METH_O,
+      "Classify a constant Python value into a ConstantKind"},
     {"_benchmark", reinterpret_cast<PyCFunction>(cuda_tile_benchmark), METH_FASTCALL,
         BENCHMARK_SIGNATURE "\n"
         "--\n\n"
@@ -4173,6 +4380,12 @@ Status tile_kernel_init(PyObject* m) {
     INIT_STRING_CONSTANT(block_in_cluster_count);
     INIT_STRING_CONSTANT(preferred_block_in_cluster_count);
     INIT_STRING_CONSTANT(programmatic_dependent_launch);
+
+    g_constant_kind_enum = define_constant_kind_enum().release();
+    if (!g_constant_kind_enum) return ErrorRaised;
+
+    if (PyModule_AddObjectRef(m, "ConstantKind", g_constant_kind_enum) < 0)
+        return ErrorRaised;
 
     g_stream_buffer_pool_by_ctx_id = new StreamBufferPoolMap();
 

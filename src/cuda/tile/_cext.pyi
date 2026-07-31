@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) <2025> NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 #
 # SPDX-License-Identifier: Apache-2.0
-
+import enum
 from typing import Any, Sequence, TypeAlias
 
 from cuda.tile._context import TileContextConfig
@@ -46,6 +46,14 @@ def _get_max_grid_size(device_id, /):
 
 
 def get_parameter_constraints_from_pyargs(dispatcher, pyargs, calling_convention, /):
+    ...
+
+
+class ConstantKind(enum.Enum):
+    ...
+
+
+def classify_constant(value, /) -> ConstantKind | None:
     ...
 
 
