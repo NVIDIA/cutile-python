@@ -5,6 +5,20 @@
 from enum import Enum, auto
 from cuda.tile import _cext
 from cuda.tile._memory_model import MemorySpace, MemoryScope, MemoryOrder
+from cuda.tile._numeric_semantics import RoundingMode
+
+
+class SaturationMode(Enum):
+    """Saturation mode for floating-point and integer operations."""
+
+    NONE = "none"
+    """Do not saturate the result."""
+
+    SATFINITE = "satfinite"
+    """Limit the result to the largest finite value of its type."""
+
+    SAT = "sat"
+    """Limit a floating-point result to ``[0.0, 1.0]``."""
 
 
 class SwizzleMode(Enum):
@@ -182,6 +196,8 @@ __all__ = (
     "MemorySpace",
     "MemoryScope",
     "MemoryOrder",
+    "RoundingMode",
+    "SaturationMode",
     "SwizzleMode",
     "TensorMapL2Promotion",
     "MbarrierScope",

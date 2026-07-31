@@ -6,15 +6,17 @@ from test.util import compile_kernel
 import cuda.lang as cl
 import cuda.lang._datatype as datatype
 import builtins
+import itertools
 import math as host_math
 import operator
 import sys
 import torch
 import pytest
 from cuda.lang import compile_simt
+from cuda.lang._compile import get_compute_capability
 from cuda.lang._stub import math as device_math
 from cuda.lang.compilation import KernelSignature
-from cuda.lang._exception import TypeCheckingError
+from cuda.lang._exception import CompilerExecutionError, TypeCheckingError
 from cuda.lang._fp_utils import _FLOAT_SMALLEST_NORMAL, isnormal
 from .util import make_symbolic_tensor
 
@@ -562,6 +564,340 @@ def test_math_binary_float_promotion():
     expected = host_math.atan2(lhs.cpu().item(), rhs.cpu().item())
     cl.launch(torch.cuda.current_stream(), (1,), (1,), kernel, (lhs, rhs, out))
     assert out[0].item() == approx_float(expected, dt2)
+
+
+@pytest.mark.parametrize("vector", (False, True))
+def test_math_fma_ir(vector):
+    def kernel(x, y, z, out):
+        if vector:
+            xv = x.get_base_pointer().load(count=2)
+            yv = y.get_base_pointer().load(count=2)
+            zv = z.get_base_pointer().load(count=2)
+            out.get_base_pointer().store(cl.fma(xv, yv, zv))
+        else:
+            out[0] = cl.fma(x[0], y[0], z[0])
+
+    count = 2 if vector else 1
+    x = make_symbolic_tensor([count], cl.float16)
+    y = make_symbolic_tensor([count], cl.float32)
+    z = make_symbolic_tensor([count], cl.float64)
+    out = make_symbolic_tensor([count], cl.float64)
+    compile_kernel(
+        kernel,
+        signature=KernelSignature([x, y, z, out]),
+        filecheck_nvvm=(
+            f"CHECK-COUNT-{count}: call double @llvm.nvvm.fma.rn.d("
+        ),
+        filecheck_ptx=f"CHECK-COUNT-{count}: fma.rn.f64",
+    )
+
+
+@pytest.mark.parametrize("dtype", FLOAT_TYPES)
+@pytest.mark.parametrize("vector", (False, True))
+def test_math_fma(dtype, vector):
+    """
+    https://docs.nvidia.com/cuda/archive/12.2.1/floating-point/index.html#the-fused-multiply-add-fma
+
+    From the docs above, a fused multiply-add has one rounding while a non-fused
+    multiply and add will round twice. We can check the precision to determine
+    the number of times the operation was rounded, telling us if an fma was
+    really used.
+    """
+
+    @cl.kernel
+    def kernel(x, y, z, out):
+        if vector:
+            xv = x.get_base_pointer().load(count=2)
+            yv = y.get_base_pointer().load(count=2)
+            zv = z.get_base_pointer().load(count=2)
+            out.get_base_pointer().store(cl.fma(xv, yv, zv))
+        else:
+            out[0] = cl.fma(x[0], y[0], z[0])
+
+    count = 2 if vector else 1
+    torch_dtype = datatype.to_torch_dtype(dtype)
+    eps = torch.finfo(torch_dtype).eps
+    scale = 32.0
+    delta = scale * eps
+    x = torch.full(
+        (count,),
+        scale + delta,
+        dtype=torch_dtype,
+        device="cuda",
+    )
+    y = torch.full(
+        (count,),
+        scale - delta,
+        dtype=torch_dtype,
+        device="cuda",
+    )
+    z = torch.full(
+        (count,),
+        -(scale**2),
+        dtype=torch_dtype,
+        device="cuda",
+    )
+    out = torch.zeros(count, dtype=torch_dtype, device="cuda")
+    expected = torch.full(
+        (count,),
+        -(delta**2),
+        dtype=torch_dtype,
+    )
+
+    cl.launch(torch.cuda.current_stream(), (1,), (1,), kernel, (x, y, z, out))
+    assert torch.equal(out.cpu(), expected)
+
+
+_FMA_ROUNDING_MODES = (
+    cl.RoundingMode.RM,
+    cl.RoundingMode.RN,
+    cl.RoundingMode.RP,
+    cl.RoundingMode.RZ,
+)
+_FMA_SATURATION_MODES = (
+    cl.SaturationMode.NONE,
+    cl.SaturationMode.SATFINITE,
+    cl.SaturationMode.SAT,
+)
+_FMA_DATA_TYPE_CASES = tuple(
+    itertools.product(
+        (cl.float16, cl.bfloat16, cl.float32, cl.float64),
+        (False, True),
+    )
+)
+
+
+def _fma_supported_options(dtype):
+    if dtype == cl.float16:
+        yield from itertools.product(
+            (cl.RoundingMode.RN,),
+            (cl.SaturationMode.NONE, cl.SaturationMode.SAT),
+            (False, True),
+            (False,),
+            (False,),
+        )
+        yield from itertools.product(
+            (cl.RoundingMode.RN,),
+            (cl.SaturationMode.NONE,),
+            (False, True),
+            (True,),
+            (False,),
+        )
+        yield from itertools.product(
+            (cl.RoundingMode.RN,),
+            (cl.SaturationMode.NONE,),
+            (False,),
+            (False, True),
+            (True,),
+        )
+    elif dtype == cl.bfloat16:
+        yield from itertools.product(
+            (cl.RoundingMode.RN,),
+            (cl.SaturationMode.NONE,),
+            (False,),
+            (False, True),
+            (False, True),
+        )
+    elif dtype == cl.float32:
+        yield from itertools.product(
+            _FMA_ROUNDING_MODES,
+            (cl.SaturationMode.NONE, cl.SaturationMode.SAT),
+            (False, True),
+            (False,),
+            (False,),
+        )
+    elif dtype == cl.float64:
+        yield from itertools.product(
+            _FMA_ROUNDING_MODES,
+            (cl.SaturationMode.NONE,),
+            (False,),
+            (False,),
+            (False,),
+        )
+
+
+def _fma_supported_cases():
+    for dtype, vector in _FMA_DATA_TYPE_CASES:
+        for options in _fma_supported_options(dtype):
+            yield dtype, vector, *options
+
+
+def _fma_all_options():
+    yield from itertools.product(
+        _FMA_ROUNDING_MODES,
+        _FMA_SATURATION_MODES,
+        (False, True),
+        (False, True),
+        (False, True),
+    )
+
+
+def _fma_unsupported_cases():
+    for dtype, vector in _FMA_DATA_TYPE_CASES:
+        supported = set(_fma_supported_options(dtype))
+        for options in _fma_all_options():
+            if options not in supported:
+                yield dtype, vector, *options
+
+
+def _fma_ptx_type(dtype, vector):
+    ptx_type = dtype.name.replace("float", "f")
+    if vector and dtype in (cl.float16, cl.bfloat16):
+        ptx_type += "x2"
+    return ptx_type
+
+
+def _compile_math_fma_mode(
+    dtype,
+    vector,
+    rounding_mode,
+    saturation_mode,
+    flush_to_zero,
+    relu,
+    oob,
+    *,
+    assert_in_ptx=None,
+    raises=None,
+):
+    def kernel(values, out):
+        if vector:
+            value = values.get_base_pointer().load(count=2)
+            value = cl.fma(
+                value,
+                value,
+                value,
+                rounding_mode=rounding_mode,
+                saturation_mode=saturation_mode,
+                flush_to_zero=flush_to_zero,
+                relu=relu,
+                oob=oob,
+            )
+            out.get_base_pointer().store(value)
+        else:
+            value = values[0]
+            out[0] = cl.fma(
+                value,
+                value,
+                value,
+                rounding_mode=rounding_mode,
+                saturation_mode=saturation_mode,
+                flush_to_zero=flush_to_zero,
+                relu=relu,
+                oob=oob,
+            )
+
+    count = 2 if vector else 1
+    values = make_symbolic_tensor([count], dtype)
+    out = make_symbolic_tensor([count], dtype)
+    compile_kernel(
+        kernel,
+        signature=KernelSignature([values, out]),
+        assert_in_ptx=assert_in_ptx,
+        raises=raises,
+    )
+
+
+@pytest.mark.parametrize(
+    (
+        "dtype,vector,rounding_mode,saturation_mode,flush_to_zero,relu,oob"
+    ),
+    _fma_supported_cases(),
+)
+def test_math_fma_modes(
+    dtype,
+    vector,
+    rounding_mode,
+    saturation_mode,
+    flush_to_zero,
+    relu,
+    oob,
+):
+    if oob and get_compute_capability() < (9, 0):
+        pytest.skip("OOB FMA requires Hopper or newer")
+
+    ptx_modifiers = [rounding_mode.name.lower()]
+    if flush_to_zero:
+        ptx_modifiers.append("ftz")
+    if saturation_mode == cl.SaturationMode.SAT:
+        ptx_modifiers.append("sat")
+    if oob:
+        ptx_modifiers.append("oob")
+    if relu:
+        ptx_modifiers.append("relu")
+    ptx_type = _fma_ptx_type(dtype, vector)
+    ptx_instruction = f"fma.{'.'.join(ptx_modifiers)}.{ptx_type}"
+
+    _compile_math_fma_mode(
+        dtype,
+        vector,
+        rounding_mode,
+        saturation_mode,
+        flush_to_zero,
+        relu,
+        oob,
+        assert_in_ptx=ptx_instruction,
+    )
+
+
+@pytest.mark.parametrize(
+    (
+        "dtype,vector,rounding_mode,saturation_mode,flush_to_zero,relu,oob"
+    ),
+    _fma_unsupported_cases(),
+)
+def test_math_fma_unsupported_modes(
+    dtype,
+    vector,
+    rounding_mode,
+    saturation_mode,
+    flush_to_zero,
+    relu,
+    oob,
+):
+    exception = (
+        TypeCheckingError
+        if saturation_mode == cl.SaturationMode.SATFINITE
+        else CompilerExecutionError
+    )
+    _compile_math_fma_mode(
+        dtype,
+        vector,
+        rounding_mode,
+        saturation_mode,
+        flush_to_zero,
+        relu,
+        oob,
+        raises=pytest.raises(exception),
+    )
+
+
+@pytest.mark.parametrize(
+    "rounding_mode",
+    (
+        cl.RoundingMode.RA,
+        cl.RoundingMode.FULL,
+        cl.RoundingMode.APPROX,
+        cl.RoundingMode.RZI,
+    ),
+)
+def test_math_fma_invalid_rounding_mode(rounding_mode):
+    def kernel():
+        values = cl.shared_array(1, cl.float32)
+        value = values[0]
+        values[0] = cl.fma(
+            value,
+            value,
+            value,
+            rounding_mode=rounding_mode,
+        )
+
+    compile_kernel(
+        kernel,
+        raises=pytest.raises(
+            TypeCheckingError,
+            match="fma does not support RoundingMode",
+        ),
+    )
 
 
 @pytest.mark.parametrize("device_op,python_op,dtype", OPERATOR_ALIAS_BINARY_OPS)

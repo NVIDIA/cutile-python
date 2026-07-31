@@ -2,8 +2,8 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-
 from cuda.lang._execution import stub
+from cuda.lang._enums import RoundingMode, SaturationMode
 
 
 @stub(static_eval_ok=True)
@@ -21,6 +21,36 @@ def sub(x, y, /):
 @stub(static_eval_ok=True)
 def mul(x, y, /):
     """Compute ``x * y``."""
+    ...
+
+
+@stub
+def fma(
+    x,
+    y,
+    z,
+    /,
+    *,
+    rounding_mode=RoundingMode.RN,
+    saturation_mode=SaturationMode.NONE,
+    flush_to_zero=False,
+    relu=False,
+    oob=False,
+):
+    """Compute fused ``x * y + z`` with one rounding step.
+
+    Args:
+        x: First multiplicand.
+        y: Second multiplicand.
+        z: Value added to ``x * y``.
+        rounding_mode: The rounding mode.
+        saturation_mode: The saturation mode. ``SAT`` limits the result to
+            ``[0.0, 1.0]`` and flushes a NaN result to positive zero.
+        flush_to_zero: Whether to flush subnormal inputs and results to
+            sign-preserving zero.
+        relu: Whether to apply ReLU to the result.
+        oob: Whether to set the result to zero when an operand is an OOB NaN.
+    """
     ...
 
 
@@ -323,6 +353,7 @@ __all__ = (
     "add",
     "sub",
     "mul",
+    "fma",
     "truediv",
     "floordiv",
     "mod",

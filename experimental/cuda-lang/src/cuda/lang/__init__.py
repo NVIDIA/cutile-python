@@ -7,7 +7,6 @@ from cuda.tile._memory_model import (
     MemoryOrder,
     MemorySpace
 )
-
 from ._execution import (
     function,
     static_def,
@@ -42,11 +41,14 @@ from ._enums import (
     MatrixLoadShape,
     MatrixLoadSourceFormat,
     MatrixStoreShape,
+    RoundingMode,
+    SaturationMode,
 )
 from ._stub.math import (
     add,
     sub,
     mul,
+    fma,
     truediv,
     floordiv,
     mod,
@@ -353,6 +355,7 @@ __all__ = (
     "MemorySpace",
     "MemoryScope",
     "MemoryOrder",
+    "RoundingMode",
     "BarrierReductionKind",
     "FenceProxyKind",
     "fence",
@@ -436,9 +439,11 @@ __all__ = (
     "copy_async_bulk_wait_group",
     "store_async_cluster",
     "store_async_global",
+    "SaturationMode",
     "add",
     "sub",
     "mul",
+    "fma",
     "truediv",
     "floordiv",
     "mod",

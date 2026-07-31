@@ -2,10 +2,11 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+import enum
 import operator
 
 from cuda.tile._ir.ir import add_operation_variadic
-from cuda.tile._ir.ops_utils import promote_dtypes
+from cuda.tile._ir.ops_utils import promote_dtypes, promote_types
 
 import cuda.lang._datatype as datatype
 import cuda.lang._mlir as mlir
@@ -47,12 +48,23 @@ from cuda.tile._ir.core_ops import build_tuple, strictly_typed_const
 from cuda.tile._ir.op_impl import (
     ImplRegistry,
     require_constant_bool,
+    require_constant_enum,
 )
+from cuda.lang._enums import RoundingMode, SaturationMode
 from ..._stub import math as cl_math
 
 
 _registry = ImplRegistry()
 impl = _registry.impl
+
+
+# TODO(ajm): need to bump llvm bindings to get this enum
+class _FmaSaturationMode(enum.Enum):
+    NONE = 0
+    SAT = 1
+
+    def _print_mlir_unqualified(self, printer):
+        printer(("none", "sat")[self.value])
 
 
 def math_impl_registry() -> ImplRegistry:
@@ -68,6 +80,73 @@ def math_binary_arithmetic_impl(fn: str, x: Var, y: Var):
     require_scalar_or_vector_type(x)
     require_scalar_or_vector_type(y)
     return binary_arithmetic_tensorlike(fn, x, y)
+
+
+@impl(cl_math.fma)
+def math_fma_impl(
+    x: Var,
+    y: Var,
+    z: Var,
+    rounding_mode: Var,
+    saturation_mode: Var,
+    flush_to_zero: Var,
+    relu: Var,
+    oob: Var,
+):
+    rounding_mode = require_constant_enum(rounding_mode, RoundingMode)
+    saturation_mode = require_constant_enum(
+        saturation_mode, SaturationMode
+    )
+    flush_to_zero = require_constant_bool(flush_to_zero)
+    relu = require_constant_bool(relu)
+    oob = require_constant_bool(oob)
+
+    require_scalar_or_vector_float_type(x)
+    require_scalar_or_vector_float_type(y)
+    require_scalar_or_vector_float_type(z)
+    ty = promote_types(
+        common_type(x, y), z.get_loose_type(), x.ctx.typing_hooks
+    )
+    x = promote_and_broadcast_to(x, ty)
+    y = promote_and_broadcast_to(y, ty)
+    z = promote_and_broadcast_to(z, ty)
+
+    rounding_modes = {
+        RoundingMode.RM: mlir.nvvm.FPRoundingMode.RM,
+        RoundingMode.RN: mlir.nvvm.FPRoundingMode.RN,
+        RoundingMode.RP: mlir.nvvm.FPRoundingMode.RP,
+        RoundingMode.RZ: mlir.nvvm.FPRoundingMode.RZ,
+    }
+    if rounding_mode not in rounding_modes:
+        valid = ", ".join(str(mode) for mode in rounding_modes)
+        raise TypeCheckingError(
+            f"fma does not support {rounding_mode}. Use one of {valid}."
+        )
+
+    if saturation_mode == SaturationMode.SATFINITE:
+        raise TypeCheckingError(
+            "fma does not implement SaturationMode.SATFINITE yet"
+        )
+    saturation_modes = {
+        SaturationMode.NONE: _FmaSaturationMode.NONE,
+        SaturationMode.SAT: _FmaSaturationMode.SAT,
+    }
+
+    rns = mlir.nvvm.FPRoundingModeAttr(value=rounding_modes[rounding_mode])
+    sat = mlir.nvvm.SaturationModeAttr(value=saturation_modes[saturation_mode])
+    return add_operation(
+        RawMLIROperation,
+        ty,
+        op_name="nvvm.fma",
+        operands_=(x, y, z),
+        mlir_attributes=(
+            ("rnd", rns),
+            ("sat", sat),
+            ("ftz", mlir.BoolAttr(value=flush_to_zero)),
+            ("relu", mlir.BoolAttr(value=relu)),
+            ("oob", mlir.BoolAttr(value=oob)),
+        ),
+    )
 
 
 @impl(cl_math.truediv)
