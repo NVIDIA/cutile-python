@@ -78,14 +78,16 @@ from cuda.tile._datatype import (
 )
 from .atomics_support import (
     ATOMIC_CAS_DTYPES,
+    ATOMIC_VALID_MEMORY_ORDERS,
     ATOMIC_XCHG_DTYPES,
     AtomicRMWKind,
-    atomic_rmw_op_name,
     require_atomic_dtype,
     require_atomic_memory_order_and_scope,
     require_atomic_rmw_value,
 )
 from .op_defs import (  # noqa: F401
+    AtomicLoad,
+    AtomicStore,
     RawNVVMIntrinsic,
     RawMLIROperation,
     InlinePTX,
@@ -204,11 +206,10 @@ def _atomic_rmw_dispatch(
     memory_order: Var,
     memory_scope: Var,
 ) -> Var:
-    op_name = atomic_rmw_op_name(kind)
     ptr_ty = require_pointer_type(ptr)
     val, result_ty = require_atomic_rmw_value(kind, ptr_ty, val)
     memory_order, memory_scope = require_atomic_memory_order_and_scope(
-        op_name, memory_order, memory_scope
+        AtomicRMW, memory_order, memory_scope
     )
     return add_operation(
         AtomicRMW,
@@ -229,6 +230,8 @@ class AtomicRMW(Operation, opcode="atomic_rmw", memory_effect=MemoryEffect.STORE
     memory_order: MemoryOrder = attribute()
     memory_scope: MemoryScope = attribute()
 
+    VALID_MEMORY_ORDERS = ATOMIC_VALID_MEMORY_ORDERS
+
 
 @dataclass(eq=False)
 class AtomicExchange(Operation, opcode="atomic_xchg", memory_effect=MemoryEffect.STORE):
@@ -236,6 +239,8 @@ class AtomicExchange(Operation, opcode="atomic_xchg", memory_effect=MemoryEffect
     value: Var = operand()
     memory_order: MemoryOrder = attribute()
     memory_scope: MemoryScope = attribute()
+
+    VALID_MEMORY_ORDERS = ATOMIC_VALID_MEMORY_ORDERS
 
 
 @dataclass(eq=False)
@@ -245,6 +250,8 @@ class AtomicCAS(Operation, opcode="atomic_cas", memory_effect=MemoryEffect.STORE
     value: Var = operand()
     memory_order: MemoryOrder = attribute()
     memory_scope: MemoryScope = attribute()
+
+    VALID_MEMORY_ORDERS = ATOMIC_VALID_MEMORY_ORDERS
 
 
 @impl(core_api.atomic_add, fixed_args=[AtomicRMWKind.ADD])
@@ -277,7 +284,7 @@ def atomic_xchg_impl(
     val = astype(val, dtype)
     result_ty = ScalarTy(dtype)
     memory_order, memory_scope = require_atomic_memory_order_and_scope(
-        "atomic_xchg", memory_order, memory_scope
+        AtomicExchange, memory_order, memory_scope
     )
     return add_operation(
         AtomicExchange,
@@ -305,7 +312,7 @@ def atomic_cas_impl(
         )
     result_ty = ScalarTy(dtype)
     memory_order, memory_scope = require_atomic_memory_order_and_scope(
-        "atomic_cas", memory_order, memory_scope
+        AtomicCAS, memory_order, memory_scope
     )
     return add_operation(
         AtomicCAS,
@@ -855,8 +862,10 @@ __all__ = (
     "AddrSpaceCast",
     "AtomicCAS",
     "AtomicExchange",
+    "AtomicLoad",
     "AtomicRMW",
     "AtomicRMWKind",
+    "AtomicStore",
     "Assign",
     "AssumeBounded",
     "AssumeDivBy",

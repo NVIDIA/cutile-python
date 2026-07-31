@@ -1127,6 +1127,40 @@ def lower_store_pointer(
 
 
 @mlir_op_lowering(host=False)
+def lower_atomic_load(
+    context: DeviceLoweringContext, operation: ops.AtomicLoad
+) -> Sequence[mlir.Value]:
+    pointer = context.get_var(operation.pointer)
+    result_type = ir_type_to_mlir_type(operation.result_var.get_type())
+    result = mlir.llvm.add_LoadOp(
+        res_type=result_type,
+        addr=pointer,
+        alignment=operation.alignment,
+        ordering=_get_llvm_memory_ordering(operation.memory_order),
+        syncscope=_get_llvm_syncscope(operation.memory_scope),
+        volatile_=operation.mmio,
+    )
+    return [result]
+
+
+@mlir_op_lowering(host=False)
+def lower_atomic_store(
+    context: DeviceLoweringContext, operation: ops.AtomicStore
+) -> Sequence[mlir.Value]:
+    pointer = context.get_var(operation.pointer)
+    value = context.get_var(operation.value)
+    mlir.llvm.add_StoreOp(
+        value=value,
+        addr=pointer,
+        alignment=operation.alignment,
+        ordering=_get_llvm_memory_ordering(operation.memory_order),
+        syncscope=_get_llvm_syncscope(operation.memory_scope),
+        volatile_=operation.mmio,
+    )
+    return []
+
+
+@mlir_op_lowering(host=False)
 def lower_alloc_local_memory(
     context: DeviceLoweringContext, operation: ops.AllocLocalMemory
 ) -> Sequence[mlir.Value]:

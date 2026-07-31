@@ -6,7 +6,7 @@ from typing import Generic, TypeVar
 
 from cuda.tile import DType
 from cuda.tile._execution import stub
-from cuda.tile._memory_model import MemorySpace
+from cuda.tile._memory_model import MemoryOrder, MemoryScope, MemorySpace
 from .._enums import VectorReduction
 from .._stub import math as cl_math
 
@@ -304,6 +304,63 @@ class Pointer(Generic[T]):
                 The value must be a positive power of two. The address must
                 have this alignment. If the value is ``None``, the compiler
                 does not get an alignment hint.
+        """
+
+    @stub
+    def atomic_load(
+        self,
+        *,
+        memory_order: MemoryOrder = MemoryOrder.ACQUIRE,
+        memory_scope: MemoryScope = MemoryScope.DEVICE,
+        mmio: bool = False,
+        alignment: int | None = None,
+    ) -> T:
+        """Atomically load one value from this address.
+
+        This operation is valid only for a typed pointer. The pointee size must
+        be a power-of-two number of bytes.
+
+        Args:
+            memory_order: Memory order for the load. Supported values are
+                ``MemoryOrder.RELAXED`` and ``MemoryOrder.ACQUIRE``.
+            memory_scope: Scope of threads that participate in memory ordering.
+            mmio: Whether to use a memory-mapped I/O access. MMIO requires
+                ``MemoryOrder.RELAXED`` or ``MemoryOrder.ACQUIRE`` and
+                ``MemoryScope.SYS``. The pointer must refer to global memory.
+            alignment: Minimum byte alignment that the compiler can assume.
+                The value must be a positive power of two. The address must
+                have at least this alignment. If the value is ``None``, the
+                natural alignment of the pointee data type is used.
+        """
+
+    @stub
+    def atomic_store(
+        self,
+        value: T,
+        *,
+        memory_order: MemoryOrder = MemoryOrder.RELEASE,
+        memory_scope: MemoryScope = MemoryScope.DEVICE,
+        mmio: bool = False,
+        alignment: int | None = None,
+    ) -> None:
+        """Atomically store one value to this address.
+
+        This operation is valid only for a typed pointer. The pointee size must
+        be a power-of-two number of bytes.
+
+        Args:
+            value: Scalar value to store. The value must be compatible with the
+                pointee data type.
+            memory_order: Memory order for the store. Supported values are
+                ``MemoryOrder.RELAXED`` and ``MemoryOrder.RELEASE``.
+            memory_scope: Scope of threads that participate in memory ordering.
+            mmio: Whether to use a memory-mapped I/O access. MMIO requires
+                ``MemoryOrder.RELAXED`` or ``MemoryOrder.RELEASE`` and
+                ``MemoryScope.SYS``. The pointer must refer to global memory.
+            alignment: Minimum byte alignment that the compiler can assume.
+                The value must be a positive power of two. The address must
+                have at least this alignment. If the value is ``None``, the
+                natural alignment of the pointee data type is used.
         """
 
     @property

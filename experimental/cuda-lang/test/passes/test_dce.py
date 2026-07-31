@@ -10,6 +10,7 @@ import cuda.lang as cl
 from cuda.lang._compile import _transform_ir
 from cuda.lang._ir.ir import Operation
 from cuda.lang._ir.ops import (
+    AtomicLoad,
     AtomicRMW,
     InlinePTX,
     AllocStaticSharedMemory,
@@ -61,6 +62,31 @@ class TestOpsSurviveDCE:
             cl.atomic_add(A.get_element_pointer(0), cl.int32(1))
 
         assert kernel.has_op(AtomicRMW)
+
+    def test_unused_acquire_load_is_kept(self):
+        @ir_wrapper
+        def kernel(A, n):
+            A.get_element_pointer(0).atomic_load()
+
+        assert kernel.has_op(AtomicLoad)
+
+    def test_unused_relaxed_load_is_removed(self):
+        @ir_wrapper
+        def kernel(A, n):
+            A.get_element_pointer(0).atomic_load(memory_order=cl.MemoryOrder.RELAXED)
+
+        assert not kernel.has_op(AtomicLoad)
+
+    def test_unused_mmio_load_is_kept(self):
+        @ir_wrapper
+        def kernel(A, n):
+            A.get_element_pointer(0).atomic_load(
+                memory_order=cl.MemoryOrder.RELAXED,
+                memory_scope=cl.MemoryScope.SYS,
+                mmio=True,
+            )
+
+        assert kernel.has_op(AtomicLoad)
 
     def test_syncthreads_intrinsic_is_kept(self):
         @ir_wrapper

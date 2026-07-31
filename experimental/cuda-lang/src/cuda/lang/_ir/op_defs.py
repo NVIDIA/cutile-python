@@ -7,6 +7,7 @@ from typing import Optional
 from enum import Enum, auto
 
 import cuda.lang._mlir as mlir
+from cuda.tile._memory_model import MemoryOrder, MemoryScope
 from cuda.tile._ir.ir import MemoryEffect
 import cuda.lang._datatype as datatype
 from cuda.lang._enums import VectorReduction
@@ -84,6 +85,47 @@ class StorePointer(Operation, opcode="store_pointer", memory_effect=MemoryEffect
 class LoadPointer(Operation, opcode="load_pointer", memory_effect=MemoryEffect.LOAD):
     pointer: Var = operand()
     alignment: Optional[int] = attribute()
+
+
+@dataclass(eq=False)
+class AtomicStore(Operation, opcode="atomic_store", memory_effect=MemoryEffect.STORE):
+    pointer: Var = operand()
+    value: Var = operand()
+    alignment: int = attribute()
+    memory_order: MemoryOrder = attribute()
+    memory_scope: MemoryScope = attribute()
+    mmio: bool = attribute()
+
+    VALID_MEMORY_ORDERS = (
+        MemoryOrder.RELAXED,
+        MemoryOrder.RELEASE,
+    )
+    VALID_MMIO_MEMORY_ORDERS = (
+        MemoryOrder.RELAXED,
+        MemoryOrder.RELEASE,
+    )
+
+
+@dataclass(eq=False)
+class AtomicLoad(Operation, opcode="atomic_load", memory_effect=MemoryEffect.LOAD):
+    pointer: Var = operand()
+    alignment: int = attribute()
+    memory_order: MemoryOrder = attribute()
+    memory_scope: MemoryScope = attribute()
+    mmio: bool = attribute()
+
+    VALID_MEMORY_ORDERS = (
+        MemoryOrder.RELAXED,
+        MemoryOrder.ACQUIRE,
+    )
+    VALID_MMIO_MEMORY_ORDERS = (
+        MemoryOrder.RELAXED,
+        MemoryOrder.ACQUIRE,
+    )
+
+    @property
+    def has_observable_effect(self) -> bool:
+        return self.mmio or self.memory_order is MemoryOrder.ACQUIRE
 
 
 @dataclass(eq=False)

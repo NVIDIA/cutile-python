@@ -5,8 +5,9 @@
 import operator
 
 import cuda.lang._datatype as datatype
+from cuda.tile._memory_model import MemoryScope
 from cuda.lang._exception import TypeCheckingError
-from cuda.lang._ir.ir import Var, add_operation
+from cuda.lang._ir.ir import Operation, Var, add_operation
 from cuda.lang._ir.type import (
     ArrayTy,
     ArrayValue,
@@ -17,7 +18,16 @@ from cuda.lang._ir.type import (
     Type,
     VectorTy,
 )
-from cuda.lang._ir.op_defs import LoadPointer, StorePointer, ReinterpretPointerAsArray
+from cuda.lang._ir.atomics_support import (
+    require_atomic_memory_order_and_scope,
+)
+from cuda.lang._ir.op_defs import (
+    AtomicLoad,
+    AtomicStore,
+    LoadPointer,
+    ReinterpretPointerAsArray,
+    StorePointer,
+)
 from cuda.lang._ir.type_checking_helpers import (
     require_concrete_pointer_type,
     require_optional_alignment,
@@ -40,6 +50,7 @@ from cuda.tile._ir.op_impl import (
     ImplRegistry,
     WILDCARD,
     require_array_type,
+    require_constant_bool,
     require_constant_enum,
     require_constant_int_tuple,
     require_constant_pointer_info,
@@ -291,6 +302,114 @@ def pointer_store(
     )
 
 
+def require_atomic_scalar_dtype(
+    operation_type: type[Operation], dtype: datatype.DType
+) -> int:
+    """Require a scalar type with a power-of-two byte size."""
+    byte_count, remainder = divmod(dtype.bitwidth, 8)
+    if remainder or byte_count & (byte_count - 1):
+        raise TypeCheckingError(
+            f"Type {dtype} cannot be accessed atomically; {operation_type._opcode} "
+            "requires a pointee whose size is a power-of-two number of bytes"
+        )
+    return byte_count
+
+
+def require_atomic_mmio(
+    operation_type: type[Operation],
+    pointer_type: PointerTy,
+    mmio: bool,
+    memory_scope: MemoryScope,
+) -> bool:
+    if not mmio:
+        return False
+    if memory_scope is not MemoryScope.SYS:
+        raise TypeCheckingError(
+            f"{operation_type._opcode} with MMIO requires MemoryScope.SYS"
+        )
+    if pointer_type.memory_space not in (MemorySpace.GENERIC, MemorySpace.GLOBAL):
+        raise TypeCheckingError(
+            f"{operation_type._opcode} with MMIO requires a pointer to global memory"
+        )
+    return True
+
+
+def pointer_atomic_load(
+    pointer: Var,
+    memory_order: Var,
+    memory_scope: Var,
+    mmio: Var,
+    alignment: Var,
+) -> Var:
+    pointer_type = require_pointer_type(pointer)
+    pointee_dtype = pointer_type.pointee_dtype
+    natural_alignment = require_atomic_scalar_dtype(AtomicLoad, pointee_dtype)
+    mmio_value = require_constant_bool(mmio)
+    memory_order, memory_scope = require_atomic_memory_order_and_scope(
+        AtomicLoad,
+        memory_order,
+        memory_scope,
+        mmio_value,
+    )
+    mmio_value = require_atomic_mmio(
+        AtomicLoad, pointer_type, mmio_value, memory_scope
+    )
+    alignment = require_optional_alignment(alignment)
+    if alignment is None:
+        alignment = natural_alignment
+    return add_operation(
+        AtomicLoad,
+        ScalarTy(pointee_dtype),
+        pointer=pointer,
+        alignment=alignment,
+        memory_order=memory_order,
+        memory_scope=memory_scope,
+        mmio=mmio_value,
+    )
+
+
+def pointer_atomic_store(
+    pointer: Var,
+    value: Var,
+    memory_order: Var,
+    memory_scope: Var,
+    mmio: Var,
+    alignment: Var,
+) -> None:
+    pointer_type = require_pointer_type(pointer)
+    pointee_dtype = pointer_type.pointee_dtype
+    natural_alignment = require_atomic_scalar_dtype(AtomicStore, pointee_dtype)
+    require_scalar_type(value)
+    value = implicit_cast(
+        value,
+        pointee_dtype,
+        "Stored value type is incompatible with pointer type",
+    )
+    mmio_value = require_constant_bool(mmio)
+    memory_order, memory_scope = require_atomic_memory_order_and_scope(
+        AtomicStore,
+        memory_order,
+        memory_scope,
+        mmio_value,
+    )
+    mmio_value = require_atomic_mmio(
+        AtomicStore, pointer_type, mmio_value, memory_scope
+    )
+    alignment = require_optional_alignment(alignment)
+    if alignment is None:
+        alignment = natural_alignment
+    add_operation_variadic(
+        AtomicStore,
+        (),
+        pointer=pointer,
+        value=value,
+        alignment=alignment,
+        memory_order=memory_order,
+        memory_scope=memory_scope,
+        mmio=mmio_value,
+    )
+
+
 def pointer_with_offset(pointer: Var, offset: Var) -> Var:
     require_pointer_type(pointer)
     ty = require_scalar_type(offset)
@@ -324,6 +443,8 @@ def pointer_memory_space_impl(object: Var[PointerTy], name: Var):
 
 @impl(getattr, overload=(PointerTy, "load"))
 @impl(getattr, overload=(PointerTy, "store"))
+@impl(getattr, overload=(PointerTy, "atomic_load"))
+@impl(getattr, overload=(PointerTy, "atomic_store"))
 def getattr_pointer_method(object: Var, name: Var):
     name = require_constant_str(name)
     unbound_func = getattr(Pointer, name)
@@ -346,6 +467,29 @@ def pointer_store_impl(
     alignment: Var,
 ) -> None:
     pointer_store(self, value, alignment)
+
+
+@impl(Pointer.atomic_load)
+def pointer_atomic_load_impl(
+    self: Var,
+    memory_order: Var,
+    memory_scope: Var,
+    mmio: Var,
+    alignment: Var,
+) -> Var:
+    return pointer_atomic_load(self, memory_order, memory_scope, mmio, alignment)
+
+
+@impl(Pointer.atomic_store)
+def pointer_atomic_store_impl(
+    self: Var,
+    value: Var,
+    memory_order: Var,
+    memory_scope: Var,
+    mmio: Var,
+    alignment: Var,
+) -> None:
+    pointer_atomic_store(self, value, memory_order, memory_scope, mmio, alignment)
 
 
 @impl(core_api.address_space_cast)

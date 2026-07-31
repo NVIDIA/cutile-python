@@ -7,14 +7,344 @@ import cuda.lang as cl
 import torch
 from cuda.lang._compile import compile_simt
 from cuda.lang._exception import UnsupportedFeatureError, TypeCheckingError
+from cuda.lang._ir.ops import AtomicLoad, AtomicStore
 from cuda.lang.compilation import KernelSignature
 
 from .util import (
+    get_ir,
     make_symbolic_tensor,
     make_symbolic_scalar,
     compile_kernel,
     require_blackwell_cc100,
 )
+
+
+def _get_single_op(body, op_type):
+    return next(op for op in body.traverse() if isinstance(op, op_type))
+
+
+@pytest.mark.parametrize(
+    "memory_order",
+    (cl.MemoryOrder.RELAXED, cl.MemoryOrder.ACQUIRE),
+)
+@pytest.mark.parametrize(
+    "memory_scope",
+    (
+        cl.MemoryScope.BLOCK,
+        cl.MemoryScope.CLUSTER,
+        cl.MemoryScope.DEVICE,
+        cl.MemoryScope.SYS,
+    ),
+)
+def test_atomic_pointer_load_memory_arguments(memory_order, memory_scope):
+    def kernel(source, result):
+        result[0] = source.get_base_pointer().atomic_load(
+            memory_order=memory_order,
+            memory_scope=memory_scope,
+        )
+
+    body = get_ir(
+        kernel,
+        (
+            make_symbolic_tensor(1, cl.int32),
+            make_symbolic_tensor(1, cl.int32),
+        ),
+    )
+    operation = _get_single_op(body, AtomicLoad)
+    assert operation.memory_order is memory_order
+    assert operation.memory_scope is memory_scope
+    assert not operation.mmio
+    assert operation.alignment == 4
+
+
+@pytest.mark.parametrize(
+    "memory_order",
+    (cl.MemoryOrder.RELAXED, cl.MemoryOrder.RELEASE),
+)
+@pytest.mark.parametrize(
+    "memory_scope",
+    (
+        cl.MemoryScope.BLOCK,
+        cl.MemoryScope.CLUSTER,
+        cl.MemoryScope.DEVICE,
+        cl.MemoryScope.SYS,
+    ),
+)
+def test_atomic_pointer_store_memory_arguments(memory_order, memory_scope):
+    def kernel(result):
+        result.get_base_pointer().atomic_store(
+            cl.int32(1),
+            memory_order=memory_order,
+            memory_scope=memory_scope,
+        )
+
+    body = get_ir(kernel, (make_symbolic_tensor(1, cl.int32),))
+    operation = _get_single_op(body, AtomicStore)
+    assert operation.memory_order is memory_order
+    assert operation.memory_scope is memory_scope
+    assert not operation.mmio
+    assert operation.alignment == 4
+
+
+def test_atomic_pointer_mmio():
+    def kernel(source, result):
+        value = source.get_base_pointer().atomic_load(
+            memory_order=cl.MemoryOrder.RELAXED,
+            memory_scope=cl.MemoryScope.SYS,
+            mmio=True,
+        )
+        result.get_base_pointer().atomic_store(
+            value,
+            memory_order=cl.MemoryOrder.RELAXED,
+            memory_scope=cl.MemoryScope.SYS,
+            mmio=True,
+        )
+
+    sym = make_symbolic_tensor(1, cl.int32)
+    compile_kernel(
+        kernel,
+        signature=KernelSignature((sym, sym)),
+        assert_in_nvvm=("load atomic volatile", "store atomic volatile"),
+        assert_in_ptx=(
+            "ld.mmio.relaxed.sys.global.b32",
+            "st.mmio.relaxed.sys.global.b32",
+        ),
+        gpu_name="sm_100a",
+        arch="compute_100a",
+    )
+
+
+@pytest.mark.parametrize(
+    "method,memory_order,operation_type",
+    (
+        ("load", cl.MemoryOrder.RELAXED, AtomicLoad),
+        ("load", cl.MemoryOrder.ACQUIRE, AtomicLoad),
+        ("store", cl.MemoryOrder.RELAXED, AtomicStore),
+        ("store", cl.MemoryOrder.RELEASE, AtomicStore),
+    ),
+)
+def test_atomic_pointer_mmio_memory_order(method, memory_order, operation_type):
+    def kernel(data):
+        pointer = data.get_base_pointer()
+        if method == "load":
+            pointer.atomic_load(
+                memory_order=memory_order,
+                memory_scope=cl.MemoryScope.SYS,
+                mmio=True,
+            )
+        else:
+            pointer.atomic_store(
+                cl.int32(1),
+                memory_order=memory_order,
+                memory_scope=cl.MemoryScope.SYS,
+                mmio=True,
+            )
+
+    body = get_ir(kernel, (make_symbolic_tensor(1, cl.int32),))
+    operation = _get_single_op(body, operation_type)
+    assert operation.memory_order is memory_order
+    assert operation.memory_scope is cl.MemoryScope.SYS
+    assert operation.mmio
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "volatile ldst combination does not lower to expected mmio ptx instructions"
+    ),
+)
+@pytest.mark.parametrize(
+    "method,memory_order,instruction",
+    (
+        (
+            "load",
+            cl.MemoryOrder.ACQUIRE,
+            "ld.mmio.acquire.sys.global.b32",
+        ),
+        (
+            "store",
+            cl.MemoryOrder.RELEASE,
+            "st.mmio.release.sys.global.b32",
+        ),
+    ),
+)
+def test_atomic_ldst_mmio_ptx(method, memory_order, instruction):
+    def kernel(data):
+        pointer = data.get_base_pointer()
+        if method == "load":
+            pointer.atomic_load(
+                memory_order=memory_order,
+                memory_scope=cl.MemoryScope.SYS,
+                mmio=True,
+            )
+        else:
+            pointer.atomic_store(
+                cl.int32(1),
+                memory_order=memory_order,
+                memory_scope=cl.MemoryScope.SYS,
+                mmio=True,
+            )
+
+    compile_kernel(
+        kernel,
+        signature=KernelSignature((make_symbolic_tensor(1, cl.int32),)),
+        assert_in_nvvm=("atomic volatile",),
+        assert_in_ptx=instruction,
+        gpu_name="sm_100a",
+        arch="compute_100a",
+    )
+
+
+@pytest.mark.parametrize(
+    "method,memory_order",
+    (
+        ("load", cl.MemoryOrder.WEAK),
+        ("load", cl.MemoryOrder.RELEASE),
+        ("load", cl.MemoryOrder.ACQ_REL),
+        ("store", cl.MemoryOrder.WEAK),
+        ("store", cl.MemoryOrder.ACQUIRE),
+        ("store", cl.MemoryOrder.ACQ_REL),
+    ),
+)
+def test_atomic_pointer_mmio_rejects_invalid_memory_order(method, memory_order):
+    def kernel(result):
+        pointer = result.get_base_pointer()
+        if method == "load":
+            result[0] = pointer.atomic_load(
+                memory_order=memory_order,
+                memory_scope=cl.MemoryScope.SYS,
+                mmio=True,
+            )
+        else:
+            pointer.atomic_store(
+                cl.int32(1),
+                memory_order=memory_order,
+                memory_scope=cl.MemoryScope.SYS,
+                mmio=True,
+            )
+
+    compile_kernel(
+        kernel,
+        signature=KernelSignature((make_symbolic_tensor(1, cl.int32),)),
+        raises=pytest.raises(TypeCheckingError, match="Invalid memory order"),
+    )
+
+
+@pytest.mark.parametrize(
+    "method,memory_order",
+    (
+        ("load", cl.MemoryOrder.RELAXED),
+        ("load", cl.MemoryOrder.ACQUIRE),
+        ("store", cl.MemoryOrder.RELAXED),
+        ("store", cl.MemoryOrder.RELEASE),
+    ),
+)
+@pytest.mark.parametrize(
+    "memory_scope",
+    (
+        cl.MemoryScope.BLOCK,
+        cl.MemoryScope.CLUSTER,
+        cl.MemoryScope.DEVICE,
+    ),
+)
+def test_atomic_pointer_mmio_requires_system_scope(
+    method, memory_order, memory_scope
+):
+    def kernel(result):
+        pointer = result.get_base_pointer()
+        if method == "load":
+            result[0] = pointer.atomic_load(
+                memory_order=memory_order,
+                memory_scope=memory_scope,
+                mmio=True,
+            )
+        else:
+            pointer.atomic_store(
+                cl.int32(1),
+                memory_order=memory_order,
+                memory_scope=memory_scope,
+                mmio=True,
+            )
+
+    compile_kernel(
+        kernel,
+        signature=KernelSignature((make_symbolic_tensor(1, cl.int32),)),
+        raises=pytest.raises(
+            TypeCheckingError, match="MMIO requires MemoryScope.SYS"
+        ),
+    )
+
+
+def test_atomic_pointer_mmio_rejects_shared_memory():
+    def kernel():
+        array = cl.shared_array(1, cl.int32)
+        array.get_base_pointer().atomic_load(
+            memory_order=cl.MemoryOrder.RELAXED,
+            memory_scope=cl.MemoryScope.SYS,
+            mmio=True,
+        )
+
+    compile_kernel(
+        kernel,
+        raises=pytest.raises(
+            TypeCheckingError, match="MMIO requires a pointer to global memory"
+        ),
+    )
+
+
+def test_observe_atomic_load_store():
+    @cl.kernel
+    def kernel(result):
+        first = result.get_element_pointer(0)
+        second = result.get_element_pointer(1)
+        first.atomic_store(cl.int32(42))
+        second.atomic_store(first.atomic_load() + cl.int32(1))
+
+    result = torch.zeros(2, dtype=torch.int32, device="cuda")
+    cl.launch(torch.cuda.current_stream(), (1,), (1,), kernel, (result,))
+    assert result.cpu().tolist() == [42, 43]
+
+
+@pytest.mark.parametrize(
+    "method,memory_order",
+    (
+        ("load", cl.MemoryOrder.WEAK),
+        ("load", cl.MemoryOrder.RELEASE),
+        ("load", cl.MemoryOrder.ACQ_REL),
+        ("store", cl.MemoryOrder.WEAK),
+        ("store", cl.MemoryOrder.ACQUIRE),
+        ("store", cl.MemoryOrder.ACQ_REL),
+    ),
+)
+def test_atomic_pointer_rejects_invalid_memory_order(method, memory_order):
+    def kernel(result):
+        pointer = result.get_base_pointer()
+        if method == "load":
+            result[0] = pointer.atomic_load(memory_order=memory_order)
+        else:
+            pointer.atomic_store(cl.int32(1), memory_order=memory_order)
+
+    compile_kernel(
+        kernel,
+        signature=KernelSignature((make_symbolic_tensor(1, cl.int32),)),
+        raises=pytest.raises(TypeCheckingError, match="Invalid memory order"),
+    )
+
+
+@pytest.mark.parametrize("method", ("load", "store"))
+def test_atomic_pointer_rejects_invalid_memory_scope(method):
+    def kernel(result):
+        pointer = result.get_base_pointer()
+        if method == "load":
+            result[0] = pointer.atomic_load(memory_scope=cl.MemoryScope.NONE)
+        else:
+            pointer.atomic_store(cl.int32(1), memory_scope=cl.MemoryScope.NONE)
+
+    compile_kernel(
+        kernel,
+        signature=KernelSignature((make_symbolic_tensor(1, cl.int32),)),
+        raises=pytest.raises(TypeCheckingError, match="Invalid memory scope"),
+    )
 
 
 def test_pointer_gep():

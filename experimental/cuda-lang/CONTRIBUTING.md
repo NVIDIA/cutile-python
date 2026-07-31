@@ -28,3 +28,4 @@ These terms and abbreviations are permitted in `cuda.lang` source code.
 - src: source
 - dst: destination
 - ndim: number of dimensions
+- mmio: memory-mapped input-output

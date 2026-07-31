@@ -10,7 +10,7 @@ from cuda.tile._memory_model import MemoryOrder, MemoryScope
 
 import cuda.lang._datatype as datatype
 from cuda.lang._exception import TypeCheckingError
-from .ir import Var
+from .ir import Operation, Var
 from .type import PointerTy, ScalarTy
 from .type_checking_helpers import require_scalar_type
 
@@ -122,22 +122,30 @@ def require_atomic_dtype(
 
 
 def require_atomic_memory_order_and_scope(
-    op_name: str, memory_order_var: Var, memory_scope_var: Var
+    operation_type: type[Operation],
+    memory_order_var: Var,
+    memory_scope_var: Var,
+    mmio: bool = False,
 ) -> tuple[MemoryOrder, MemoryScope]:
     memory_order = require_constant_enum(memory_order_var, MemoryOrder)
     memory_scope = require_constant_enum(memory_scope_var, MemoryScope)
 
-    if memory_order not in ATOMIC_VALID_MEMORY_ORDERS:
-        expected = ", ".join(str(order) for order in ATOMIC_VALID_MEMORY_ORDERS)
+    valid_memory_orders = (
+        operation_type.VALID_MMIO_MEMORY_ORDERS
+        if mmio
+        else operation_type.VALID_MEMORY_ORDERS
+    )
+    if memory_order not in valid_memory_orders:
+        expected = ", ".join(str(order) for order in valid_memory_orders)
         raise TypeCheckingError(
-            f"Invalid memory order for {op_name}. "
+            f"Invalid memory order for {operation_type._opcode}. "
             f"Got {memory_order}, expected one of {expected}"
         )
 
     if memory_scope not in ATOMIC_VALID_MEMORY_SCOPES:
         expected = ", ".join(str(scope) for scope in ATOMIC_VALID_MEMORY_SCOPES)
         raise TypeCheckingError(
-            f"Invalid memory scope for {op_name}. "
+            f"Invalid memory scope for {operation_type._opcode}. "
             f"Got {memory_scope}, expected one of {expected}"
         )
 
