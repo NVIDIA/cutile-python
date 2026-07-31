@@ -4,9 +4,32 @@
 
 from typing import Literal
 
-from cuda.lang._execution import function
+from cuda.lang._execution import function, stub
 from .._enums import FenceProxyKind, MemoryOrder, MemoryScope, MemorySpace
 from . import nvvm_mlir_interfaces as _mlir
+
+
+@stub
+def fence(
+    order: Literal[
+        MemoryOrder.ACQUIRE,
+        MemoryOrder.RELEASE,
+        MemoryOrder.ACQ_REL,
+    ],
+    scope: Literal[
+        MemoryScope.BLOCK,
+        MemoryScope.CLUSTER,
+        MemoryScope.DEVICE,
+        MemoryScope.SYS,
+    ],
+) -> None:
+    """Issue a memory fence with the specified order and scope.
+
+    Args:
+        order: Memory-ordering semantics.
+        scope: Memory-ordering scope.
+    """
+    ...
 
 
 @function()
@@ -125,6 +148,7 @@ def fence_proxy_sync_restrict(
 
 __all__ = (
     "FenceProxyKind",
+    "fence",
     "fence_sync_restrict",
     "fence_sc_cluster",
     "fence_mbarrier_initialize",

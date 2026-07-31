@@ -149,6 +149,7 @@ from cuda.tile._ir import hir_stubs
 
 from .op_impl.tcgen05_impl import tcgen05_impl_registry
 from .op_impl.math_impl import math_impl_registry
+from .op_impl.fence_impl import fence_impl_registry
 from .op_impl.vector_impl import vector_impl_registry
 from .op_impl.pointer_impl import (
     pointer_with_offset,
@@ -175,6 +176,7 @@ cuda_lang_impl_registry.update(tcgen05_impl_registry())
 cuda_lang_impl_registry.update(inline_ptx_impl_registry())
 cuda_lang_impl_registry.update(core_api_impl_registry())
 cuda_lang_impl_registry.update(math_impl_registry())
+cuda_lang_impl_registry.update(fence_impl_registry())
 cuda_lang_impl_registry.update(vector_impl_registry())
 cuda_lang_impl_registry.update(pointer_impl_registry())
 cuda_lang_impl_registry.update(copy_async_impl_registry())

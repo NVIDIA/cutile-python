@@ -90,6 +90,7 @@ from ._stub.math import (
 )
 from ._stub.fence import (
     FenceProxyKind,
+    fence,
     fence_sync_restrict,
     fence_sc_cluster,
     fence_mbarrier_initialize,
@@ -354,6 +355,7 @@ __all__ = (
     "MemoryOrder",
     "BarrierReductionKind",
     "FenceProxyKind",
+    "fence",
     "fence_sync_restrict",
     "fence_sc_cluster",
     "fence_mbarrier_initialize",

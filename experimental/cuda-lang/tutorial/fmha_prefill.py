@@ -110,7 +110,7 @@ def _wait_mbarrier(mbar, phase):
 
 def _fence_acq_rel_cta():
     """Order generic shared-memory mailbox accesses at CTA scope."""
-    cl._inline_ptx("fence.acq_rel.cta;")
+    cl.fence(cl.MemoryOrder.ACQ_REL, cl.MemoryScope.BLOCK)
 
 
 def _tmem_pointer(base, lane_offset, column_offset):

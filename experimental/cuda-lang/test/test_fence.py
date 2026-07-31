@@ -10,6 +10,7 @@ from cuda.lang._enums import MemoryScope, MemorySpace, MemoryOrder
 from cuda.lang._exception import (
     CompilerExecutionError,
     InvalidValueError,
+    TypeCheckingError,
 )
 from cuda.lang._stub.fence import FenceProxyKind
 from test.util import make_symbolic_tensor, compile_kernel
@@ -19,7 +20,7 @@ if cc < (9, 0):
     pytest.skip("Requires hopper", True)
 
 
-MEMORY_SCOPE_TO_PTX_REPR = {
+MEMORY_SCOPE_PTX = {
     MemoryScope.BLOCK: "cta",
     MemoryScope.CLUSTER: "cluster",
     MemoryScope.DEVICE: "gpu",
@@ -53,6 +54,49 @@ def compile_empty_kernel_with_call(func, **kwargs):
         func()
 
     compile_kernel(kernel, **kwargs)
+
+
+@pytest.mark.parametrize(
+    "order, scope, expect",
+    (
+        (order, scope, f"fence.{order.value}.{scope_suffix}")
+        for order in (
+            MemoryOrder.ACQUIRE,
+            MemoryOrder.RELEASE,
+            MemoryOrder.ACQ_REL,
+        )
+        for scope, scope_suffix in MEMORY_SCOPE_PTX.items()
+    ),
+)
+def test_fence(order, scope, expect):
+    def func():
+        cl.fence(order, scope)
+
+    compile_empty_kernel_with_call(func, assert_in_ptx=expect)
+
+
+@pytest.mark.parametrize(
+    "order",
+    (MemoryOrder.WEAK, MemoryOrder.RELAXED),
+)
+def test_fence_invalid_order(order):
+    def func():
+        cl.fence(order, MemoryScope.BLOCK)
+
+    compile_empty_kernel_with_call(
+        func,
+        raises=pytest.raises(TypeCheckingError, match="Invalid fence memory order"),
+    )
+
+
+def test_fence_invalid_scope():
+    def func():
+        cl.fence(MemoryOrder.ACQ_REL, MemoryScope.NONE)
+
+    compile_empty_kernel_with_call(
+        func,
+        raises=pytest.raises(TypeCheckingError, match="Invalid fence memory scope"),
+    )
 
 
 @pytest.mark.parametrize(
@@ -127,7 +171,7 @@ def test_fence_proxy(kind, space, expect, raises):
 def _proxy_pair_cases(release: bool):
     direction = "release" if release else "acquire"
     for scope in MemoryScope:
-        scope_ptx = MEMORY_SCOPE_TO_PTX_REPR.get(scope)
+        scope_ptx = MEMORY_SCOPE_PTX.get(scope)
         for from_proxy in FenceProxyKind:
             for to_proxy in FenceProxyKind:
                 valid_scope = scope_ptx is not None
