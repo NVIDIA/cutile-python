@@ -2754,6 +2754,15 @@ static PythonArgProfile* python_arg_profile_lookup_impl(
         } else {
             // Slower path: allocate a new ProfileMapNode.
 
+            if (depth == 0 && (size_t)num_pyargs != param_annotations.size()) {
+                raise(PyExc_TypeError, "Kernel expects %zu %s but %zd %s given",
+                        param_annotations.size(),
+                        param_annotations.size() == 1 ? "argument" : "arguments",
+                        num_pyargs,
+                        num_pyargs == 1 ? "was" : "were");
+                return nullptr;
+            }
+
             // Determine which arguments are aggregate.
             Vec<AggregateArgInfo> aggregate_args;
             for (size_t i = 0; i < query.size(); ++i) {

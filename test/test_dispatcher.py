@@ -289,3 +289,22 @@ def test_max_grid_size_24bit():
     )
     with pytest.raises(ValueError, match=re.escape(expected_msg)):
         ct.launch(torch.cuda.current_stream(), grid, array_inc_1d, (x, tile))
+
+
+def test_wrong_number_of_kernel_arguments():
+    @ct.kernel
+    def kern_one_arg(x):
+        print(x)
+
+    @ct.kernel
+    def kern_two_args(x, y):
+        print(x, y)
+
+    with pytest.raises(TypeError, match="Kernel expects 1 argument but 2 were given"):
+        ct.launch(torch.cuda.current_stream(), (1,), kern_one_arg, (123, 456))
+
+    with pytest.raises(TypeError, match="Kernel expects 2 arguments but 1 was given"):
+        ct.launch(torch.cuda.current_stream(), (1,), kern_two_args, (123,))
+
+    with pytest.raises(TypeError, match="Kernel expects 2 arguments but 3 were given"):
+        ct.launch(torch.cuda.current_stream(), (1,), kern_two_args, (123, 456, 789))
