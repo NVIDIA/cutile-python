@@ -35,6 +35,7 @@ from dataclasses import dataclass
 from typing import Optional, TypeAlias
 
 import cuda.lang as cl
+from cuda.lang._compile import get_compute_capability
 import torch
 
 import fmha_prefill_helpers as fmha_utils
@@ -104,6 +105,14 @@ class UnsupportedFmhaConfiguration(RuntimeError):
     """Raised instead of using a structurally non-equivalent fallback."""
 
 
+cc = get_compute_capability()
+if cc.major != 10:
+    raise RuntimeError(
+        "CUDA Lang FMHA requires Blackwell compute capability 10.x; "
+        f"detected compute capability {cc.major}.{cc.minor}"
+    )
+
+
 def _wait_mbarrier(mbar, phase):
     cl.mbarrier_wait_parity(mbar, phase, time_hint=10_000_000)
 
@@ -167,12 +176,6 @@ def _add_packed_f32x2(a0, a1, b0, b1):
     )
 
 
-def _pack_16bit_pair(lo, hi, element_kind):
-    if element_kind == ELEMENT_BF16:
-        return cl.bitcast(cl._nvvm.ff2bf16x2_rn(hi, lo), cl.int32)
-    return cl.bitcast(cl._nvvm.ff2f16x2_rn(hi, lo), cl.int32)
-
-
 def _pack_e4m3_quad(values):
     lo = cl.uint32(cl.uint16(cl._nvvm.ff_to_e4m3x2_rn(values[1], values[0])))
     hi = cl.uint32(cl.uint16(cl._nvvm.ff_to_e4m3x2_rn(values[3], values[2])))
@@ -187,8 +190,8 @@ def _compute_p_fma_window(
     minus_row_max_scale,
 ):
     affine01 = _fma_packed_f32x2(
-        cl.bitcast(scores[window_start], cl.float32),
-        cl.bitcast(scores[window_start + 1], cl.float32),
+        scores[window_start],
+        scores[window_start + 1],
         scale,
         scale,
         minus_row_max_scale,
@@ -197,8 +200,8 @@ def _compute_p_fma_window(
     if p_window_elems == 2:
         return affine01
     affine23 = _fma_packed_f32x2(
-        cl.bitcast(scores[window_start + 2], cl.float32),
-        cl.bitcast(scores[window_start + 3], cl.float32),
+        scores[window_start + 2],
+        scores[window_start + 3],
         scale,
         scale,
         minus_row_max_scale,
@@ -388,20 +391,9 @@ def _consume_scheduled_tile(
     return seq_tile, head, batch, valid, full_phase ^ 1
 
 
-def _bitcast_f32_vector(values, count):
-    """Reinterpret an int32 register vector as float32 lanes."""
-    return cl.Vector(
-        *tuple(
-            cl.bitcast(values[index], cl.float32)
-            for index in cl.static_iter(range(count))
-        ),
-        dtype=cl.float32,
-    )
-
-
 def _pack_output_values(values, scale, output_kind):
     """Scale and convert 32 FP32 TMEM values into packed output words."""
-    values_f32 = _bitcast_f32_vector(values[:32], 32)
+    values_f32 = values[:32]
     scaled_f32 = values_f32 * scale
     if output_kind == ELEMENT_E4M3:
         return cl.Vector(
@@ -536,7 +528,7 @@ def _mask_score(
         valid = valid and key_index <= query_index + offset + window_right
     result = score
     if not valid:
-        result = cl.bitcast(cl.float32(-float("inf")), cl.int32)
+        result = cl.float32(-float("inf"))
     return result
 
 
@@ -1877,6 +1869,7 @@ def _fmha_prefill_kernel(
                             cl.Tcgen05LoadStoreShape.SHAPE_32X32B,
                             _tmem_pointer(row_tmem, 0, chunk * 32),
                             element_count=32,
+                            dtype=cl.float32,
                         )
                         for chunk in cl.static_iter(range(4))
                     )
@@ -1912,7 +1905,7 @@ def _fmha_prefill_kernel(
                                     )
                                     for item in cl.static_iter(range(32))
                                 ),
-                                dtype=cl.int32,
+                                dtype=cl.float32,
                             )
                             for chunk in cl.static_iter(range(4))
                         )
@@ -1922,7 +1915,7 @@ def _fmha_prefill_kernel(
                     # outer maxnum combines retain the source's semantics.
                     new_row_max = cl.float32(-float("inf"))
                     for chunk in cl.static_iter(score_chunks):
-                        chunk_max = _bitcast_f32_vector(chunk[:32], 32).reduce(
+                        chunk_max = chunk[:32].reduce(
                             cl.VectorReduction.max,
                             propagate_nan=True,
                         )
@@ -1943,9 +1936,9 @@ def _fmha_prefill_kernel(
                         1 ^ (score_event & 1),
                     )
                     stats_vec = cl.Vector(
-                        cl.bitcast(alpha, cl.int32),
-                        cl.bitcast(safe_max, cl.int32),
-                        dtype=cl.int32,
+                        alpha,
+                        safe_max,
+                        dtype=cl.float32,
                     )
                     cl.tcgen05_store(
                         cl.Tcgen05LoadStoreShape.SHAPE_32X32B,
@@ -2373,9 +2366,9 @@ def _fmha_prefill_kernel(
                 1 ^ (final_score_event & 1),
             )
             final_vec = cl.Vector(
-                cl.bitcast(row_sum, cl.int32),
-                cl.bitcast(row_max, cl.int32),
-                dtype=cl.int32,
+                row_sum,
+                row_max,
+                dtype=cl.float32,
             )
             final_tmem = _tmem_pointer(
                 tmem_base,
@@ -2504,8 +2497,9 @@ def _fmha_prefill_kernel(
                             cl.Tcgen05LoadStoreShape.SHAPE_32X32B,
                             stats_tmem,
                             element_count=2,
+                            dtype=cl.float32,
                         )
-                        alpha = cl.bitcast(stats[0], cl.float32)
+                        alpha = stats[0]
                         should_rescale = True
                         if enable_skip_correction:
                             should_rescale = cl.vote_any_sync(
@@ -2522,22 +2516,9 @@ def _fmha_prefill_kernel(
                                     cl.Tcgen05LoadStoreShape.SHAPE_32X32B,
                                     output_tmem,
                                     element_count=8,
-                                )
-                                values_f32 = cl.Vector(
-                                    *tuple(
-                                        cl.bitcast(values[i], cl.float32)
-                                        for i in cl.static_iter(range(8))
-                                    ),
                                     dtype=cl.float32,
                                 )
-                                scaled_f32 = values_f32 * alpha
-                                scaled = cl.Vector(
-                                    *tuple(
-                                        cl.bitcast(scaled_f32[i], cl.int32)
-                                        for i in cl.static_iter(range(8))
-                                    ),
-                                    dtype=cl.int32,
-                                )
+                                scaled = values * alpha
                                 cl.tcgen05_store(
                                     cl.Tcgen05LoadStoreShape.SHAPE_32X32B,
                                     output_tmem,
@@ -2577,10 +2558,11 @@ def _fmha_prefill_kernel(
                     cl.Tcgen05LoadStoreShape.SHAPE_32X32B,
                     stats_tmem,
                     element_count=2,
+                    dtype=cl.float32,
                 )
                 cl.tcgen05_wait_store()
-                row_sum = cl.bitcast(stats[0], cl.float32)
-                row_max = cl.bitcast(stats[1], cl.float32)
+                row_sum = stats[0]
+                row_max = stats[1]
                 # The final statistics are now resident in registers; release
                 # their TMEM alias before doing the comparatively long output
                 # conversion, matching the source pipeline cadence.
@@ -2606,6 +2588,7 @@ def _fmha_prefill_kernel(
                         cl.Tcgen05LoadStoreShape.SHAPE_32X32B,
                         output_tmem,
                         element_count=32,
+                        dtype=cl.float32,
                     )
                     packed_output = _pack_output_values(
                         values, final_scale, output_kind
