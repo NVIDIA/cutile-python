@@ -234,6 +234,7 @@ class Operation:
     attributes: Sequence[tuple[str, Attribute]]
     regions: Sequence["Region"]
     successors: Sequence[BlockLabel]
+    location: Attribute | None = None
 
     def __str__(self):
         io = StringIO()
@@ -326,7 +327,8 @@ class _Cursor:
             ret = tuple(ret)
 
         op = Operation(name=name, results=results, operands=operands, properties=properties,
-                       attributes=attributes, regions=regions, successors=successors)
+                       attributes=attributes, regions=regions, successors=successors,
+                       location=_current_location.location)
         if self._insert_pos is None:
             self._block.append(op)
         else:
@@ -351,6 +353,23 @@ class _CurrentCursor(threading.local):
 
 
 _current_cursor = _CurrentCursor()
+
+
+class _CurrentLocation(threading.local):
+    location: Attribute | None = None
+
+
+_current_location = _CurrentLocation()
+
+
+@contextmanager
+def use_location(location: Attribute | None):
+    old = _current_location.location
+    _current_location.location = location
+    try:
+        yield
+    finally:
+        _current_location.location = old
 
 
 class MlirPrinter:
@@ -442,6 +461,11 @@ class MlirPrinter:
             comma = ", "
 
         if parens:
+            self(")")
+
+        if op.location is not None:
+            self(" loc(")
+            op.location.print_mlir(self, qualified=False)
             self(")")
 
     def print_region(self, region: Region):

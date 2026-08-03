@@ -17,6 +17,7 @@ from ._builtins import SignednessSemantics
 from ._builtins import Type
 from ._builtins import Value
 from ._builtins import add_operation
+from ._builtins import use_location  # noqa: F401
 from dataclasses import dataclass
 from typing import Optional
 from typing import Sequence
@@ -380,6 +381,13 @@ class CallSiteLoc(LocationAttr):
     callee: "Location"
     caller: "Location"
 
+    def _print_mlir_unqualified(self, p):
+        p("callsite(")
+        self.callee._print_mlir_unqualified(p)
+        p(" at ")
+        self.caller._print_mlir_unqualified(p)
+        p(")")
+
 
 @dataclass(kw_only=True)
 class DenseArrayAttr(Attribute, BlobAttr):
@@ -498,6 +506,19 @@ class FileLineColRange(LocationAttr):
     start_column: "int"
     end_line: "int"
     end_column: "int"
+
+    def _print_mlir_unqualified(self, p):
+        self.filename._print_mlir_unqualified(p)
+        p(f":{self.start_line}:{self.start_column}")
+        if (self.end_line, self.end_column) == (
+            self.start_line,
+            self.start_column,
+        ):
+            return
+        p(" to ")
+        if self.end_line != self.start_line:
+            p(self.end_line)
+        p(f":{self.end_column}")
 
 
 @dataclass(kw_only=True)
@@ -682,7 +703,9 @@ class UnitAttr(Attribute):
 
 @dataclass(kw_only=True)
 class UnknownLoc(LocationAttr):
-    pass
+
+    def _print_mlir_unqualified(self, p):
+        p("?")
 
 
 # ---- Types ----

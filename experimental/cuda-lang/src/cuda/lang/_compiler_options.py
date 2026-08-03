@@ -4,12 +4,18 @@
 
 from __future__ import annotations
 from dataclasses import dataclass, field, fields
+from typing import Literal
+
 from ._exception import TypeCheckingError
+
+
+DebugInfo = Literal["none", "line", "full"]
 
 
 @dataclass(frozen=True)
 class CompilerOptions:
     opt_level: int = 3
+    debug_info: DebugInfo = "none"
     max_threads_per_block: tuple[int, int, int] | None = None
     max_blocks_per_cluster: int | None = None
     max_registers_per_thread: int | None = None
@@ -32,6 +38,15 @@ class CompilerOptions:
     )
 
     def __post_init__(self):
+        if self.debug_info not in DebugInfo.__args__:
+            expected = ", ".join(DebugInfo.__args__)
+            message = f"Expected debug_info to be {expected}, but got {self.debug_info}"
+            raise TypeCheckingError(message)
+        if self.debug_info == "full":
+            raise NotImplementedError(
+                "debug_info='full' is not yet implemented. Use debug_info='line'."
+            )
+
         message = (
             "Expected max_threads_per_block to be an integer tuple of length three"
         )

@@ -25,6 +25,7 @@ from .type_conversion import (
     convert_dtype,
     dtype_to_mlir_type,
 )
+from .location import ir_loc_to_mlir_location
 
 
 def _expect_arith_type(ty: ir_type.Type) -> ir_type.TensorLikeTy:
@@ -649,7 +650,11 @@ class DeviceIR2MLIR:
 
     def __call__(self) -> mlir.Operation:
         context = self.context
-        self.setup_func_op()
+        entry_loc = None
+        if self.compiler_options.debug_info == "line":
+            entry_loc = ir_loc_to_mlir_location(context.region.blocks[0].loc)
+        with mlir.use_location(entry_loc):
+            self.setup_func_op()
         self.setup_blocks()
 
         try:
@@ -698,7 +703,11 @@ class DeviceIR2MLIR:
                 if isinstance(operation, tuple(_NOOP_LOWERINGS)):
                     continue
 
-                results = _MLIR_OP_LOWERING.lower(self.context, operation)
+                operation_loc = None
+                if self.compiler_options.debug_info == "line":
+                    operation_loc = ir_loc_to_mlir_location(operation.loc)
+                with mlir.use_location(operation_loc):
+                    results = _MLIR_OP_LOWERING.lower(self.context, operation)
 
                 # Aggregate assignments do not materialize an MLIR SSA value.
                 if isinstance(operation, ops.Assign):

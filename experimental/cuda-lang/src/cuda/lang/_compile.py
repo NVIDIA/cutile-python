@@ -64,6 +64,8 @@ def mlir2cubin(
     *,
     emit_ptx: bool = False,
     emit_nvvm: bool = False,
+    opt_level: int | None = None,
+    generate_line_info: bool = False,
     ptx_compiler_options: Sequence[str] = (),
 ) -> MLIR2CubinResult:
     executable = get_compiler_binary_path()
@@ -73,6 +75,10 @@ def mlir2cubin(
     argv.extend(
         f"--ptx-compiler-option={option}" for option in ptx_compiler_options
     )
+    if opt_level is not None:
+        argv.append(f"--opt={opt_level}")
+    if generate_line_info:
+        argv.append("--generate-device-line-info")
 
     if custom_flags is not None:
         argv.extend(custom_flags.split())
@@ -297,6 +303,8 @@ def compile_simt(
         arch=arch,
         emit_nvvm=need_nvvm,
         emit_ptx=need_ptx,
+        opt_level=compiler_options.opt_level,
+        generate_line_info=compiler_options.debug_info == "line",
         ptx_compiler_options=ptx_compiler_options,
     )
 

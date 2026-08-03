@@ -9,6 +9,30 @@ import pytest
 import torch
 
 
+def test_debug_info_line_option():
+    @cl.kernel(debug_info="line")
+    def foo():
+        pass
+
+    assert foo._compiler_options.debug_info == "line"
+
+
+def test_bad_debug_info_option():
+    with pytest.raises(TypeCheckingError, match="Expected debug_info"):
+
+        @cl.kernel(debug_info="invalid")
+        def foo():
+            pass
+
+
+def test_full_debug_info_is_not_implemented():
+    with pytest.raises(NotImplementedError, match="debug_info='full'"):
+
+        @cl.kernel(debug_info="full")
+        def foo():
+            pass
+
+
 @require_hopper_or_newer()
 @pytest.mark.parametrize(
     "kwarg",

@@ -4,8 +4,10 @@
 
 import torch
 import pytest
+from types import SimpleNamespace
 
 import cuda.lang._mlir as mlir
+import cuda.lang._compile as compile_module
 from cuda.lang._compile import mlir2cubin
 import cuda.lang as cl
 from cuda.lang._compile import get_compute_capability
@@ -23,6 +25,30 @@ class _HackKernel(_cext.TileDispatcher):
 
     def _compile(self, signature, ctx):
         return self._cubin, self._func_name, None, []
+
+
+def test_mlir2cubin_debug_options(monkeypatch):
+    compiler_argv = None
+
+    def run(argv, **kwargs):
+        nonlocal compiler_argv
+        compiler_argv = argv
+        return SimpleNamespace(stdout=b"cubin", stderr=b"")
+
+    monkeypatch.setattr(compile_module.subprocess, "run", run)
+
+    result = mlir2cubin(
+        "module",
+        gpu_name="sm_80",
+        arch="compute_80",
+        opt_level=1,
+        generate_line_info=True,
+    )
+
+    assert result.cubin == b"cubin"
+    assert compiler_argv is not None
+    assert "--opt=1" in compiler_argv
+    assert "--generate-device-line-info" in compiler_argv
 
 
 def construct_1d_memref_from(

@@ -4,6 +4,7 @@
 
 import cuda.lang as cl
 import cuda.lang._compile as compile_module
+from cuda.lang._compiler_options import CompilerOptions
 from cuda.lang._ir import hir, ir
 from cuda.lang._logging import LoggingConfig
 from cuda.lang.compilation import KernelSignature
@@ -27,6 +28,55 @@ def test_compile_simt_does_not_keep_ir_by_default(monkeypatch):
     assert result.nvvm is None
     assert result.ptx is None
     assert isinstance(result.cubin, bytes)
+
+
+def test_compile_simt_keeps_line_information(monkeypatch):
+    _disable_environment_logs(monkeypatch)
+
+    def kernel():
+        pass
+
+    result = cl.compile_simt(
+        kernel,
+        [KernelSignature([])],
+        compiler_options=CompilerOptions(debug_info="line"),
+        keep_mlir=True,
+        keep_nvvm=True,
+        keep_ptx=True,
+    )
+
+    assert result.mlir is not None
+    assert __file__ in result.mlir
+    assert "loc(" in result.mlir
+    assert result.nvvm is not None
+    assert "!DICompileUnit" in result.nvvm
+    assert "!DILocation" in result.nvvm
+    assert result.ptx is not None
+    assert ".file" in result.ptx
+    assert ".loc" in result.ptx
+
+
+def test_compile_simt_keeps_call_site_information(monkeypatch):
+    _disable_environment_logs(monkeypatch)
+
+    def callee():
+        return cl.thread_index(0)
+
+    def kernel():
+        print(callee())
+
+    result = cl.compile_simt(
+        kernel,
+        [KernelSignature([])],
+        compiler_options=CompilerOptions(debug_info="line"),
+        keep_mlir=True,
+        keep_nvvm=True,
+    )
+
+    assert result.mlir is not None
+    assert "loc(callsite(" in result.mlir
+    assert result.nvvm is not None
+    assert "inlinedAt:" in result.nvvm
 
 
 def test_compile_simt_keeps_ir_without_logging(monkeypatch, capsys):

@@ -77,3 +77,63 @@ def test_dense_array_printing():
 
 def test_type_attr_printing():
     assert str(mlir.TypeAttr(value=mlir.IntegerType.signed(16))) == "si16"
+
+
+@pytest.mark.parametrize(
+    "location,expected",
+    (
+        (
+            mlir.FileLineColRange(
+                filename=mlir.StringAttr(value="kernel.py"),
+                start_line=2,
+                start_column=3,
+                end_line=2,
+                end_column=3,
+            ),
+            '"kernel.py":2:3',
+        ),
+        (
+            mlir.FileLineColRange(
+                filename=mlir.StringAttr(value="kernel.py"),
+                start_line=2,
+                start_column=3,
+                end_line=2,
+                end_column=7,
+            ),
+            '"kernel.py":2:3 to :7',
+        ),
+        (
+            mlir.FileLineColRange(
+                filename=mlir.StringAttr(value="kernel.py"),
+                start_line=2,
+                start_column=3,
+                end_line=4,
+                end_column=7,
+            ),
+            '"kernel.py":2:3 to 4:7',
+        ),
+        (mlir.UnknownLoc(), "?"),
+    ),
+)
+def test_location_printing(location, expected):
+    assert str(location) == expected
+
+
+def test_call_site_location_printing():
+    callee = mlir.FileLineColRange(
+        filename=mlir.StringAttr(value="helper.py"),
+        start_line=4,
+        start_column=5,
+        end_line=4,
+        end_column=5,
+    )
+    caller = mlir.FileLineColRange(
+        filename=mlir.StringAttr(value="kernel.py"),
+        start_line=12,
+        start_column=9,
+        end_line=12,
+        end_column=9,
+    )
+    location = mlir.CallSiteLoc(callee=callee, caller=caller)
+
+    assert str(location) == 'callsite("helper.py":4:5 at "kernel.py":12:9)'

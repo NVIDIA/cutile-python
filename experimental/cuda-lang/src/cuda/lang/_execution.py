@@ -8,7 +8,7 @@ from types import FunctionType
 from typing import TYPE_CHECKING
 
 from cuda.lang._ir import ir
-from ._compiler_options import CompilerOptions
+from ._compiler_options import CompilerOptions, DebugInfo
 from cuda.tile import _cext
 from cuda.tile._cext import launch_extended
 from cuda.tile._execution import function, stub, static_def
@@ -132,6 +132,7 @@ class kernel(_cext.TileDispatcher):
         /,
         *,
         opt_level: int | None = 3,
+        debug_info: DebugInfo = "none",
         arch: str | None = None,
         gpu_name: str | None = None,
         max_threads_per_block: Dim3 | None = None,
@@ -147,6 +148,8 @@ class kernel(_cext.TileDispatcher):
         Args:
             function: Python function to be compiled.
             opt_level (int | None): Optimization level applied to the kernel.
+            debug_info: Debug information mode. ``"line"`` adds source line
+                information. ``"none"`` does not add debug information.
             arch (str): GPU architecture this kernel should be compiled for.
                 ``None`` selects an appropriate value for the current device.
             gpu_name (str): GPU name this kernel should be compiled for.
@@ -168,6 +171,7 @@ class kernel(_cext.TileDispatcher):
         self._annotated_function = ann_func
         self._compiler_options = CompilerOptions(
             opt_level=opt_level,
+            debug_info=debug_info,
             max_threads_per_block=max_threads_per_block,
             max_blocks_per_cluster=max_blocks_per_cluster,
             max_registers_per_thread=max_registers_per_thread,
