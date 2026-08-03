@@ -364,6 +364,46 @@ def elect_sync(membermask: int = FULL_MASK, /) -> bool:
 
 
 @stub
+def vote_all_sync(predicate: bool, mask: int = FULL_MASK) -> bool:
+    """Return whether ``predicate`` is true for all lanes in ``mask``.
+
+    Args:
+        predicate: Per-lane boolean value.
+        mask: Mask indicating membership where bit ``i`` selects lane ``i``.
+    """
+
+
+@stub
+def vote_any_sync(predicate: bool, mask: int = FULL_MASK) -> bool:
+    """Return whether ``predicate`` is true for one or more lanes in ``mask``.
+
+    Args:
+        predicate: Per-lane boolean value.
+        mask: Mask indicating membership where bit ``i`` selects lane ``i``.
+    """
+
+
+@stub
+def vote_uniform_sync(predicate: bool, mask: int = FULL_MASK) -> bool:
+    """Return whether ``predicate`` has the same value in all lanes in ``mask``.
+
+    Args:
+        predicate: Per-lane boolean value.
+        mask: Mask indicating membership where bit ``i`` selects lane ``i``.
+    """
+
+
+@stub
+def vote_ballot_sync(predicate: bool, mask: int = FULL_MASK) -> int:
+    """Return the selected lanes for which ``predicate`` is true.
+
+    Args:
+        predicate: Per-lane boolean value.
+        mask: Mask indicating membership where bit ``i`` selects lane ``i``.
+    """
+
+
+@stub
 def _inline_ptx(ptx_code: str, *constraint_pairs: tuple) -> tuple:
     """Execute inline PTX.
 

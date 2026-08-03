@@ -2508,8 +2508,8 @@ def _fmha_prefill_kernel(
                         alpha = cl.bitcast(stats[0], cl.float32)
                         should_rescale = True
                         if enable_skip_correction:
-                            should_rescale = cl._nvvm.vote_any_sync(
-                                cl.int32(-1), alpha != cl.float32(1.0)
+                            should_rescale = cl.vote_any_sync(
+                                alpha != cl.float32(1.0), mask=cl.int32(-1)
                             )
                         if should_rescale:
                             for column in cl.static_iter(range(0, head_dim, 8)):

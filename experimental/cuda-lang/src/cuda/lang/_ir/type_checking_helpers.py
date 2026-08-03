@@ -124,7 +124,7 @@ def require_integral_scalar_type(var: Var, /, bitwidth: int | None = None):
 def require_boolean_scalar_type(var: Var):
     ty = require_scalar_type(var)
     if not is_boolean(ty.dtype):
-        raise make_type_checking_error(f"Expected scalar integral but got {ty}", var)
+        raise make_type_checking_error(f"Expected boolean scalar but got {ty}", var)
 
 
 def require_clusterlaunchcontrol_token_type(var: Var) -> ScalarTy:

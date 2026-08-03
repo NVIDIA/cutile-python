@@ -4,7 +4,7 @@
 import math
 
 import cuda.lang as cl
-from cuda.lang._exception import CompilerExecutionError
+from cuda.lang._exception import CompilerExecutionError, TypeCheckingError
 import torch
 import pytest
 
@@ -702,6 +702,46 @@ class TestVoteSync:
     semantics.
     """
 
+    @pytest.mark.parametrize(
+        "op,intrinsic,result_dtype",
+        (
+            (cl.vote_all_sync, "all", cl.bool_),
+            (cl.vote_any_sync, "any", cl.bool_),
+            (cl.vote_uniform_sync, "uni", cl.bool_),
+            (cl.vote_ballot_sync, "ballot", cl.uint32),
+        ),
+    )
+    def test_lowering_and_result_dtype(self, op, intrinsic, result_dtype):
+        @cl.kernel
+        def kernel():
+            result = op(cl.thread_index(0) == 0)
+            cl.static_assert(cl.dtype_of(result) == result_dtype)
+
+        compile_kernel(
+            kernel,
+            assert_in_mlir=f"llvm.nvvm.vote.{intrinsic}.sync",
+        )
+
+    def test_predicate_must_be_boolean(self):
+        @cl.kernel
+        def kernel():
+            cl.vote_any_sync(cl.int32(1))
+
+        compile_kernel(
+            kernel,
+            raises=pytest.raises(TypeCheckingError, match="Expected boolean scalar"),
+        )
+
+    def test_mask_must_be_integral(self):
+        @cl.kernel
+        def kernel():
+            cl.vote_any_sync(True, mask=cl.float32(1.0))
+
+        compile_kernel(
+            kernel,
+            raises=pytest.raises(TypeCheckingError, match="Expected scalar integral"),
+        )
+
     def test_all_sync(self):
         @cl.kernel
         def kernel(out):
@@ -714,7 +754,7 @@ class TestVoteSync:
             else:
                 pred = lane < 16
 
-            if cl._nvvm.vote_all_sync(mask, pred):
+            if cl.vote_all_sync(pred, mask=mask):
                 out[tid] = 1
             else:
                 out[tid] = 0
@@ -736,7 +776,7 @@ class TestVoteSync:
             else:
                 pred = lane == 0
 
-            if cl._nvvm.vote_any_sync(mask, pred):
+            if cl.vote_any_sync(pred, mask=mask):
                 out[tid] = 1
             else:
                 out[tid] = 0
@@ -760,7 +800,7 @@ class TestVoteSync:
             else:
                 pred = lane < 16
 
-            if cl._nvvm.vote_uni_sync(mask, pred):
+            if cl.vote_uniform_sync(pred, mask=mask):
                 out[tid] = 1
             else:
                 out[tid] = 0
@@ -782,12 +822,29 @@ class TestVoteSync:
             else:
                 pred = (lane % 2) == 0
 
-            out[tid] = cl._nvvm.vote_ballot_sync(mask, pred)
+            out[tid] = cl.vote_ballot_sync(pred, mask=mask)
 
         out = torch.zeros(64, dtype=torch.int32, device="cuda")
         cl.launch(torch.cuda.current_stream(), (1,), (64,), kernel, (out,))
         expected = torch.tensor(
             [0x000000FF] * 32 + [0x55555555] * 32,
+            dtype=torch.int32,
+        )
+        assert (out.cpu() == expected).all()
+
+    def test_ballot_sync_runtime_mask(self):
+        @cl.kernel
+        def kernel(out):
+            lane = cl.thread_index(0)
+            mask = cl.uint32(0x0000FFFF)
+            if lane >= 16:
+                mask = cl.uint32(0xFFFF0000)
+            out[lane] = cl.vote_ballot_sync((lane % 2) == 0, mask=mask)
+
+        out = torch.zeros(32, dtype=torch.int32, device="cuda")
+        cl.launch(torch.cuda.current_stream(), (1,), (32,), kernel, (out,))
+        expected = torch.tensor(
+            [0x00005555] * 16 + [0x55550000] * 16,
             dtype=torch.int32,
         )
         assert (out.cpu() == expected).all()

@@ -625,8 +625,8 @@ def mha_kernel(
                         corr_arrived.get_element_pointer(qid), correction_phase
                     )
                     correction = max_vec[qid, lane_in_group]
-                    needs_rescale = cl._nvvm.vote_any_sync(
-                        cl.int32(-1), correction < cl.float32(1.0)
+                    needs_rescale = cl.vote_any_sync(
+                        correction < cl.float32(1.0), mask=cl.int32(-1)
                     )
                     if needs_rescale:
                         for column in cl.static_iter(range(0, HEAD_DIM_V, 16)):

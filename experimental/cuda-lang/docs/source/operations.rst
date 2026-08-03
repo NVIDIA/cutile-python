@@ -181,6 +181,18 @@ Warp shuffle
     shfl_xor_sync
 
 
+Warp vote
+---------
+.. autosummary::
+   :toctree: generated
+   :nosignatures:
+
+    vote_all_sync
+    vote_any_sync
+    vote_uniform_sync
+    vote_ballot_sync
+
+
 Warp Matrix Load and Store
 --------------------------
 .. autosummary::

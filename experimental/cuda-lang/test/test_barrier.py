@@ -94,7 +94,7 @@ def barrier_reduce_block_cases():
                     elif not isinstance(predicate, bool):
                         raises = pytest.raises(
                             Exception,
-                            match="Expected (a scalar|scalar integral)",
+                            match="Expected (a scalar|boolean scalar)",
                         )
                         yield op, predicate, number_of_threads, aligned, None, raises
                     elif not isinstance(aligned, bool):

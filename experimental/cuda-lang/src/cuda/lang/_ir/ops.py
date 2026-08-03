@@ -104,6 +104,8 @@ from .op_impl.core_api_impl import core_api_impl_registry
 from .type_checking_helpers import (
     require_optional_alignment,
     require_scalar_type,
+    require_integral_scalar_type,
+    require_boolean_scalar_type,
     require_pointer_type,
     require_signed_int_scalar_or_tuple,
     require_clusterlaunchcontrol_token_type,
@@ -601,6 +603,40 @@ def elect_sync_impl(membermask) -> Var:
                                            intrinsic="llvm.nvvm.elect.sync",
                                            operands_=(mask,))
     return is_elected
+
+
+def vote_sync_impl(kind: str, predicate: Var, mask: Var) -> Var:
+    assert kind in ('all', 'any', 'ballot', 'uni')
+    require_boolean_scalar_type(predicate)
+    require_integral_scalar_type(mask)
+    mask = astype(mask, datatype.int32)
+    result_dtype = datatype.uint32 if kind == "ballot" else datatype.bool_
+    return add_operation(
+        RawNVVMIntrinsic,
+        ScalarTy(result_dtype),
+        intrinsic=f"llvm.nvvm.vote.{kind}.sync",
+        operands_=(mask, predicate),
+    )
+
+
+@impl(core_api.vote_all_sync)
+def vote_all_sync_impl(predicate: Var, mask: Var) -> Var:
+    return vote_sync_impl("all", predicate, mask)
+
+
+@impl(core_api.vote_any_sync)
+def vote_any_sync_impl(predicate: Var, mask: Var) -> Var:
+    return vote_sync_impl("any", predicate, mask)
+
+
+@impl(core_api.vote_uniform_sync)
+def vote_uniform_sync_impl(predicate: Var, mask: Var) -> Var:
+    return vote_sync_impl("uni", predicate, mask)
+
+
+@impl(core_api.vote_ballot_sync)
+def vote_ballot_sync_impl(predicate: Var, mask: Var) -> Var:
+    return vote_sync_impl("ballot", predicate, mask)
 
 
 def shfl_sync_impl(mode: str, mask: Var, value: Var, operand: Var, width: Var) -> Var:
