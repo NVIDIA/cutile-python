@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from typing import Any, Callable, Generic, Sequence, TypeVar
 
 from cuda.tile._cext import _benchmark
+from cuda.tile._execution import kernel as TileKernel
 from cuda.tile.tune._tune_utils import benchmark_with_timeout
 import logging
 import sys
@@ -132,7 +133,7 @@ def exhaustive_search(
     search_space: Sequence[T],
     stream,
     grid_fn: Callable[[T], tuple[int, ...]],
-    kernel,
+    kernel: TileKernel | Callable[[T], TileKernel],
     args_fn: Callable[[T], tuple[Any, ...]],
     hints_fn: Callable[[T], dict[str, Any]] | None = None,
     *,
@@ -145,7 +146,9 @@ def exhaustive_search(
         search_space: Sequence of configs to evaluate.
         stream: The CUDA stream to execute kernel on.
         grid_fn: Maps a config to grid dimensions.
-        kernel: The kernel to tune.
+        kernel: The kernel to tune, or a function mapping a config to the kernel to
+            tune. For best performance when using a function, return the same kernel
+            object for configs that map to the same kernel.
         args_fn: Maps a config to kernel arguments for timing.
         hints_fn: Maps a config to compiler hints. Default: no hints.
         quiet: If true, avoid printing any progress or result.
@@ -251,8 +254,9 @@ def exhaustive_search(
         if not quiet and isatty:
             progress(0, i, total, len(errors))
         grid = grid_fn(cfg)
+        base_kernel = kernel if isinstance(kernel, TileKernel) else kernel(cfg)
         hints = hints_fn(cfg) if hints_fn is not None else {}
-        updated_kernel = kernel.replace_hints(**hints)
+        updated_kernel = base_kernel.replace_hints(**hints)
         candidate = _TimingCandidate(
             config=cfg,
             grid=grid,

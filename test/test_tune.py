@@ -364,3 +364,43 @@ def test_tune_scalar_only_ipc(monkeypatch):
     elapsed_us, _ = tune_utils.benchmark_with_timeout(
         torch.cuda.current_stream(), (1,), scalar_only_kernel, (7,), 5.0)
     assert elapsed_us >= 0
+
+
+# ========== Test dynamic generated kernels ==========
+def make_fill_kernel(cfg):
+    if cfg == 0:
+        # A kernel that fails to compile: `undefined_value` is not in scope.
+        @ct.kernel
+        def fill(out):
+            ct.store(out, index=(0,),
+                     tile=ct.full((16,), undefined_value, ct.int32))  # noqa: F821
+    else:
+        @ct.kernel
+        def fill(out):
+            ct.store(out, index=(0,),
+                     tile=ct.full((16,), cfg, ct.int32))
+
+    return fill
+
+
+def test_kernel_generated_per_config():
+    search_space = [0, 1, 2]
+    outs = {cfg: torch.zeros((16,), dtype=torch.int32, device="cuda")
+            for cfg in search_space}
+
+    result = exhaustive_search(
+        search_space,
+        torch.cuda.current_stream(),
+        grid_fn=lambda cfg: (1,),
+        kernel=make_fill_kernel,
+        args_fn=lambda cfg: (outs[cfg],),
+        quiet=True,
+    )
+
+    assert sorted(m.config for m in result.successes) == [1, 2]
+    assert_equal(outs[1], torch.full_like(outs[1], 1))
+    assert_equal(outs[2], torch.full_like(outs[2], 2))
+
+    assert len(result.failures) == 1
+    err_cfg, _, _ = result.failures[0]
+    assert err_cfg == 0
