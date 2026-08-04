@@ -85,15 +85,6 @@ class MemoryScope(enum.Enum):
     SYS = b"\x02"
 
 
-class MultimemReductionKind(enum.Enum):
-    ADD = b"\x00"
-    MIN = b"\x01"
-    MAX = b"\x02"
-    AND = b"\x03"
-    OR = b"\x04"
-    XOR = b"\x05"
-
-
 class RoundingMode(enum.Enum):
     NEAREST_EVEN = b"\x00"
     ZERO = b"\x01"
@@ -727,7 +718,7 @@ def encode_FPowIOp(  # since 13.4
 ) -> Value:
     _buf = code_builder.buf
     # Opcode
-    encode_varint(130, _buf)
+    encode_varint(121, _buf)
     # Result types
     encode_typeid(result_type, _buf)
     # Operands
@@ -1332,7 +1323,7 @@ def encode_MemoryFenceAliasTkoOp(  # since 13.4
 ) -> Value:
     _buf = code_builder.buf
     # Opcode
-    encode_varint(131, _buf)
+    encode_varint(122, _buf)
     # Result types
     encode_typeid(result_token_type, _buf)
     # Operands
@@ -1531,103 +1522,6 @@ def encode_MulhiIOp(
     # Operands
     encode_operand(x, _buf)
     encode_operand(y, _buf)
-    return code_builder.new_op()
-
-
-def encode_MultimemLoadReduceViewTkoOp(  # since 13.4
-    code_builder: CodeBuilder,
-    reduced_values_type: TypeId,  # since 13.4
-    result_token_type: TypeId,  # since 13.4
-    view: Value,  # since 13.4
-    index: Sequence[Value],  # since 13.4
-    token: Optional[Value],  # since 13.4
-    memory_ordering_semantics: MemoryOrderingSemantics,  # since 13.4
-    memory_scope: Optional[MemoryScope],  # since 13.4
-    reduction: MultimemReductionKind,  # since 13.4
-    inbounds: Sequence[bool],  # since 13.4
-) -> Tuple[Value, Value]:
-    _buf = code_builder.buf
-    # Opcode
-    encode_varint(121, _buf)
-    # Variadic result types
-    encode_sized_typeid_seq((reduced_values_type, result_token_type,), _buf)
-    # Flags
-    encode_varint((memory_scope is not None)
-                  | ((token is not None) << 1), _buf)
-    # Attributes
-    code_builder.encode_opattr_enum(MemoryOrderingSemantics, memory_ordering_semantics)
-    if memory_scope is not None:
-        code_builder.encode_opattr_enum(MemoryScope, memory_scope)
-    code_builder.encode_opattr_enum(MultimemReductionKind, reduction)
-    code_builder.encode_opattr_dense_bool_array(inbounds)
-    # Operands
-    encode_operand(view, _buf)
-    encode_sized_variadic_operands(index, _buf)
-    encode_optional_operand(token, _buf)
-    return code_builder.new_op(2)
-
-
-def encode_MultimemReduceViewTkoOp(  # since 13.4
-    code_builder: CodeBuilder,
-    result_token_type: TypeId,  # since 13.4
-    view: Value,  # since 13.4
-    tile: Value,  # since 13.4
-    index: Sequence[Value],  # since 13.4
-    token: Optional[Value],  # since 13.4
-    memory_ordering_semantics: MemoryOrderingSemantics,  # since 13.4
-    memory_scope: MemoryScope,  # since 13.4
-    reduction: MultimemReductionKind,  # since 13.4
-    inbounds: Sequence[bool],  # since 13.4
-) -> Value:
-    _buf = code_builder.buf
-    # Opcode
-    encode_varint(128, _buf)
-    # Variadic result types
-    encode_sized_typeid_seq((result_token_type,), _buf)
-    # Flags
-    encode_varint((token is not None), _buf)
-    # Attributes
-    code_builder.encode_opattr_enum(MemoryOrderingSemantics, memory_ordering_semantics)
-    code_builder.encode_opattr_enum(MemoryScope, memory_scope)
-    code_builder.encode_opattr_enum(MultimemReductionKind, reduction)
-    code_builder.encode_opattr_dense_bool_array(inbounds)
-    # Operands
-    encode_operand(view, _buf)
-    encode_operand(tile, _buf)
-    encode_sized_variadic_operands(index, _buf)
-    encode_optional_operand(token, _buf)
-    return code_builder.new_op()
-
-
-def encode_MultimemStoreViewTkoOp(  # since 13.4
-    code_builder: CodeBuilder,
-    result_token_type: TypeId,  # since 13.4
-    view: Value,  # since 13.4
-    tile: Value,  # since 13.4
-    index: Sequence[Value],  # since 13.4
-    token: Optional[Value],  # since 13.4
-    memory_ordering_semantics: MemoryOrderingSemantics,  # since 13.4
-    memory_scope: Optional[MemoryScope],  # since 13.4
-    inbounds: Sequence[bool],  # since 13.4
-) -> Value:
-    _buf = code_builder.buf
-    # Opcode
-    encode_varint(129, _buf)
-    # Variadic result types
-    encode_sized_typeid_seq((result_token_type,), _buf)
-    # Flags
-    encode_varint((memory_scope is not None)
-                  | ((token is not None) << 1), _buf)
-    # Attributes
-    code_builder.encode_opattr_enum(MemoryOrderingSemantics, memory_ordering_semantics)
-    if memory_scope is not None:
-        code_builder.encode_opattr_enum(MemoryScope, memory_scope)
-    code_builder.encode_opattr_dense_bool_array(inbounds)
-    # Operands
-    encode_operand(view, _buf)
-    encode_operand(tile, _buf)
-    encode_sized_variadic_operands(index, _buf)
-    encode_optional_operand(token, _buf)
     return code_builder.new_op()
 
 
@@ -2266,7 +2160,6 @@ __all__ = [
     'IntegerOverflow',
     'MemoryOrderingSemantics',
     'MemoryScope',
-    'MultimemReductionKind',
     'RoundingMode',
     'Signedness',
     'SymbolVisibility',
@@ -2343,9 +2236,6 @@ __all__ = [
     'encode_MulFOp',
     'encode_MulIOp',
     'encode_MulhiIOp',
-    'encode_MultimemLoadReduceViewTkoOp',
-    'encode_MultimemReduceViewTkoOp',
-    'encode_MultimemStoreViewTkoOp',
     'encode_NegFOp',
     'encode_NegIOp',
     'encode_OffsetOp',
