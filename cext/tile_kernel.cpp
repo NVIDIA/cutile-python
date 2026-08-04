@@ -121,9 +121,16 @@ namespace { union ArraySpecializationBits {
 
 static_assert(sizeof(ArraySpecializationBits) == 8);
 
+#ifdef CUDA_TILE_ENABLE_DEV_FEATURES
+#define ENABLE_CCONV_V3
+#endif
+
 enum class CallConvVersion {
     CutilePython_V1 = 1,
     CutilePython_V2 = 2,
+#ifdef ENABLE_CCONV_V3
+    CutilePython_V3 = 3,
+#endif
 };
 
 namespace { struct CallingConvention {
@@ -175,23 +182,41 @@ static PyPtr get_cconv(CallConvVersion version) {
     return steal(ret);
 }
 
+static PyObject* get_cached_cconv(CallConvVersion version, PyObject** cache) {
+    if (!*cache) {
+        PyPtr cconv = get_cconv(version);
+        if (!cconv) return nullptr;
+        *cache = cconv.release();
+    }
+    return Py_NewRef(*cache);
+}
+
 static PyObject* CallingConvention_cutile_python_v1(PyObject*, PyObject*) {
     static PyObject* c;
-    if (!c) c = get_cconv(CallConvVersion::CutilePython_V1).release();
-    return Py_NewRef(c);
+    return get_cached_cconv(CallConvVersion::CutilePython_V1, &c);
 }
 
 static PyObject* CallingConvention_cutile_python_v2(PyObject*, PyObject*) {
     static PyObject* c;
-    if (!c) c = get_cconv(CallConvVersion::CutilePython_V2).release();
-    return Py_NewRef(c);
+    return get_cached_cconv(CallConvVersion::CutilePython_V2, &c);
 }
+
+#ifdef ENABLE_CCONV_V3
+static PyObject* CallingConvention_cutile_python_v3(PyObject*, PyObject*) {
+    static PyObject* c;
+    return get_cached_cconv(CallConvVersion::CutilePython_V3, &c);
+}
+#endif
 
 static PyPtr parse_cutile_python_calling_convention(const char* s) {
     if (s[0] == '1' && !s[1])
         return get_cconv(CallConvVersion::CutilePython_V1);
     if (s[0] == '2' && !s[1])
         return get_cconv(CallConvVersion::CutilePython_V2);
+#ifdef ENABLE_CCONV_V3
+    if (s[0] == '3' && !s[1])
+        return get_cconv(CallConvVersion::CutilePython_V3);
+#endif
     return {};
 }
 
@@ -220,6 +245,14 @@ static PyMethodDef CallingConvention_methods[] = {
         "--\n\n"
         "Returns the ``cutile_python_v2`` calling convention.\n\n"
     },
+#ifdef ENABLE_CCONV_V3
+    {"cutile_python_v3", CallingConvention_cutile_python_v3, METH_NOARGS | METH_STATIC,
+       "cutile_python_v3()\n"
+        "--\n\n"
+        "Returns the ``cutile_python_v3`` calling convention.\n\n"
+
+    },
+#endif
     {}  // sentinel
 };
 
@@ -4310,7 +4343,25 @@ static void try_get_cuda_bindings_globals() {
     }
 }
 
+static PyObject* dev_features_enabled(PyObject*, PyObject*) {
+#ifdef CUDA_TILE_ENABLE_DEV_FEATURES
+    Py_RETURN_TRUE;
+#else
+    Py_RETURN_FALSE;
+#endif
+}
+
+static PyObject* cconv_v3_enabled(PyObject*, PyObject*) {
+#ifdef ENABLE_CCONV_V3
+    Py_RETURN_TRUE;
+#else
+    Py_RETURN_FALSE;
+#endif
+}
+
 static PyMethodDef functions[] = {
+    {"dev_features_enabled", dev_features_enabled, METH_NOARGS, nullptr},
+    {"cconv_v3_enabled", cconv_v3_enabled, METH_NOARGS, nullptr},
     {"launch", reinterpret_cast<PyCFunction>(cuda_tile_launch),
         METH_FASTCALL | METH_KEYWORDS, LAUNCH_SIGNATURE "\n"
         "--\n\n"

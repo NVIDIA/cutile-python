@@ -61,6 +61,10 @@ def dev_features_enabled():
     ...
 
 
+def cconv_v3_enabled():
+    ...
+
+
 class TileDispatcher:
     def __init__(self, parameter_annotations: Sequence):
         ...

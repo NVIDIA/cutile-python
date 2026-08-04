@@ -15,24 +15,10 @@ extern "C" int __cdecl _purecall() { CHECK(false); }
 #endif
 
 
-static PyObject* dev_features_enabled(PyObject*, PyObject*) {
-#ifdef CUDA_TILE_ENABLE_DEV_FEATURES
-    Py_RETURN_TRUE;
-#else
-    Py_RETURN_FALSE;
-#endif
-}
-
-static PyMethodDef module_methods[] = {
-    {"dev_features_enabled", dev_features_enabled, METH_NOARGS, nullptr},
-    {nullptr, nullptr, 0, nullptr},
-};
-
 static PyModuleDef module_def = {
     .m_base = PyModuleDef_HEAD_INIT,
     .m_name = "cuda.tile._cext",
     .m_size = 0,
-    .m_methods = module_methods,
 };
 
 PyMODINIT_FUNC PyInit__cext() {

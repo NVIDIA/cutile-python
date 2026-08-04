@@ -81,7 +81,7 @@ target_link_options(_cext PUBLIC ${cext_link_flags} ${nostdlib_flags})
 set_target_properties(_cext PROPERTIES SKIP_BUILD_RPATH TRUE)
 
 if (ENABLE_DEV_FEATURES)
-    target_compile_definitions(_cext PRIVATE CUDA_TILE_ENABLE_DEV_FEATURES)
+    target_compile_definitions(_cext_static PRIVATE CUDA_TILE_ENABLE_DEV_FEATURES)
 endif()
 
 if (APPLE)
