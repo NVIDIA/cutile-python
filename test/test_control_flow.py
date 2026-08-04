@@ -8,7 +8,7 @@ import torch
 
 from math import ceil
 import cuda.tile as ct
-from cuda.tile._exception import TileTypeError, TileSyntaxError
+from cuda.tile._exception import TileTypeError
 from util import assert_equal
 
 
@@ -174,15 +174,57 @@ class TestForLoop:
                 break
             x += 1
 
-    @pytest.mark.parametrize("n", [5, 1])
-    def test_break_in_for_loop(self, n):
+    @pytest.mark.parametrize("n", [5, 1, 0, 2, 3])
+    def test_break_in_for_loop_1(self, n):
         N = 256
         tile = 128
         x = torch.zeros(N, dtype=torch.float32, device='cuda')
+        ref = torch.zeros_like(x)
         grid = ((N // tile), 1, 1)
-        with pytest.raises(TileSyntaxError, match="Break in a for loop is not supported"):
-            # TODO(Issue-103): Break in for needs to be transformed to loopOp
-            ct.launch(torch.cuda.current_stream(), grid, self.plus_n_until_2, (x, n, tile))
+        ct.launch(torch.cuda.current_stream(), grid, self.plus_n_until_2, (x, n, tile))
+        self.plus_n_until_2_ref(ref, n)
+
+        assert_equal(x, ref)
+
+    @staticmethod
+    @ct.kernel
+    def nested_cont_break_if(x, n, tile: ct.Constant[int]):
+        i = ct.bid(0)
+        xi = ct.load(x, index=(i,), shape=(tile,))
+        for index in range(n):
+            for inner in range(n):
+                if inner == 2:
+                    break
+            if index == 2:
+                continue
+            elif index > 4:
+                break
+            xi += 1
+        ct.store(x, index=(i,), tile=xi)
+
+    @staticmethod
+    def nested_cont_break_if_ref(x, n):
+        for index in range(n):
+            for inner in range(n):
+                if inner == 2:
+                    break
+            if index == 2:
+                continue
+            elif index > 4:
+                break
+            x += 1
+
+    @pytest.mark.parametrize("n", [0, 1, 2, 3, 5, 6, 8])
+    def test_nested_break_continue_in_for_loop(self, n):
+        N = 256
+        tile = 128
+        x = torch.zeros(N, dtype=torch.float32, device='cuda')
+        ref = torch.zeros_like(x)
+        grid = ((N // tile), 1, 1)
+        ct.launch(torch.cuda.current_stream(), grid, self.nested_cont_break_if, (x, n, tile))
+        self.nested_cont_break_if_ref(ref, n)
+
+        assert_equal(x, ref)
 
     @staticmethod
     @ct.kernel

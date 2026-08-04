@@ -1062,8 +1062,8 @@ def _continue_stmt(stmt: ast.Continue, ctx: _Context) -> None:
 
 @_register(_stmt_handlers, ast.Break)
 def _break_stmt(stmt: ast.Break, ctx: _Context) -> None:
-    if ctx.parent_loops and ctx.parent_loops[-1] in (LoopKind.FOR, LoopKind.STATIC_FOR):
-        raise ctx.syntax_error("Break in a for loop is not supported")
+    if ctx.parent_loops and ctx.parent_loops[-1] in (LoopKind.STATIC_FOR,):
+        raise ctx.syntax_error("Break in a for loop with static_iter() is not supported")
     ctx.set_block_jump(hir.Jump.BREAK)
 
 

@@ -68,7 +68,7 @@ def test_static_iter_break_not_allowed():
 
     x = torch.zeros((10,), dtype=torch.int32, device="cuda")
     with pytest.raises(ct.TileSyntaxError,
-                       match="Break in a for loop is not supported"):
+                       match="Break in a for loop with static_iter\\(\\) is not supported"):
         ct.launch(torch.cuda.current_stream(), (1,), kernel, (x,))
 
 

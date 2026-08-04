@@ -1,0 +1,1 @@
+Added support for `break` in non-static `for` loops.

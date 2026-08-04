@@ -161,9 +161,10 @@ async def loop_impl(body: hir.Block, iterable: Var):
     # Propagate type information from Continue/Break to body/result phis
     for jump_info in loop_info.jumps:
         is_continue = isinstance(jump_info.jump_op, Continue)
-        assert is_continue or isinstance(jump_info.jump_op, Break)
+        is_break = isinstance(jump_info.jump_op, Break)
+        assert is_continue or is_break
         for output, state in zip(jump_info.outputs, var_states, strict=True):
-            if is_continue:
+            if is_continue or (is_break and range_ty is not None):
                 state.body_phi.propagate(output, fail_eagerly=True)
             if range_ty is not None or not is_continue:
                 state.result_phi.propagate(output)
