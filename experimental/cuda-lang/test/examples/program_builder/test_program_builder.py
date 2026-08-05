@@ -2,12 +2,25 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-from typing import Callable
-from abc import abstractmethod
+from dataclasses import dataclass
+import sys
+from pathlib import Path
+
 import torch
 import cuda.lang as cl
-from dataclasses import dataclass, fields, replace
-import pprint
+
+if not __package__:
+    sys.path.insert(0, str(Path(__file__).parents[3]))
+    __package__ = "test.examples.program_builder"
+
+from .program_builder import (
+    Call,
+    ForN,
+    If,
+    ProgN,
+    Visitor,
+    VisitorIterate,
+)
 
 __doc__ = """
 Demonstrates the flexibility of frozen dataclasses by constructing a dynamic
@@ -20,86 +33,6 @@ and executing the program on the device.
 class Context:
     tensor: cl.Array
     iv: int = 0
-    n: int = 0
-
-
-@dataclass(frozen=True)
-class AST:
-    @abstractmethod
-    def __call__(self, context: Context) -> Context: ...
-
-    def __str__(self):
-        return pprint.pformat(self, indent=2, width=60)
-
-    def visit(self, f):
-        f(self)
-        for field in fields(self):
-            attr = getattr(self, field.name)
-            attr.visit(f)
-
-
-@dataclass(frozen=True)
-class ProgN(AST):
-    body: tuple
-
-    def __call__(self, context):
-        for expr in cl.static_iter(self.body):
-            context = expr(context)
-        return context
-
-    def visit(self, f):
-        f(self)
-        for expression in self.body:
-            expression.visit(f)
-
-
-@dataclass(frozen=True)
-class If(AST):
-    condition: AST
-    then: AST
-    else_: AST
-
-    def __call__(self, context):
-        if self.condition(context):
-            context = self.then(context)
-        else:
-            context = self.else_(context)
-        return context
-
-
-@dataclass(frozen=True)
-class Loop(AST):
-    condition: AST
-    body: AST
-
-    def __call__(self, context):
-        while self.condition(context):
-            context = self.body(context)
-        return context
-
-
-@dataclass(frozen=True)
-class ForN(AST):
-    get_n: AST
-    body: AST
-
-    def __call__(self, context):
-        context = self.get_n(context)
-        for iv in range(context.n):
-            context = replace(context, iv=iv)
-            context = self.body(context)
-        return context
-
-
-@dataclass(frozen=True)
-class Call(AST):
-    function: Callable
-
-    def __call__(self, context):
-        return self.function(context)
-
-    def visit(self, f):
-        f(self)
 
 
 def assign_to_tensor(context: Context):
@@ -108,7 +41,7 @@ def assign_to_tensor(context: Context):
 
 
 def get_tensor_length(context):
-    return replace(context, n=context.tensor.shape[0])
+    return context.tensor.shape[0]
 
 
 def print_tensor_element(context):
@@ -150,7 +83,7 @@ schedule = ProgN(
 
 
 @dataclass
-class Visitor:
+class ProgNAnalysis(Visitor):
     seen_progn: bool = False
     seen_nested_progn: bool = False
 
@@ -158,16 +91,19 @@ class Visitor:
         got_progn = isinstance(node, ProgN)
         self.seen_nested_progn |= self.seen_progn and got_progn
         self.seen_progn = self.seen_progn or got_progn
+        return (
+            VisitorIterate.STOP if self.seen_nested_progn else VisitorIterate.CONTINUE
+        )
 
 
 def analyze_program(program):
     """Example analysis traversing and analyzing the program on the host"""
-    visitor = Visitor()
+    visitor = ProgNAnalysis()
     program.visit(visitor)
     assert visitor.seen_nested_progn
 
 
-def test_device_lisp():
+def test_simple_program_builder():
     analyze_program(schedule)
     import subprocess
     import sys
