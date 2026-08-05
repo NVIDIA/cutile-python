@@ -24,16 +24,20 @@ jobs:
     name: Define Base Images
     runs-on: ubuntu-latest
     outputs:
-      lint: ghcr.io/nvidia/cutile-python/lint:2026-03-18-3ee906b0ced0
-      docs: ghcr.io/nvidia/cutile-python/docs:2026-03-18-67c908a4176e
-      build_py310: ghcr.io/nvidia/cutile-python/build_py_3.10_x86_64:2026-03-18-a2fdea5320fe
-      build_py311: ghcr.io/nvidia/cutile-python/build_py_3.11_x86_64:2026-03-18-8573f3996301
-      build_py312: ghcr.io/nvidia/cutile-python/build_py_3.12_x86_64:2026-03-18-63835ff03f5d
-      build_py313: ghcr.io/nvidia/cutile-python/build_py_3.13_x86_64:2026-03-18-9cadab6c475e
-      test_py310: ghcr.io/nvidia/cutile-python/test_py_3.10_x86_64:2026-03-25-d688c40b1f28
-      test_py311: ghcr.io/nvidia/cutile-python/test_py_3.11_x86_64:2026-03-25-ee977c750e6a
-      test_py312: ghcr.io/nvidia/cutile-python/test_py_3.12_x86_64:2026-03-25-4a28b7ac9c10
-      test_py313: ghcr.io/nvidia/cutile-python/test_py_3.13_x86_64:2026-03-25-daa77b7df120
+      lint: ghcr.io/nvidia/cutile-python/lint:2026-08-04-8854f4ebd00e
+      docs: ghcr.io/nvidia/cutile-python/docs:2026-08-04-2b5c1b6ff16d
+      build_py310: ghcr.io/nvidia/cutile-python/build_py_3.10_x86_64:2026-08-04-a22cfecce994
+      build_py311: ghcr.io/nvidia/cutile-python/build_py_3.11_x86_64:2026-08-04-01ddf2db1250
+      build_py312: ghcr.io/nvidia/cutile-python/build_py_3.12_x86_64:2026-08-04-5d176be12380
+      build_py313: ghcr.io/nvidia/cutile-python/build_py_3.13_x86_64:2026-08-04-36f3cb8cb734
+      build_py314: ghcr.io/nvidia/cutile-python/build_py_3.14_x86_64:2026-08-04-8941b0827e64
+      build_py314t: ghcr.io/nvidia/cutile-python/build_py_3.14t_x86_64:2026-08-04-539882a577bf
+      test_py310: ghcr.io/nvidia/cutile-python/test_py_3.10_x86_64:2026-08-04-09ad1ed2ad49
+      test_py311: ghcr.io/nvidia/cutile-python/test_py_3.11_x86_64:2026-08-04-29a68e5c67ac
+      test_py312: ghcr.io/nvidia/cutile-python/test_py_3.12_x86_64:2026-08-04-4f9f6c939518
+      test_py313: ghcr.io/nvidia/cutile-python/test_py_3.13_x86_64:2026-08-04-3c7a7b10362c
+      test_py314: ghcr.io/nvidia/cutile-python/test_py_3.14_x86_64:2026-08-04-27b9df967040
+      test_py314t: ghcr.io/nvidia/cutile-python/test_py_3.14t_x86_64:2026-08-04-77600bd82ab8
     steps:
       - run: echo "Defining image tags"
 
@@ -110,6 +114,10 @@ jobs:
             image_key: build_py312
           - python-version: "3.13"
             image_key: build_py313
+          - python-version: "3.14"
+            image_key: build_py314
+          - python-version: "3.14t"
+            image_key: build_py314t
     container:
       image: ${{ needs.images.outputs[matrix.image_key] }}
     steps:
@@ -148,6 +156,10 @@ jobs:
             image_key: test_py312
           - python-version: "3.13"
             image_key: test_py313
+          - python-version: "3.14"
+            image_key: test_py314
+          - python-version: "3.14t"
+            image_key: test_py314t
     container:
       image: ${{ needs.images.outputs[matrix.image_key] }}
       credentials:
