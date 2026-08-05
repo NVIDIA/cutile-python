@@ -5,7 +5,8 @@ import re
 import struct
 from collections import defaultdict, OrderedDict
 from dataclasses import dataclass
-from typing import Sequence, Protocol, Iterable, TypeVar
+from enum import Enum
+from typing import Sequence, Protocol, Iterable, Any, TypeVar
 
 from ._signature import ArrayConstraint, ParameterConstraint, ListConstraint, TupleConstraint, \
     ScalarConstraint, KernelSignature, _collect_alias_groups, ConstantConstraint, \
@@ -20,12 +21,14 @@ def mangle_kernel_name(function_name: str,
                        kernel_signature: KernelSignature) -> str:
     alias_group_map, alias_group_names = _map_alias_groups(kernel_signature.parameters)
     cconv = kernel_signature.calling_convention
-    collected_globals = _CollectedGlobals(dataclasses=set())
+    collected_globals = _CollectedGlobals(dataclasses=set(), enums=set())
     ret = (function_name + f"_K{cconv.code}"
            + "".join("_" + _mangle_constraint(p, alias_group_map, collected_globals)
                      for p in kernel_signature.parameters))
     parsed_function_name, parsed_sig = _demangle_kernel_name(
-            ret, alias_group_names, allowed_dataclasses=collected_globals.dataclasses)
+            ret, alias_group_names,
+            allowed_dataclasses=collected_globals.dataclasses,
+            allowed_enums=collected_globals.enums)
     assert function_name == parsed_function_name
     assert kernel_signature.parameters == parsed_sig.parameters, \
         f"Failed to round-trip mangled name {ret}"
@@ -41,17 +44,19 @@ class GlobalProvider(Protocol[T]):
 
 
 def demangle_kernel_name(symbol: str) -> tuple[str, KernelSignature]:
-    return _demangle_kernel_name(symbol, None, allowed_dataclasses=[])
+    return _demangle_kernel_name(symbol, None, allowed_dataclasses=[], allowed_enums=[])
 
 
 @dataclass(frozen=True)
 class _CollectedGlobals:
     dataclasses: set[type]
+    enums: set[type[Enum]]
 
 
 @dataclass(frozen=True)
 class _AllowedGlobals:
     dataclasses: GlobalProvider[type]
+    enums: GlobalProvider[type[Enum]]
 
 
 def _to_global_provider(iterable_or_provider: Iterable[T] | GlobalProvider[T],
@@ -73,10 +78,12 @@ def _to_global_provider(iterable_or_provider: Iterable[T] | GlobalProvider[T],
 
 def _demangle_kernel_name(symbol: str,
                           alias_group_names: Sequence[str] | None,
-                          allowed_dataclasses: Iterable[type] | GlobalProvider[type]
+                          allowed_dataclasses: Iterable[type] | GlobalProvider[type],
+                          allowed_enums: Iterable[type[Enum]] | GlobalProvider[type[Enum]],
                           ) -> tuple[str, KernelSignature]:
     allowed_globals = _AllowedGlobals(
-        dataclasses=_to_global_provider(allowed_dataclasses, "allowed_dataclasses")
+        dataclasses=_to_global_provider(allowed_dataclasses, "allowed_dataclasses"),
+        enums=_to_global_provider(allowed_enums, "allowed_enums")
     )
 
     pos = symbol.rfind("_K")
@@ -193,7 +200,7 @@ def _mangle_constraint(p: ParameterConstraint, alias_group_map: dict[str, int],
     elif isinstance(p, ScalarConstraint):
         return "S" + _mangle_dtype(p.dtype)
     elif isinstance(p, ConstantConstraint):
-        kind = classify_constant(p.value)
+        kind = classify_constant(p.value, True)
         assert kind is not None  # validated in ConstantConstraint.__post_init__()
         match kind:
             case ConstantKind.Bool:
@@ -203,6 +210,9 @@ def _mangle_constraint(p: ParameterConstraint, alias_group_map: dict[str, int],
             case ConstantKind.Float:
                 [i] = struct.unpack("<Q", struct.pack("<d", p.value))
                 ret = "F" + f"{i:016x}"
+            case ConstantKind.Enum:
+                assert cconv_v3_enabled()
+                ret = "Ce_" + _mangle_enum_constant(p.value, collected_globals)
             case _: assert False
         assert ret.startswith(kind._value_)
         return ret
@@ -214,7 +224,8 @@ def _demangle_constraint(cursor: _Cursor,
                          alias_group_demangler: _AliasGroupDemangler,
                          allowed_globals: _AllowedGlobals) -> ParameterConstraint:
     orig_cursor = cursor.clone()
-    c = cursor.expect("[A-Z]", "Expected a constraint starting with a capital letter")
+    c = cursor.expect("[A-BD-Z]|C[a-z0-9]+_",
+                      "Expected a constraint starting with a capital letter")
     if c == "A":
         return _demangle_array_constraint(cursor, alias_group_demangler)
     elif c == "L":
@@ -234,6 +245,8 @@ def _demangle_constraint(cursor: _Cursor,
         i = int(cursor.expect("[0-9a-f]{16}", "Expected 16 hex digits"), base=16)
         [f] = struct.unpack("<d", struct.pack("<Q", i))
         return ConstantConstraint(f)
+    elif c == "Ce_" and cconv_v3_enabled():
+        return ConstantConstraint(_demangle_enum_constant(cursor, allowed_globals))
     else:
         raise orig_cursor.make_error(f"Unexpected constraint code '{c}'")
 
@@ -441,12 +454,9 @@ def _demangle_tuple_constraint(cursor: _Cursor,
 def _mangle_dataclass_constraint(constraint: DataclassConstraint,
                                  alias_group_map: dict[str, int],
                                  collected_globals: _CollectedGlobals) -> str:
-    collected_globals.dataclasses.add(constraint.cls)
-
     # Format: {module_name}{qualname}{field count}{field0_mangling}{field1_mangling}...
     return (
-        _mangle_string(constraint.cls.__module__)
-        + _mangle_string(constraint.cls.__qualname__)
+        _mangle_global(constraint.cls, collected_globals.dataclasses)
         + str(len(constraint.fields))
         + "".join(_mangle_constraint(f, alias_group_map, collected_globals)
                   for f in constraint.fields)
@@ -456,14 +466,35 @@ def _mangle_dataclass_constraint(constraint: DataclassConstraint,
 def _demangle_dataclass_constraint(cursor: _Cursor,
                                    alias_group_demangler: _AliasGroupDemangler,
                                    allowed_globals: _AllowedGlobals) -> DataclassConstraint:
-    module_name = _demangle_string(cursor)
-    qualname = _demangle_string(cursor)
-    cls = allowed_globals.dataclasses(module_name, qualname)
-
+    cls = _demangle_global(cursor, allowed_globals.dataclasses)
     field_count = int(cursor.expect("[1-9][0-9]*", "Expected field count"))
     items = [_demangle_constraint(cursor, alias_group_demangler, allowed_globals)
              for _ in range(field_count)]
     return DataclassConstraint(cls, items)
+
+
+def _mangle_enum_constant(value, collected_globals: _CollectedGlobals):
+    assert isinstance(value, Enum)
+    enum_cls = type(value)
+    return _mangle_global(enum_cls, collected_globals.enums) + _mangle_string(value._name_)
+
+
+def _demangle_enum_constant(cursor: _Cursor,
+                            allowed_globals: _AllowedGlobals) -> Any:
+    enum_cls = _demangle_global(cursor, allowed_globals.enums)
+    member_name = _demangle_string(cursor)
+    return enum_cls.__members__[member_name]
+
+
+def _mangle_global(obj: T, collected: set[T]) -> str:
+    collected.add(obj)
+    return _mangle_string(obj.__module__) + _mangle_string(obj.__qualname__)
+
+
+def _demangle_global(cursor: _Cursor, provider: GlobalProvider[T]) -> T:
+    module_name = _demangle_string(cursor)
+    qualname = _demangle_string(cursor)
+    return provider(module_name, qualname)
 
 
 def _mangle_string(s: str) -> str:

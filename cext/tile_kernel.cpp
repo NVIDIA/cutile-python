@@ -39,6 +39,8 @@ static PyObject* g_preferred_block_in_cluster_count_pyunicode;
 static PyObject* g_programmatic_dependent_launch_pyunicode;
 static PyObject* g___dataclass_fields___pyunicode;
 
+static PyObject* g_enum_Enum_type;
+
 static PyTypeObject* g_torch_Tensor_type;
 static PyTypeObject* g_torch_cuda_Stream_type;
 static PyObject* g_torch_to_dlpack_func;
@@ -386,6 +388,12 @@ struct TileKernel {
     CudaKernel cukernel;
     HostProgram dyn_smem_size_prog;
     Vec<HoistedTensorMap> hoisted_tensor_maps;
+
+    // For an identity constant (e.g., Enum values), the key of KernelMap contains the constant's
+    // address encoded as an int64_t. Just by itself, this is prone to the ABA problem:
+    // if the constant is freed, another object could be allocated at the same address.
+    // Thus, for each such constant, we store a reference to it.
+    Vec<PyPtr> constant_refs;
 };
 
 struct KernelImage {
@@ -498,7 +506,8 @@ struct AggregateArgType {
 #define FOREACH_CONSTANT_KIND(X) \
     X(Bool, "B") \
     X(Int, "I") \
-    X(Float, "F")
+    X(Float, "F") \
+    X(Enum, "Ce_")
 
 #define CONSTANT_KIND_ENTRY(name, _mangling) name,
 
@@ -534,19 +543,18 @@ static PyPtr define_constant_kind_enum() {
             return {};
     }
 
-    PyPtr enum_mod = steal(PyImport_ImportModule("enum"));
-    if (!enum_mod) return {};
-
-    return steal(PyObject_CallMethod(
-            enum_mod.get(), "Enum", "sO", "ConstantKind", entries.get()));
+    return steal(PyObject_CallFunction(
+            g_enum_Enum_type, "sO", "ConstantKind", entries.get()));
 }
 
 
-#define PARAMETER_CATEGORY_CONSTANT_ENTRY(name, _mangling) Constant##name,
 
 struct ParameterKind {
     enum Category : uint8_t {
-        FOREACH_CONSTANT_KIND(PARAMETER_CATEGORY_CONSTANT_ENTRY)
+        ConstantBool,
+        ConstantInt,
+        ConstantFloat,
+        IdentityConstant,  // constant that can be compared via object identity, e.g. an Enum value
         Array,
         Boolean,
         Integer,
@@ -576,12 +584,11 @@ struct KernelFamily : SimpleRefcount<KernelFamily> {
 };
 
 
-#define CONSTANT_PYTHON_ARG_KIND_ENTRY(name, _mangling) Constant##name,
-
 enum class PythonArgKind : uint8_t {
-    // All kinds of constants go first, so that we could trivially cast
-    // a ConstantKind to a PythonArgKind.
-    FOREACH_CONSTANT_KIND(CONSTANT_PYTHON_ARG_KIND_ENTRY)
+    ConstantBool,
+    ConstantInt,
+    ConstantFloat,
+    IdentityConstant,
     // A torch.Tensor that we can access via torch._C._to_dlpack
     TorchTensorDlpack,
     // An object with __dlpack__ method
@@ -599,22 +606,22 @@ enum class PythonArgKind : uint8_t {
 };
 
 static inline PythonArgKind constant_kind_as_arg_kind(ConstantKind kind) {
-// Verify that ConstantKind values match PythonArgKind values
-#define STATIC_ASSERT_CONSTANT_KIND_EQUALS_ARG_KIND(name, _mangling) \
-    static_assert(static_cast<int>(ConstantKind::name) \
-            == static_cast<int>(PythonArgKind::Constant##name));
-
-    FOREACH_CONSTANT_KIND(STATIC_ASSERT_CONSTANT_KIND_EQUALS_ARG_KIND)
-    return static_cast<PythonArgKind>(kind);
+    switch (kind) {
+    case ConstantKind::Bool: return PythonArgKind::ConstantBool;
+    case ConstantKind::Int: return PythonArgKind::ConstantInt;
+    case ConstantKind::Float: return PythonArgKind::ConstantFloat;
+    case ConstantKind::Enum: return PythonArgKind::IdentityConstant;
+    }
+    CHECK_UNREACHABLE;
 }
 
 
 static ParameterKind::Category param_category_from_pyarg_kind(PythonArgKind k) {
-#define CONSTANT_ARG_KIND_CASE(name, _mangling) \
-    case PythonArgKind::Constant##name: return ParameterKind::Constant##name;
-
     switch (k) {
-    FOREACH_CONSTANT_KIND(CONSTANT_ARG_KIND_CASE)
+    case PythonArgKind::ConstantBool: return ParameterKind::ConstantBool;
+    case PythonArgKind::ConstantInt: return ParameterKind::ConstantInt;
+    case PythonArgKind::ConstantFloat: return ParameterKind::ConstantFloat;
+    case PythonArgKind::IdentityConstant: return ParameterKind::IdentityConstant;
     case PythonArgKind::TorchTensorDlpack: return ParameterKind::Array;
     case PythonArgKind::DlpackArray: return ParameterKind::Array;
     case PythonArgKind::CudaArray: return ParameterKind::Array;
@@ -627,7 +634,7 @@ static ParameterKind::Category param_category_from_pyarg_kind(PythonArgKind k) {
 }
 
 
-static std::optional<ConstantKind> classify_constant(PyObject* obj) {
+static std::optional<ConstantKind> classify_constant(PyObject* obj, bool kernel_arg) {
     if (PyBool_Check(obj))
         return ConstantKind::Bool;
 
@@ -637,11 +644,27 @@ static std::optional<ConstantKind> classify_constant(PyObject* obj) {
     if (PyFloat_Check(obj))
         return ConstantKind::Float;
 
+#ifndef ENABLE_CCONV_V3
+    if (!kernel_arg) {
+#endif
+
+    if (PyObject_TypeCheck(obj, reinterpret_cast<PyTypeObject*>(g_enum_Enum_type)))
+        return ConstantKind::Enum;
+
+#ifndef ENABLE_CCONV_V3
+    }
+#endif
+
     return std::nullopt;
 }
 
-static PyObject* py_classify_constant(PyObject* self, PyObject* obj) {
-    std::optional<ConstantKind> res = classify_constant(obj);
+static PyObject* py_classify_constant(PyObject* self, PyObject* args) {
+    PyObject* obj;
+    int kernel_arg;
+    if (!PyArg_ParseTuple(args, "Op", &obj, &kernel_arg))
+        return nullptr;
+
+    std::optional<ConstantKind> res = classify_constant(obj, kernel_arg);
     if (!res.has_value())
         return Py_NewRef(Py_None);
 
@@ -1842,6 +1865,22 @@ static PyPtr parse_float_constant_constraint(ConstantCursor& cursor) {
     return make_constant_constraint(value.get());
 }
 
+static void extract_identity_constant(PyObject* object, Vec<int64_t>* constants,
+                                      Vec<PyObject*>* identity_constants) {
+    constants->push_back(reinterpret_cast<int64_t>(object));
+    identity_constants->push_back(object);
+}
+
+static PyPtr parse_identity_constant_constraint(ConstantCursor& cursor,
+                                                const Vec<PyObject*>& identity_constants) {
+    int64_t address = cursor.next();
+    for (PyObject* obj : identity_constants) {
+        if (reinterpret_cast<int64_t>(obj) == address)
+            return make_constant_constraint(obj);
+    }
+    CHECK_UNREACHABLE;
+}
+
 static Result<ArrayRepr> get_array_repr(PythonArgKind kind, PyObject* pyobj,
                                         unsigned index_bitwidth, Arena& arena) {
     switch (kind) {
@@ -2132,6 +2171,9 @@ static Status extract_arg(const DriverApi* driver, PyObject* obj, PythonArgKind 
     case PythonArgKind::ConstantFloat:
         extract_float_constant(obj, &helper.constants);
         return OK;
+    case PythonArgKind::IdentityConstant:
+        extract_identity_constant(obj, &helper.constants, &helper.identity_constants);
+        return OK;
     case PythonArgKind::TorchTensorDlpack:
         return extract_array<arrayrepr_torch_tensor_dlpack>(driver, obj, annotation->array, helper);
     case PythonArgKind::DlpackArray:
@@ -2164,6 +2206,7 @@ static Status extract_cuda_args(const DriverApi* driver,
     helper.list_args.clear();
     helper.total_list_data_size_words = 0;
     helper.constants.clear();
+    helper.identity_constants.clear();
     for (size_t i = 0; i < arg_kinds.size(); ++i) {
         PythonArgKind kind = arg_kinds[i];
         if (!extract_arg(driver, pyarg_objs[i], kind, flat_param_annotations[i].get(), helper))
@@ -2173,7 +2216,8 @@ static Status extract_cuda_args(const DriverApi* driver,
 }
 
 static PyPtr parse_element_constraint(ConstantCursor& cursor, ParameterKind::Category category,
-                                      const LeafAnnotationNode& annotation) {
+                                      const LeafAnnotationNode& annotation,
+                                      const Vec<PyObject*>& identity_constants) {
     switch (category) {
     case ParameterKind::ConstantBool:
         return parse_bool_constant_constraint(cursor);
@@ -2181,6 +2225,8 @@ static PyPtr parse_element_constraint(ConstantCursor& cursor, ParameterKind::Cat
         return parse_int_constant_constraint(cursor);
     case ParameterKind::ConstantFloat:
         return parse_float_constant_constraint(cursor);
+    case ParameterKind::IdentityConstant:
+        return parse_identity_constant_constraint(cursor, identity_constants);
     case ParameterKind::Array:
         return parse_array_constraint(cursor, annotation.array.static_shape_dims,
                                       annotation.array.static_stride_dims);
@@ -2222,13 +2268,15 @@ static PyPtr create_dataclass_constraint(PyObject* dataclass, PyObject* items_li
 
 static PyPtr parse_param_constraint(ConstantCursor& cursor,
                                     Cursor<ParameterKind>* param_cursor,
-                                    Cursor<RefPtr<LeafAnnotationNode>>* annotation_cursor) {
+                                    Cursor<RefPtr<LeafAnnotationNode>>* annotation_cursor,
+                                    const Vec<PyObject*>& identity_constants) {
     const ParameterKind& pk = param_cursor->next();
     if (pk.category == ParameterKind::AggregateBegin) {
         PyPtr items_list = steal(PyList_New(0));
         if (!items_list) return {};
         while (param_cursor->peek().category != ParameterKind::AggregateEnd) {
-            PyPtr item = parse_param_constraint(cursor, param_cursor, annotation_cursor);
+            PyPtr item = parse_param_constraint(cursor, param_cursor, annotation_cursor,
+                                                identity_constants);
             if (!item) return {};
             if (PyList_Append(items_list.get(), item.get()) < 0) return {};
         }
@@ -2247,11 +2295,12 @@ static PyPtr parse_param_constraint(ConstantCursor& cursor,
         CHECK(false);
     }
     LeafAnnotationNode* annotation = annotation_cursor->next().get();
-    return parse_element_constraint(cursor, pk.category, *annotation);
+    return parse_element_constraint(cursor, pk.category, *annotation, identity_constants);
 }
 
 static PyPtr parse_parameter_constraints(
         ConstantCursor cursor,
+        const Vec<PyObject*>& identity_constants,
         const Vec<ParameterKind>& param_kinds,
         const Vec<RefPtr<LeafAnnotationNode>>& flat_param_annotations) {
     PyPtr param_constraints = steal(PyList_New(0));
@@ -2260,7 +2309,8 @@ static PyPtr parse_parameter_constraints(
     Cursor<ParameterKind> param_cursor(param_kinds);
     Cursor<RefPtr<LeafAnnotationNode>> annotation_cursor(flat_param_annotations);
     while (param_cursor.peek().category != ParameterKind::AggregateEnd) {
-        PyPtr constraint = parse_param_constraint(cursor, &param_cursor, &annotation_cursor);
+        PyPtr constraint = parse_param_constraint(cursor, &param_cursor, &annotation_cursor,
+                                                  identity_constants);
         if (!constraint) return {};
         if (PyList_Append(param_constraints.get(), constraint.get()))
             return {};
@@ -2299,10 +2349,12 @@ static CallConvVersion minimum_calling_convention(
 }
 
 static PyPtr make_signature(ConstantCursor constants,
+                            const Vec<PyObject*>& identity_constants,
                             const Vec<ParameterKind>& param_kinds,
                             const Vec<RefPtr<LeafAnnotationNode>>& flat_param_annotations,
                             const PyPtr& calling_convention) {
-    PyPtr parameters = parse_parameter_constraints(constants, param_kinds, flat_param_annotations);
+    PyPtr parameters = parse_parameter_constraints(constants, identity_constants, param_kinds,
+                                                   flat_param_annotations);
     if (!parameters) return {};
 
     PyObject* signature_module = get_signature_module();
@@ -3017,7 +3069,7 @@ get_pyarg_kinds(const Vec<PyTypeObject*>& pyarg_types_depth_first,
     for (size_t i = 0; i < n; ++i) {
         PyObject* obj = leaf_pyarg_objs[i];
         if (flat_param_annotations[i]->constant) {
-            std::optional<ConstantKind> kind = classify_constant(obj);
+            std::optional<ConstantKind> kind = classify_constant(obj, true);
             if (!kind.has_value()) {
                 return raise_invalid_kernel_arg_type(
                         pyarg_types_depth_first, agg_types, i,
@@ -3036,7 +3088,8 @@ get_pyarg_kinds(const Vec<PyTypeObject*>& pyarg_types_depth_first,
                 } else {
                     return raise_invalid_kernel_arg_type(
                             pyarg_types_depth_first, agg_types, i,
-                            "Objects of type '%s' are not supported.", Py_TYPE(obj)->tp_name);
+                            "Objects of type '%s' are not supported as non-constant arguments.",
+                            Py_TYPE(obj)->tp_name);
                 }
             }
             ret.push_back(*kind);
@@ -3461,6 +3514,7 @@ static Result<PreparedLaunch> prepare_launch(
         ConstantCursor constants_cursor(helper->constants.data(), helper->constants.size() - 1);
         PyPtr signature = make_signature(
                 constants_cursor,
+                helper->identity_constants,
                 profile->family->param_kinds,
                 profile->flat_param_annotations,
                 cconv);
@@ -3475,6 +3529,9 @@ static Result<PreparedLaunch> prepare_launch(
                                          g_default_tile_context, image,
                                          py_compute_capability.get());
         if (!res.is_ok()) return ErrorRaised;
+
+        for (PyObject* obj : helper->identity_constants)
+            res->constant_refs.push_back(newref(obj));
 
         if (!kernel_item)
             kernel_item = kernel_map.insert(std::move(helper->constants), std::move(*res));
@@ -3972,7 +4029,8 @@ static PyObject* get_parameter_constraints_from_pyargs(PyObject* self, PyObject*
     }
 
     PyPtr ret = parse_parameter_constraints(
-            helper->constants, profile->family->param_kinds, profile->flat_param_annotations);
+            helper->constants, helper->identity_constants,
+            profile->family->param_kinds, profile->flat_param_annotations);
     return ret.release();
 }
 
@@ -4500,6 +4558,16 @@ static Result<bool> py_environ_has(const char* name) {
     }
 }
 
+static Status get_standard_globals() {
+    PyPtr enum_mod = steal(PyImport_ImportModule("enum"));
+    if (!enum_mod) return ErrorRaised;
+
+    PyPtr enum_type = getattr(enum_mod, "Enum");
+    if (!enum_type) return ErrorRaised;
+
+    g_enum_Enum_type = enum_type.release();
+    return OK;
+}
 
 static void try_get_torch_globals() {
     PyPtr torch = try_import("torch");
@@ -4608,7 +4676,7 @@ static PyMethodDef functions[] = {
     },
     {"get_parameter_constraints_from_pyargs", get_parameter_constraints_from_pyargs,
       METH_VARARGS, ""},
-    {"classify_constant", py_classify_constant, METH_O,
+    {"classify_constant", py_classify_constant, METH_VARARGS,
       "Classify a constant Python value into a ConstantKind"},
     {"_benchmark", reinterpret_cast<PyCFunction>(cuda_tile_benchmark), METH_FASTCALL,
         BENCHMARK_SIGNATURE "\n"
@@ -4666,6 +4734,8 @@ Status tile_kernel_init(PyObject* m) {
     INIT_STRING_CONSTANT(preferred_block_in_cluster_count);
     INIT_STRING_CONSTANT(programmatic_dependent_launch);
     INIT_STRING_CONSTANT(__dataclass_fields__);
+
+    if (!get_standard_globals()) return ErrorRaised;
 
     g_constant_kind_enum = define_constant_kind_enum().release();
     if (!g_constant_kind_enum) return ErrorRaised;

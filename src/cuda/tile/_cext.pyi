@@ -53,7 +53,7 @@ class ConstantKind(enum.Enum):
     ...
 
 
-def classify_constant(value, /) -> ConstantKind | None:
+def classify_constant(value, kernel_arg, /) -> ConstantKind | None:
     ...
 
 

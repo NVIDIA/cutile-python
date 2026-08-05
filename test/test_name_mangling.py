@@ -3,14 +3,16 @@
 # SPDX-License-Identifier: Apache-2.0
 
 from dataclasses import dataclass
+from enum import Enum
 from typing import Any
 
 import pytest
 
 from cuda.tile._cext import cconv_v3_enabled
-from cuda.tile.compilation import mangle_kernel_name, demangle_kernel_name
-from cuda.tile.compilation import (KernelSignature, ScalarConstraint, ArrayConstraint,
-                                   ListConstraint, TupleConstraint, CallingConvention)
+from cuda.tile.compilation import (
+    mangle_kernel_name, demangle_kernel_name, KernelSignature, ScalarConstraint, ArrayConstraint,
+    ListConstraint, TupleConstraint, CallingConvention
+)
 
 # FIXME: import from `cuda.tile.compilation` when cconv_v3_enabled() guard is removed
 from cuda.tile.compilation._signature import DataclassConstraint
@@ -344,6 +346,11 @@ _LOCAL_DCLASS = _make_local_dclass()
 _MOD = "test__name__mangling_z"
 
 
+class MyEnum(Enum):
+    OKAY = 123
+    Буквы = 456
+
+
 @pytest.mark.parametrize("parameters, expected_suffix", [
     # Simple dataclass: two scalar fields.
     pytest.param(
@@ -429,6 +436,13 @@ _MOD = "test__name__mangling_z"
         f"_A2f32_3l0_D{_MOD}DClassOneField_z1Si32_Sf32",
         id="dataclass_among_other_params",
     ),
+
+    # Enum value
+    pytest.param(
+        [MyEnum.OKAY, MyEnum.Буквы],
+        f"_Ce_{_MOD}MyEnum_zO_kAY_z_Ce_{_MOD}MyEnum_z_u0411_u0443_u043a_u0432_u044b_z",
+        id="enum_constant",
+    ),
 ] if cconv_v3_enabled() else [])
 @pytest.mark.skipif(not cconv_v3_enabled(), reason="Requires cconv3 enabled")
 def test_name_mangling_cutile_python_v3(parameters, expected_suffix):
@@ -441,7 +455,9 @@ def test_name_mangling_cutile_python_v3(parameters, expected_suffix):
     # TODO: change to public demangle_kernel_name() once cconv_v3_enabled() guard is removed
     allowed_dataclasses = [DClassTwoFields, DClassOneField,
                            First.Second, First.Third, _LOCAL_DCLASS]
-    demangled_name, demangled_sig = _demangle_kernel_name(mangled, None, allowed_dataclasses)
+    allowed_enums = [MyEnum]
+    demangled_name, demangled_sig = _demangle_kernel_name(
+            mangled, None, allowed_dataclasses, allowed_enums)
     assert demangled_name == func_name
     assert demangled_sig.parameters == sig.parameters
 
@@ -450,7 +466,7 @@ def test_name_mangling_cutile_python_v3(parameters, expected_suffix):
 def test_demangle_dataclass_with_v2_raises():
     symbol = f"my_kernel_Kt2_D{_MOD}DClassOneField_z1Si32"
     with pytest.raises(ValueError, match="version >= 3"):
-        _demangle_kernel_name(symbol, None, allowed_dataclasses=[DClassOneField])
+        _demangle_kernel_name(symbol, None, allowed_dataclasses=[DClassOneField], allowed_enums=[])
 
 
 @pytest.mark.skipif(not cconv_v3_enabled(), reason="Requires cconv3 enabled")

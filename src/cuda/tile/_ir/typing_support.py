@@ -5,7 +5,6 @@ import inspect
 import operator
 import dataclasses
 from contextlib import _GeneratorContextManager
-from enum import Enum
 from functools import lru_cache
 from types import ModuleType, FunctionType, BuiltinFunctionType
 from typing import Any, Callable, Mapping, Union, Sequence
@@ -165,17 +164,17 @@ def dtype_of_constant_scalar(val: bool | int | float) -> DType:
 
 
 def type_of_constant_python_value(val, typing_hooks: TypingHooks) -> Type:
-    kind = classify_constant(val)
+    kind = classify_constant(val, False)
     match kind:
         case None: pass
         case ConstantKind.Bool | ConstantKind.Int | ConstantKind.Float:
             return typing_hooks.get_tensor_like_type(dtype_of_constant_scalar(val), ())
+        case ConstantKind.Enum:
+            return EnumTy(val)
         case _: assert False
 
     if val is None:
         return NONE
-    if isinstance(val, Enum):
-        return EnumTy(val)
     if isinstance(val, str):
         return StringTy(val)
     if val is Ellipsis:

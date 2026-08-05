@@ -46,6 +46,7 @@ struct LaunchHelper {
     Vec<ListArg> list_args;
     size_t total_list_data_size_words;
     Vec<int64_t> constants;
+    Vec<PyObject*> identity_constants;
     CUcontext cuda_context;
     LaunchHelper* next_free;
 

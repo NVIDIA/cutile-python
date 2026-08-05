@@ -302,7 +302,7 @@ class ConstantConstraint:
     value: ConstantValue
 
     def __post_init__(self):
-        if classify_constant(self.value) is None:
+        if classify_constant(self.value, True) is None:
             raise TypeError(f"Unexpected constant value type {type(self.value)}")
 
     def __eq__(self, other):
@@ -334,7 +334,7 @@ ParameterConstraintLike = ParameterConstraint | ConstantValue | tuple | Dataclas
 def _to_constraint(c: ParameterConstraintLike) -> ParameterConstraint:
     if isinstance(c, ParameterConstraint):
         return c
-    elif classify_constant(c) is not None:
+    elif classify_constant(c, True) is not None:
         return ConstantConstraint(c)
     elif isinstance(c, tuple):
         return TupleConstraint(tuple(_to_constraint(x) for x in c))
