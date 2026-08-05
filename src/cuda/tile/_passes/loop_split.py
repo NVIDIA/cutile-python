@@ -51,6 +51,8 @@ def _find_splittable_loops(block: Block,
             good_loop = (op.is_for_loop
                          and op.step.is_constant()
                          and op.step.get_constant() == 1)
+            for var in op.body.params:
+                def_depth[var.name] = depth + 1
             _find_splittable_loops(
                 op.body,
                 def_depth,
@@ -165,7 +167,8 @@ def _clone_loop(loop: Loop, new_start: Var, new_stop: Var, new_step: Var,
 
 def split_loops(block: Block):
     splittable_loops = defaultdict(dict)
-    _find_splittable_loops(block, dict(), 0, None, None, dict(), dict(), splittable_loops)
+    def_depth = {param.name: 0 for param in block.params}
+    _find_splittable_loops(block, def_depth, 0, None, None, dict(), dict(), splittable_loops)
 
     loops_to_split = dict()
     if_ops_to_flatten = set()
