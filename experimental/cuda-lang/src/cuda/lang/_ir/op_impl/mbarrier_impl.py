@@ -17,7 +17,7 @@ from cuda.tile._ir.op_impl import (
     require_constant_bool,
     require_constant_enum,
 )
-from cuda.tile._memory_model import MemoryOrder
+from cuda.lang._enums import MemoryOrder
 
 _registry = ImplRegistry()
 impl = _registry.impl

@@ -4,9 +4,11 @@
 
 from typing import Literal
 
+import cuda.lang as cl
 from cuda.lang._execution import function, stub
 from .._enums import FenceProxyKind, MemoryOrder, MemoryScope, MemorySpace
 from . import nvvm_mlir_interfaces as _mlir
+from .static_requirements import require_constant_enum
 
 
 @stub
@@ -15,6 +17,7 @@ def fence(
         MemoryOrder.ACQUIRE,
         MemoryOrder.RELEASE,
         MemoryOrder.ACQ_REL,
+        MemoryOrder.SEQ_CST,
     ],
     scope: Literal[
         MemoryScope.BLOCK,
@@ -54,6 +57,12 @@ def fence_sync_restrict(
     Args:
         order: MemoryOrder.ACQUIRE or MemoryOrder.RELEASE
     """
+    require_constant_enum(order, MemoryOrder)
+    cl.static_assert(
+        order in (MemoryOrder.ACQUIRE, MemoryOrder.RELEASE),
+        "fence_sync_restrict order must be MemoryOrder.ACQUIRE or "
+        "MemoryOrder.RELEASE",
+    )
     _mlir.fence_sync_restrict(order=order)
 
 
@@ -139,6 +148,12 @@ def fence_proxy_sync_restrict(
         from_proxy (FenceProxyKind):
         to_proxy (FenceProxyKind):
     """
+    require_constant_enum(order, MemoryOrder)
+    cl.static_assert(
+        order in (MemoryOrder.ACQUIRE, MemoryOrder.RELEASE),
+        "fence_proxy_sync_restrict order must be MemoryOrder.ACQUIRE or "
+        "MemoryOrder.RELEASE",
+    )
     _mlir.fence_proxy_sync_restrict(
         order=order,
         from_proxy=from_proxy,

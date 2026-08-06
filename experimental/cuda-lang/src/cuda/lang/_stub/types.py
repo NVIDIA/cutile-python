@@ -6,7 +6,8 @@ from typing import Generic, TypeVar
 
 from cuda.tile import DType
 from cuda.tile._execution import stub
-from cuda.tile._memory_model import MemoryOrder, MemoryScope, MemorySpace
+from cuda.lang._enums import MemoryOrder
+from cuda.tile._memory_model import MemoryScope, MemorySpace
 from .._enums import VectorReduction
 from .._stub import math as cl_math
 

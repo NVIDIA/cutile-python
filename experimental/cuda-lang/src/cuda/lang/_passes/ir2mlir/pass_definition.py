@@ -8,10 +8,10 @@ from dataclasses import dataclass, field
 from typing import Callable, ClassVar, Literal, Sequence, get_type_hints
 
 from cuda.lang._compiler_options import CompilerOptions
-from cuda.lang._enums import VectorReduction
+from cuda.lang._enums import MemoryOrder, VectorReduction
 from cuda.lang._ir import ir, ops
 from cuda.lang import _mlir as mlir
-from cuda.tile._memory_model import MemoryOrder, MemoryScope
+from cuda.tile._memory_model import MemoryScope
 from cuda.lang._mlir._builtins import _Cursor
 import cuda.lang._mlir.extras.types as T
 import cuda.lang._ir.type as ir_type
@@ -51,6 +51,8 @@ def _get_llvm_memory_ordering(mo: None | MemoryOrder):
             return mlir.llvm.AtomicOrdering.monotonic
         case MemoryOrder.RELEASE:
             return mlir.llvm.AtomicOrdering.release
+        case MemoryOrder.SEQ_CST:
+            return mlir.llvm.AtomicOrdering.seq_cst
 
     raise NotImplementedError(f"Unhandled {mo=}")
 

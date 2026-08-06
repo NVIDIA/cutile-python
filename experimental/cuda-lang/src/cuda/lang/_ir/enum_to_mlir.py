@@ -48,10 +48,6 @@ cl_enum_to_mlir_attribute.register(
     partial(enum_to_mlir_nvvm_attribute, mlir_enum=mlir.nvvm.CTAGroupKind),
 )
 cl_enum_to_mlir_attribute.register(
-    enums.MemoryOrder,
-    partial(enum_to_mlir_nvvm_attribute, mlir_enum=mlir.nvvm.MemOrderKind),
-)
-cl_enum_to_mlir_attribute.register(
     enums.TMALoadMode,
     partial(enum_to_mlir_nvvm_attribute, mlir_enum=mlir.nvvm.TMALoadMode),
 )
@@ -117,6 +113,20 @@ def memory_space_to_mlir_attribute(enum_value):
     }
     if mlir_enum_value := value_map.get(enum_value):
         return mlir.nvvm.SharedSpaceAttr(value=mlir_enum_value)
+    raise invalid_enum_member(enum_value, value_map)
+
+
+@cl_enum_to_mlir_attribute.register(enums.MemoryOrder)
+def memory_order_to_mlir_attribute(enum_value):
+    value_map = {
+        enums.MemoryOrder.WEAK: mlir.nvvm.MemOrderKind.WEAK,
+        enums.MemoryOrder.RELAXED: mlir.nvvm.MemOrderKind.RELAXED,
+        enums.MemoryOrder.ACQUIRE: mlir.nvvm.MemOrderKind.ACQUIRE,
+        enums.MemoryOrder.RELEASE: mlir.nvvm.MemOrderKind.RELEASE,
+        enums.MemoryOrder.ACQ_REL: mlir.nvvm.MemOrderKind.ACQ_REL,
+    }
+    if mlir_enum_value := value_map.get(enum_value):
+        return mlir.nvvm.MemOrderKindAttr(value=mlir_enum_value)
     raise invalid_enum_member(enum_value, value_map)
 
 

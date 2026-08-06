@@ -4,6 +4,7 @@
 
 from typing import Literal
 
+import cuda.lang as cl
 from cuda.lang._execution import function, stub
 from .._enums import BarrierReductionKind, MemoryOrder
 from .core_api import FULL_MASK
@@ -107,6 +108,11 @@ def barrier_arrive_cluster(
     """
     require_constant_bool(aligned)
     require_constant_enum(memory_order, MemoryOrder)
+    cl.static_assert(
+        memory_order in (MemoryOrder.RELEASE, MemoryOrder.RELAXED),
+        "barrier_arrive_cluster memory_order must be "
+        "MemoryOrder.RELEASE or MemoryOrder.RELAXED",
+    )
     if memory_order == MemoryOrder.RELAXED:
         if aligned:
             _nvvm.barrier_cluster_arrive_relaxed_aligned()

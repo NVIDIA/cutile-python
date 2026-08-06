@@ -5,6 +5,7 @@
 import pytest
 
 import cuda.lang as cl
+from cuda.tile import TileStaticAssertionError
 from cuda.lang._compile import KernelSignature, get_compute_capability
 from cuda.lang._enums import MemoryScope, MemorySpace, MemoryOrder
 from cuda.lang._exception import (
@@ -28,9 +29,8 @@ MEMORY_SCOPE_PTX = {
 }
 
 FENCE_SYNC_RESTRICT_RAISES = pytest.raises(
-    CompilerExecutionError,
-    match="only acquire and release semantics are supported|"
-    r"attribute 'order' failed to satisfy constraint: .*\{acquire, release\}",
+    TileStaticAssertionError,
+    match=r"order must be MemoryOrder.ACQUIRE or MemoryOrder.RELEASE",
 )
 INVALID_SHARED_SPACE_RAISES = pytest.raises(
     InvalidValueError,
@@ -59,11 +59,17 @@ def compile_empty_kernel_with_call(func, **kwargs):
 @pytest.mark.parametrize(
     "order, scope, expect",
     (
-        (order, scope, f"fence.{order.value}.{scope_suffix}")
+        (
+            order,
+            scope,
+            f"fence.{('sc' if order is MemoryOrder.SEQ_CST else order.value)}."
+            f"{scope_suffix}",
+        )
         for order in (
             MemoryOrder.ACQUIRE,
             MemoryOrder.RELEASE,
             MemoryOrder.ACQ_REL,
+            MemoryOrder.SEQ_CST,
         )
         for scope, scope_suffix in MEMORY_SCOPE_PTX.items()
     ),

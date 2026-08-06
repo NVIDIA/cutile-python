@@ -27,6 +27,7 @@ def fence_impl(order, scope) -> None:
         MemoryOrder.ACQUIRE,
         MemoryOrder.RELEASE,
         MemoryOrder.ACQ_REL,
+        MemoryOrder.SEQ_CST,
     )
     if order not in valid_orders:
         formatted = ", ".join(str(value) for value in valid_orders)
@@ -46,10 +47,11 @@ def fence_impl(order, scope) -> None:
             f"Invalid fence memory scope {scope}, expected one of {formatted}"
         )
 
+    order_suffix = "sc" if order is MemoryOrder.SEQ_CST else order.value
     add_operation_variadic(
         InlinePTX,
         (),
-        ptx_code=f"fence.{order.value}.{scope_suffixes[scope]};",
+        ptx_code=f"fence.{order_suffix}.{scope_suffixes[scope]};",
         read_only_operands=(),
         write_only_operands=(),
         read_write_operands=(),

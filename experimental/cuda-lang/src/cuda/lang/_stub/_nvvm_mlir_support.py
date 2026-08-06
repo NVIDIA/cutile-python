@@ -7,12 +7,12 @@ from enum import Enum
 from typing import Any, Callable, Literal, TypeVar
 
 from cuda.tile._datatype import is_pointer_dtype
-from cuda.tile._memory_model import MemoryOrder, MemoryScope, MemorySpace
+from cuda.tile._memory_model import MemoryScope, MemorySpace
 import cuda.lang._datatype as datatype
+from cuda.lang._enums import FenceProxyKind, MemoryOrder
 from cuda.lang._execution import stub
 from cuda.lang._ir.enum_to_mlir import cl_enum_to_mlir_attribute
 import cuda.lang._mlir as mlir
-from cuda.lang._enums import FenceProxyKind
 from cuda.lang._mlir.nvvm import MemScopeKind, MemOrderKind, ProxyKind, SharedSpace
 from cuda.lang._stub._nvvm_support import (
     _IntrinsicDTypeAnnotation,

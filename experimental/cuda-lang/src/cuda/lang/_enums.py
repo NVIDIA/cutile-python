@@ -4,8 +4,19 @@
 
 from enum import Enum, auto
 from cuda.tile import _cext
-from cuda.tile._memory_model import MemorySpace, MemoryScope, MemoryOrder
+from cuda.tile._memory_model import MemorySpace, MemoryScope
 from cuda.tile._numeric_semantics import RoundingMode
+
+
+class MemoryOrder(Enum):
+    """Memory ordering semantics of a memory operation."""
+
+    WEAK = "weak"
+    RELAXED = "relaxed"
+    ACQUIRE = "acquire"
+    RELEASE = "release"
+    ACQ_REL = "acq_rel"
+    SEQ_CST = "seq_cst"
 
 
 class SaturationMode(Enum):

@@ -4,7 +4,8 @@
 import math
 import operator
 from dataclasses import dataclass
-from cuda.tile._memory_model import MemoryOrder, MemoryScope
+from cuda.lang._enums import MemoryOrder
+from cuda.tile._memory_model import MemoryScope
 from cuda.tile._ir.op_impl import (
     require_tuple_type,
     require_constant_str,

@@ -4,6 +4,7 @@
 
 import cuda.lang as cl
 from cuda.lang._exception import CompilerExecutionError
+from cuda.tile import TileStaticAssertionError
 from .util import compile_kernel, require_hopper_or_newer
 import pytest
 
@@ -136,6 +137,7 @@ def test_barrier_reduce_block(
 
 
 def barrier_arrive_cluster_cases():
+    valid_orders = (cl.MemoryOrder.RELEASE, cl.MemoryOrder.RELAXED)
     for aligned in (True, False, 3):
         for order in (*tuple(cl.MemoryOrder), 5, None):
             if not isinstance(aligned, bool):
@@ -148,6 +150,12 @@ def barrier_arrive_cluster_cases():
                 raises = pytest.raises(
                     Exception,
                     match="Expected enum constant of type MemoryOrder",
+                )
+                yield aligned, order, None, raises
+            elif order not in valid_orders:
+                raises = pytest.raises(
+                    TileStaticAssertionError,
+                    match="memory_order must be MemoryOrder.RELEASE or MemoryOrder.RELAXED",
                 )
                 yield aligned, order, None, raises
             else:

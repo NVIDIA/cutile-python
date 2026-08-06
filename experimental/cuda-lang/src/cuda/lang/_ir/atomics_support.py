@@ -6,7 +6,8 @@ from enum import Enum, auto
 
 from cuda.tile._ir.arithmetic_ops import astype
 from cuda.tile._ir.op_impl import require_constant_enum
-from cuda.tile._memory_model import MemoryOrder, MemoryScope
+from cuda.lang._enums import MemoryOrder
+from cuda.tile._memory_model import MemoryScope
 
 import cuda.lang._datatype as datatype
 from cuda.lang._exception import TypeCheckingError

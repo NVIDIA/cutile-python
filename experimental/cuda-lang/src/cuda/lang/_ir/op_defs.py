@@ -7,7 +7,8 @@ from typing import Optional
 from enum import Enum, auto
 
 import cuda.lang._mlir as mlir
-from cuda.tile._memory_model import MemoryOrder, MemoryScope
+from cuda.lang._enums import MemoryOrder
+from cuda.tile._memory_model import MemoryScope
 from cuda.tile._ir.ir import MemoryEffect
 import cuda.lang._datatype as datatype
 from cuda.lang._enums import VectorReduction

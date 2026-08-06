@@ -8,7 +8,8 @@ import cuda.lang as cl
 from cuda.lang._execution import stub, function
 from cuda.lang._exception import TypeCheckingError
 from cuda.tile._stub import Array as TileArray, cdiv as tile_cdiv
-from cuda.tile._memory_model import MemoryOrder, MemoryScope, MemorySpace
+from cuda.lang._enums import MemoryOrder
+from cuda.tile._memory_model import MemoryScope, MemorySpace
 from cuda.lang._datatype import DType
 from .types import Pointer, Scalar, Vector
 

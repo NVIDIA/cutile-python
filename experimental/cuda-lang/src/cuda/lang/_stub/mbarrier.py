@@ -7,7 +7,7 @@ from typing import Literal
 from cuda.lang._enums import MbarrierScope
 from cuda.lang._execution import stub
 from cuda.lang._datatype import uint64, bool_
-from cuda.tile._memory_model import MemoryOrder
+from cuda.lang._enums import MemoryOrder
 
 
 ArriveMemoryOrder = Literal[MemoryOrder.RELAXED, MemoryOrder.RELEASE]

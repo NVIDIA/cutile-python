@@ -4,7 +4,6 @@
 
 from cuda.tile._memory_model import (
     MemoryScope,
-    MemoryOrder,
     MemorySpace
 )
 from ._execution import (
@@ -41,6 +40,7 @@ from ._enums import (
     MatrixLoadShape,
     MatrixLoadSourceFormat,
     MatrixStoreShape,
+    MemoryOrder,
     RoundingMode,
     SaturationMode,
 )
