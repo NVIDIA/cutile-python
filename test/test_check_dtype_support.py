@@ -91,6 +91,22 @@ def test_f4e2m1fn_requires_13_3():
         compile_with(kernel, (x,), "sm_100", "13.2")
 
 
+def test_f8e5m3fnu_requires_rubin_13_4():
+    def kernel():
+        t = ct.full((2,), 1.5, dtype=ct.float8_e5m3fnu)
+        ct.printf("%f", t)
+
+    with pytest.raises(TileUnsupportedFeatureError,
+                       match=r"float8_e5m3fnu requires tileiras 13\.4"):
+        compile_with(kernel, (), "sm_107", "13.3")
+    with pytest.raises(TileUnsupportedFeatureError,
+                       match=r"float8_e5m3fnu is not supported on sm_100"):
+        compile_with(kernel, (), "sm_100", "13.4")
+    with pytest.raises(TileUnsupportedFeatureError,
+                       match=r"float8_e5m3fnu is not supported on sm_80"):
+        compile_with(kernel, (), "sm_80", "13.4")
+
+
 @pytest.mark.parametrize("val", [-1.0, -0.0, float("-inf"), float("-nan")])
 def test_f8e8m0fnu_rejects_negative(val):
     def kernel():
@@ -100,6 +116,17 @@ def test_f8e8m0fnu_rejects_negative(val):
     with pytest.raises(TileValueError,
                        match="Negative values cannot be represented in an unsigned float format"):
         compile_with(kernel, (), "sm_100", "13.2")
+
+
+@pytest.mark.parametrize("val", [-1.0, -0.0, float("-nan")])
+def test_f8e5m3fnu_rejects_negative(val):
+    def kernel():
+        t = ct.astile(val, dtype=ct.float8_e5m3fnu)
+        ct.printf("%f", t)
+
+    with pytest.raises(TileValueError,
+                       match="Negative values cannot be represented in an unsigned float format"):
+        compile_with(kernel, (), "sm_107", "13.4")
 
 
 @requires_tileiras(BytecodeVersion.V_13_3)

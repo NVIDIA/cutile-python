@@ -308,6 +308,15 @@ def require_blackwell_or_newer():
                               reason="feature requires Blackwell or newer")
 
 
+def is_rubin():
+    return get_compute_capability() == (10, 7)
+
+
+def require_rubin_cc107():
+    return pytest.mark.skipif(not is_rubin(),
+                              reason="feature requires Rubin with compute capability 10.7")
+
+
 def make_test_tensor(shape, dtype, device):
     if dtype == torch.float8_e8m0fnu:
         return make_tensor(shape, dtype=torch.uint8, device=device).view(dtype)

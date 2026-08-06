@@ -28,6 +28,7 @@ class SimpleType(enum.Enum):
     F8E8M0FNU = b"\x12"  # since 13.2
     F4E2M1FN = b"\x13"  # since 13.3
     I4 = b"\x16"  # since 13.3
+    F8E5M3FNU = b"\x82\x01"  # since 13.4
 
 
 class _CompositeType(enum.Enum):

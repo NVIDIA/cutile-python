@@ -6,7 +6,7 @@ import pytest
 import torch
 
 import cuda.tile as ct
-from util import assert_equal, require_blackwell_or_newer
+from util import assert_equal, require_blackwell_or_newer, require_rubin_cc107
 from cuda.tile._bytecode import BytecodeVersion
 from cuda.tile._exception import TileTypeError
 from conftest import arithmetic_dtypes, dtype_id, float8_dtypes, requires_tileiras
@@ -46,6 +46,22 @@ def test_astile_scalar_const():
 
     x = torch.zeros((1,), dtype=torch.int32, device="cuda")
     ref = torch.tensor([5], dtype=torch.int32, device="cuda")
+    ct.launch(torch.cuda.current_stream(), (1,), kernel, (x,))
+    assert_equal(x, ref)
+
+
+@require_rubin_cc107()
+@requires_tileiras(BytecodeVersion.V_13_4)
+def test_float8_e5m3fnu_constructor():
+    @ct.kernel
+    def kernel(X):
+        value = ct.float8_e5m3fnu(1.5)
+        t = ct.astile((value,), dtype=ct.float8_e5m3fnu)
+        t = t.astype(ct.float32)
+        ct.store(X, (0,), t)
+
+    x = torch.zeros((1,), dtype=torch.float32, device="cuda")
+    ref = torch.tensor([1.5], dtype=torch.float32, device="cuda")
     ct.launch(torch.cuda.current_stream(), (1,), kernel, (x,))
     assert_equal(x, ref)
 

@@ -10,10 +10,12 @@ import cuda.tile as ct
 
 from pathlib import Path
 from math import ceil
-from util import assert_equal, jit_kernel
-from conftest import float_dtypes, int_dtypes, bool_dtypes, dtype_id, get_cupy_or_skip
+from util import assert_equal, jit_kernel, require_rubin_cc107
+from conftest import float_dtypes, int_dtypes, bool_dtypes, dtype_id, get_cupy_or_skip, \
+                     requires_tileiras
 from cuda.tile._exception import TileTypeError
 from dataclasses import dataclass
+from cuda.tile._bytecode.version import BytecodeVersion
 
 
 @dataclass
@@ -210,6 +212,26 @@ def test_full_cutile_dtype(value_dtype, tmp_path: Path):
                                 tmp_path, globals={"ct": ct})
     ct.launch(torch.cuda.current_stream(), grid, kernel, (x, tile[0]))
     assert_equal(x, torch.full(shape, 1, dtype=dtype, device=x.device))
+
+
+@ct.kernel
+def full_f8e5m3fnu_kernel(x, TILE: ct.Constant[int]):
+    bidx = ct.bid(0)
+    tx = ct.full((TILE,), 1.5, ct.float8_e5m3fnu)
+    tx = ct.astype(tx, ct.float32)
+    ct.store(x, index=(bidx,), tile=tx)
+
+
+@require_rubin_cc107()
+@requires_tileiras(BytecodeVersion.V_13_4)
+def test_full_f8e5m3fnu():
+    shape = (256,)
+    tile = (128,)
+    grid = (ceil(shape[0] / tile[0]), 1, 1)
+    x = torch.zeros(shape, dtype=torch.float32, device="cuda")
+
+    ct.launch(torch.cuda.current_stream(), grid, full_f8e5m3fnu_kernel, (x, tile[0]),)
+    assert_equal(x, torch.full(shape, 1.5, dtype=torch.float32, device="cuda"))
 
 
 create_ones_zeros_kernel_template = """

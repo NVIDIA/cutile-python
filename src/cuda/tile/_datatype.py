@@ -20,7 +20,7 @@ __all__ = ["bool_", "uint8", "uint16", "uint32", "uint64",
            "int8", "int16", "int32", "int64",
            "float16", "float32", "float64",
            "bfloat16", "tfloat32", "float8_e4m3fn", "float8_e5m2",
-           "float8_e8m0fnu", "float4_e2m1fn", "DType"]
+           "float8_e8m0fnu", "float8_e5m3fnu", "float4_e2m1fn", "DType"]
 
 
 class DType:
@@ -230,6 +230,11 @@ float8_e4m3fn = _numeric_dtype("float8_e4m3fn", 8, NumericDTypeCategory.Restrict
 float8_e4m3fn.__doc__ = """An 8-bit floating-point |numeric dtype| with 1 sign bit, \
 4 exponent bits, and 3 mantissa bits."""
 
+float8_e5m3fnu = _numeric_dtype("float8_e5m3fnu", 8, NumericDTypeCategory.RestrictedFloat,
+                                bc.SimpleType.F8E5M3FNU)
+float8_e5m3fnu.__doc__ = """An 8-bit floating-point |numeric dtype| with no sign bit, \
+5 exponent bits, and 3 mantissa bits."""
+
 float8_e5m2 = _numeric_dtype("float8_e5m2", 8, NumericDTypeCategory.RestrictedFloat,
                              bc.SimpleType.F8E5M2)
 float8_e5m2.__doc__ = """An 8-bit floating-point |numeric dtype| with 1 sign bit, \
@@ -379,6 +384,7 @@ class _DTypePromotionImpl:
     f8e4m3fn = float8_e4m3fn
     f8e5m2 = float8_e5m2
     f8e8m0fnu = float8_e8m0fnu
+    f8e5m3fnu = float8_e5m3fnu
     f4e2m1fn = float4_e2m1fn
     na = None
 
@@ -478,7 +484,8 @@ _mma_scaled_supported_dtypes = {
     float8_e4m3fn: {float8_e8m0fnu: (float32, (32,))},
     float8_e5m2:   {float8_e8m0fnu: (float32, (32,))},
     float4_e2m1fn: {float8_e8m0fnu: (float32, (16, 32)),
-                    float8_e4m3fn:  (float32, (16,))},
+                    float8_e4m3fn:  (float32, (16,)),
+                    float8_e5m3fnu: (float32, (16, 32))},
 }
 
 

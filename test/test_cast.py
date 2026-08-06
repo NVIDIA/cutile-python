@@ -11,7 +11,7 @@ import torch
 from torch.testing import make_tensor
 
 import cuda.tile as ct
-from util import assert_close, assert_equal, torch_to_tf32
+from util import assert_close, assert_equal, torch_to_tf32, require_rubin_cc107
 from cuda.tile._exception import TileTypeError, TileUnsupportedFeatureError
 from cuda.tile._cext import CallingConvention
 from conftest import float_dtypes, int_dtypes, bool_dtypes, dtype_id
@@ -146,6 +146,38 @@ def make_astype_to_kernel(rounding_mode, from_dtype, to_dtype):
         ty = ty.astype(y.dtype)
         ct.store(y, index=(0,), tile=ty)
     return kernel
+
+
+def make_f8e5m3fnu_astype_kernel(from_dtype, to_dtype, use_method):
+    @ct.kernel
+    def kernel(y):
+        tx = ct.full((4,), 1.5, dtype=from_dtype)
+        if use_method:
+            ty = tx.astype(to_dtype)
+        else:
+            ty = ct.astype(tx, to_dtype)
+        ct.store(y, index=(0,), tile=ty)
+    return kernel
+
+
+@require_rubin_cc107()
+@requires_tileiras(BytecodeVersion.V_13_4)
+@pytest.mark.parametrize("use_method", [True, False])
+@pytest.mark.parametrize("to_dtype,torch_dtype",
+                         [(ct.float64, torch.float64),
+                          (ct.float32, torch.float32),
+                          (ct.float16, torch.float16),
+                          (ct.bfloat16, torch.bfloat16),
+                          (ct.float8_e5m2, torch.float8_e5m2),
+                          (ct.float8_e4m3fn, torch.float8_e4m3fn)],
+                         ids=["f16", "f32", "f16", "bf16", "f8e5m2", "f8e4m3fn"])
+def test_astype_from_f8e5m3fnu(to_dtype, torch_dtype, use_method):
+    y = torch.empty((4,), dtype=torch_dtype, device="cuda")
+    ref = torch.full((4,), 1.5, dtype=torch_dtype, device="cuda")
+    kernel = make_f8e5m3fnu_astype_kernel(ct.float8_e5m3fnu, to_dtype, use_method)
+
+    ct.launch(torch.cuda.current_stream(), (1,), kernel, (y,))
+    assert_equal(y, ref)
 
 
 @pytest.mark.parametrize("rounding_mode", [ct.RoundingMode.RN,

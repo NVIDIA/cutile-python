@@ -38,6 +38,8 @@ _specs = {
                                      have_sign=False,
                                      have_zero_and_subnormals=False),
     SimpleType.F4E2M1FN: _FloatSpec(4, 0, 2, 2, 1, NonFiniteBehavior.FiniteOnly),
+    SimpleType.F8E5M3FNU: _FloatSpec(8, -14, 16, 5, 3, NonFiniteBehavior.NanOnlyAllOnes,
+                                     have_sign=False),
 }
 
 
@@ -50,7 +52,7 @@ def float_to_bits(val: float, ty: SimpleType) -> int:
         return struct.unpack("<Q", struct.pack("<d", val))[0]
 
     spec = _specs[ty]
-    if spec.have_sign and spec.have_zero_and_subnormals:
+    if spec.have_zero_and_subnormals:
         return _convert_float(val, *spec)
     else:
         assert not spec.have_sign and not spec.have_zero_and_subnormals
@@ -135,13 +137,18 @@ def _convert_float(val: float,
                    exp_bits: int,
                    precision: int,
                    non_finite_behavior: NonFiniteBehavior,
-                   _have_sign: bool,
+                   have_sign: bool,
                    _have_zero_and_subnormals: bool) -> int:
+
+    if not have_sign and math.copysign(1.0, val) < 0:
+        raise ValueError("Negative values cannot be represented in an unsigned float format")
+
     if val == 0.0:
         sign = math.copysign(1.0, val) < 0.0
         return sign << (bitwidth - 1)
     elif not math.isfinite(val):
-        return _convert_nonfinite(val, bitwidth, exp_bits, precision, non_finite_behavior)
+        return _convert_nonfinite(val, bitwidth, exp_bits, precision, non_finite_behavior,
+                                  have_sign)
 
     sign, val = (1, -val) if (val < 0) else (0, val)
     m, e = math.frexp(val)
@@ -150,7 +157,7 @@ def _convert_float(val: float,
 
     if e > emax:
         return _convert_nonfinite(-math.inf if sign else math.inf,
-                                  bitwidth, exp_bits, precision, non_finite_behavior)
+                                  bitwidth, exp_bits, precision, non_finite_behavior, have_sign)
 
     if e < emin:
         m = math.ldexp(m, e - emin)
@@ -168,14 +175,17 @@ def _convert_float(val: float,
         e += 1
         if e > emax - emin + 1:
             return _convert_nonfinite(-math.inf if sign else math.inf,
-                                      bitwidth, exp_bits, precision, non_finite_behavior)
+                                      bitwidth, exp_bits, precision, non_finite_behavior,
+                                      have_sign)
     bits = (sign << (bitwidth - 1)) | (e << precision) | m
     return bits
 
 
-def _convert_nonfinite(val, bitwidth, exp_bits, precision, non_finite_behavior) -> int:
+def _convert_nonfinite(val, bitwidth, exp_bits, precision, non_finite_behavior, have_sign) -> int:
     match non_finite_behavior:
         case NonFiniteBehavior.NanOnlyAllOnes:
+            if not have_sign:
+                return (1 << bitwidth) - 1
             # NaN is encoded as all ones
             sign = math.copysign(1.0, val) < 0.0
             return (sign << (bitwidth - 1)) | ((1 << (bitwidth - 1)) - 1)

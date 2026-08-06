@@ -9,8 +9,8 @@ from cuda.tile._ir.core_ops import TypedConst
 from cuda.tile._ir.ops import TileAtomicRMW, TileAtomicRedView, AtomicRMWMode
 from cuda.tile._ir.type import TileTy, Type
 from cuda.tile._datatype import (
-    DType, float4_e2m1fn, float8_e4m3fn, float8_e5m2, float8_e8m0fnu, bfloat16, is_pointer_dtype,
-    PointerInfo
+    DType, float4_e2m1fn, float8_e4m3fn, float8_e5m2, float8_e8m0fnu, float8_e5m3fnu,
+    bfloat16, is_pointer_dtype, PointerInfo
 )
 from cuda.tile._bytecode.version import BytecodeVersion
 from cuda.tile._exception import TileUnsupportedFeatureError, TileValueError
@@ -22,12 +22,14 @@ _DTYPE_MIN_SM: dict[DType, int] = {
     float8_e5m2: 90,
     float8_e8m0fnu: 100,
     float4_e2m1fn: 100,
+    float8_e5m3fnu: 107,
 }
 
 # Minimum bytecode version per dtype.
 _DTYPE_MIN_BC_VERSION: dict[DType, BytecodeVersion] = {
     float8_e8m0fnu: BytecodeVersion.V_13_2,
     float4_e2m1fn: BytecodeVersion.V_13_3,
+    float8_e5m3fnu: BytecodeVersion.V_13_4,
 }
 
 # dtype: (predicate, error message).
@@ -40,6 +42,10 @@ _DTYPE_INVALID_VALUE: dict[DType, tuple[Callable[[float | int], bool], str]] = {
         math.isnan,
         f"NaN cannot be represented in {float4_e2m1fn}",
     ),
+    float8_e5m3fnu: (
+        lambda v: math.copysign(1.0, v) < 0,
+        f"negative values cannot be represented in {float8_e5m3fnu}",
+    )
 }
 
 

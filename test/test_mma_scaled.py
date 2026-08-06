@@ -12,8 +12,9 @@ from cuda.tile._datatype import float4_e2m1fn, float8_e4m3fn, float8_e5m2, float
 from cuda.tile._exception import TileTypeError
 from cuda.tile._bytecode.version import BytecodeVersion
 from conftest import requires_tileiras
-from util import assert_close, require_blackwell_or_newer
-
+from util import assert_close, require_blackwell_or_newer, require_rubin_cc107
+from cuda.tile._bytecode import SimpleType
+from cuda.tile._bytecode.float import float_from_bits
 
 pytestmark = [require_blackwell_or_newer(), requires_tileiras(BytecodeVersion.V_13_3)]
 
@@ -57,16 +58,21 @@ def mma_scaled_general_kernel(X, X_scale, Y, Y_scale, Z,
                               tm: ct.Constant[int], tn: ct.Constant[int],
                               tk: ct.Constant[int], tks: ct.Constant[int],
                               dtype_id: ct.Constant[int],
-                              elem_per_byte: ct.Constant[int]):
+                              elem_per_byte: ct.Constant[int],
+                              packed_scale: ct.Constant[bool]):
     dtype = (float4_e2m1fn, float8_e4m3fn, float8_e5m2)[dtype_id]
 
     x_bytes = ct.load(X, index=(0, 0), shape=(tm, tk // elem_per_byte)).reshape((-1,))
     x = ct.unpack_from_bytes(x_bytes, dtype).reshape((tm, tk))
     x_scale = ct.load(X_scale, index=(0, 0), shape=(tm, tks))
+    if packed_scale:
+        x_scale = ct.unpack_from_bytes(x_scale.reshape((-1,)), ct.float8_e5m3fnu).reshape((tm, tks))
 
     y_bytes = ct.load(Y, index=(0, 0), shape=(tk, tn // elem_per_byte)).reshape((-1,))
     y = ct.unpack_from_bytes(y_bytes, dtype).reshape((tk, tn))
     y_scale = ct.load(Y_scale, index=(0, 0), shape=(tks, tn))
+    if packed_scale:
+        y_scale = ct.unpack_from_bytes(y_scale.reshape((-1,)), ct.float8_e5m3fnu).reshape((tks, tn))
 
     acc = ct.load(Z, index=(0, 0), shape=(tm, tn))
     acc = ct.mma_scaled(x, x_scale, y, y_scale, acc)
@@ -115,7 +121,7 @@ def test_mma_scaled_general_fp8(input_dtype, dtype_id):
 
     ct.launch(torch.cuda.current_stream(), (1,), mma_scaled_general_kernel,
               (X_raw, X_scale, Y_raw, Y_scale, Z,
-               m, n, k, ks, dtype_id, 1))
+               m, n, k, ks, dtype_id, 1, False))
     assert_close(Z, ref, atol=1e-2, rtol=1e-2)
 
 
@@ -173,7 +179,40 @@ def test_mma_scaled_general_f4(scale_dtype, scaling_block_size):
     ref_Y_scale = torch.repeat_interleave(Y_scale, scaling_block_size, dim=0).to(f32)
     ref = (ref_X * ref_X_scale) @ (ref_Y * ref_Y_scale) + Z
     ct.launch(torch.cuda.current_stream(), (1,), mma_scaled_general_kernel,
-              (X_packed, X_scale, Y_packed, Y_scale, Z, m, n, k, ks, 0, 2))
+              (X_packed, X_scale, Y_packed, Y_scale, Z, m, n, k, ks, 0, 2, False))
+    assert_close(Z, ref, atol=1e-2, rtol=1e-2)
+
+
+@require_rubin_cc107()
+@requires_tileiras(BytecodeVersion.V_13_4)
+@pytest.mark.parametrize("scaling_block_size", [
+    32, 16,
+], ids=str)
+def test_mma_e5m3fnu_scaled_f4(scaling_block_size):
+    m, n, k = 16, 16, 64
+    ks = k // scaling_block_size
+
+    X_packed = torch.randint(0, 256, (m, k // 2), dtype=torch.uint8, device='cuda')
+    Y_packed = torch.randint(0, 256, (k, n // 2), dtype=torch.uint8, device='cuda')
+    X_scale = torch.randint(0, 255, (m, ks), dtype=torch.uint8, device="cuda")
+    Y_scale = torch.randint(0, 255, (ks, n), dtype=torch.uint8, device="cuda")
+
+    Z = torch.randn((m, n), dtype=f32, device='cuda')
+
+    ref_X = _unpack_f4e2m1fn_to_f32(X_packed, (m, k))
+    ref_Y = _unpack_f4e2m1fn_to_f32(Y_packed, (k, n))
+
+    ref_X_scale = torch.repeat_interleave(X_scale, scaling_block_size, dim=1)
+    ref_X_scale = [float_from_bits(int(i), SimpleType.F8E5M3FNU) for i in ref_X_scale.view(-1)]
+    ref_X_scale = torch.tensor(ref_X_scale, dtype=f32, device='cuda').reshape((m, k))
+
+    ref_Y_scale = torch.repeat_interleave(Y_scale, scaling_block_size, dim=0)
+    ref_Y_scale = [float_from_bits(int(i), SimpleType.F8E5M3FNU) for i in ref_Y_scale.view(-1)]
+    ref_Y_scale = torch.tensor(ref_Y_scale, dtype=f32, device='cuda').reshape((k, n))
+
+    ref = (ref_X * ref_X_scale) @ (ref_Y * ref_Y_scale) + Z
+    ct.launch(torch.cuda.current_stream(), (1,), mma_scaled_general_kernel,
+              (X_packed, X_scale, Y_packed, Y_scale, Z, m, n, k, ks, 0, 2, True))
     assert_close(Z, ref, atol=1e-2, rtol=1e-2)
 
 
