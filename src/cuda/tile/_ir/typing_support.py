@@ -24,9 +24,9 @@ from .._execution import is_function_wrapper
 _dtype_registry: dict[Any, DTypeSpec] = {}
 
 
-def register_dtypes(dtypes: Mapping[Any, datatype.DType], usable_as_constructor=False):
-    cls = DTypeConstructor if usable_as_constructor else DTypeSpec
+def register_dtypes(dtypes: Mapping[Any, datatype.DType]):
     for t1, t2 in dtypes.items():
+        cls = DTypeConstructor if _is_dtype_allowed_as_constructor(t2) else DTypeSpec
         _dtype_registry[t1] = cls(t2)
 
 
@@ -317,7 +317,7 @@ if HAS_NUMPY:
         np.uint16: datatype.uint16,
         np.uint8: datatype.uint8,
         np.bool_: datatype.bool_
-    }, usable_as_constructor=True)
+    })
     # register numpy dtype objects
     register_dtypes({
         np.dtype('float64'): datatype.float64,

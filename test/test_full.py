@@ -109,7 +109,7 @@ def test_full_value_invalid_call(invalid_value, tmp_path: Path):
         ct.launch(torch.cuda.current_stream(), grid, kernel, (x, tile[0]))
 
 
-def test_full_value_invalid_torch_call(tmp_path: Path):
+def test_full_value_torch_call(tmp_path: Path):
     shape = (256,)
     tile = (128,)
     grid = (ceil(shape[0] / tile[0]), 1, 1)
@@ -118,8 +118,8 @@ def test_full_value_invalid_torch_call(tmp_path: Path):
     kernel = value_call_full_kernel("create_full_value_call",
                                     str(dtype), "1.0", str(dtype),
                                     tmp_path, globals={"torch": torch})
-    with pytest.raises(TileTypeError):
-        ct.launch(torch.cuda.current_stream(), grid, kernel, (x, tile[0]))
+    ct.launch(torch.cuda.current_stream(), grid, kernel, (x, tile[0]))
+    assert_equal(x, torch.full(shape, 1.0, dtype=dtype, device=x.device))
 
 
 create_full_kernel_template = """
