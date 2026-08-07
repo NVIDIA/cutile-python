@@ -16,8 +16,8 @@ from cuda.tile._annotated_function import (
     LeafAnnotationNode, HomogeneousTupleNode, HeterogeneousTupleNode)
 from cuda.tile._datatype import DType
 from cuda.tile.compilation._signature import (
-    ArrayConstraint, ConstantConstraint, ScalarConstraint, TupleConstraint,
-    ParameterConstraint)
+    ArrayConstraint, ConstantConstraint, ListConstraint, ScalarConstraint,
+    TupleConstraint, ParameterConstraint)
 from cuda.tile.compilation import (KernelSignature, CallingConvention, export_kernel)
 import cuda.tile._compile as ct_compile
 
@@ -406,9 +406,17 @@ def _cutile_call_ffi_p_lower(
 _COMPILE_CACHE = {}
 
 
+def _requires_calling_convention_v2(constraint: ParameterConstraint) -> bool:
+    if isinstance(constraint, ArrayConstraint):
+        return any(x is not None for x in constraint.shape_constant)
+    if isinstance(constraint, ListConstraint):
+        return _requires_calling_convention_v2(constraint.element)
+    return isinstance(constraint, TupleConstraint)
+
+
 def _calling_convention_for(constraints: Sequence[ParameterConstraint]
                             ) -> CallingConvention:
-    if any(isinstance(c, TupleConstraint) for c in constraints):
+    if any(_requires_calling_convention_v2(c) for c in constraints):
         return CallingConvention.cutile_python_v2()
     return CallingConvention.cutile_python_v1()
 
@@ -492,6 +500,7 @@ def _array_constraint(aval: "jax.core.ShapedArray",
                 )
 
     stride_constant = []
+    shape_constant = []
     stride_divisible_by = []
     shape_divisible_by = []
     div16_bits = _DIVISOR_16 * _BYTE_BITWIDTH
@@ -500,6 +509,7 @@ def _array_constraint(aval: "jax.core.ShapedArray",
     for i in range(ndim):
         s, d = strides[i], shape[i]
         stride_constant.append(1 if s == 1 else None)
+        shape_constant.append(1 if d == 1 else None)
         shape_divisible_by.append(_DIVISOR_16 if d % _DIVISOR_16 == 0 else 1)
         stride_divisible_by.append(stride_divisor if s % stride_divisor == 0 else 1)
 
@@ -511,6 +521,7 @@ def _array_constraint(aval: "jax.core.ShapedArray",
         alias_groups=() if alias_group is None else (alias_group,),
         may_alias_internally=False,
         stride_constant=tuple(stride_constant),
+        shape_constant=tuple(shape_constant),
         stride_divisible_by=tuple(stride_divisible_by),
         shape_divisible_by=tuple(shape_divisible_by),
         base_addr_divisible_by=_XLA_BASE_ADDR_ALIGN,

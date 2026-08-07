@@ -149,6 +149,33 @@ def test_static_shape_constraint_values():
     assert constraint.base_addr_divisible_by == 16
 
 
+def test_singleton_shape_inference_respects_calling_convention():
+    @ct.kernel
+    def k(x):
+        pass
+
+    x = torch.zeros((8, 1), device='cuda')
+    v1_sig = ct.compilation.KernelSignature.from_kernel_args(
+        k, (x,), ct.compilation.CallingConvention.cutile_python_v1())
+    v2_sig = ct.compilation.KernelSignature.from_kernel_args(
+        k, (x,), ct.compilation.CallingConvention.cutile_python_v2())
+
+    assert v1_sig.parameters[0].shape_constant == (None, None)
+    assert v2_sig.parameters[0].shape_constant == (None, 1)
+
+
+def test_static_shape_annotation_disables_singleton_inference():
+    @ct.kernel
+    def k(x: Annotated[ct.Array, ct.ArrayAnnotation(static_shape_dims=(0,))]):
+        pass
+
+    x = torch.zeros((8, 1), device='cuda')
+    sig = ct.compilation.KernelSignature.from_kernel_args(
+        k, (x,), ct.compilation.CallingConvention.cutile_python_v2())
+
+    assert sig.parameters[0].shape_constant == (8, None)
+
+
 def test_static_shape_annotation_validation():
     with pytest.raises(TypeError, match="must be int"):
         ct.ArrayAnnotation(static_shape_dims=(False,))
@@ -327,8 +354,8 @@ def copy_singleton_axis(
 
 
 def test_static_stride_singleton_axis():
-    # A size-one singleton reports 16-byte stride divisibility whatever its physical stride is;
-    # pinning that stride to its exact value must not turn into a contradictory constraint.
+    # Pinning a singleton axis stride to its exact value must remain consistent with
+    # the independently known shape_constant=1 fact.
     x = torch.arange(8, dtype=torch.float32, device='cuda').unsqueeze(1)
     assert x.shape == (8, 1) and x.stride() == (1, 1)
     out = torch.zeros((8, 1), dtype=torch.float32, device='cuda')
@@ -355,3 +382,12 @@ def test_static_stride_broadcast_axis():
     out = torch.zeros((4, 8), dtype=torch.float32, device='cuda')
     ct.launch(torch.cuda.current_stream(), (1,), copy_broadcast_axis, (x, out))
     assert_equal(out, x)
+
+
+def test_array_constraint_rejects_conflicting_stride_constant():
+    with pytest.raises(ValueError,
+                       match=r"stride_constant\[1\].*not divisible by 4"):
+        ct.compilation.ArrayConstraint(
+            dtype=ct.float32, ndim=2, index_dtype=ct.int32, stride_lower_bound_incl=0,
+            alias_groups=(), may_alias_internally=False,
+            stride_constant=(None, 1), stride_divisible_by=(1, 4))

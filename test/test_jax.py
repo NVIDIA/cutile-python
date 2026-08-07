@@ -251,6 +251,24 @@ def test_mixed_scalar_constant_types():
     np.testing.assert_array_equal(y, 2 * x - 1.0)
 
 
+def test_list_constraint_with_static_shape_uses_v2():
+    from cuda.tile.jax import _jax as _jax_mod
+
+    element = ct.compilation.ArrayConstraint(
+        dtype=ct.float32,
+        ndim=1,
+        index_dtype=ct.int32,
+        stride_lower_bound_incl=0,
+        alias_groups=(),
+        may_alias_internally=False,
+        shape_constant=(1,),
+    )
+    constraint = ct.compilation.ListConstraint(
+        element, alias_groups=(), elements_may_alias=False)
+
+    assert _jax_mod._calling_convention_for((constraint,)).version == 2
+
+
 def test_cubin_id_round_trip(monkeypatch):
     """The 32-byte cubin_id digest round-trips through the FFI u8 array
     attribute, including byte values with the high bit set."""
