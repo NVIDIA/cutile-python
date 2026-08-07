@@ -351,8 +351,8 @@ def _compiler_crash_dump(final_ir: Sequence[ir.Block],
         "debug_info.txt": debug_info,
     }
 
-    for i, func_ir in enumerate(final_ir):
-        artifacts[f"{func_name}.{i}.cutileir"] = f"{func_ir.body.to_string(include_loc=False)}\n"
+    for i, block in enumerate(final_ir):
+        artifacts[f"{func_name}.{i}.cutileir"] = f"{block.to_string(include_loc=False)}\n"
 
     timestamp = datetime.datetime.now().timestamp()
     zip_filename = os.path.abspath(f"crash_dump_{func_name}_{timestamp}.zip")

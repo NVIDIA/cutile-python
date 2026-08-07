@@ -1,0 +1,1 @@
+- Fixed AttributeError with ``CUDA_TILE_ENABLE_CRASH_DUMP=1``.
