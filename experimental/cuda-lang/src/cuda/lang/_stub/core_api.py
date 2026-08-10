@@ -7,10 +7,15 @@ from typing import TypeVar, Generic
 import cuda.lang as cl
 from cuda.lang._execution import stub, function
 from cuda.lang._exception import TypeCheckingError
-from cuda.tile._stub import Array as TileArray, cdiv as tile_cdiv
+from cuda.tile._stub import (
+    Array as TileArray,
+    cdiv as tile_cdiv,
+    static_assert,
+    static_eval,
+)
 from cuda.lang._enums import MemoryOrder
 from cuda.tile._memory_model import MemoryScope, MemorySpace
-from cuda.lang._datatype import DType
+from cuda.lang._datatype import DType, uint32, uint64
 from .types import Pointer, Scalar, Vector
 
 T = TypeVar("T")
@@ -408,7 +413,7 @@ def vote_ballot_sync(predicate: bool, mask: int = FULL_MASK) -> int:
 def _inline_ptx(ptx_code: str, *constraint_pairs: tuple) -> tuple:
     """Execute inline PTX.
 
-    The API mirrors CUDA C++'s device-side `asm` statement:
+    The API follows CUDA C++'s device-side `asm` statement:
     `cl._inline_ptx(ptx_code, (constraint1, value1), (constraint2, value2), ...)`.
 
     Args:
@@ -419,14 +424,12 @@ def _inline_ptx(ptx_code: str, *constraint_pairs: tuple) -> tuple:
             Constraints must be compile-time constant strings.
 
             Read-only operands use constraints ``"h"``, ``"r"``, ``"l"``,
-            ``"f"``, ``"d"``, or ``"C"`` and are paired with runtime values.
+            ``"f"``, ``"d"``, or ``"p"`` and are paired with runtime values.
 
             Write-only operands use constraints ``"=h"``, ``"=r"``, ``"=l"``,
-            ``"=f"``, or ``"=d"`` and are paired with dtype specs.
-            This determines the type of the output.
-
-            Read-write operands use constraints ``"+h"``, ``"+r"``, ``"+l"``,
-            ``"+f"``, ``"+d"``, or ``"+C"`` and are paired with runtime values.
+            ``"=f"``, ``"=d"``, or ``"=p"`` and are paired with dtype specs.
+            Use a pointer dtype with ``"=p"``. The dtype determines the type
+            of the output.
 
     Returns:
 
@@ -467,7 +470,11 @@ def _inline_ptx(ptx_code: str, *constraint_pairs: tuple) -> tuple:
             - ``l``: ``cl.int64``
             - ``f``: ``cl.float32``
             - ``d``: ``cl.float64``
-            - ``C``: pointer value from ``array.get_base_pointer()``
+            - ``p``: pointer value, or a pointer dtype for an output
+        - ``p`` is not in CUDA C++'s inline ptx. The compiler selects the
+          correct register size for the pointer based on its address space.
+        - Use ``%0``, ``%1``, and so on for operands. Escape literal percent
+          signs with a second percent sign, as in ``%%clock``.
 
     """
 
@@ -475,6 +482,15 @@ def _inline_ptx(ptx_code: str, *constraint_pairs: tuple) -> tuple:
 @function()
 def ptx_comment(comment: str):
     _inline_ptx(cl.static_eval("// " + comment))
+
+
+@function()
+def clock(dtype=uint32):
+    static_assert(dtype in (uint32, uint64))
+    fn = static_eval(
+        nvvm.read_ptx_sreg_clock if dtype is uint32 else nvvm.read_ptx_sreg_clock64
+    )
+    return fn()
 
 
 @stub

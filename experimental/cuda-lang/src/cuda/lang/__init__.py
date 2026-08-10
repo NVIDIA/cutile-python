@@ -168,6 +168,7 @@ from ._stub.core_api import (
     memory_barrier,
     bitcast,
     assert_,
+    clock,
 )
 from cuda.tile._stub import (
     Constant,
@@ -500,4 +501,5 @@ __all__ = (
     "MatrixLoadSourceFormat",
     "MatrixStoreShape",
     "_debug",
+    "clock",
 )

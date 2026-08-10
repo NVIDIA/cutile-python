@@ -41,22 +41,6 @@ def matrix_impl_registry() -> ImplRegistry:
     return _registry
 
 
-def ldmatrix_intrinsic_name(
-    shape: MatrixLoadShape,
-    count: int,
-    transpose: bool,
-    source_format: MatrixLoadSourceFormat | None,
-) -> str:
-    name = f"llvm.nvvm.ldmatrix.sync.aligned.{shape.value}.x{count}"
-    if transpose:
-        name += ".trans"
-    if source_format is MatrixLoadSourceFormat.B6X16_P32:
-        return name + ".b8x16.b6x16_p32"
-    if source_format is MatrixLoadSourceFormat.B4X16_P64:
-        return name + ".b8x16.b4x16_p64"
-    return name + (".b16" if shape is MatrixLoadShape.M8N8 else ".b8")
-
-
 @impl(load_store_matrix.load_matrix)
 def load_matrix_impl(
     src: Var,

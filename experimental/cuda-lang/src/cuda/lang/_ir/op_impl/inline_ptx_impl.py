@@ -62,14 +62,14 @@ _INLINE_PTX_MODE_FROM_PREFIX = {
     "+": InlinePTX.RMWMode.READ_WRITE,
 }
 
-_INLINE_PTX_TYPECODES = {
+_INLINE_PTX_TYPECODES = (
     "h",
     "r",
     "l",
     "f",
     "d",
-    "C",
-}
+    "p",
+)
 
 _INLINE_PTX_SCALAR_DTYPE_FROM_TYPECODE = {
     "h": datatype.int16,
@@ -97,12 +97,13 @@ def parse_inline_ptx_constraint(var: Var) -> tuple[str, InlinePTX.RMWMode, str]:
             f"Unknown constraint rmw modifier {prefix!r}, expected "
             "'' (meaning readonly), '+' (meaning readwrite), or '=' (meaning writeonly)"
         )
-
     if type_char not in _INLINE_PTX_TYPECODES:
         expected = ", ".join(_INLINE_PTX_TYPECODES)
         raise TypeCheckingError(
             f"Unknown constraint dtype {type_char!r}, expected one of {expected}"
         )
+    if mode is InlinePTX.RMWMode.READ_WRITE:
+        raise TypeCheckingError("Read-write inline_ptx constraints are not supported")
 
     return constraint_str, mode, type_char
 
@@ -111,14 +112,17 @@ def validate_inline_ptx_operand(
     constraint_str: str, mode: InlinePTX.RMWMode, type_char: str, value: Var
 ) -> InlinePTXOperand:
     if mode is InlinePTX.RMWMode.WRITE_ONLY:
-        if type_char == "C":
-            # write-only arguments require specifying the output data type, but we don't
-            # expose a dtype for pointers. Disallow this for now.
-            raise TypeCheckingError(
-                "Write-only pointer outputs are not supported for inline_ptx"
+        actual_dtype = require_dtype_spec(value)
+        if type_char == "p":
+            if not is_pointer_dtype(actual_dtype):
+                raise TypeCheckingError(
+                    f"Expected a pointer dtype for constraint {constraint_str}, "
+                    f"got {actual_dtype}"
+                )
+            return InlinePTXOperand(
+                mode=mode, type_code=type_char, value=actual_dtype
             )
 
-        actual_dtype = require_dtype_spec(value)
         expected_dtype = _INLINE_PTX_SCALAR_DTYPE_FROM_TYPECODE[type_char]
         if actual_dtype != expected_dtype:
             raise TypeCheckingError(
@@ -127,7 +131,7 @@ def validate_inline_ptx_operand(
             )
         return InlinePTXOperand(mode=mode, type_code=type_char, value=actual_dtype)
 
-    if type_char == "C":
+    if type_char == "p":
         require_pointer_type(value)
         return InlinePTXOperand(mode=mode, type_code=type_char, value=value)
 
@@ -192,7 +196,15 @@ def require_inline_ptx_constraint_pairs(
 
         return ptx_interpolation_replacements[index]
 
-    mlir_ptx_code = _INLINE_PTX_PLACEHOLDER_RE.sub(rewrite, ptx_code)
+    ptx_fragments = []
+    for fragment in ptx_code.split("%%"):
+        fragment = _INLINE_PTX_PLACEHOLDER_RE.sub(rewrite, fragment)
+        if "%" in fragment:
+            raise TypeCheckingError(
+                "Literal percent signs in inline_ptx must be escaped as '%%'"
+            )
+        ptx_fragments.append(fragment)
+    mlir_ptx_code = "%".join(ptx_fragments)
     return (
         mlir_ptx_code,
         tuple(ro_args),
