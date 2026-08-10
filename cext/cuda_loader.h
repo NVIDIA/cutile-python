@@ -10,64 +10,65 @@
 #include <cuda.h>
 
 #define FOREACH_CUDA_FUNCTION_TO_LOAD(X) \
-    X(cuInit, 2000) \
-    X(cuLibraryLoadData, 12000) \
-    X(cuLibraryUnload, 12000) \
-    X(cuLibraryGetKernel, 12000) \
-    X(cuGetErrorString, 6000) \
-    X(cuLaunchKernel, 7000) \
-    X(cuLaunchKernelEx, 11060) \
-    X(cuPointerGetAttribute, 4000) \
-    X(cuCtxSynchronize, 2000) \
-    X(cuCtxPushCurrent, 4000) \
-    X(cuCtxPopCurrent, 4000) \
-    X(cuCtxGetCurrent, 4000) \
-    X(cuCtxSetCurrent, 4000) \
-    X(cuCtxGetDevice, 2000) \
-    X(cuCtxGetId, 12000) \
-    X(cuDeviceGet, 2000) \
-    X(cuDeviceGetCount, 2000) \
-    X(cuDeviceGetAttribute, 2000) \
-    X(cuDevicePrimaryCtxRetain, 7000) \
-    X(cuDriverGetVersion, 2020) \
-    X(cuEventCreate, 2000) \
-    X(cuEventDestroy, 2000) \
-    X(cuEventQuery, 2000) \
-    X(cuEventRecord, 2000) \
-    X(cuKernelGetFunction, 12000) \
-    X(cuKernelGetAttribute, 12000) \
-    X(cuKernelSetAttribute, 12000) \
-    X(cuMemAlloc, 3020) \
-    X(cuMemAllocHost, 3020) \
-    X(cuMemFree, 3020) \
-    X(cuMemFreeHost, 2000) \
-    X(cuMemGetAddressRange, 3020) \
-    X(cuIpcGetMemHandle, 4010) \
-    X(cuIpcOpenMemHandle, 4010) \
-    X(cuIpcCloseMemHandle, 4010) \
-    X(cuMemcpyHtoDAsync, 3020) \
-    X(cuStreamCreate, 2000) \
-    X(cuStreamDestroy, 4000) \
-    X(cuStreamGetCtx, 9020) \
-    X(cuStreamGetId, 12000) \
-    X(cuStreamIsCapturing, 10000) \
-    X(cuStreamSynchronize, 7000) \
-    X(cuStreamWaitEvent, 7000) \
-    X(cuEventElapsedTime, 12080) \
-    X(cuGraphCreate, 10000) \
-    X(cuGraphDestroy, 10000) \
-    X(cuGraphAddEventRecordNode, 11010) \
-    X(cuGraphAddKernelNode, 12000) \
-    X(cuGraphAddMemsetNode, 10000) \
-    X(cuGraphAddMemAllocNode, 11040) \
-    X(cuGraphAddMemFreeNode, 11040) \
-    X(cuGraphInstantiateWithFlags, 11040) \
-    X(cuGraphExecDestroy, 10000) \
-    X(cuGraphLaunch, 10000) \
-    X(cuTensorMapEncodeTiled, 12000)
+    X(cuInit, "cuInit", 2000) \
+    X(cuLibraryLoadData, "cuLibraryLoadData", 12000) \
+    X(cuLibraryUnload, "cuLibraryUnload", 12000) \
+    X(cuLibraryGetKernel, "cuLibraryGetKernel", 12000) \
+    X(cuGetErrorString, "cuGetErrorString", 6000) \
+    X(cuLaunchKernel, "cuLaunchKernel", 7000) \
+    X(cuLaunchKernelEx, "cuLaunchKernelEx", 11060) \
+    X(cuPointerGetAttribute, "cuPointerGetAttribute", 4000) \
+    X(cuCtxSynchronize, "cuCtxSynchronize", 2000) \
+    X(cuCtxPushCurrent, "cuCtxPushCurrent", 4000) \
+    X(cuCtxPopCurrent, "cuCtxPopCurrent", 4000) \
+    X(cuCtxGetCurrent, "cuCtxGetCurrent", 4000) \
+    X(cuCtxSetCurrent, "cuCtxSetCurrent", 4000) \
+    X(cuCtxGetDevice, "cuCtxGetDevice", 2000) \
+    X(cuCtxGetDevice_v2, "cuCtxGetDevice", 13000) \
+    X(cuCtxGetId, "cuCtxGetId", 12000) \
+    X(cuDeviceGet, "cuDeviceGet", 2000) \
+    X(cuDeviceGetCount, "cuDeviceGetCount", 2000) \
+    X(cuDeviceGetAttribute, "cuDeviceGetAttribute", 2000) \
+    X(cuDevicePrimaryCtxRetain, "cuDevicePrimaryCtxRetain", 7000) \
+    X(cuDriverGetVersion, "cuDriverGetVersion", 2020) \
+    X(cuEventCreate, "cuEventCreate", 2000) \
+    X(cuEventDestroy, "cuEventDestroy", 2000) \
+    X(cuEventQuery, "cuEventQuery", 2000) \
+    X(cuEventRecord, "cuEventRecord", 2000) \
+    X(cuKernelGetFunction, "cuKernelGetFunction", 12000) \
+    X(cuKernelGetAttribute, "cuKernelGetAttribute", 12000) \
+    X(cuKernelSetAttribute, "cuKernelSetAttribute", 12000) \
+    X(cuMemAlloc, "cuMemAlloc", 3020) \
+    X(cuMemAllocHost, "cuMemAllocHost", 3020) \
+    X(cuMemFree, "cuMemFree", 3020) \
+    X(cuMemFreeHost, "cuMemFreeHost", 2000) \
+    X(cuMemGetAddressRange, "cuMemGetAddressRange", 3020) \
+    X(cuIpcGetMemHandle, "cuIpcGetMemHandle", 4010) \
+    X(cuIpcOpenMemHandle, "cuIpcOpenMemHandle", 4010) \
+    X(cuIpcCloseMemHandle, "cuIpcCloseMemHandle", 4010) \
+    X(cuMemcpyHtoDAsync, "cuMemcpyHtoDAsync", 3020) \
+    X(cuStreamCreate, "cuStreamCreate", 2000) \
+    X(cuStreamDestroy, "cuStreamDestroy", 4000) \
+    X(cuStreamGetCtx, "cuStreamGetCtx", 9020) \
+    X(cuStreamGetId, "cuStreamGetId", 12000) \
+    X(cuStreamIsCapturing, "cuStreamIsCapturing", 10000) \
+    X(cuStreamSynchronize, "cuStreamSynchronize", 7000) \
+    X(cuStreamWaitEvent, "cuStreamWaitEvent", 7000) \
+    X(cuEventElapsedTime, "cuEventElapsedTime", 12080) \
+    X(cuGraphCreate, "cuGraphCreate", 10000) \
+    X(cuGraphDestroy, "cuGraphDestroy", 10000) \
+    X(cuGraphAddEventRecordNode, "cuGraphAddEventRecordNode", 11010) \
+    X(cuGraphAddKernelNode, "cuGraphAddKernelNode", 12000) \
+    X(cuGraphAddMemsetNode, "cuGraphAddMemsetNode", 10000) \
+    X(cuGraphAddMemAllocNode, "cuGraphAddMemAllocNode", 11040) \
+    X(cuGraphAddMemFreeNode, "cuGraphAddMemFreeNode", 11040) \
+    X(cuGraphInstantiateWithFlags, "cuGraphInstantiateWithFlags", 11040) \
+    X(cuGraphExecDestroy, "cuGraphExecDestroy", 10000) \
+    X(cuGraphLaunch, "cuGraphLaunch", 10000) \
+    X(cuTensorMapEncodeTiled, "cuTensorMapEncodeTiled", 12000)
 
 
-#define DECLARE_CUDA_FUNC_EXTERN(name, _cuda_version) \
+#define DECLARE_CUDA_FUNC_EXTERN(name, _key, _cuda_version) \
     decltype(::name)* name;
 
 struct DriverApi {

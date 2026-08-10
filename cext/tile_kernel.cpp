@@ -3433,13 +3433,10 @@ static Result<PreparedLaunch> prepare_launch(
         return ErrorRaised;
     }
 
-    if (!ctx_guard.switch_to(helper->cuda_context))
-        return ErrorRaised;
-
     // Get the compute capability of the device this launch targets.
     // Devices with the same compute capability can share a compiled kernel.
     CUdevice dev;
-    CUresult dev_res = driver->cuCtxGetDevice(&dev);
+    CUresult dev_res = driver->cuCtxGetDevice_v2(&dev, helper->cuda_context);
     if (dev_res != CUDA_SUCCESS) {
         return raise(PyExc_RuntimeError, "Failed to get current CUDA device: %s",
                      get_cuda_error(driver, dev_res));
@@ -3482,6 +3479,9 @@ static Result<PreparedLaunch> prepare_launch(
         if (!kernel_item)
             kernel_item = kernel_map.insert(std::move(helper->constants), std::move(*res));
     }
+
+    if (!ctx_guard.switch_to(helper->cuda_context))
+        return ErrorRaised;
 
     if (stage_list_args
             && !stage_list_args_on_stream(driver, launch_stream, helper->cuda_context,

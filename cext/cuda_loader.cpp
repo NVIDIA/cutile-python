@@ -44,14 +44,14 @@ F get_proc_address(cuGetProcAddress_v2_t getter,
 } // anonymous namespace
 
 
-#define DEFINE_CUDA_FUNCTION_GLOBAL(name, _cuda_version) \
+#define DEFINE_CUDA_FUNCTION_GLOBAL(name, _key, _cuda_version) \
     decltype(name)* g_##name;
 
 FOREACH_CUDA_FUNCTION_TO_LOAD(DEFINE_CUDA_FUNCTION_GLOBAL)
 
-#define GET_PROC_ADDRESS(name, cuda_ver) \
+#define GET_PROC_ADDRESS(name, key, cuda_ver) \
         if (!(driver_api.name = \
-                    get_proc_address<decltype(name)*>(_cuGetProcAddress, #name, cuda_ver))) \
+                    get_proc_address<decltype(name)*>(_cuGetProcAddress, key, cuda_ver))) \
             return ErrorRaised;
 
 
