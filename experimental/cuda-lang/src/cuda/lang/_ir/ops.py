@@ -101,6 +101,7 @@ from .op_defs import (  # noqa: F401
     LoadPointer,
     ReinterpretPointerAsArray,
     BitCast,
+    FmaOperation,
 )
 from .op_impl.core_api_impl import core_api_impl_registry
 from .type_checking_helpers import (
@@ -942,6 +943,7 @@ __all__ = (
     "RawMLIROperation",
     "Fence",
     "ForeignFunction",
+    "FmaOperation",
     "VectorGetItem",
     "VectorReduce",
 )

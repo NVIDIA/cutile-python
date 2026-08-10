@@ -7,7 +7,7 @@ from typing import Optional
 from enum import Enum, auto
 
 import cuda.lang._mlir as mlir
-from cuda.lang._enums import MemoryOrder
+from cuda.lang._enums import MemoryOrder, RoundingMode, SaturationMode
 from cuda.tile._memory_model import MemoryScope
 from cuda.tile._ir.ir import MemoryEffect
 import cuda.lang._datatype as datatype
@@ -143,3 +143,15 @@ class ReinterpretPointerAsArray(Operation, opcode="reinterpret_ptr_as_array"):
 @dataclass
 class TensorMapAsOpaquePtr(Operation, opcode="tensor_map_as_opaque_ptr"):
     tensor_map: Var = operand()
+
+
+@dataclass(eq=False)
+class FmaOperation(Operation, opcode="fma"):
+    x: Var = operand()
+    y: Var = operand()
+    z: Var = operand()
+    rounding_mode: RoundingMode = attribute()
+    saturation_mode: SaturationMode = attribute()
+    flush_to_zero: bool = attribute()
+    relu: bool = attribute()
+    oob: bool = attribute()

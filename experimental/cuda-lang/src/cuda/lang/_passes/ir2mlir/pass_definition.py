@@ -2,13 +2,19 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+import enum
 import sys
 from functools import partial
 from dataclasses import dataclass, field
 from typing import Callable, ClassVar, Literal, Sequence, get_type_hints
 
 from cuda.lang._compiler_options import CompilerOptions
-from cuda.lang._enums import MemoryOrder, VectorReduction
+from cuda.lang._enums import (
+    MemoryOrder,
+    RoundingMode,
+    SaturationMode,
+    VectorReduction,
+)
 from cuda.lang._ir import ir, ops
 from cuda.lang import _mlir as mlir
 from cuda.tile._memory_model import MemoryScope
@@ -16,6 +22,7 @@ from cuda.lang._mlir._builtins import _Cursor
 import cuda.lang._mlir.extras.types as T
 import cuda.lang._ir.type as ir_type
 from cuda.lang.compilation import KernelSignature
+from cuda.lang._target import TargetFeature, TargetInfo
 import cuda.lang._datatype as datatype
 from cuda.tile._datatype import PointerInfo, is_integral
 from cuda.lang._exception import InternalError, TypeCheckingError
@@ -341,6 +348,7 @@ class MLIRLoweringContext:
     execution_space: ClassVar[Literal["host", "device"]]
     region: ir.Region
     ir_context: ir.IRContext
+    target_info: TargetInfo
     var_map: dict[str, mlir.Value] = field(default_factory=dict)
     block_map: dict[ir.Block, mlir.Block] = field(default_factory=dict)
     module_op: mlir.Operation | None = None
@@ -454,6 +462,149 @@ def mlir_op_lowering(handler=None, *, host: bool = True, device: bool = True):
     return decorator if handler is None else decorator(handler)
 
 
+# TODO(ajm): need to bump LLVM bindings to get this enum.
+class _FmaSaturationMode(enum.Enum):
+    NONE = 0
+    SAT = 1
+
+    def _print_mlir_unqualified(self, printer):
+        printer(("none", "sat")[self.value])
+
+
+@mlir_op_lowering(host=False)
+def lower_fma(
+    context: DeviceLoweringContext, operation: ops.FmaOperation
+) -> Sequence[mlir.Value]:
+    result_type = operation.result_var.get_type()
+    operands = (
+        context.get_var(operation.x),
+        context.get_var(operation.y),
+        context.get_var(operation.z),
+    )
+    mlir_result_type = ir_type_to_mlir_type(result_type)
+    rounding_modes = {
+        RoundingMode.RM: mlir.nvvm.FPRoundingMode.RM,
+        RoundingMode.RN: mlir.nvvm.FPRoundingMode.RN,
+        RoundingMode.RP: mlir.nvvm.FPRoundingMode.RP,
+        RoundingMode.RZ: mlir.nvvm.FPRoundingMode.RZ,
+    }
+    rnd = mlir.nvvm.FPRoundingModeAttr(
+        value=rounding_modes[operation.rounding_mode]
+    )
+    saturation_modes = {
+        SaturationMode.NONE: _FmaSaturationMode.NONE,
+        SaturationMode.SAT: _FmaSaturationMode.SAT,
+    }
+    sat = mlir.nvvm.SaturationModeAttr(
+        value=saturation_modes[operation.saturation_mode]
+    )
+
+    packed_f32x2 = (
+        isinstance(result_type, ir_type.VectorTy)
+        and result_type.length >= 2
+        and result_type.length % 2 == 0
+        and result_type.element_dtype == datatype.float32
+        and operation.saturation_mode == SaturationMode.NONE
+        and not operation.relu
+        and not operation.oob
+    )
+    if packed_f32x2 and context.target_info.supports(TargetFeature.PACKED_F32X2):
+        result = mlir.add_operation(
+            name="nvvm.fma.packed.f32x2",
+            result_type=mlir_result_type,
+            operands=operands,
+            properties=(),
+            attributes=(
+                ("rnd", rnd),
+                ("ftz", mlir.BoolAttr(value=operation.flush_to_zero)),
+            ),
+        )
+        return [result]
+
+    attributes = (
+        ("rnd", rnd),
+        ("sat", sat),
+        ("ftz", mlir.BoolAttr(value=operation.flush_to_zero)),
+        ("relu", mlir.BoolAttr(value=operation.relu)),
+        ("oob", mlir.BoolAttr(value=operation.oob)),
+    )
+    # `nvvm.fma` only supports scalar or vector of size 2.
+    if not (
+        isinstance(result_type, ir_type.VectorTy)
+        and result_type.length > 2
+    ):
+        result = mlir.add_operation(
+            name="nvvm.fma",
+            result_type=mlir_result_type,
+            operands=operands,
+            properties=(),
+            attributes=attributes,
+        )
+        return [result]
+
+    result = mlir.llvm.add_PoisonOp(res_type=mlir_result_type)
+    pair_type = mlir.VectorType(
+        shape=[2],
+        elementType=mlir_result_type.elementType,
+        scalableDims=[False],
+    )
+    paired_length = result_type.length - result_type.length % 2
+    for pair_start in range(0, paired_length, 2):
+        pair_operands = tuple(
+            mlir.llvm.add_ShuffleVectorOp(
+                res_type=pair_type,
+                v1=operand,
+                v2=operand,
+                mask=[pair_start, pair_start + 1],
+            )
+            for operand in operands
+        )
+        pair_result = mlir.add_operation(
+            name="nvvm.fma",
+            result_type=pair_type,
+            operands=pair_operands,
+            properties=(),
+            attributes=attributes,
+        )
+        for pair_index in range(2):
+            pair_position = mlir_constant_of_type(T.i32(), pair_index)
+            result_position = mlir_constant_of_type(
+                T.i32(), pair_start + pair_index
+            )
+            pair_element = mlir.llvm.add_ExtractElementOp(
+                vector=pair_result,
+                position=pair_position,
+            )
+            result = mlir.llvm.add_InsertElementOp(
+                vector=result,
+                value=pair_element,
+                position=result_position,
+            )
+
+    if paired_length != result_type.length:
+        tail_position = mlir_constant_of_type(T.i32(), paired_length)
+        tail_operands = tuple(
+            mlir.llvm.add_ExtractElementOp(
+                vector=operand,
+                position=tail_position,
+            )
+            for operand in operands
+        )
+        tail_result = mlir.add_operation(
+            name="nvvm.fma",
+            result_type=mlir_result_type.elementType,
+            operands=tail_operands,
+            properties=(),
+            attributes=attributes,
+        )
+        result = mlir.llvm.add_InsertElementOp(
+            vector=result,
+            value=tail_result,
+            position=tail_position,
+        )
+    return [result]
+
+
 @mlir_op_lowering
 def lower_comparison(
     context: MLIRLoweringContext, operation: ops.RawComparisonOperation
@@ -504,6 +655,38 @@ def _lower_raw_binary_arith(
     assert lhs_type == rhs_type == res_type
 
     res_dtype = res_type.tensor_dtype()
+    packed_f32x2_add = (
+        operation.fn == "add"
+        and isinstance(res_type, ir_type.VectorTy)
+        and res_type.length >= 2
+        and res_type.length % 2 == 0
+        and res_dtype == datatype.float32
+    )
+    if packed_f32x2_add and context.target_info.supports(TargetFeature.PACKED_F32X2):
+        # TODO: Propagate rounding and FTZ once cl.add exposes these options.
+        result = mlir.add_operation(
+            name="nvvm.add.packed.f32x2",
+            result_type=ir_type_to_mlir_type(res_type),
+            operands=(
+                context.get_var(operation.lhs),
+                context.get_var(operation.rhs),
+            ),
+            properties=(),
+            attributes=(
+                (
+                    "rnd",
+                    mlir.nvvm.FPRoundingModeAttr(
+                        value=mlir.nvvm.FPRoundingMode.RN
+                    ),
+                ),
+                (
+                    "ftz",
+                    mlir.BoolAttr(value=False),
+                ),
+            ),
+        )
+        return [result]
+
     mlir_op = _get_mlir_op_for_op_and_dtype(operation.fn, res_dtype)
     if mlir_op is None:
         raise NotImplementedError(
@@ -642,11 +825,13 @@ class DeviceIR2MLIR:
         region: ir.Region,
         ctx: ir.IRContext,
         compiler_options: CompilerOptions,
+        target_info: TargetInfo,
     ):
         self.context = DeviceLoweringContext(
             signature=signature,
             region=region,
             ir_context=ctx,
+            target_info=target_info,
         )
         self.compiler_options = compiler_options
 
@@ -1626,8 +1811,15 @@ def ir2mlir(
     body: ir.Region,
     ctx: ir.IRContext,
     compiler_options: CompilerOptions,
+    target_info: TargetInfo,
 ) -> mlir.Operation:
-    lower = DeviceIR2MLIR(signature, body, ctx, compiler_options)
+    lower = DeviceIR2MLIR(
+        signature,
+        body,
+        ctx,
+        compiler_options,
+        target_info,
+    )
     op = lower()
     return op
 

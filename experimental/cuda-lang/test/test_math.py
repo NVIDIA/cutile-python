@@ -593,7 +593,7 @@ def test_math_fma_ir(vector):
 
 
 @pytest.mark.parametrize("dtype", FLOAT_TYPES)
-@pytest.mark.parametrize("vector", (False, True))
+@pytest.mark.parametrize("vector", (False, 2, 3, 4))
 def test_math_fma(dtype, vector):
     """
     https://docs.nvidia.com/cuda/archive/12.2.1/floating-point/index.html#the-fused-multiply-add-fma
@@ -607,14 +607,14 @@ def test_math_fma(dtype, vector):
     @cl.kernel
     def kernel(x, y, z, out):
         if vector:
-            xv = x.get_base_pointer().load(count=2)
-            yv = y.get_base_pointer().load(count=2)
-            zv = z.get_base_pointer().load(count=2)
+            xv = x.get_base_pointer().load(count=vector)
+            yv = y.get_base_pointer().load(count=vector)
+            zv = z.get_base_pointer().load(count=vector)
             out.get_base_pointer().store(cl.fma(xv, yv, zv))
         else:
             out[0] = cl.fma(x[0], y[0], z[0])
 
-    count = 2 if vector else 1
+    count = vector if vector else 1
     torch_dtype = datatype.to_torch_dtype(dtype)
     eps = torch.finfo(torch_dtype).eps
     scale = 32.0
@@ -740,9 +740,14 @@ def _fma_unsupported_cases():
                 yield dtype, vector, *options
 
 
-def _fma_ptx_type(dtype, vector):
+def _fma_ptx_type(dtype, vector, saturation_mode):
     ptx_type = dtype.name.replace("float", "f")
-    if vector and dtype in (cl.float16, cl.bfloat16):
+    packed_f32x2 = (
+        dtype == cl.float32
+        and saturation_mode == cl.SaturationMode.NONE
+        and get_compute_capability() >= (10, 0)
+    )
+    if vector and (dtype in (cl.float16, cl.bfloat16) or packed_f32x2):
         ptx_type += "x2"
     return ptx_type
 
@@ -824,7 +829,7 @@ def test_math_fma_modes(
         ptx_modifiers.append("oob")
     if relu:
         ptx_modifiers.append("relu")
-    ptx_type = _fma_ptx_type(dtype, vector)
+    ptx_type = _fma_ptx_type(dtype, vector, saturation_mode)
     ptx_instruction = f"fma.{'.'.join(ptx_modifiers)}.{ptx_type}"
 
     _compile_math_fma_mode(
@@ -1425,3 +1430,149 @@ def test_divmod(divmod_func):
               (lhs, rhs, output_q, output_r))
     assert expected_q.tolist() == output_q.tolist()
     assert expected_r.tolist() == output_r.tolist()
+
+
+@pytest.mark.parametrize("vector_length", (2, 4, 8))
+def test_fma_f32x2_target_lowering(vector_length):
+    def kernel():
+        values = cl.shared_array(vector_length * 2, cl.float32)
+        ptr = values.get_base_pointer()
+        value = ptr.load(count=vector_length * 2)
+        ptr.store(
+            cl.fma(
+                value[vector_length: vector_length * 2],
+                cl.float32(2.0),
+                cl.float32(1.0),
+            )
+        )
+
+    compile_kernel(
+        kernel,
+        filecheck_mlir="CHECK-COUNT-1: nvvm.fma.packed.f32x2",
+        filecheck_nvvm="CHECK-COUNT-1: llvm.nvvm.fma.packed.f32x2",
+        filecheck_ptx=(
+            f"CHECK-COUNT-{vector_length // 2}: fma.rn.f32x2"
+        ),
+        gpu_name="sm_100a",
+        arch="compute_100a",
+    )
+    compile_kernel(
+        kernel,
+        filecheck_mlir=f"""
+            CHECK-COUNT-{max(1, vector_length // 2)}: nvvm.fma
+            CHECK-NOT: nvvm.fma.packed.f32x2
+        """,
+        filecheck_nvvm=(
+            f"CHECK-COUNT-{vector_length}: llvm.nvvm.fma.rn.f"
+        ),
+        filecheck_ptx=f"CHECK-COUNT-{vector_length}: fma.rn.f32",
+        gpu_name="sm_100a",
+        arch="compute_90",
+    )
+
+
+@pytest.mark.parametrize("vector_length", (2, 4, 8))
+def test_add_f32x2_target_lowering(vector_length):
+    def kernel():
+        values = cl.shared_array(vector_length, cl.float32)
+        ptr = values.get_base_pointer()
+        value = ptr.load(count=vector_length)
+        ptr.store(value + value)
+
+    compile_kernel(
+        kernel,
+        filecheck_mlir="CHECK-COUNT-1: nvvm.add.packed.f32x2",
+        filecheck_nvvm="CHECK-COUNT-1: llvm.nvvm.add.packed.f32x2",
+        filecheck_ptx=(
+            f"CHECK-COUNT-{vector_length // 2}: add.rn.f32x2"
+        ),
+        gpu_name="sm_100a",
+        arch="compute_100a",
+    )
+
+    compile_kernel(
+        kernel,
+        filecheck_mlir="""
+            CHECK: arith.addf
+            CHECK-NOT: nvvm.add.packed.f32x2
+        """,
+        filecheck_ptx=f"CHECK-COUNT-{vector_length}: add.f32",
+        gpu_name="sm_100a",
+        arch="compute_90",
+    )
+
+
+def test_add_f32x2_odd_vector_fallback():
+    vector_length = 3
+
+    def kernel():
+        values = cl.shared_array(vector_length, cl.float32)
+        ptr = values.get_base_pointer()
+        value = ptr.load(count=vector_length)
+        ptr.store(cl.add(value, value))
+
+    compile_kernel(
+        kernel,
+        filecheck_mlir="""
+            CHECK: arith.addf
+            CHECK-NOT: nvvm.add.packed.f32x2
+        """,
+        gpu_name="sm_100a",
+        arch="compute_100a",
+    )
+
+
+@pytest.mark.parametrize(
+    "dtype,ptx_type",
+    (
+        (cl.float16, "f16"),
+        (cl.bfloat16, "bf16"),
+    ),
+)
+@pytest.mark.parametrize("vector_length", (3, 4))
+def test_fma_long_vector_pair_lowering(dtype, ptx_type, vector_length):
+    def kernel():
+        values = cl.shared_array(vector_length, dtype)
+        ptr = values.get_base_pointer()
+        value = ptr.load(count=vector_length)
+        ptr.store(cl.fma(value, value, value))
+
+    pair_count = vector_length // 2
+    operation_count = pair_count + vector_length % 2
+    compile_kernel(
+        kernel,
+        filecheck_mlir=f"""
+            CHECK-COUNT-{operation_count}: nvvm.fma
+            CHECK-NOT: nvvm.fma.packed.f32x2
+        """,
+        filecheck_nvvm=(
+            f"CHECK-COUNT-{pair_count}: llvm.nvvm.fma.rn.{ptx_type}x2"
+        ),
+        filecheck_ptx=(
+            f"CHECK-COUNT-{pair_count}: fma.rn.{ptx_type}x2"
+        ),
+        gpu_name="sm_100a",
+        arch="compute_100a",
+    )
+
+
+def test_fma_f32x2_odd_vector_fallback():
+    vector_length = 3
+
+    def kernel():
+        values = cl.shared_array(vector_length, cl.float32)
+        ptr = values.get_base_pointer()
+        value = ptr.load(count=vector_length)
+        ptr.store(cl.fma(value, value, value))
+
+    compile_kernel(
+        kernel,
+        filecheck_mlir="""
+            CHECK-COUNT-2: nvvm.fma
+            CHECK-NOT: nvvm.fma.packed.f32x2
+        """,
+        filecheck_nvvm="CHECK-COUNT-3: llvm.nvvm.fma.rn.f",
+        filecheck_ptx="CHECK-COUNT-3: fma.rn.f32",
+        gpu_name="sm_100a",
+        arch="compute_100a",
+    )

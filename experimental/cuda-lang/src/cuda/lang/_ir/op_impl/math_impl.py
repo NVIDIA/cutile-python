@@ -2,7 +2,6 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-import enum
 import operator
 
 from cuda.tile._ir.ir import add_operation_variadic
@@ -22,6 +21,7 @@ from cuda.lang._ir.op_defs import (
     RawNVVMIntrinsic,
     RawMLIROperation,
     ForeignFunction,
+    FmaOperation,
 )
 from cuda.lang._ir.type_checking_helpers import (
     broadcast_to_same_shape,
@@ -56,15 +56,6 @@ from ..._stub import math as cl_math
 
 _registry = ImplRegistry()
 impl = _registry.impl
-
-
-# TODO(ajm): need to bump llvm bindings to get this enum
-class _FmaSaturationMode(enum.Enum):
-    NONE = 0
-    SAT = 1
-
-    def _print_mlir_unqualified(self, printer):
-        printer(("none", "sat")[self.value])
 
 
 def math_impl_registry() -> ImplRegistry:
@@ -111,12 +102,12 @@ def math_fma_impl(
     y = promote_and_broadcast_to(y, ty)
     z = promote_and_broadcast_to(z, ty)
 
-    rounding_modes = {
-        RoundingMode.RM: mlir.nvvm.FPRoundingMode.RM,
-        RoundingMode.RN: mlir.nvvm.FPRoundingMode.RN,
-        RoundingMode.RP: mlir.nvvm.FPRoundingMode.RP,
-        RoundingMode.RZ: mlir.nvvm.FPRoundingMode.RZ,
-    }
+    rounding_modes = (
+        RoundingMode.RM,
+        RoundingMode.RN,
+        RoundingMode.RP,
+        RoundingMode.RZ,
+    )
     if rounding_mode not in rounding_modes:
         valid = ", ".join(str(mode) for mode in rounding_modes)
         raise TypeCheckingError(
@@ -127,25 +118,17 @@ def math_fma_impl(
         raise TypeCheckingError(
             "fma does not implement SaturationMode.SATFINITE yet"
         )
-    saturation_modes = {
-        SaturationMode.NONE: _FmaSaturationMode.NONE,
-        SaturationMode.SAT: _FmaSaturationMode.SAT,
-    }
-
-    rns = mlir.nvvm.FPRoundingModeAttr(value=rounding_modes[rounding_mode])
-    sat = mlir.nvvm.SaturationModeAttr(value=saturation_modes[saturation_mode])
     return add_operation(
-        RawMLIROperation,
+        FmaOperation,
         ty,
-        op_name="nvvm.fma",
-        operands_=(x, y, z),
-        mlir_attributes=(
-            ("rnd", rns),
-            ("sat", sat),
-            ("ftz", mlir.BoolAttr(value=flush_to_zero)),
-            ("relu", mlir.BoolAttr(value=relu)),
-            ("oob", mlir.BoolAttr(value=oob)),
-        ),
+        x=x,
+        y=y,
+        z=z,
+        rounding_mode=rounding_mode,
+        saturation_mode=saturation_mode,
+        flush_to_zero=flush_to_zero,
+        relu=relu,
+        oob=oob,
     )
 
 

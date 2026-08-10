@@ -43,6 +43,7 @@ from cuda.lang.compilation import (
     ConstantConstraint,
 )
 from cuda.lang._exception import CompilerExecutionError
+from cuda.lang._target import TargetInfo
 from ._execution import kernel
 from cuda.lang._ir.ops import cuda_lang_impl_registry
 from ._ir._host_program import HostProgram, get_host_programs_by_var
@@ -283,17 +284,24 @@ def compile_simt(
     if log_flags.log_flattened_ir:
         _dump("Flattened IR", flattened_ir)
 
-    mlir_module = ir2mlir(signature, flattened_ir, ctx, compiler_options)
-    mlir_text = str(mlir_module)
-
-    if log_flags.log_mlir:
-        _dump("MLIR", mlir_text)
-
     if gpu_name is None or arch is None:
         cc = compute_capability or get_compute_capability()
         suffix = "a" if cc >= (9, 0) else ""
         gpu_name = gpu_name or cc.gpu_name + suffix
         arch = arch or cc.arch + suffix
+
+    target_info = TargetInfo.from_arch(arch)
+    mlir_module = ir2mlir(
+        signature,
+        flattened_ir,
+        ctx,
+        compiler_options,
+        target_info,
+    )
+    mlir_text = str(mlir_module)
+
+    if log_flags.log_mlir:
+        _dump("MLIR", mlir_text)
 
     need_nvvm = log_flags.log_nvvm or keep_nvvm
     need_ptx = log_flags.log_ptx or keep_ptx

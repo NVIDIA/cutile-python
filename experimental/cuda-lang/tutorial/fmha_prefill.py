@@ -130,52 +130,6 @@ def _tmem_pointer(base, lane_offset, column_offset):
     )
 
 
-def _fma_packed_f32x2(a0, a1, b0, b1, c0, c1):
-    """Issue the source kernel's packed two-lane FP32 FMA."""
-    result = cl._inline_ptx(
-        """
-        {
-            .reg .b64 a, b, c, d;
-            mov.b64 a, {%2, %3};
-            mov.b64 b, {%4, %5};
-            mov.b64 c, {%6, %7};
-            fma.rn.f32x2 d, a, b, c;
-            mov.b64 {%0, %1}, d;
-        }
-        """,
-        ("=f", cl.float32),
-        ("=f", cl.float32),
-        ("f", a0),
-        ("f", a1),
-        ("f", b0),
-        ("f", b1),
-        ("f", c0),
-        ("f", c1),
-    )
-    return cl.Vector(result[0], result[1], dtype=cl.float32)
-
-
-def _add_packed_f32x2(a0, a1, b0, b1):
-    """Issue the source kernel's packed two-lane FP32 add."""
-    return cl._inline_ptx(
-        """
-        {
-            .reg .b64 a, b, c;
-            mov.b64 a, {%2, %3};
-            mov.b64 b, {%4, %5};
-            add.rn.f32x2 c, a, b;
-            mov.b64 {%0, %1}, c;
-        }
-        """,
-        ("=f", cl.float32),
-        ("=f", cl.float32),
-        ("f", a0),
-        ("f", a1),
-        ("f", b0),
-        ("f", b1),
-    )
-
-
 def _pack_e4m3_quad(values):
     lo = cl.uint32(cl.uint16(cl._nvvm.ff_to_e4m3x2_rn(values[1], values[0])))
     hi = cl.uint32(cl.uint16(cl._nvvm.ff_to_e4m3x2_rn(values[3], values[2])))
@@ -189,30 +143,10 @@ def _compute_p_fma_window(
     scale,
     minus_row_max_scale,
 ):
-    affine01 = _fma_packed_f32x2(
-        scores[window_start],
-        scores[window_start + 1],
-        scale,
+    return cl.fma(
+        scores[window_start: window_start + p_window_elems],
         scale,
         minus_row_max_scale,
-        minus_row_max_scale,
-    )
-    if p_window_elems == 2:
-        return affine01
-    affine23 = _fma_packed_f32x2(
-        scores[window_start + 2],
-        scores[window_start + 3],
-        scale,
-        scale,
-        minus_row_max_scale,
-        minus_row_max_scale,
-    )
-    return cl.Vector(
-        affine01[0],
-        affine01[1],
-        affine23[0],
-        affine23[1],
-        dtype=cl.float32,
     )
 
 
@@ -247,19 +181,13 @@ def _pack_p_window(probabilities, input_kind):
 
 
 def _accumulate_p_window_sum(
-    block_sum0,
-    block_sum1,
+    block_sums,
     probabilities,
     p_window_elems,
 ):
     for pair in cl.static_iter(range(p_window_elems // 2)):
-        block_sum0, block_sum1 = _add_packed_f32x2(
-            probabilities[2 * pair],
-            probabilities[2 * pair + 1],
-            block_sum0,
-            block_sum1,
-        )
-    return block_sum0, block_sum1
+        block_sums = block_sums + probabilities[2 * pair: 2 * (pair + 1)]
+    return block_sums
 
 
 def _qk_descriptor(pointer, head_dim, element_bits, tma_slices, swizzle):
@@ -1958,8 +1886,7 @@ def _fmha_prefill_kernel(
                         1 ^ (pv_event & 1),
                     )
 
-                    block_sum0 = cl.float32(0.0)
-                    block_sum1 = cl.float32(0.0)
+                    block_sums = cl.Vector(0.0, 0.0, dtype=cl.float32)
                     minus_safe_max_scale = -safe_max * scale_softmax_log2
                     # Keep the DKG constexpr-loop topology while using flattened
                     # local arrays in place of its mutable Python lists.
@@ -2210,12 +2137,8 @@ def _fmha_prefill_kernel(
                                     count=p_window_elems,
                                     alignment=p_window_alignment,
                                 )
-                                (
-                                    block_sum0,
-                                    block_sum1,
-                                ) = _accumulate_p_window_sum(
-                                    block_sum0,
-                                    block_sum1,
+                                block_sums = _accumulate_p_window_sum(
+                                    block_sums,
                                     reduce_window,
                                     p_window_elems,
                                 )
@@ -2334,23 +2257,14 @@ def _fmha_prefill_kernel(
                                 count=p_window_elems,
                                 alignment=p_window_alignment,
                             )
-                            (
-                                block_sum0,
-                                block_sum1,
-                            ) = _accumulate_p_window_sum(
-                                block_sum0,
-                                block_sum1,
+                            block_sums = _accumulate_p_window_sum(
+                                block_sums,
                                 reduce_window,
                                 p_window_elems,
                             )
                     half_scaled_old_sum = row_sum * alpha * cl.float32(0.5)
-                    block_sum0, block_sum1 = _add_packed_f32x2(
-                        half_scaled_old_sum,
-                        half_scaled_old_sum,
-                        block_sum0,
-                        block_sum1,
-                    )
-                    row_sum = block_sum0 + block_sum1
+                    block_sums = half_scaled_old_sum + block_sums
+                    row_sum = block_sums[0] + block_sums[1]
 
                 if qid == 0:
                     cl.barrier_arrive_block(256, SOFTMAX_SEQUENCE_1)
