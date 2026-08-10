@@ -194,7 +194,11 @@ def tma_multicast_copy_kernel(
     rank = cl.block_in_cluster_index(0)
     if tid == 0:
         cl.mbarrier_initialize(mbar, 1)
-    cl.fence_mbarrier_initialize()
+    cl.fence(
+        cl.MemoryOrder.RELEASE,
+        cl.MemoryScope.CLUSTER,
+        restriction=cl.FenceRestriction.mbarrier_initialize(),
+    )
     cl.barrier_sync_cluster()
 
     if tid == 0:
@@ -291,7 +295,11 @@ def two_cta_tcgen05_kernel(a, b, c):
     if warp == 0 and cl.elect_sync():
         cl.mbarrier_initialize(tma_bar, 2)
         cl.mbarrier_initialize(mma_bar, 1)
-        cl.fence_mbarrier_initialize()
+        cl.fence(
+            cl.MemoryOrder.RELEASE,
+            cl.MemoryScope.CLUSTER,
+            restriction=cl.FenceRestriction.mbarrier_initialize(),
+        )
     cl.barrier_sync_cluster(aligned=True)
 
     if warp == 1 and cl.elect_sync():
@@ -382,7 +390,10 @@ def two_cta_tcgen05_kernel(a, b, c):
         )
     cl.barrier_sync_block()
     if tid == 0:
-        cl.fence_proxy(cl.FenceProxyKind.ASYNC_SHARED, space=cl.MemorySpace.SHARED)
+        cl.fence_proxy_bidirectional(
+            cl.FenceProxy.ASYNC,
+            restriction=cl.FenceRestriction.shared_block(),
+        )
         cl.copy_async_bulk_tensor_shared_to_global(
             c_smem.get_base_pointer(), c_tmap, (0, rank * cta_m)
         )
@@ -444,7 +455,11 @@ def tma_tcgen05_kernel(a, b, c):
         cl.mbarrier_initialize(b_bar, 1)
         # Both CTA pairs consume each multicast B tile.
         cl.mbarrier_initialize(mma_bar, 2)
-        cl.fence_mbarrier_initialize()
+        cl.fence(
+            cl.MemoryOrder.RELEASE,
+            cl.MemoryScope.CLUSTER,
+            restriction=cl.FenceRestriction.mbarrier_initialize(),
+        )
     cl.barrier_sync_cluster(aligned=True)
 
     if warp == 0:
@@ -536,7 +551,10 @@ def tma_tcgen05_kernel(a, b, c):
         )
     cl.barrier_sync_block()
     if tid == 0:
-        cl.fence_proxy(cl.FenceProxyKind.ASYNC_SHARED, space=cl.MemorySpace.SHARED)
+        cl.fence_proxy_bidirectional(
+            cl.FenceProxy.ASYNC,
+            restriction=cl.FenceRestriction.shared_block(),
+        )
         cl.copy_async_bulk_tensor_shared_to_global(
             c_smem.get_base_pointer(), c_tmap, (0, rank * cta_m)
         )
@@ -570,11 +588,23 @@ CLC_BYTES = cl.clusterlaunchcontrol_token.bitwidth // 8
 
 
 def fence_clc_acquire():
-    cl.fence_proxy_sync_restrict(cl.MemoryOrder.ACQUIRE)
+    cl.fence(
+        cl.MemoryOrder.ACQUIRE,
+        cl.MemoryScope.CLUSTER,
+        from_proxy=cl.FenceProxy.GENERIC,
+        to_proxy=cl.FenceProxy.ASYNC,
+        restriction=cl.FenceRestriction.shared_cluster(),
+    )
 
 
 def fence_clc_release():
-    cl.fence_proxy_sync_restrict(cl.MemoryOrder.RELEASE)
+    cl.fence(
+        cl.MemoryOrder.RELEASE,
+        cl.MemoryScope.CLUSTER,
+        from_proxy=cl.FenceProxy.GENERIC,
+        to_proxy=cl.FenceProxy.ASYNC,
+        restriction=cl.FenceRestriction.shared_block(),
+    )
 
 
 def swizzle_program_id(tile, tiles_m, tiles_n, width):
@@ -651,9 +681,9 @@ def store_matmul_partition(
         cl.barrier_sync_block()
 
         if warp == 0 and cl.elect_sync():
-            cl.fence_proxy(
-                cl.FenceProxyKind.ASYNC_SHARED,
-                space=cl.MemorySpace.SHARED,
+            cl.fence_proxy_bidirectional(
+                cl.FenceProxy.ASYNC,
+                restriction=cl.FenceRestriction.shared_block(),
             )
             cl.copy_async_bulk_tensor_shared_to_global(
                 stage_smem,
@@ -733,7 +763,11 @@ def matmul_multicta_kernel(
             cl.mbarrier_initialize(scheduler_ready.get_element_pointer(stage), 1)
             cl.mbarrier_initialize(scheduler_consumed.get_element_pointer(stage), 3)
         cl.mbarrier_initialize(clc_bar, 1)
-        cl.fence_mbarrier_initialize()
+        cl.fence(
+            cl.MemoryOrder.RELEASE,
+            cl.MemoryScope.CLUSTER,
+            restriction=cl.FenceRestriction.mbarrier_initialize(),
+        )
     cl.barrier_sync_cluster(aligned=True)
 
     if warp == 2:

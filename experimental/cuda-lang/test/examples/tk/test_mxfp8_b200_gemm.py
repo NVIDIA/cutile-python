@@ -170,9 +170,9 @@ def store_bf16_register_subtile(dst, registers, register_offset, row, width):
 
 def issue_output_store(c_tmap, c_smem, pid_m, pid_n, rank, subtile, width):
     if cl.elect_sync():
-        cl.fence_proxy(
-            cl.FenceProxyKind.ASYNC_SHARED,
-            space=cl.MemorySpace.SHARED,
+        cl.fence_proxy_bidirectional(
+            cl.FenceProxy.ASYNC,
+            restriction=cl.FenceRestriction.shared_block(),
         )
         cache_hint = cl.create_fractional_cache_policy(cl.CachePolicy.L2_EVICT_FIRST)
         cl.copy_async_bulk_tensor_shared_to_global(
@@ -383,7 +383,11 @@ def mxfp8_b200_gemm_kernel(
             cl.mbarrier_initialize(input_empty.get_element_pointer(stage), 1)
         cl.mbarrier_initialize(output_ready, 1)
         cl.mbarrier_initialize(output_empty, 8)
-        cl.fence_mbarrier_initialize()
+        cl.fence(
+            cl.MemoryOrder.RELEASE,
+            cl.MemoryScope.CLUSTER,
+            restriction=cl.FenceRestriction.mbarrier_initialize(),
+        )
     cl.barrier_sync_cluster(aligned=True)
 
     if warp == mma_warp:

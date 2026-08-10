@@ -228,7 +228,11 @@ def flash_attention_fwd_kernel(
         for stage in cl.static_iter(range(LOAD_STAGES)):
             cl.mbarrier_initialize(kv_arrived.get_element_pointer(stage), 1)
             cl.mbarrier_initialize(kv_finished.get_element_pointer(stage), 2)
-        cl.fence_mbarrier_initialize()
+        cl.fence(
+            cl.MemoryOrder.RELEASE,
+            cl.MemoryScope.CLUSTER,
+            restriction=cl.FenceRestriction.mbarrier_initialize(),
+        )
 
     if warp == 0:
         cl.tcgen05_allocate(
@@ -723,9 +727,9 @@ def flash_attention_fwd_kernel(
                     store_output_pairs(o_smem, values, inv_norm, lane_in_group, column)
                 cl.barrier_sync_block(number_of_threads=WARPGROUP_SIZE, barrier_id=1)
                 if warp == 8 and cl.elect_sync():
-                    cl.fence_proxy(
-                        cl.FenceProxyKind.ASYNC_SHARED,
-                        space=cl.MemorySpace.SHARED,
+                    cl.fence_proxy_bidirectional(
+                        cl.FenceProxy.ASYNC,
+                        restriction=cl.FenceRestriction.shared_block(),
                     )
                     m_tile = m_base + rank * 2 + qid
                     cache_hint = cl.create_fractional_cache_policy(

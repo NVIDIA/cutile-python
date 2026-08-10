@@ -47,6 +47,12 @@ class InlinePTX(Operation, opcode="inline_ptx", memory_effect=MemoryEffect.STORE
 
 
 @dataclass(eq=False)
+class Fence(Operation, opcode="fence", memory_effect=MemoryEffect.STORE):
+    memory_order: MemoryOrder = attribute()
+    memory_scope: MemoryScope = attribute()
+
+
+@dataclass(eq=False)
 class ForeignFunction(
     Operation, opcode="foreign_function", memory_effect=MemoryEffect.STORE
 ):

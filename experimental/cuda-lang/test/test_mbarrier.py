@@ -32,7 +32,11 @@ def test_cluster_barriers():
         if tx == 0:
             cl.mbarrier_initialize(mbar, cdx * bdx)
 
-        cl._nvvm.fence_mbarrier_init_release_cluster()
+        cl.fence(
+            cl.MemoryOrder.RELEASE,
+            cl.MemoryScope.CLUSTER,
+            restriction=cl.FenceRestriction.mbarrier_initialize(),
+        )
         cl.barrier_sync_block()
         cl._nvvm.barrier_cluster_arrive_aligned()
         cl._nvvm.barrier_cluster_wait_aligned()

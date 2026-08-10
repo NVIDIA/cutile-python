@@ -287,13 +287,8 @@ Memory Fence
    :nosignatures:
 
     memory_barrier
-    fence_sc_cluster
-    fence_mbarrier_initialize
-    fence_sync_restrict
-    fence_proxy
-    fence_proxy_acquire
-    fence_proxy_release
-    fence_proxy_sync_restrict
+    fence
+    fence_proxy_bidirectional
 
 
 TensorCore (Gen5)

@@ -128,7 +128,11 @@ def _kernel(
         cl.mbarrier_initialize(ab_full.get_base_pointer(), 1)
         cl.mbarrier_initialize(ab_empty.get_base_pointer(), 1)
         cl.mbarrier_initialize(acc_full.get_base_pointer(), 1)
-    cl.fence_mbarrier_initialize()
+    cl.fence(
+        cl.MemoryOrder.RELEASE,
+        cl.MemoryScope.CLUSTER,
+        restriction=cl.FenceRestriction.mbarrier_initialize(),
+    )
     cl.barrier_sync_block()
 
     # Match the source tutorial's full TMEM allocation.

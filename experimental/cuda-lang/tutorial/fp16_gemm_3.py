@@ -227,7 +227,11 @@ def _kernel(a, b, c, bias, k: cl.Constant[int], has_bias: cl.Constant[bool]):
             cl.mbarrier_initialize(ab_full.get_element_pointer(stage), 1)
             cl.mbarrier_initialize(ab_empty.get_element_pointer(stage), 1)
 
-    cl.fence_mbarrier_initialize()
+    cl.fence(
+        cl.MemoryOrder.RELEASE,
+        cl.MemoryScope.CLUSTER,
+        restriction=cl.FenceRestriction.mbarrier_initialize(),
+    )
     cl.barrier_arrive_cluster(
         aligned=False, memory_order=cl.MemoryOrder.RELAXED
     )

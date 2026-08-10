@@ -351,9 +351,9 @@ def _query_next_work_tile(
     next_linear = cl.int32(0)
     if has_more:
         next_linear = cl.clusterlaunchcontrol_get_first_block_index(token, axis=0)
-    cl.fence_proxy(
-        cl.FenceProxyKind.ASYNC_SHARED,
-        space=cl.MemorySpace.SHARED,
+    cl.fence_proxy_bidirectional(
+        cl.FenceProxy.ASYNC,
+        restriction=cl.FenceRestriction.shared_block(),
     )
     next_seq, next_head, next_batch = _decode_work_tile(
         next_linear,
@@ -966,7 +966,11 @@ def _fmha_prefill_kernel(
         cl.mbarrier_initialize(tmem_dealloc.get_base_pointer(), 384)
         cl.mbarrier_initialize(sched_full.get_base_pointer(), 1)
         cl.mbarrier_initialize(sched_empty.get_base_pointer(), 480)
-    cl.fence_mbarrier_initialize()
+    cl.fence(
+        cl.MemoryOrder.RELEASE,
+        cl.MemoryScope.CLUSTER,
+        restriction=cl.FenceRestriction.mbarrier_initialize(),
+    )
     cl.barrier_sync_block()
 
     # ------------------------------------------------------------------ CLC
@@ -2624,9 +2628,9 @@ def _fmha_prefill_kernel(
                     lse[lse_index] = (
                         cl.log(row_sum) + scale_softmax * row_max
                     )
-                cl.fence_proxy(
-                    cl.FenceProxyKind.ASYNC_SHARED,
-                    space=cl.MemorySpace.SHARED,
+                cl.fence_proxy_bidirectional(
+                    cl.FenceProxy.ASYNC,
+                    restriction=cl.FenceRestriction.shared_block(),
                 )
                 cl.mbarrier_arrive(
                     epi_full.get_element_pointer(qid),

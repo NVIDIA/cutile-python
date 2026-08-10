@@ -1172,6 +1172,17 @@ def lower_atomic_store(
 
 
 @mlir_op_lowering(host=False)
+def lower_fence(
+    context: DeviceLoweringContext, operation: ops.Fence
+) -> Sequence[mlir.Value]:
+    mlir.llvm.add_FenceOp(
+        ordering=_get_llvm_memory_ordering(operation.memory_order),
+        syncscope=_get_llvm_syncscope(operation.memory_scope),
+    )
+    return []
+
+
+@mlir_op_lowering(host=False)
 def lower_alloc_local_memory(
     context: DeviceLoweringContext, operation: ops.AllocLocalMemory
 ) -> Sequence[mlir.Value]:

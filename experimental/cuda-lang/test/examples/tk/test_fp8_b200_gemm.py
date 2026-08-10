@@ -76,11 +76,23 @@ BENCHMARK_CONFIGS = (
 
 
 def fence_clc_acquire():
-    cl.fence_proxy_sync_restrict(cl.MemoryOrder.ACQUIRE)
+    cl.fence(
+        cl.MemoryOrder.ACQUIRE,
+        cl.MemoryScope.CLUSTER,
+        from_proxy=cl.FenceProxy.GENERIC,
+        to_proxy=cl.FenceProxy.ASYNC,
+        restriction=cl.FenceRestriction.shared_cluster(),
+    )
 
 
 def fence_clc_release():
-    cl.fence_proxy_sync_restrict(cl.MemoryOrder.RELEASE)
+    cl.fence(
+        cl.MemoryOrder.RELEASE,
+        cl.MemoryScope.CLUSTER,
+        from_proxy=cl.FenceProxy.GENERIC,
+        to_proxy=cl.FenceProxy.ASYNC,
+        restriction=cl.FenceRestriction.shared_block(),
+    )
 
 
 def swizzle_program_id(tile, tiles_m, tiles_n, width):
@@ -209,9 +221,9 @@ def store_persistent_partition(
         sync_consumer_warpgroup(consumer)
 
         if local_warp == 0 and cl.elect_sync():
-            cl.fence_proxy(
-                cl.FenceProxyKind.ASYNC_SHARED,
-                space=cl.MemorySpace.SHARED,
+            cl.fence_proxy_bidirectional(
+                cl.FenceProxy.ASYNC,
+                restriction=cl.FenceRestriction.shared_block(),
             )
             cache_hint = cl.create_fractional_cache_policy(
                 cl.CachePolicy.L2_EVICT_FIRST
@@ -294,7 +306,11 @@ def fp8_b200_gemm_kernel(
             cl.mbarrier_initialize(load_ready.get_element_pointer(stage), 2)
             cl.mbarrier_initialize(load_empty.get_element_pointer(stage), 1)
         cl.mbarrier_initialize(acc_ready, 1)
-        cl.fence_mbarrier_initialize()
+        cl.fence(
+            cl.MemoryOrder.RELEASE,
+            cl.MemoryScope.CLUSTER,
+            restriction=cl.FenceRestriction.mbarrier_initialize(),
+        )
     cl.barrier_sync_cluster(aligned=True)
 
     if warp == 2:
@@ -405,7 +421,10 @@ def fp8_b200_gemm_kernel(
     cl.barrier_sync_block()
 
     if warp == 0 and cl.elect_sync():
-        cl.fence_proxy(cl.FenceProxyKind.ASYNC_SHARED, space=cl.MemorySpace.SHARED)
+        cl.fence_proxy_bidirectional(
+            cl.FenceProxy.ASYNC,
+            restriction=cl.FenceRestriction.shared_block(),
+        )
         cl.copy_async_bulk_tensor_shared_to_global(
             c_smem.get_base_pointer(),
             c_tmap,
@@ -530,7 +549,11 @@ def _fp8_b200_gemm_persistent_kernel(
         cl.mbarrier_initialize(clc_bar, 1)
         cl.mbarrier_initialize(schedule_ready, 1)
         cl.mbarrier_initialize(schedule_consumed, 1 + 2 * num_consumers)
-        cl.fence_mbarrier_initialize()
+        cl.fence(
+            cl.MemoryOrder.RELEASE,
+            cl.MemoryScope.CLUSTER,
+            restriction=cl.FenceRestriction.mbarrier_initialize(),
+        )
     cl.barrier_sync_cluster(aligned=True)
 
     if warp >= producer_base:

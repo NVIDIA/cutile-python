@@ -3,6 +3,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+from typing import cast
 from dataclasses import dataclass, replace
 from pathlib import Path
 import sys
@@ -202,7 +203,7 @@ def tma_load(context):
         full_mbarrier = context.full_barrier()
         cl.mbarrier_arrive_expect_transaction(
             full_mbarrier,
-            TILE_SIZE * cl.float16.bitwidth // 8,
+            TILE_SIZE * cast(int, cl.float16.bitwidth) // 8,
         )
         cl.copy_async_bulk_tensor_global_to_shared(
             context.tensor_map,
@@ -430,7 +431,11 @@ def tma_copy_kernel(input_tensor, output_tensor):
                 empty_mbarriers.get_element_pointer(stage_idx),
                 STORE_WARP_COUNT * WARP_SIZE,
             )
-        cl.fence_mbarrier_initialize()
+        cl.fence(
+            cl.MemoryOrder.RELEASE,
+            cl.MemoryScope.CLUSTER,
+            restriction=cl.FenceRestriction.mbarrier_initialize(),
+        )
 
     cl.barrier_sync_block()
 

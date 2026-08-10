@@ -157,6 +157,16 @@ class FenceProxyKind(Enum):
     GENERIC = "generic"
 
 
+class FenceProxy(Enum):
+    """Memory access proxy used by a fence."""
+
+    ALIAS = "alias"
+    ASYNC = "async"
+    TENSORMAP = "tensormap"
+    GENERIC = "generic"
+    FABRIC = "fabric"
+
+
 class BarrierReductionKind(Enum):
     POP_COUNT = auto()
     AND = auto()
@@ -226,6 +236,7 @@ __all__ = (
     "Tcgen05CopySourceFormat",
     "Tcgen05WaitKind",
     "FenceProxyKind",
+    "FenceProxy",
     "BarrierReductionKind",
     "VectorReduction",
     "CachePolicy",

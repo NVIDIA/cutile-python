@@ -2,8 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-from typing import TypeVar
-from typing import Callable, Generic
+from typing import TypeVar, Callable, Generic
 from abc import abstractmethod
 from enum import Enum, auto
 import cuda.lang as cl
@@ -34,7 +33,7 @@ class ProgramFragment(Generic[Context]):
         return pprint.pformat(self, indent=2, width=60)
 
     @property
-    def children(self) -> tuple["ProgramFragment[Context]"]:
+    def children(self) -> tuple["ProgramFragment[Context]", ...]:
         return tuple(
             child for child in self.attributes if isinstance(child, ProgramFragment)
         )

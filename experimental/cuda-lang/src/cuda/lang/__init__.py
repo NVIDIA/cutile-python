@@ -91,15 +91,10 @@ from ._stub.math import (
     not_equal
 )
 from ._stub.fence import (
-    FenceProxyKind,
+    FenceProxy,
+    FenceRestriction,
     fence,
-    fence_sync_restrict,
-    fence_sc_cluster,
-    fence_mbarrier_initialize,
-    fence_proxy_sync_restrict,
-    fence_proxy,
-    fence_proxy_acquire,
-    fence_proxy_release,
+    fence_proxy_bidirectional,
 )
 from ._stub.types import (
     Scalar,
@@ -365,15 +360,10 @@ __all__ = (
     "MemoryOrder",
     "RoundingMode",
     "BarrierReductionKind",
-    "FenceProxyKind",
+    "FenceProxy",
+    "FenceRestriction",
     "fence",
-    "fence_sync_restrict",
-    "fence_sc_cluster",
-    "fence_mbarrier_initialize",
-    "fence_proxy_sync_restrict",
-    "fence_proxy",
-    "fence_proxy_acquire",
-    "fence_proxy_release",
+    "fence_proxy_bidirectional",
     "compile_simt",
     "SwizzleMode",
     "TensorMapL2Promotion",

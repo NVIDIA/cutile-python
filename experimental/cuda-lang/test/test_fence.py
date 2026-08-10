@@ -2,18 +2,14 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+from itertools import product
+
 import pytest
 
 import cuda.lang as cl
-from cuda.tile import TileStaticAssertionError
 from cuda.lang._compile import KernelSignature, get_compute_capability
-from cuda.lang._enums import MemoryScope, MemorySpace, MemoryOrder
-from cuda.lang._exception import (
-    CompilerExecutionError,
-    InvalidValueError,
-    TypeCheckingError,
-)
-from cuda.lang._stub.fence import FenceProxyKind
+from cuda.lang._enums import MemoryScope, MemoryOrder
+from cuda.lang._exception import TypeCheckingError, CompilerExecutionError
 from test.util import make_symbolic_tensor, compile_kernel
 
 cc = get_compute_capability()
@@ -27,25 +23,6 @@ MEMORY_SCOPE_PTX = {
     MemoryScope.DEVICE: "gpu",
     MemoryScope.SYS: "sys",
 }
-
-FENCE_SYNC_RESTRICT_RAISES = pytest.raises(
-    TileStaticAssertionError,
-    match=r"order must be MemoryOrder.ACQUIRE or MemoryOrder.RELEASE",
-)
-INVALID_SHARED_SPACE_RAISES = pytest.raises(
-    InvalidValueError,
-    match="Expected one of MemorySpace.SHARED, MemorySpace.SHARED_CLUSTER",
-)
-NVVM_COMPILER_PROXY_RAISES = pytest.raises(
-    CompilerExecutionError,
-    match="'nvvm.fence.*' op",
-)
-MISSING_SHARED_SPACE_RAISES = pytest.raises(
-    CompilerExecutionError, match="requires space attribute"
-)
-INVALID_SCOPE_RAISES = pytest.raises(
-    InvalidValueError, match="Expected one of MemoryScope"
-)
 
 
 def compile_empty_kernel_with_call(func, **kwargs):
@@ -81,10 +58,11 @@ def test_fence(order, scope, expect):
     compile_empty_kernel_with_call(func, assert_in_ptx=expect)
 
 
-@pytest.mark.parametrize(
-    "order",
-    (MemoryOrder.WEAK, MemoryOrder.RELAXED),
-)
+def test_fence_defaults():
+    compile_empty_kernel_with_call(cl.fence, assert_in_ptx="fence.sc.sys")
+
+
+@pytest.mark.parametrize("order", (MemoryOrder.WEAK, MemoryOrder.RELAXED))
 def test_fence_invalid_order(order):
     def func():
         cl.fence(order, MemoryScope.BLOCK)
@@ -106,175 +84,370 @@ def test_fence_invalid_scope():
 
 
 @pytest.mark.parametrize(
-    "func, expect",
+    "order, restrict, expect",
     (
-        (cl.fence_mbarrier_initialize, "fence.mbarrier_init.release.cluster"),
-        (cl.fence_sc_cluster, "fence.sc.cluster"),
+        (
+            MemoryOrder.RELEASE,
+            cl.FenceRestriction.mbarrier_initialize(),
+            "fence.mbarrier_init.release.cluster",
+        ),
+        (
+            MemoryOrder.RELEASE,
+            cl.FenceRestriction.shared_block(),
+            "fence.release.sync_restrict::shared::cta.cluster",
+        ),
+        (
+            MemoryOrder.ACQUIRE,
+            cl.FenceRestriction.shared_cluster(),
+            "fence.acquire.sync_restrict::shared::cluster.cluster",
+        ),
     ),
 )
-def test_simple_fence(func, expect):
+def test_fence_restricted(order, restrict, expect):
+    def func():
+        cl.fence(
+            order,
+            cl.MemoryScope.CLUSTER,
+            restriction=restrict,
+        )
+
     compile_empty_kernel_with_call(func, assert_in_ptx=expect)
 
 
-def _fence_sync_restrict_cases():
-    for order in tuple(MemoryOrder):
-        if order is MemoryOrder.RELEASE:
-            yield order, "fence.release.sync_restrict", None
-        elif order is MemoryOrder.ACQUIRE:
-            yield order, "fence.acquire.sync_restrict", None
-        else:
-            yield order, None, FENCE_SYNC_RESTRICT_RAISES
-
-
-@pytest.mark.parametrize("order, expect, raises", _fence_sync_restrict_cases())
-def test_fence_sync_restrict(order, expect, raises):
-    def func():
-        cl.fence_sync_restrict(order)
-
-    compile_empty_kernel_with_call(func, assert_in_ptx=expect, raises=raises)
-
-
-def _fence_proxy_cases():
-    for kind in FenceProxyKind:
-        for space in (*list(MemorySpace), None):
-            if space not in (None, MemorySpace.SHARED, MemorySpace.SHARED_CLUSTER):
-                yield kind, space, None, INVALID_SHARED_SPACE_RAISES
-                continue
-
-            if kind is FenceProxyKind.ALIAS:
-                expect = "fence.proxy.alias" if space is None else None
-                raises = None if space is None else NVVM_COMPILER_PROXY_RAISES
-            elif kind is FenceProxyKind.ASYNC:
-                expect = "fence.proxy.async" if space is None else None
-                raises = None if space is None else NVVM_COMPILER_PROXY_RAISES
-            elif kind is FenceProxyKind.ASYNC_GLOBAL:
-                expect = "fence.proxy.async.global" if space is None else None
-                raises = None if space is None else NVVM_COMPILER_PROXY_RAISES
-            elif kind is FenceProxyKind.ASYNC_SHARED:
-                if space is MemorySpace.SHARED:
-                    expect = "fence.proxy.async.shared::cta"
-                    raises = None
-                elif space is MemorySpace.SHARED_CLUSTER:
-                    expect = "fence.proxy.async.shared::cluster"
-                    raises = None
-                else:
-                    expect = None
-                    raises = MISSING_SHARED_SPACE_RAISES
-            else:
-                expect = None
-                raises = NVVM_COMPILER_PROXY_RAISES
-            yield kind, space, expect, raises
-
-
-@pytest.mark.parametrize("kind, space, expect, raises", _fence_proxy_cases())
-def test_fence_proxy(kind, space, expect, raises):
-    def func():
-        cl.fence_proxy(kind, space=space)
-
-    compile_empty_kernel_with_call(func, assert_in_ptx=expect, raises=raises)
-
-
-def _proxy_pair_cases(release: bool):
-    direction = "release" if release else "acquire"
-    for scope in MemoryScope:
-        scope_ptx = MEMORY_SCOPE_PTX.get(scope)
-        for from_proxy in FenceProxyKind:
-            for to_proxy in FenceProxyKind:
-                valid_scope = scope_ptx is not None
-                valid_pair = (
-                    from_proxy is FenceProxyKind.GENERIC
-                    and to_proxy is FenceProxyKind.TENSORMAP
-                )
-                if valid_scope and valid_pair:
-                    expect = f"fence.proxy.tensormap::generic.{direction}.{scope_ptx}"
-                    raises = None
-                elif not valid_scope:
-                    expect = None
-                    raises = INVALID_SCOPE_RAISES
-                elif from_proxy is not FenceProxyKind.GENERIC:
-                    expect = None
-                    raises = NVVM_COMPILER_PROXY_RAISES
-                else:
-                    expect = None
-                    raises = NVVM_COMPILER_PROXY_RAISES
-                yield scope, from_proxy, to_proxy, expect, raises
-
-
 @pytest.mark.parametrize(
-    "scope, from_proxy, to_proxy, expect, raises",
-    _proxy_pair_cases(release=True),
+    "proxy, restriction, expect",
+    (
+        (cl.FenceProxy.ALIAS, None, "fence.proxy.alias"),
+        (cl.FenceProxy.ASYNC, None, "fence.proxy.async"),
+        (
+            cl.FenceProxy.ASYNC,
+            cl.FenceRestriction.global_memory(),
+            "fence.proxy.async.global",
+        ),
+        (
+            cl.FenceProxy.ASYNC,
+            cl.FenceRestriction.shared_block(),
+            "fence.proxy.async.shared::cta",
+        ),
+        (
+            cl.FenceProxy.ASYNC,
+            cl.FenceRestriction.shared_cluster(),
+            "fence.proxy.async.shared::cluster",
+        ),
+    ),
 )
-def test_fence_proxy_release(scope, from_proxy, to_proxy, expect, raises):
+def test_fence_proxy_bidirectional(proxy, restriction, expect):
     def func():
-        cl.fence_proxy_release(
-            scope=scope,
-            from_proxy=from_proxy,
-            to_proxy=to_proxy,
+        cl.fence_proxy_bidirectional(
+            proxy,
+            restriction=restriction,
         )
 
-    compile_empty_kernel_with_call(func, assert_in_ptx=expect, raises=raises)
+    compile_empty_kernel_with_call(func, assert_in_ptx=expect)
 
 
-@pytest.mark.parametrize(
-    "scope, from_proxy, to_proxy, expect, raises",
-    _proxy_pair_cases(release=False),
-)
-def test_fence_proxy_acquire(scope, from_proxy, to_proxy, expect, raises):
+@pytest.mark.parametrize("scope, scope_ptx", MEMORY_SCOPE_PTX.items())
+def test_fence_proxy_tensormap_release(scope, scope_ptx):
+    def func():
+        cl.fence(
+            cl.MemoryOrder.RELEASE,
+            scope,
+            from_proxy=cl.FenceProxy.GENERIC,
+            to_proxy=cl.FenceProxy.TENSORMAP,
+        )
+
+    compile_empty_kernel_with_call(
+        func,
+        assert_in_ptx=f"fence.proxy.tensormap::generic.release.{scope_ptx}",
+    )
+
+
+@pytest.mark.parametrize("scope, scope_ptx", MEMORY_SCOPE_PTX.items())
+def test_fence_proxy_tensormap_acquire(scope, scope_ptx):
     @cl.kernel
     def kernel(tensor):
-        cl.fence_proxy_acquire(
-            tensor.get_base_pointer(),
-            128,
-            scope=scope,
-            from_proxy=from_proxy,
-            to_proxy=to_proxy,
+        cl.fence(
+            cl.MemoryOrder.ACQUIRE,
+            scope,
+            from_proxy=cl.FenceProxy.GENERIC,
+            to_proxy=cl.FenceProxy.TENSORMAP,
+            restriction=cl.FenceRestriction.address_range(tensor.get_base_pointer()),
         )
 
     compile_kernel(
         kernel,
         signature=KernelSignature([make_symbolic_tensor((1,), cl.int32)]),
-        assert_in_ptx=expect,
-        raises=raises,
+        assert_in_ptx=f"fence.proxy.tensormap::generic.acquire.{scope_ptx}",
     )
 
 
-def _fence_proxy_sync_restrict_cases():
-    for order in tuple(MemoryOrder):
-        for from_proxy in FenceProxyKind:
-            for to_proxy in FenceProxyKind:
-                valid_order = order in (MemoryOrder.ACQUIRE, MemoryOrder.RELEASE)
-                valid_pair = (
-                    from_proxy is FenceProxyKind.GENERIC
-                    and to_proxy is FenceProxyKind.ASYNC
-                )
-                if valid_order and valid_pair:
-                    if order is MemoryOrder.ACQUIRE:
-                        expect = "fence.proxy.async::generic.acquire.sync_restrict"
-                    else:
-                        expect = "fence.proxy.async::generic.release.sync_restrict"
-                    raises = None
-                elif not valid_order:
-                    expect = None
-                    raises = FENCE_SYNC_RESTRICT_RAISES
-                elif from_proxy is not FenceProxyKind.GENERIC:
-                    expect = None
-                    raises = NVVM_COMPILER_PROXY_RAISES
-                else:
-                    expect = None
-                    raises = NVVM_COMPILER_PROXY_RAISES
-                yield order, from_proxy, to_proxy, expect, raises
+@pytest.mark.parametrize(
+    "order, restrict, expect",
+    (
+        (
+            cl.MemoryOrder.ACQUIRE,
+            cl.FenceRestriction.shared_cluster(),
+            "fence.proxy.async::generic.acquire."
+            "sync_restrict::shared::cluster.cluster",
+        ),
+        (
+            cl.MemoryOrder.RELEASE,
+            cl.FenceRestriction.shared_block(),
+            "fence.proxy.async::generic.release."
+            "sync_restrict::shared::cta.cluster",
+        ),
+    ),
+)
+def test_fence_proxy_async_split(order, restrict, expect):
+    def func():
+        cl.fence(
+            order,
+            cl.MemoryScope.CLUSTER,
+            from_proxy=cl.FenceProxy.GENERIC,
+            to_proxy=cl.FenceProxy.ASYNC,
+            restriction=restrict,
+        )
+
+    compile_empty_kernel_with_call(func, assert_in_ptx=expect)
 
 
 @pytest.mark.parametrize(
-    "order, from_proxy, to_proxy, expect, raises",
-    _fence_proxy_sync_restrict_cases(),
+    "order, scope, from_proxy, to_proxy, restriction",
+    (
+        (
+            cl.MemoryOrder.ACQUIRE,
+            cl.MemoryScope.CLUSTER,
+            cl.FenceProxy.GENERIC,
+            cl.FenceProxy.ASYNC,
+            cl.FenceRestriction.shared_block(),
+        ),
+        (
+            cl.MemoryOrder.RELEASE,
+            cl.MemoryScope.DEVICE,
+            cl.FenceProxy.GENERIC,
+            cl.FenceProxy.ASYNC,
+            cl.FenceRestriction.shared_block(),
+        ),
+        (
+            cl.MemoryOrder.RELEASE,
+            cl.MemoryScope.CLUSTER,
+            cl.FenceProxy.GENERIC,
+            cl.FenceProxy.ASYNC,
+            cl.FenceRestriction.shared_cluster(),
+        ),
+        (
+            cl.MemoryOrder.ACQUIRE,
+            cl.MemoryScope.DEVICE,
+            cl.FenceProxy.GENERIC,
+            cl.FenceProxy.ASYNC,
+            cl.FenceRestriction.shared_cluster(),
+        ),
+        (
+            cl.MemoryOrder.RELEASE,
+            cl.MemoryScope.CLUSTER,
+            cl.FenceProxy.GENERIC,
+            cl.FenceProxy.GENERIC,
+            cl.FenceRestriction.global_memory(),
+        ),
+        (
+            cl.MemoryOrder.ACQUIRE,
+            cl.MemoryScope.DEVICE,
+            cl.FenceProxy.GENERIC,
+            cl.FenceProxy.TENSORMAP,
+            None,
+        ),
+        (
+            cl.MemoryOrder.RELEASE,
+            cl.MemoryScope.DEVICE,
+            cl.FenceProxy.GENERIC,
+            cl.FenceProxy.TENSORMAP,
+            cl.FenceRestriction.shared_block(),
+        ),
+        (
+            cl.MemoryOrder.RELEASE,
+            cl.MemoryScope.CLUSTER,
+            cl.FenceProxy.ASYNC,
+            cl.FenceProxy.GENERIC,
+            cl.FenceRestriction.shared_block(),
+        ),
+        (
+            cl.MemoryOrder.RELEASE,
+            cl.MemoryScope.CLUSTER,
+            cl.FenceProxy.GENERIC,
+            cl.FenceProxy.ASYNC,
+            cl.FenceRestriction.mbarrier_initialize(),
+        ),
+    ),
 )
-def test_fence_proxy_sync_restrict(order, from_proxy, to_proxy, expect, raises):
+def test_fence_invalid_combination(order, scope, from_proxy, to_proxy, restriction):
     def func():
-        cl.fence_proxy_sync_restrict(
+        cl.fence(
             order,
+            scope,
+            from_proxy=from_proxy,
+            to_proxy=to_proxy,
+            restriction=restriction,
+        )
+
+    compile_empty_kernel_with_call(
+        func,
+        raises=pytest.raises(Exception),
+    )
+
+
+FABRIC_PROXY_PAIRS = tuple(
+    pair
+    for pair in product(
+        (cl.FenceProxy.GENERIC, cl.FenceProxy.FABRIC),
+        repeat=2,
+    )
+    if cl.FenceProxy.FABRIC in pair
+)
+
+
+@pytest.mark.parametrize("from_proxy, to_proxy", FABRIC_PROXY_PAIRS)
+def test_fence_proxy_fabric_unsupported(from_proxy, to_proxy):
+    def func():
+        cl.fence(
+            cl.MemoryOrder.RELEASE,
+            cl.MemoryScope.SYS,
             from_proxy=from_proxy,
             to_proxy=to_proxy,
         )
 
-    compile_empty_kernel_with_call(func, assert_in_ptx=expect, raises=raises)
+    compile_empty_kernel_with_call(func, raises=pytest.raises(Exception))
+
+
+@pytest.mark.parametrize(
+    "proxy, restriction",
+    (
+        (cl.FenceProxy.ALIAS, cl.FenceRestriction.global_memory()),
+        (cl.FenceProxy.GENERIC, None),
+        (cl.FenceProxy.TENSORMAP, None),
+        (cl.FenceProxy.FABRIC, None),
+    ),
+)
+def test_fence_proxy_bidirectional_invalid(proxy, restriction):
+    def func():
+        cl.fence_proxy_bidirectional(proxy, restriction=restriction)
+
+    compile_empty_kernel_with_call(func, raises=pytest.raises(Exception))
+
+
+def test_fence_proxy_tensormap_invalid_address_size():
+    @cl.kernel
+    def kernel(tensor):
+        cl.fence(
+            cl.MemoryOrder.ACQUIRE,
+            cl.MemoryScope.DEVICE,
+            from_proxy=cl.FenceProxy.GENERIC,
+            to_proxy=cl.FenceProxy.TENSORMAP,
+            restriction=cl.FenceRestriction.address_range(
+                tensor.get_base_pointer(), 256
+            ),
+        )
+
+    compile_kernel(
+        kernel,
+        signature=KernelSignature([make_symbolic_tensor((1,), cl.int32)]),
+        raises=pytest.raises(TypeCheckingError, match="must have size 128"),
+    )
+
+
+def test_fence_address_restriction_bad_pointer():
+    def func():
+        cl.fence(restriction=cl.FenceRestriction.address_range(0))
+
+    compile_empty_kernel_with_call(
+        func, raises=pytest.raises(TypeCheckingError, match="Expected a pointer")
+    )
+
+
+def test_fence_address_restriction_bad_extent():
+    @cl.kernel
+    def kernel():
+        array = cl.shared_array(1, cl.int32)
+        cl.fence(
+            restriction=cl.FenceRestriction.address_range(
+                array.get_base_pointer(), 128.0
+            )
+        )
+
+    compile_kernel(
+        kernel,
+        raises=pytest.raises(TypeCheckingError, match="Expected an integer constant"),
+    )
+
+
+def test_fence_non_proxy_address_restriction():
+    @cl.kernel
+    def kernel():
+        array = cl.shared_array(1, cl.int32)
+        cl.fence(
+            cl.MemoryOrder.ACQUIRE,
+            cl.MemoryScope.DEVICE,
+            restriction=cl.FenceRestriction.address_range(
+                array.get_base_pointer()
+            ),
+        )
+
+    compile_kernel(kernel, raises=pytest.raises(Exception))
+
+
+def test_fence_proxy_bidirectional_address_restriction():
+    @cl.kernel
+    def kernel():
+        array = cl.shared_array(1, cl.int32)
+        cl.fence_proxy_bidirectional(
+            cl.FenceProxy.ASYNC,
+            restriction=cl.FenceRestriction.address_range(
+                array.get_base_pointer()
+            ),
+        )
+
+    compile_kernel(kernel, raises=pytest.raises(CompilerExecutionError))
+
+
+@pytest.mark.parametrize(
+    "from_proxy",
+    (
+        (cl.FenceProxy.GENERIC,),
+        (cl.FenceProxy.GENERIC, cl.FenceProxy.ASYNC),
+    ),
+)
+def test_fence_proxy_tuple_unsupported(from_proxy):
+    def func():
+        cl.fence(
+            cl.MemoryOrder.RELEASE,
+            cl.MemoryScope.DEVICE,
+            from_proxy=from_proxy,
+            to_proxy=cl.FenceProxy.TENSORMAP,
+        )
+
+    compile_empty_kernel_with_call(
+        func, raises=pytest.raises(TypeCheckingError, match="Expected FenceProxy")
+    )
+
+
+def test_fence_restriction_tuple_unsupported():
+    def func():
+        cl.fence(
+            cl.MemoryOrder.RELEASE,
+            cl.MemoryScope.CLUSTER,
+            restriction=(cl.FenceRestriction.shared_block(),),
+        )
+
+    compile_empty_kernel_with_call(func, raises=pytest.raises(TypeCheckingError))
+
+
+def test_fence_invalid_restriction():
+    def func():
+        cl.fence(restriction=1)
+
+    compile_empty_kernel_with_call(
+        func,
+        raises=pytest.raises(
+            TypeCheckingError,
+            match="Expected FenceRestriction or None",
+        ),
+    )

@@ -126,7 +126,11 @@ def test_tensor_map_byte_types_l2_promotion_launch(cl_dtype):
 
         if cl.thread_index(0) == 0:
             cl.mbarrier_initialize(mbar, cl.thread_count(0))
-            cl.fence_mbarrier_initialize()
+            cl.fence(
+                cl.MemoryOrder.RELEASE,
+                cl.MemoryScope.CLUSTER,
+                restriction=cl.FenceRestriction.mbarrier_initialize(),
+            )
 
         cl.barrier_sync_block()
         if cl.elect_sync():
@@ -200,7 +204,11 @@ def test_transaction_bytes_with_oob_fill(row, column):
 
         if cl.thread_index(0) == 0:
             cl.mbarrier_initialize(mbar, cl.thread_count(0))
-            cl.fence_mbarrier_initialize()
+            cl.fence(
+                cl.MemoryOrder.RELEASE,
+                cl.MemoryScope.CLUSTER,
+                restriction=cl.FenceRestriction.mbarrier_initialize(),
+            )
 
         cl.barrier_sync_block()
         if cl.elect_sync():
@@ -254,7 +262,11 @@ def test_transaction_bytes_with_multicast():
 
         if cl.thread_index(0) == 0:
             cl.mbarrier_initialize(mbar, cl.thread_count(0))
-            cl.fence_mbarrier_initialize()
+            cl.fence(
+                cl.MemoryOrder.RELEASE,
+                cl.MemoryScope.CLUSTER,
+                restriction=cl.FenceRestriction.mbarrier_initialize(),
+            )
 
         cl.barrier_sync_block()
         cl.barrier_sync_cluster()
@@ -330,7 +342,11 @@ def test_transaction_bytes_with_128b_swizzle():
 
         if cl.thread_index(0) == 0:
             cl.mbarrier_initialize(mbar, cl.thread_count(0))
-            cl.fence_mbarrier_initialize()
+            cl.fence(
+                cl.MemoryOrder.RELEASE,
+                cl.MemoryScope.CLUSTER,
+                restriction=cl.FenceRestriction.mbarrier_initialize(),
+            )
 
         cl.barrier_sync_block()
         if cl.elect_sync():

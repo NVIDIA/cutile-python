@@ -325,7 +325,11 @@ def _kernel(
         if warp == 3 and cl.elect_sync():
             cl.mbarrier_initialize(acc_full_ptr, 1)
 
-    cl.fence_mbarrier_initialize()
+    cl.fence(
+        cl.MemoryOrder.RELEASE,
+        cl.MemoryScope.CLUSTER,
+        restriction=cl.FenceRestriction.mbarrier_initialize(),
+    )
     cl.barrier_sync_block()
 
     if cluster_size > 1:
@@ -507,9 +511,9 @@ def _kernel(
                         lane,
                     )
 
-                cl.fence_proxy(
-                    cl.FenceProxyKind.ASYNC_SHARED,
-                    space=cl.MemorySpace.SHARED,
+                cl.fence_proxy_bidirectional(
+                    cl.FenceProxy.ASYNC,
+                    restriction=cl.FenceRestriction.shared_block(),
                 )
                 cl.barrier_sync_block(
                     number_of_threads=EPILOGUE_THREADS,
@@ -691,9 +695,9 @@ def _kernel(
                             lane,
                         )
 
-                    cl.fence_proxy(
-                        cl.FenceProxyKind.ASYNC_SHARED,
-                        space=cl.MemorySpace.SHARED,
+                    cl.fence_proxy_bidirectional(
+                        cl.FenceProxy.ASYNC,
+                        restriction=cl.FenceRestriction.shared_block(),
                     )
                     cl.barrier_sync_block(
                         number_of_threads=EPILOGUE_THREADS,

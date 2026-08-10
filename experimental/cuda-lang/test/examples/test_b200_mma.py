@@ -109,7 +109,11 @@ def make_mma_kernel(
                     4 * cta_group * WARP_SIZE,
                 )
 
-            cl.fence_mbarrier_initialize()
+            cl.fence(
+                cl.MemoryOrder.RELEASE,
+                cl.MemoryScope.CLUSTER,
+                restriction=cl.FenceRestriction.mbarrier_initialize(),
+            )
 
         if cta_group > 1:
             cl.barrier_sync_cluster(aligned=True)

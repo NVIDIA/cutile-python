@@ -2,173 +2,92 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-from typing import Literal
+from dataclasses import dataclass
+from enum import Enum, auto
+from cuda.lang._execution import stub
+from .._enums import FenceProxy, MemoryOrder, MemoryScope
 
-import cuda.lang as cl
-from cuda.lang._execution import function, stub
-from .._enums import FenceProxyKind, MemoryOrder, MemoryScope, MemorySpace
-from . import nvvm_mlir_interfaces as _mlir
-from .static_requirements import require_constant_enum
+
+class FenceRestriction:
+    """A restriction on the memory operations affected by a fence."""
+
+    @staticmethod
+    def mbarrier_initialize() -> "FenceRestriction":
+        return _FenceRestrictionKind.MBARRIER_INIT
+
+    @staticmethod
+    def shared_block() -> "FenceRestriction":
+        return _FenceRestrictionKind.SHARED_BLOCK
+
+    @staticmethod
+    def shared_cluster() -> "FenceRestriction":
+        return _FenceRestrictionKind.SHARED_CLUSTER
+
+    @staticmethod
+    def global_memory() -> "FenceRestriction":
+        return _FenceRestrictionKind.GLOBAL
+
+    @staticmethod
+    def address_range(address, size: int = 128) -> "FenceRestriction":
+        return _FenceAddressRestriction(address, size)
+
+
+class _FenceRestrictionKind(FenceRestriction, Enum):
+    MBARRIER_INIT = auto()
+    SHARED_BLOCK = auto()
+    SHARED_CLUSTER = auto()
+    GLOBAL = auto()
+
+
+@dataclass(frozen=True)
+class _FenceAddressRestriction(FenceRestriction):
+    """Restrict a fence to a range of memory."""
+
+    address: object
+    size: int = 128
 
 
 @stub
 def fence(
-    order: Literal[
-        MemoryOrder.ACQUIRE,
-        MemoryOrder.RELEASE,
-        MemoryOrder.ACQ_REL,
-        MemoryOrder.SEQ_CST,
-    ],
-    scope: Literal[
-        MemoryScope.BLOCK,
-        MemoryScope.CLUSTER,
-        MemoryScope.DEVICE,
-        MemoryScope.SYS,
-    ],
+    order: MemoryOrder = MemoryOrder.SEQ_CST,
+    scope: MemoryScope = MemoryScope.SYS,
+    *,
+    from_proxy: FenceProxy = FenceProxy.GENERIC,
+    to_proxy: FenceProxy = FenceProxy.GENERIC,
+    restriction: FenceRestriction | None = None,
 ) -> None:
-    """Issue a memory fence with the specified order and scope.
+    """Issue a non-proxy fence or a split unidirectional proxy fence.
+
+    A split proxy fence orders accesses from ``from_proxy`` to ``to_proxy``.
 
     Args:
         order: Memory-ordering semantics.
-        scope: Memory-ordering scope.
+        scope: Threads that can observe the ordering effect.
+        from_proxy: Proxy used by the earlier memory accesses.
+        to_proxy: Proxy used by the later memory accesses.
+        restriction: Restriction on the affected memory operations.
     """
     ...
 
 
-@function()
-def fence_sc_cluster() -> None:
-    """Issue a sequentially consistent memory fence at cluster scope."""
-    _mlir.fence_sc_cluster()
-
-
-@function()
-def fence_mbarrier_initialize() -> None:
-    """Release prior mbarrier initializations to the thread-block cluster."""
-    _mlir.fence_mbarrier_init()
-
-
-@function()
-def fence_sync_restrict(
-    order: Literal[MemoryOrder.ACQUIRE, MemoryOrder.RELEASE],
-) -> None:
-    """
-    Uni-directional proxy fence operation with sync_restrict.
-
-    Args:
-        order: MemoryOrder.ACQUIRE or MemoryOrder.RELEASE
-    """
-    require_constant_enum(order, MemoryOrder)
-    cl.static_assert(
-        order in (MemoryOrder.ACQUIRE, MemoryOrder.RELEASE),
-        "fence_sync_restrict order must be MemoryOrder.ACQUIRE or "
-        "MemoryOrder.RELEASE",
-    )
-    _mlir.fence_sync_restrict(order=order)
-
-
-@function()
-def fence_proxy(
-    kind: FenceProxyKind,
+@stub
+def fence_proxy_bidirectional(
+    proxy: FenceProxy,
     *,
-    space: MemorySpace | None = None,
+    restriction: FenceRestriction | None = None,
 ) -> None:
-    """
-    Fence operation with proxy to establish an ordering between memory accesses
-    that may happen through different proxies.
+    """Issue a bidirectional fence between the generic proxy and ``proxy``.
 
     Args:
-        kind (FenceProxyKind): Proxy relationship.
-        space (MemorySpace): Memory space restriction.
+        proxy: The non-generic memory access proxy.
+        restriction: Restriction on the affected memory operations.
     """
-    _mlir.fence_proxy(kind=kind, space=space)
-
-
-@function()
-def fence_proxy_acquire(
-    address,
-    size: int,
-    *,
-    scope: MemoryScope,
-    from_proxy: FenceProxyKind = FenceProxyKind.GENERIC,
-    to_proxy: FenceProxyKind = FenceProxyKind.TENSORMAP,
-) -> None:
-    """
-    Uni-directional proxy fence operation with acquire semantics.
-
-    Args:
-        address: Pointer to the beginning of the affected memory range.
-        size (int): Number of bytes in the range.
-        scope (MemoryScope): Effective scope of the fence.
-        from_proxy (FenceProxyKind):
-        to_proxy (FenceProxyKind):
-    """
-    _mlir.fence_proxy_acquire(
-        addr=address,
-        size=size,
-        scope=scope,
-        from_proxy=from_proxy,
-        to_proxy=to_proxy,
-    )
-
-
-@function()
-def fence_proxy_release(
-    *,
-    scope: MemoryScope,
-    from_proxy: FenceProxyKind = FenceProxyKind.GENERIC,
-    to_proxy: FenceProxyKind = FenceProxyKind.TENSORMAP,
-) -> None:
-    """
-    Uni-directional proxy fence operation with release semantics.
-
-    Args:
-        scope (MemoryScope): Effective scope of the fence.
-        from_proxy (FenceProxyKind):
-        to_proxy (FenceProxyKind):
-    """
-    _mlir.fence_proxy_release(
-        scope=scope,
-        from_proxy=from_proxy,
-        to_proxy=to_proxy,
-    )
-
-
-@function()
-def fence_proxy_sync_restrict(
-    order: Literal[MemoryOrder.ACQUIRE, MemoryOrder.RELEASE],
-    *,
-    from_proxy: FenceProxyKind = FenceProxyKind.GENERIC,
-    to_proxy: FenceProxyKind = FenceProxyKind.ASYNC,
-) -> None:
-    """
-    Uni-directional proxy fence operation with sync_restrict.
-
-    Args:
-        order: MemoryOrder.ACQUIRE or MemoryOrder.RELEASE
-        from_proxy (FenceProxyKind):
-        to_proxy (FenceProxyKind):
-    """
-    require_constant_enum(order, MemoryOrder)
-    cl.static_assert(
-        order in (MemoryOrder.ACQUIRE, MemoryOrder.RELEASE),
-        "fence_proxy_sync_restrict order must be MemoryOrder.ACQUIRE or "
-        "MemoryOrder.RELEASE",
-    )
-    _mlir.fence_proxy_sync_restrict(
-        order=order,
-        from_proxy=from_proxy,
-        to_proxy=to_proxy,
-    )
+    ...
 
 
 __all__ = (
-    "FenceProxyKind",
+    "FenceProxy",
+    "FenceRestriction",
     "fence",
-    "fence_sync_restrict",
-    "fence_sc_cluster",
-    "fence_mbarrier_initialize",
-    "fence_proxy_sync_restrict",
-    "fence_proxy",
-    "fence_proxy_acquire",
-    "fence_proxy_release",
+    "fence_proxy_bidirectional",
 )

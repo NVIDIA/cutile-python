@@ -92,7 +92,11 @@ def make_tcgen05_mma_kernel(
 
         if warp == 0 and cl.elect_sync():
             cl.mbarrier_initialize(mma_done.get_base_pointer(), 1)
-            cl.fence_mbarrier_initialize()
+            cl.fence(
+                cl.MemoryOrder.RELEASE,
+                cl.MemoryScope.CLUSTER,
+                restriction=cl.FenceRestriction.mbarrier_initialize(),
+            )
 
         cl.barrier_sync_block()
 
@@ -146,9 +150,9 @@ def make_tcgen05_mma_kernel(
 
         if warp == MMA_WARP and cl.elect_sync():
             if copy_scales:
-                cl.fence_proxy(
-                    cl.FenceProxyKind.ASYNC_SHARED,
-                    space=cl.MemorySpace.SHARED,
+                cl.fence_proxy_bidirectional(
+                    cl.FenceProxy.ASYNC,
+                    restriction=cl.FenceRestriction.shared_block(),
                 )
                 scale_a_descriptor = cl.Tcgen05SharedMemoryDescriptor(
                     matrix_start_address=scale_a_smem,

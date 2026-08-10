@@ -5,6 +5,7 @@
 
 import pytest
 import cuda.lang as cl
+from cuda.lang._enums import FenceProxyKind
 from cuda.lang._exception import (
     CompilerExecutionError,
     TypeCheckingError,
@@ -25,8 +26,8 @@ def test_mlir_interface_enums():
             scope=cl.MemoryScope.BLOCK,
             addr=tensor.get_base_pointer(),
             size=128,
-            from_proxy=cl.FenceProxyKind.GENERIC,
-            to_proxy=cl.FenceProxyKind.TENSORMAP,
+            from_proxy=FenceProxyKind.GENERIC,
+            to_proxy=FenceProxyKind.TENSORMAP,
         )
 
     z = torch.zeros(1, dtype=torch.int32).cuda()

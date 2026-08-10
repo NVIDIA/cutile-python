@@ -110,9 +110,9 @@ def _consume_clc_response(clc_barriers, clc_tokens, iteration):
     )
     token = clc_tokens.get_element_pointer(slot).load()
     tile_m, tile_n, tile_l, has_work = _work_tile_from_clc_token(token)
-    cl.fence_proxy(
-        cl.FenceProxyKind.ASYNC_SHARED,
-        space=cl.MemorySpace.SHARED,
+    cl.fence_proxy_bidirectional(
+        cl.FenceProxy.ASYNC,
+        restriction=cl.FenceRestriction.shared_block(),
     )
     return tile_m, tile_n, tile_l, has_work
 
@@ -307,7 +307,11 @@ def _kernel(
         cl.mbarrier_initialize(acc_full.get_base_pointer(), 1)
         cl.mbarrier_initialize(acc_empty.get_base_pointer(), ACC_EMPTY_THREADS)
         cl.mbarrier_initialize(tmem_dealloc.get_base_pointer(), WARP_SIZE)
-    cl.fence_mbarrier_initialize()
+    cl.fence(
+        cl.MemoryOrder.RELEASE,
+        cl.MemoryScope.CLUSTER,
+        restriction=cl.FenceRestriction.mbarrier_initialize(),
+    )
     cl.barrier_arrive_cluster(aligned=False, memory_order=cl.MemoryOrder.RELAXED)
     cl.barrier_wait_cluster(aligned=False)
 
@@ -362,9 +366,9 @@ def _kernel(
             tile_m, tile_n, tile_l, scheduler_has_work = _work_tile_from_clc_token(
                 token
             )
-            cl.fence_proxy(
-                cl.FenceProxyKind.ASYNC_SHARED,
-                space=cl.MemorySpace.SHARED,
+            cl.fence_proxy_bidirectional(
+                cl.FenceProxy.ASYNC,
+                restriction=cl.FenceRestriction.shared_block(),
             )
             _release_clc_response(scheduler_consumed, scheduler_iteration)
             scheduler_iteration += 1
@@ -750,9 +754,9 @@ def _kernel(
                         )
 
             if output_fp4:
-                cl.fence_proxy(
-                    cl.FenceProxyKind.ASYNC_SHARED,
-                    space=cl.MemorySpace.SHARED,
+                cl.fence_proxy_bidirectional(
+                    cl.FenceProxy.ASYNC,
+                    restriction=cl.FenceRestriction.shared_block(),
                 )
                 if cl.elect_sync():
                     cl.copy_async_bulk_tensor_shared_to_global(

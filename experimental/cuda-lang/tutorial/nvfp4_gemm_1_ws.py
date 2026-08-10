@@ -143,7 +143,11 @@ def _kernel(
             cl.mbarrier_initialize(ab_empty.get_element_pointer(stage), 1)
         cl.mbarrier_initialize(acc_full.get_base_pointer(), 1)
         cl.mbarrier_initialize(tmem_dealloc.get_base_pointer(), WARP_SIZE)
-    cl.fence_mbarrier_initialize()
+    cl.fence(
+        cl.MemoryOrder.RELEASE,
+        cl.MemoryScope.CLUSTER,
+        restriction=cl.FenceRestriction.mbarrier_initialize(),
+    )
     cl.barrier_arrive_cluster(
         aligned=False, memory_order=cl.MemoryOrder.RELAXED
     )
