@@ -8,6 +8,7 @@ from typing import Any
 
 import pytest
 
+import cuda.tile as ct
 from cuda.tile._cext import cconv_v3_enabled
 from cuda.tile.compilation import (
     mangle_kernel_name, demangle_kernel_name, KernelSignature, ScalarConstraint, ArrayConstraint,
@@ -442,6 +443,13 @@ class MyEnum(Enum):
         [MyEnum.OKAY, MyEnum.Буквы],
         f"_Ce_{_MOD}MyEnum_zO_kAY_z_Ce_{_MOD}MyEnum_z_u0411_u0443_u043a_u0432_u044b_z",
         id="enum_constant",
+    ),
+
+    # DType constant
+    pytest.param(
+        [ct.float32, ct.int32],
+        "_Cd_f32_Cd_i32",
+        id="dtype_constant",
     ),
 ] if cconv_v3_enabled() else [])
 @pytest.mark.skipif(not cconv_v3_enabled(), reason="Requires cconv3 enabled")

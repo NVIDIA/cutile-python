@@ -16,6 +16,7 @@ from cuda.tile import TileTypeError
 import cuda.tile._datatype as datatype
 from cuda.tile._bytecode import float_to_bits
 from cuda.tile._bytecode.float import float_from_bits
+from cuda.tile._cext import foreign_dtype_object_to_native
 from cuda.tile._datatype import numeric_dtype_category, is_integral
 from cuda.tile._exception import Loc, TileSyntaxError, TileValueError, TypeCheckingError
 from cuda.tile._ir import hir_stubs, hir
@@ -33,7 +34,7 @@ from cuda.tile._ir.type import Type, DTypeSpec, TensorLikeTy, TupleTy, TupleValu
     StringFormat, FormattedStringValue, FormattedPiece, DictTy, DictValue, EnumTy, TokenTy, \
     FunctionTy, GeneratorContextManagerTy, ContextManagerState, GeneratorContextManagerValue
 from cuda.tile._ir.typing_support import type_of_constant_python_value, \
-    loose_type_of_constant_python_value, get_dataclass_info, as_third_party_dtype_spec, \
+    loose_type_of_constant_python_value, get_dataclass_info, \
     create_dataclass_instance, find_method, dataclass_has_default_repr
 from cuda.tile._ir2bytecode import BytecodeContext
 from cuda.tile._mutex import tile_mutex
@@ -759,10 +760,10 @@ def sym2var(x: Any, constant_only: bool = False) -> Var:
         return bind_method(self_var, x.__func__)
 
     # Transform a third party typed scalar (e.g., np.int16(5)) into a strictly typed constant
-    dtype_spec = as_third_party_dtype_spec(type(x))
-    if dtype_spec is not None:
-        pyval = numeric_dtype_category(dtype_spec.dtype).pytype(x)
-        ty = Builder.get_current().ir_ctx.typing_hooks.get_tensor_like_type(dtype_spec.dtype, ())
+    native_dtype = foreign_dtype_object_to_native(type(x))
+    if native_dtype is not None:
+        pyval = numeric_dtype_category(native_dtype).pytype(x)
+        ty = Builder.get_current().ir_ctx.typing_hooks.get_tensor_like_type(native_dtype, ())
         return strictly_typed_const(pyval, ty)
 
     return loosely_typed_const(x)

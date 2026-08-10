@@ -57,6 +57,14 @@ def classify_constant(value, kernel_arg, /) -> ConstantKind | None:
     ...
 
 
+def foreign_dtype_object_register(foreign, native):
+    ...
+
+
+def foreign_dtype_object_to_native(foreign, /):
+    ...
+
+
 def dev_features_enabled():
     ...
 

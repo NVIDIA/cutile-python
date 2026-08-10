@@ -9,7 +9,7 @@
 #include <cstddef>
 
 #include "check.h"
-#include "hash.h"
+#include "hash_map.h"
 
 
 template <typename Derived>  // curiously recurring template
@@ -142,5 +142,13 @@ template <typename T>
 struct Hash<RefPtr<T>> {
     static void hash(const RefPtr<T>& ptr, Hasher& h) {
         Hash<T*>::hash(ptr.get(), h);
+    }
+};
+
+// Allow heterogeneous lookup for T* vs. RefPtr<T>
+template <typename T>
+struct CompareKey <T*, RefPtr<T>> {
+    static bool equals(T* a, const RefPtr<T>& b) {
+        return a == b.get();
     }
 };

@@ -10,7 +10,7 @@ from typing import Sequence, Iterator, TypeAlias, Any, Protocol, ClassVar
 
 from cuda.tile._execution import kernel
 from cuda.tile._cext import CallingConvention, get_parameter_constraints_from_pyargs, \
-    classify_constant, cconv_v3_enabled
+    classify_constant, cconv_v3_enabled, ConstantKind
 from cuda.tile._datatype import DType, int32, int64, uint32
 
 
@@ -302,7 +302,8 @@ class ConstantConstraint:
     value: ConstantValue
 
     def __post_init__(self):
-        if classify_constant(self.value, True) is None:
+        kind = classify_constant(self.value, True)
+        if kind is None or kind == ConstantKind.ForeignDType:
             raise TypeError(f"Unexpected constant value type {type(self.value)}")
 
     def __eq__(self, other):

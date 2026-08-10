@@ -204,18 +204,18 @@ def _mangle_constraint(p: ParameterConstraint, alias_group_map: dict[str, int],
         assert kind is not None  # validated in ConstantConstraint.__post_init__()
         match kind:
             case ConstantKind.Bool:
-                ret = "B" + str(int(p.value))
+                return "B" + str(int(p.value))
             case ConstantKind.Int:
-                ret = "I" + _mangle_signed_int(p.value)
+                return "I" + _mangle_signed_int(p.value)
             case ConstantKind.Float:
                 [i] = struct.unpack("<Q", struct.pack("<d", p.value))
-                ret = "F" + f"{i:016x}"
+                return "F" + f"{i:016x}"
             case ConstantKind.Enum:
                 assert cconv_v3_enabled()
-                ret = "Ce_" + _mangle_enum_constant(p.value, collected_globals)
+                return "Ce_" + _mangle_enum_constant(p.value, collected_globals)
+            case ConstantKind.NativeDType:
+                return "Cd_" + _mangle_dtype(p.value)
             case _: assert False
-        assert ret.startswith(kind._value_)
-        return ret
     else:
         raise TypeError(f"Unexpected constraint type: {type(p)}")
 
@@ -247,6 +247,8 @@ def _demangle_constraint(cursor: _Cursor,
         return ConstantConstraint(f)
     elif c == "Ce_" and cconv_v3_enabled():
         return ConstantConstraint(_demangle_enum_constant(cursor, allowed_globals))
+    elif c == "Cd_" and cconv_v3_enabled():
+        return ConstantConstraint(_demangle_dtype(cursor))
     else:
         raise orig_cursor.make_error(f"Unexpected constraint code '{c}'")
 

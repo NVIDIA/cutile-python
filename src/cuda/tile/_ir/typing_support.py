@@ -5,9 +5,9 @@ import inspect
 import operator
 import dataclasses
 from contextlib import _GeneratorContextManager
-from functools import lru_cache
+from functools import lru_cache, cache
 from types import ModuleType, FunctionType, BuiltinFunctionType
-from typing import Any, Callable, Mapping, Union, Sequence
+from typing import Any, Sequence
 
 from cuda.tile import _datatype as datatype, DType
 from cuda.tile._exception import TileTypeError, TileValueError
@@ -16,39 +16,23 @@ from .type import DataclassInfo, PointerInfoTy
 
 from .type import Type, DTypeConstructor, DTypeSpec, NONE, StringTy, \
     ELLIPSIS, SLICE, ModuleTy, FunctionTy, EnumTy, TypeTy, LooselyTypedScalar
-from .._cext import classify_constant, ConstantKind
+from .._cext import classify_constant, ConstantKind, foreign_dtype_object_to_native
 from .._execution import is_function_wrapper
-
-# Store mapping from 3rd party dtype objects
-# e.g. np.float32 -> float32, torch.bfloat16 -> bfloat16
-_dtype_registry: dict[Any, DTypeSpec] = {}
-
-
-def register_dtypes(dtypes: Mapping[Any, datatype.DType]):
-    for t1, t2 in dtypes.items():
-        cls = DTypeConstructor if _is_dtype_allowed_as_constructor(t2) else DTypeSpec
-        _dtype_registry[t1] = cls(t2)
 
 
 def to_dtype(x: Any):
     if isinstance(x, DType):
         return x
-    return _dtype_registry[x].dtype
+    ret = foreign_dtype_object_to_native(x)
+    if ret is None:
+        raise TypeError(f"{x} is not a dtype")
+    return ret
 
 
-def _safe_get(dict, key, default=None):
-    try:
-        return dict.get(key, default)
-    except TypeError:  # if not hashable
-        return default
-
-
-def is_dtype(x: Any):
-    return isinstance(x, DType) or _safe_get(_dtype_registry, x) is not None
-
-
-def as_third_party_dtype_spec(x: Any) -> DTypeSpec | None:
-    return _safe_get(_dtype_registry, x)
+@cache
+def _get_dtype_spec(dtype: DType) -> DTypeSpec:
+    assert isinstance(dtype, DType)
+    return DTypeConstructor(dtype) if _is_dtype_allowed_as_constructor(dtype) else DTypeSpec(dtype)
 
 
 def _is_dtype_allowed_as_constructor(dtype: DType) -> bool:
@@ -57,29 +41,11 @@ def _is_dtype_allowed_as_constructor(dtype: DType) -> bool:
 
 
 def is_dtype_constructor(x: Any) -> bool:
-    if isinstance(x, DType):
-        return _is_dtype_allowed_as_constructor(x)
-    else:
-        return isinstance(_safe_get(_dtype_registry, x), DTypeConstructor)
-
-
-# Store mapping from a type to a handler that convert value of that type to IR Type
-# e.g. torch.Tensor -> Array
-# The key can also be a str object interface such as "__cuda_array_interface__" or "__dlpack__"
-TypeHandler = Callable[[Type], Any]
-TypeKey = Union[type, str]
-
-
-class TypeHandlerTable(dict[TypeKey, TypeHandler]):
-    _types_with_subtypes = []
-
-    def __missing__(self, key: TypeKey) -> TypeHandler:
-        if isinstance(key, type):
-            for parent_ty in self._types_with_subtypes:
-                if issubclass(key, parent_ty):
-                    self[key] = self[parent_ty]
-                    return self[key]
-        raise KeyError
+    if not isinstance(x, DType):
+        x = foreign_dtype_object_to_native(x)
+        if x is None:
+            return False
+    return _is_dtype_allowed_as_constructor(x)
 
 
 BUILTIN_FUNC_SIGNATURES = {
@@ -171,6 +137,10 @@ def type_of_constant_python_value(val, typing_hooks: TypingHooks) -> Type:
             return typing_hooks.get_tensor_like_type(dtype_of_constant_scalar(val), ())
         case ConstantKind.Enum:
             return EnumTy(val)
+        case ConstantKind.NativeDType:
+            return _get_dtype_spec(val)
+        case ConstantKind.ForeignDType:
+            return _get_dtype_spec(foreign_dtype_object_to_native(val))
         case _: assert False
 
     if val is None:
@@ -185,13 +155,6 @@ def type_of_constant_python_value(val, typing_hooks: TypingHooks) -> Type:
         return ModuleTy(val)
     if isinstance(val, FunctionType | BuiltinFunctionType):
         return FunctionTy(val)
-    if isinstance(val, datatype.DType):
-        if _is_dtype_allowed_as_constructor(val):
-            return DTypeConstructor(val)
-        else:
-            return DTypeSpec(val)
-    if (t := as_third_party_dtype_spec(val)) is not None:
-        return t
     if isinstance(val, datatype.PointerInfo):
         return PointerInfoTy(val)
     if isinstance(val, type):
@@ -290,102 +253,6 @@ def find_method(cls, name: str):
         if name in b.__dict__:
             return b.__dict__[name]
     return NotImplemented
-
-
-# ========= Numpy support ===========
-
-try:
-    import numpy as np
-    HAS_NUMPY = True
-except ImportError:
-    HAS_NUMPY = False
-    np = None
-
-if HAS_NUMPY:
-
-    # register numpy dtype types
-    register_dtypes({
-        np.float64: datatype.float64,
-        np.float32: datatype.float32,
-        np.float16: datatype.float16,
-        np.int64: datatype.int64,
-        np.int32: datatype.int32,
-        np.int16: datatype.int16,
-        np.int8: datatype.int8,
-        np.uint64: datatype.uint64,
-        np.uint32: datatype.uint32,
-        np.uint16: datatype.uint16,
-        np.uint8: datatype.uint8,
-        np.bool_: datatype.bool_
-    })
-    # register numpy dtype objects
-    register_dtypes({
-        np.dtype('float64'): datatype.float64,
-        np.dtype('float32'): datatype.float32,
-        np.dtype('float16'): datatype.float16,
-        np.dtype('int64'): datatype.int64,
-        np.dtype('int32'): datatype.int32,
-        np.dtype('int16'): datatype.int16,
-        np.dtype('int8'): datatype.int8,
-        np.dtype('uint64'): datatype.uint64,
-        np.dtype('uint32'): datatype.uint32,
-        np.dtype('uint16'): datatype.uint16,
-        np.dtype('uint8'): datatype.uint8,
-        np.dtype('bool'): datatype.bool_
-    })
-
-# ========= JAX MLDtype support ===========
-try:
-    import ml_dtypes
-    HAS_ML_DTYPES = True
-except ImportError:
-    HAS_ML_DTYPES = False
-    ml_dtypes = None
-
-
-if HAS_NUMPY and HAS_ML_DTYPES:
-    register_dtypes({
-        np.dtype(ml_dtypes.bfloat16): datatype.bfloat16,
-        np.dtype(ml_dtypes.float8_e4m3fn): datatype.float8_e4m3fn,
-        np.dtype(ml_dtypes.float8_e5m2): datatype.float8_e5m2,
-        np.dtype(ml_dtypes.float8_e8m0fnu): datatype.float8_e8m0fnu,
-    })
-
-
-# ===== PyTorch ===========
-
-try:
-    import torch as torch
-    HAS_TORCH = True
-except ImportError:
-    HAS_TORCH = False
-    torch = None
-
-
-if HAS_TORCH:
-    # register torch dtypes
-    register_dtypes({
-        torch.float64: datatype.float64,
-        torch.float32: datatype.float32,
-        torch.float16: datatype.float16,
-        torch.int64: datatype.int64,
-        torch.int32: datatype.int32,
-        torch.int16: datatype.int16,
-        torch.int8: datatype.int8,
-        torch.uint64: datatype.uint64,
-        torch.uint32: datatype.uint32,
-        torch.uint16: datatype.uint16,
-        torch.uint8: datatype.uint8,
-        torch.bool: datatype.bool_,
-        torch.bfloat16: datatype.bfloat16,
-        torch.float8_e4m3fn: datatype.float8_e4m3fn,
-        torch.float8_e5m2: datatype.float8_e5m2,
-        torch.float8_e8m0fnu: datatype.float8_e8m0fnu,
-    })
-
-
-# ===== Cuda Array Interface ===========
-BYTE_BITWIDTH = 8
 
 
 def _compute_elem_strides(shape, dtype_bytewidth, byte_strides):

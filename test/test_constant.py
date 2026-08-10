@@ -53,3 +53,27 @@ def test_enum_kernel_argument():
     out = torch.full((2,), -1, dtype=torch.int32, device="cuda")
     ct.launch(torch.cuda.current_stream(), (1,), kern, (MyEnum.BAR, out))
     assert out.tolist() == [0, 1]
+
+
+@pytest.mark.skipif(not cconv_v3_enabled(), reason="Requires cconv3 enabled")
+def test_dtype_kernel_argument():
+    @ct.kernel
+    def kern(c: ct.Constant, out):
+        ct.scatter(out, 0, c == ct.float32)
+        ct.scatter(out, 1, c == ct.int32)
+
+    out = torch.full((2,), -1, dtype=torch.int32, device="cuda")
+    ct.launch(torch.cuda.current_stream(), (1,), kern, (ct.float32, out))
+    assert out.tolist() == [1, 0]
+
+    out = torch.full((2,), -1, dtype=torch.int32, device="cuda")
+    ct.launch(torch.cuda.current_stream(), (1,), kern, (torch.float32, out))
+    assert out.tolist() == [1, 0]
+
+    out = torch.full((2,), -1, dtype=torch.int32, device="cuda")
+    ct.launch(torch.cuda.current_stream(), (1,), kern, (ct.int32, out))
+    assert out.tolist() == [0, 1]
+
+    out = torch.full((2,), -1, dtype=torch.int32, device="cuda")
+    ct.launch(torch.cuda.current_stream(), (1,), kern, (torch.int32, out))
+    assert out.tolist() == [0, 1]

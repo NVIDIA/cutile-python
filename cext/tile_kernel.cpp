@@ -55,37 +55,27 @@ static PyObject* get_datatype_module() {
 }
 
 
+static PyTypeObject* get_dtype_class() {
+    static PyTypeObject* c;
+    static bool cached;
+    if (!cached) {
+        cached = true;
+        PyObject* datatype_mod = get_datatype_module();
+        if (!datatype_mod) return nullptr;
+        PyPtr dtype_class = getattr(datatype_mod, "DType");
+        if (!dtype_class) return nullptr;
+        if (!PyType_Check(dtype_class.get())) return nullptr;
+        c = reinterpret_cast<PyTypeObject*>(dtype_class.release());
+    }
+    return c;
+}
+
+
 static PyObject* get_signature_module() {
     static PyObject* m;
     if (!m) m = PyImport_ImportModule("cuda.tile.compilation._signature");
     return m;
 }
-
-
-#define FOREACH_TORCH_DTYPE(X) \
-    X(bool, 8, 1, kDLBool) \
-    X(uint8, 8, 1, kDLUInt) \
-    X(uint16, 16, 1, kDLUInt) \
-    X(uint32, 32, 1, kDLUInt) \
-    X(uint64, 64, 1, kDLUInt) \
-    X(int8, 8, 1, kDLInt) \
-    X(int16, 16, 1, kDLInt) \
-    X(int32, 32, 1, kDLInt) \
-    X(int64, 64, 1, kDLInt) \
-    X(float16, 16, 1, kDLFloat) \
-    X(float32, 32, 1, kDLFloat) \
-    X(float64, 64, 1, kDLFloat) \
-    X(bfloat16, 16, 1, kDLBfloat) \
-    X(float8_e4m3fn, 8, 1, kDLFloat8_e4m3fn) \
-    X(float8_e5m2, 8, 1, kDLFloat8_e5m2) \
-    X(float8_e8m0fnu, 8, 1, kDLFloat8_e8m0fnu)
-
-
-#define DECLARE_TORCH_DTYPE_GLOBAL(name, bitwidth, lanes, typecode) \
-    static PyObject* g_torch_dtype_##name;
-
-
-FOREACH_TORCH_DTYPE(DECLARE_TORCH_DTYPE_GLOBAL)
 
 
 static PyTypeObject* g_cupy_cuda_Stream_type;
@@ -502,41 +492,35 @@ struct AggregateArgType {
 
 
 // Kinds of constant values that are allowed as kernel arguments.
-// The second argument is the name mangling prefix (mostly for documentation).
 #define FOREACH_CONSTANT_KIND(X) \
-    X(Bool, "B") \
-    X(Int, "I") \
-    X(Float, "F") \
-    X(Enum, "Ce_")
+    X(Bool) \
+    X(Int) \
+    X(Float) \
+    X(Enum) \
+    X(NativeDType) \
+    X(ForeignDType)
 
-#define CONSTANT_KIND_ENTRY(name, _mangling) name,
+#define CONSTANT_KIND_ENTRY(name) name,
 
 enum class ConstantKind : uint8_t {
     FOREACH_CONSTANT_KIND(CONSTANT_KIND_ENTRY)
 };
 
 
-#define CONSTANT_KIND_NAME_STR(name, _mangling) #name,
-static const char* const g_constant_kind_names[] = {
+#define CONSTANT_KIND_NAME_STR(name) #name,
+static const char g_constant_kind_names[][16] = {
     FOREACH_CONSTANT_KIND(CONSTANT_KIND_NAME_STR)
 };
 
-#define CONSTANT_KIND_MANGLING(_name, mangling) mangling,
-static const char* const g_constant_kind_manglings[] = {
-    FOREACH_CONSTANT_KIND(CONSTANT_KIND_MANGLING)
-};
 
 static PyObject* g_constant_kind_enum;
 
 static PyPtr define_constant_kind_enum() {
-    constexpr size_t n = std::extent_v<decltype(g_constant_kind_names)>;
-    static_assert(n == std::extent_v<decltype(g_constant_kind_manglings)>);
-
     PyPtr entries = steal(PyDict_New());
     if (!entries) return {};
 
-    for (size_t i = 0; i < n; ++i) {
-        PyPtr value = steal(PyUnicode_FromString(g_constant_kind_manglings[i]));
+    for (size_t i = 0; i < std::extent_v<decltype(g_constant_kind_names)>; ++i) {
+        PyPtr value = steal(PyLong_FromUnsignedLongLong(i));
         if (!value) return {};
 
         if (PyDict_SetItemString(entries.get(), g_constant_kind_names[i], value.get()))
@@ -589,6 +573,7 @@ enum class PythonArgKind : uint8_t {
     ConstantInt,
     ConstantFloat,
     IdentityConstant,
+    ForeignDTypeConstant,
     // A torch.Tensor that we can access via torch._C._to_dlpack
     TorchTensorDlpack,
     // An object with __dlpack__ method
@@ -611,6 +596,8 @@ static inline PythonArgKind constant_kind_as_arg_kind(ConstantKind kind) {
     case ConstantKind::Int: return PythonArgKind::ConstantInt;
     case ConstantKind::Float: return PythonArgKind::ConstantFloat;
     case ConstantKind::Enum: return PythonArgKind::IdentityConstant;
+    case ConstantKind::NativeDType: return PythonArgKind::IdentityConstant;
+    case ConstantKind::ForeignDType: return PythonArgKind::ForeignDTypeConstant;
     }
     CHECK_UNREACHABLE;
 }
@@ -622,6 +609,7 @@ static ParameterKind::Category param_category_from_pyarg_kind(PythonArgKind k) {
     case PythonArgKind::ConstantInt: return ParameterKind::ConstantInt;
     case PythonArgKind::ConstantFloat: return ParameterKind::ConstantFloat;
     case PythonArgKind::IdentityConstant: return ParameterKind::IdentityConstant;
+    case PythonArgKind::ForeignDTypeConstant: return ParameterKind::IdentityConstant;
     case PythonArgKind::TorchTensorDlpack: return ParameterKind::Array;
     case PythonArgKind::DlpackArray: return ParameterKind::Array;
     case PythonArgKind::CudaArray: return ParameterKind::Array;
@@ -631,6 +619,201 @@ static ParameterKind::Category param_category_from_pyarg_kind(PythonArgKind k) {
     case PythonArgKind::PyList: return ParameterKind::List;
     }
     CHECK_UNREACHABLE;
+}
+
+static constexpr int u8_pair(uint8_t x, uint8_t y) {
+    return x | (y << 8);
+}
+
+#define FOREACH_DLPACK_DTYPE(X) \
+    X(kDLBool, 8, "bool_") \
+    \
+    X(kDLInt, 8, "int8") \
+    X(kDLInt, 16, "int16") \
+    X(kDLInt, 32, "int32") \
+    X(kDLInt, 64, "int64") \
+    \
+    X(kDLUInt, 8, "uint8") \
+    X(kDLUInt, 16, "uint16") \
+    X(kDLUInt, 32, "uint32") \
+    X(kDLUInt, 64, "uint64") \
+    \
+    X(kDLFloat, 16, "float16") \
+    X(kDLFloat, 32, "float32") \
+    X(kDLFloat, 64, "float64") \
+    \
+    X(kDLBfloat, 16, "bfloat16") \
+    \
+    X(kDLFloat8_e4m3fn, 8, "float8_e4m3fn") \
+    X(kDLFloat8_e5m2, 8, "float8_e5m2") \
+    X(kDLFloat8_e8m0fnu, 8, "float8_e8m0fnu")
+
+
+#define DLPACK_DTYPE_NAME_CASE(code, bits, name) \
+    case u8_pair(code, bits): return name;
+
+static Result<const char*> dtype_name(DLDataType dtype) {
+    if (dtype.lanes != 1)
+        return raise(PyExc_TypeError, "Array dtypes with multiple lanes are not supported");
+
+    switch (u8_pair(dtype.code, dtype.bits)) {
+        FOREACH_DLPACK_DTYPE(DLPACK_DTYPE_NAME_CASE)
+    default:
+        return raise(PyExc_TypeError, "Unsupported array dtype");
+    }
+}
+
+static PyPtr dtype_to_python(DLDataType dtype) {
+    PyObject* dtype_module = get_datatype_module();
+    if (!dtype_module) return {};
+
+    Result<const char*> name = dtype_name(dtype);
+    if (!name.is_ok()) return {};
+
+    return getattr(dtype_module, *name);
+}
+
+
+#define DLPACK_DTYPE_NAME(_code, _bits, name) name,
+#define DLPACK_DTYPE_TYPE(code, bits, _name) {code, bits, 1},
+
+static constexpr char dlpack_dtype_names[][16] = { FOREACH_DLPACK_DTYPE(DLPACK_DTYPE_NAME) };
+static constexpr DLDataType dlpack_dtypes[] = { FOREACH_DLPACK_DTYPE(DLPACK_DTYPE_TYPE) };
+
+static Result<std::optional<DLDataType>> dtype_from_python(PyObject* dtype) {
+    PyPtr py_name = getattr(dtype, "name");
+    if (!py_name) return ErrorRaised;
+
+    constexpr size_t n = std::extent_v<decltype(dlpack_dtype_names)>;
+    static_assert(n == std::extent_v<decltype(dlpack_dtypes)>);
+
+    for (size_t i = 0; i < n; ++i) {
+        if (!PyUnicode_CompareWithASCIIString(py_name.get(), dlpack_dtype_names[i]))
+            return {dlpack_dtypes[i]};
+    }
+    return {std::nullopt};
+}
+
+
+struct ForeignDTypeInfo {
+    std::optional<DLDataType> dlpack_dtype;
+    PyPtr native_dtype;
+};
+
+
+enum ForeignDtypeKind {
+    kTorch = 1,
+    kNumpy = 2,
+    kMlDTypes = 8
+};
+
+static constexpr
+struct { char name[16]; DLDataType type; int lib_mask; } foreign_dtype_table[] = {
+    {"bool", {kDLBool, 8, 1}, kTorch },
+    {"bool_", {kDLBool, 8, 1}, kNumpy },
+    {"uint8", {kDLUInt, 8, 1}, kTorch | kNumpy },
+    {"uint16", {kDLUInt, 16, 1}, kTorch | kNumpy },
+    {"uint32", {kDLUInt, 32, 1}, kTorch | kNumpy},
+    {"uint64", {kDLUInt, 64, 1}, kTorch | kNumpy},
+    {"int8", {kDLInt, 8, 1}, kTorch | kNumpy},
+    {"int16", {kDLInt, 16, 1}, kTorch | kNumpy},
+    {"int32", {kDLInt, 32, 1}, kTorch | kNumpy},
+    {"int64", {kDLInt, 64, 1}, kTorch | kNumpy},
+    {"float16", {kDLFloat, 16, 1}, kTorch | kNumpy},
+    {"float32", {kDLFloat, 32, 1}, kTorch | kNumpy},
+    {"float64", {kDLFloat, 64, 1}, kTorch | kNumpy},
+    {"bfloat16", {kDLBfloat, 16, 1}, kTorch | kMlDTypes},
+    {"float8_e4m3fn", {kDLFloat8_e4m3fn, 8, 1}, kTorch | kMlDTypes},
+    {"float8_e5m2", {kDLFloat8_e5m2, 8, 1}, kTorch | kMlDTypes},
+    {"float8_e8m0fnu", {kDLFloat8_e8m0fnu, 8, 1}, kTorch | kMlDTypes}
+};
+
+static void register_foreign_dtypes_common(PyObject* foreign_module,
+                                           PyObject* numpy_dtype_class,
+                                           ForeignDtypeKind bit,
+                                           HashMap<PyPtr, ForeignDTypeInfo>* registry) {
+    for (const auto& entry : foreign_dtype_table) {
+        if (!(entry.lib_mask & bit)) continue;
+
+        PyPtr foreign_pyobj = try_getattr(foreign_module, entry.name);
+        if (!foreign_pyobj) continue;
+
+        ErrorGuard guard;
+        PyPtr native_pyobj = dtype_to_python(entry.type);
+        if (!native_pyobj) continue;
+
+        registry->insert(foreign_pyobj, ForeignDTypeInfo{entry.type, native_pyobj});
+
+        if (numpy_dtype_class) {
+            PyPtr numpy_dtype_desc = steal(
+                    PyObject_CallOneArg(numpy_dtype_class, foreign_pyobj.get()));
+            if (numpy_dtype_desc)
+                registry->insert(std::move(numpy_dtype_desc),
+                                 ForeignDTypeInfo{entry.type, std::move(native_pyobj)});
+        }
+    }
+}
+
+
+static void register_torch_dtypes(HashMap<PyPtr, ForeignDTypeInfo>* registry) {
+    PyPtr torch = try_import("torch");
+    if (torch)
+        register_foreign_dtypes_common(torch.get(), nullptr, kTorch, registry);
+}
+
+
+static void register_numpy_and_ml_dtypes(HashMap<PyPtr, ForeignDTypeInfo>* registry) {
+    PyPtr numpy = try_import("numpy");
+    if (!numpy) return;
+    PyPtr numpy_dtype_class = try_getattr(numpy, "dtype");
+
+    register_foreign_dtypes_common(numpy.get(), numpy_dtype_class.get(), kNumpy, registry);
+
+    PyPtr ml_dtypes = try_import("ml_dtypes");
+    if (ml_dtypes)
+        register_foreign_dtypes_common(ml_dtypes.get(), numpy_dtype_class.get(), kMlDTypes,
+                                       registry);
+}
+
+
+// Must hold g_launch_mutex or GIL to call this
+static HashMap<PyPtr, ForeignDTypeInfo>* get_foreign_dtype_registry() {
+    static HashMap<PyPtr, ForeignDTypeInfo>* registry;
+    if (!registry) {
+        auto reg = std::make_unique<HashMap<PyPtr, ForeignDTypeInfo>>();
+        register_torch_dtypes(reg.get());
+        register_numpy_and_ml_dtypes(reg.get());
+        registry = reg.release();
+    }
+    return registry;
+}
+
+
+static PyObject* foreign_dtype_object_register(PyObject* self, PyObject* args) {
+    PyObject* foreign_dtype;
+    PyObject* native_dtype;
+    if (!PyArg_ParseTuple(args, "OO", &foreign_dtype, &native_dtype))
+        return nullptr;
+
+    Result<std::optional<DLDataType>> dtype_res = dtype_from_python(native_dtype);
+    if (!dtype_res.is_ok()) return nullptr;
+
+#ifdef Py_GIL_DISABLED
+    PyCriticalSectionGuard guard(&g_launch_mutex);
+#endif
+
+    get_foreign_dtype_registry()->insert(newref(foreign_dtype),
+                                         ForeignDTypeInfo{*dtype_res, newref(native_dtype)});
+    return Py_NewRef(Py_None);
+}
+
+
+static PyObject* foreign_dtype_object_to_native(PyObject* self, PyObject* object) {
+#ifdef Py_GIL_DISABLED
+    PyCriticalSectionGuard guard(&g_launch_mutex);
+#endif
+    HashMap<PyPtr, ForeignDTypeInfo>::Item* item = get_foreign_dtype_registry()->find(object);
+    return Py_NewRef(item ? item->value.native_dtype.get() : Py_None);
 }
 
 
@@ -650,6 +833,12 @@ static std::optional<ConstantKind> classify_constant(PyObject* obj, bool kernel_
 
     if (PyObject_TypeCheck(obj, reinterpret_cast<PyTypeObject*>(g_enum_Enum_type)))
         return ConstantKind::Enum;
+
+    if (Py_IS_TYPE(obj, get_dtype_class()))
+        return ConstantKind::NativeDType;
+
+    if (get_foreign_dtype_registry()->find(obj))
+        return ConstantKind::ForeignDType;
 
 #ifndef ENABLE_CCONV_V3
     }
@@ -1022,52 +1211,6 @@ static inline DLDataType dtype_from_uint(uint32_t u) {
         .bits = static_cast<uint8_t>((u >> 8) & 0xff),
         .lanes = static_cast<uint16_t>((u >> 16) & 0xffff),
     };
-}
-
-static constexpr int u8_pair(uint8_t x, uint8_t y) {
-    return x | (y << 8);
-}
-
-static Result<const char*> dtype_name(DLDataType dtype) {
-    if (dtype.lanes != 1)
-        return raise(PyExc_TypeError, "Array dtypes with multiple lanes are not supported");
-
-    switch (u8_pair(dtype.code, dtype.bits)) {
-    case u8_pair(kDLBool, 8): return "bool_";
-
-    case u8_pair(kDLInt, 8): return "int8";
-    case u8_pair(kDLInt, 16): return "int16";
-    case u8_pair(kDLInt, 32): return "int32";
-    case u8_pair(kDLInt, 64): return "int64";
-
-    case u8_pair(kDLUInt, 8): return "uint8";
-    case u8_pair(kDLUInt, 16): return "uint16";
-    case u8_pair(kDLUInt, 32): return "uint32";
-    case u8_pair(kDLUInt, 64): return "uint64";
-
-    case u8_pair(kDLFloat, 16): return "float16";
-    case u8_pair(kDLFloat, 32): return "float32";
-    case u8_pair(kDLFloat, 64): return "float64";
-
-    case u8_pair(kDLBfloat, 16): return "bfloat16";
-
-    case u8_pair(kDLFloat8_e4m3fn, 8): return "float8_e4m3fn";
-    case u8_pair(kDLFloat8_e5m2, 8): return "float8_e5m2";
-    case u8_pair(kDLFloat8_e8m0fnu, 8): return "float8_e8m0fnu";
-
-    default:
-        return raise(PyExc_TypeError, "Unsupported array dtype");
-    }
-}
-
-static PyPtr dtype_to_python(DLDataType dtype) {
-    PyObject* dtype_module = get_datatype_module();
-    if (!dtype_module) return {};
-
-    Result<const char*> name = dtype_name(dtype);
-    if (!name.is_ok()) return {};
-
-    return getattr(dtype_module, *name);
 }
 
 // Pack data type, array rank, and index bitwidth in a single int64_t so it
@@ -1590,14 +1733,11 @@ static Result<ArrayRepr> arrayrepr_dlpack_common(PyObject* dlpack_capsule, unsig
 }
 
 
-#define TORCH_DTYPE_TO_DL_DTYPE(name, bitwidth, lanes, typecode) \
-if (torch_dtype == g_torch_dtype_##name) \
-    return DLDataType{typecode, bitwidth, lanes};
-
-
 static Result<DLDataType> dtype_from_torch_dtype(PyObject* torch_dtype) {
-    FOREACH_TORCH_DTYPE(TORCH_DTYPE_TO_DL_DTYPE)
-    return raise(PyExc_TypeError, "dtype is not supported");
+    HashMap<PyPtr, ForeignDTypeInfo>::Item* item = get_foreign_dtype_registry()->find(torch_dtype);
+    if (!item || !item->value.dlpack_dtype)
+        return raise(PyExc_TypeError, "dtype is not supported");
+    return *item->value.dlpack_dtype;
 }
 
 static Result<ArrayRepr> arrayrepr_torch_tensor_pymethod(PyObject* tensor, unsigned index_bitwidth,
@@ -1879,6 +2019,15 @@ static PyPtr parse_identity_constant_constraint(ConstantCursor& cursor,
             return make_constant_constraint(obj);
     }
     CHECK_UNREACHABLE;
+}
+
+static Status extract_foreign_dtype_constant(PyObject* object, Vec<int64_t>* constants,
+                                             Vec<PyObject*>* identity_constants) {
+    HashMap<PyPtr, ForeignDTypeInfo>::Item* item = get_foreign_dtype_registry()->find(object);
+    if (!item)
+        return raise(PyExc_ValueError, "Received an unregistered foreign dtype object");
+    extract_identity_constant(item->value.native_dtype.get(), constants, identity_constants);
+    return OK;
 }
 
 static Result<ArrayRepr> get_array_repr(PythonArgKind kind, PyObject* pyobj,
@@ -2174,6 +2323,8 @@ static Status extract_arg(const DriverApi* driver, PyObject* obj, PythonArgKind 
     case PythonArgKind::IdentityConstant:
         extract_identity_constant(obj, &helper.constants, &helper.identity_constants);
         return OK;
+    case PythonArgKind::ForeignDTypeConstant:
+        return extract_foreign_dtype_constant(obj, &helper.constants, &helper.identity_constants);
     case PythonArgKind::TorchTensorDlpack:
         return extract_array<arrayrepr_torch_tensor_dlpack>(driver, obj, annotation->array, helper);
     case PythonArgKind::DlpackArray:
@@ -4593,14 +4744,6 @@ static void try_get_torch_globals() {
     if (PyPtr torch_C = try_getattr(torch, "_C")) {
         g_torch_to_dlpack_func = try_getattr(torch_C, "_to_dlpack").release();
     }
-
-
-#define LOAD_TORCH_DTYPE_GLOBAL(name, bitwidth, lanes, typecode) \
-    if (PyPtr dtype_ptr = try_getattr(torch, #name)) { \
-        g_torch_dtype_##name = dtype_ptr.release(); \
-    }
-
-    FOREACH_TORCH_DTYPE(LOAD_TORCH_DTYPE_GLOBAL)
 }
 
 static void try_get_cupy_globals() {
@@ -4678,6 +4821,10 @@ static PyMethodDef functions[] = {
       METH_VARARGS, ""},
     {"classify_constant", py_classify_constant, METH_VARARGS,
       "Classify a constant Python value into a ConstantKind"},
+    {"foreign_dtype_object_register", foreign_dtype_object_register, METH_VARARGS,
+     "Register a foreign dtype object"},
+    {"foreign_dtype_object_to_native", foreign_dtype_object_to_native, METH_O,
+     "Get a native dtype object for a foreign dtype object"},
     {"_benchmark", reinterpret_cast<PyCFunction>(cuda_tile_benchmark), METH_FASTCALL,
         BENCHMARK_SIGNATURE "\n"
         "--\n\n"

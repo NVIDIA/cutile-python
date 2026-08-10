@@ -167,7 +167,7 @@ def _define_dtype(name: str, definition: _DTypeDefinition) -> DType:
         dtype.__name__ = name
         _dtype_defs[dtype] = definition
         _dtype_by_name[name] = dtype
-        return dtype
+    return dtype
 
 
 def _numeric_dtype(name: str,
