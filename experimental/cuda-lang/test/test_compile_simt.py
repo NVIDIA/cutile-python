@@ -4,9 +4,11 @@
 
 import cuda.lang as cl
 import cuda.lang._compile as compile_module
+import cuda.lang._logging as logging_module
 from cuda.lang._compiler_options import CompilerOptions
 from cuda.lang._ir import hir, ir
 from cuda.lang._logging import LoggingConfig
+from cuda.lang._timing import CompilationTimings
 from cuda.lang.compilation import KernelSignature
 
 
@@ -28,6 +30,37 @@ def test_compile_simt_does_not_keep_ir_by_default(monkeypatch):
     assert result.nvvm is None
     assert result.ptx is None
     assert isinstance(result.cubin, bytes)
+    assert result.timings is None
+
+
+def test_compile_simt_keeps_timings(monkeypatch):
+    _disable_environment_logs(monkeypatch)
+
+    def kernel():
+        pass
+
+    result = cl.compile_simt(
+        kernel,
+        [KernelSignature([])],
+        keep_timings=True,
+    )
+
+    assert isinstance(result.timings, CompilationTimings)
+    assert all(value >= 0 for value in result.timings.phases_ns.values())
+
+
+def test_compile_simt_logs_timings_from_environment(monkeypatch, capsys):
+    monkeypatch.setenv("CUDA_LANG_LOGS", "timings")
+    monkeypatch.setattr(logging_module, "_config", None)
+
+    def kernel():
+        pass
+
+    result = cl.compile_simt(kernel, [KernelSignature([])])
+
+    stderr = capsys.readouterr().err
+    assert "cuda.lang Timings dump" in stderr
+    assert result.timings is None
 
 
 def test_compile_simt_keeps_line_information(monkeypatch):

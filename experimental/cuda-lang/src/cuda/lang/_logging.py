@@ -14,6 +14,7 @@ class LoggingConfig:
     log_mlir: bool = False
     log_nvvm: bool = False
     log_ptx: bool = False
+    log_timings: bool = False
 
 
 _LOG_KEYS = {
@@ -23,6 +24,7 @@ _LOG_KEYS = {
     'MLIR': 'log_mlir',
     'NVVM': 'log_nvvm',
     'PTX': 'log_ptx',
+    'TIMINGS': 'log_timings',
 }
 
 

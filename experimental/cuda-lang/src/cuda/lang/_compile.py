@@ -47,6 +47,7 @@ from cuda.lang._target import TargetInfo
 from ._execution import kernel
 from cuda.lang._ir.ops import cuda_lang_impl_registry
 from ._ir._host_program import HostProgram, get_host_programs_by_var
+from ._timing import CompilationTimer, CompilationTimings
 import contextlib
 
 
@@ -56,6 +57,28 @@ class MLIR2CubinResult:
     stderr: bytes
     ptx: str | None
     nvvm: str | None
+    timings_ns: dict[str, int] | None
+
+
+def _read_mlir2cubin_timings(filename: str) -> dict[str, int]:
+    try:
+        with open(filename, encoding="utf-8") as timing_file:
+            phases_ns = {}
+            for line in timing_file:
+                name, separator, elapsed_ns_text = line.rstrip("\n").partition("=")
+                if not separator or not name or name in phases_ns:
+                    raise ValueError
+                elapsed_ns = int(elapsed_ns_text)
+                if elapsed_ns < 0:
+                    raise ValueError
+                phases_ns[name] = elapsed_ns
+    except (OSError, ValueError) as error:
+        raise RuntimeError("Failed to read mlir2cubin timing output") from error
+
+    phases_ns.pop("total", None)
+    if not phases_ns:
+        raise RuntimeError("mlir2cubin timing output is empty")
+    return phases_ns
 
 
 def mlir2cubin(
@@ -68,6 +91,7 @@ def mlir2cubin(
     opt_level: int | None = None,
     generate_line_info: bool = False,
     ptx_compiler_options: Sequence[str] = (),
+    emit_timings: bool = False,
 ) -> MLIR2CubinResult:
     executable = get_compiler_binary_path()
     argv = [executable, "-", "-o", "-", f"--gpu-name={gpu_name}", f"--arch={arch}"]
@@ -87,6 +111,12 @@ def mlir2cubin(
     with contextlib.ExitStack() as ec:
         nvvm_file, nvvm_src = None, None
         ptx_file, ptx_src = None, None
+        timing_filename, timings_ns = None, None
+
+        if emit_timings:
+            timing_dir = ec.enter_context(tempfile.TemporaryDirectory())
+            timing_filename = os.path.join(timing_dir, "timings.txt")
+            argv.append("--timing-output=" + timing_filename)
 
         if emit_nvvm:
             nvvm_file = ec.enter_context(tempfile.NamedTemporaryFile(mode="w+t"))
@@ -118,7 +148,16 @@ def mlir2cubin(
             ptx_file.seek(0)
             ptx_src = ptx_file.read()
 
-    return MLIR2CubinResult(completed.stdout, completed.stderr, ptx_src, nvvm_src)
+        if timing_filename is not None:
+            timings_ns = _read_mlir2cubin_timings(timing_filename)
+
+    return MLIR2CubinResult(
+        completed.stdout,
+        completed.stderr,
+        ptx_src,
+        nvvm_src,
+        timings_ns,
+    )
 
 
 def get_compiler_binary_path() -> str:
@@ -164,6 +203,7 @@ class CompilationResult:
     kernel_signatures: Sequence[KernelSignature]
     dyn_smem_size_program: HostProgram | None
     hoisted_tensor_maps: list[HoistedTensorMap]
+    timings: CompilationTimings | None = None
 
     stderr: bytes | None = None
     hir: hir_ir.Function | None = None
@@ -204,16 +244,28 @@ def get_function_ir(
 
 
 def _transform_ir(
-    func_ir: ir.Block, ctx: ir.IRContext
+    func_ir: ir.Block,
+    ctx: ir.IRContext,
+    timer: CompilationTimer | None = None,
 ) -> tuple[HostProgram | None, list[HoistedTensorMap]]:
-    simt_semantic_analysis(func_ir, ctx)
+    timer = timer or CompilationTimer()
 
-    host_program_by_var = get_host_programs_by_var(func_ir)
-    dyn_smem_size_program = handle_dynamic_shared_memory(func_ir, host_program_by_var)
-    hoisted_tensor_maps = hoist_tensor_maps(func_ir, host_program_by_var)
+    with timer.phase("ir.simt_semantic_analysis"):
+        simt_semantic_analysis(func_ir, ctx)
 
-    eliminate_assign_ops(func_ir)
-    dead_code_elimination_pass(func_ir)
+    with timer.phase("ir.host_program_analysis"):
+        host_program_by_var = get_host_programs_by_var(func_ir)
+    with timer.phase("ir.dynamic_shared_memory"):
+        dyn_smem_size_program = handle_dynamic_shared_memory(
+            func_ir, host_program_by_var
+        )
+    with timer.phase("ir.tensor_map_hoisting"):
+        hoisted_tensor_maps = hoist_tensor_maps(func_ir, host_program_by_var)
+
+    with timer.phase("ir.eliminate_assign_ops"):
+        eliminate_assign_ops(func_ir)
+    with timer.phase("ir.dead_code_elimination"):
+        dead_code_elimination_pass(func_ir)
 
     return dyn_smem_size_program, hoisted_tensor_maps
 
@@ -231,24 +283,29 @@ def compile_simt(
     keep_mlir: bool = False,
     keep_nvvm: bool = False,
     keep_ptx: bool = False,
+    keep_timings: bool = False,
     log_hir: bool = False,
     log_ir: bool = False,
     log_mlir: bool = False,
     log_nvvm: bool = False,
     log_ptx: bool = False,
+    log_timings: bool = False,
 ) -> CompilationResult:
-    match function:
-        case FunctionType():
-            function = get_annotated_function(function)
-        case kernel():
-            function = get_annotated_function(function._pyfunc)
-
     log_flags = deepcopy(get_log_flags())
     log_flags.log_hir |= log_hir
     log_flags.log_ir |= log_ir
     log_flags.log_mlir |= log_mlir
     log_flags.log_nvvm |= log_nvvm
     log_flags.log_ptx |= log_ptx
+    log_flags.log_timings |= log_timings
+    need_timings = keep_timings or log_flags.log_timings
+    timer = CompilationTimer(enabled=need_timings)
+
+    match function:
+        case FunctionType():
+            function = get_annotated_function(function)
+        case kernel():
+            function = get_annotated_function(function._pyfunc)
 
     def _dump(phase: str, contents: object) -> None:
         logging_template = (
@@ -259,7 +316,9 @@ def compile_simt(
             file=sys.stderr,
         )
 
-    func_hir = get_function_hir(function.pyfunc, mode=HirMode.ENTRY_POINT)
+    with timer.phase("ir.ast2hir"):
+        func_hir = get_function_hir(function.pyfunc, mode=HirMode.ENTRY_POINT)
+
     if log_flags.log_hir:
         _dump("HIR", func_hir.body)
 
@@ -269,36 +328,44 @@ def compile_simt(
 
     ctx = ctx or ir.IRContext(log_ir_on_error=log_flags.log_hir or log_flags.log_ir)
 
-    func_ir = get_function_ir(func_hir, signature, ctx, function.parameter_annotations)
+    with timer.phase("ir.hir2ir"):
+        func_ir = get_function_ir(
+            func_hir, signature, ctx, function.parameter_annotations
+        )
 
     if log_flags.log_ir:
         _dump("IR (pre-transforms)", func_ir)
 
-    dyn_smem_size_program, hoisted_tensor_maps = _transform_ir(func_ir, ctx)
+    dyn_smem_size_program, hoisted_tensor_maps = _transform_ir(func_ir, ctx, timer)
 
     if log_flags.log_ir:
         _dump("IR (post-transforms)", func_ir)
 
-    flattened_ir = flatten_cfg(func_ir, ctx)
+    with timer.phase("ir.flatten_cfg"):
+        flattened_ir = flatten_cfg(func_ir, ctx)
 
     if log_flags.log_flattened_ir:
         _dump("Flattened IR", flattened_ir)
 
-    if gpu_name is None or arch is None:
-        cc = compute_capability or get_compute_capability()
-        suffix = "a" if cc >= (9, 0) else ""
-        gpu_name = gpu_name or cc.gpu_name + suffix
-        arch = arch or cc.arch + suffix
+    with timer.phase("ir.target_resolution"):
+        if gpu_name is None or arch is None:
+            cc = compute_capability or get_compute_capability()
+            suffix = "a" if cc >= (9, 0) else ""
+            gpu_name = gpu_name or cc.gpu_name + suffix
+            arch = arch or cc.arch + suffix
 
-    target_info = TargetInfo.from_arch(arch)
-    mlir_module = ir2mlir(
-        signature,
-        flattened_ir,
-        ctx,
-        compiler_options,
-        target_info,
-    )
-    mlir_text = str(mlir_module)
+        target_info = TargetInfo.from_arch(arch)
+
+    with timer.phase("ir2mlir"):
+        mlir_module = ir2mlir(
+            signature,
+            flattened_ir,
+            ctx,
+            compiler_options,
+            target_info,
+        )
+    with timer.phase("mlir_serialization"):
+        mlir_text = str(mlir_module)
 
     if log_flags.log_mlir:
         _dump("MLIR", mlir_text)
@@ -306,16 +373,20 @@ def compile_simt(
     need_nvvm = log_flags.log_nvvm or keep_nvvm
     need_ptx = log_flags.log_ptx or keep_ptx
     ptx_compiler_options = compiler_options._ptx_compiler_options
-    compiled = mlir2cubin(
-        mlir_text,
-        gpu_name=gpu_name,
-        arch=arch,
-        emit_nvvm=need_nvvm,
-        emit_ptx=need_ptx,
-        opt_level=compiler_options.opt_level,
-        generate_line_info=compiler_options.debug_info == "line",
-        ptx_compiler_options=ptx_compiler_options,
-    )
+    with timer.phase("mlir2cubin"):
+        compiled = mlir2cubin(
+            mlir_text,
+            gpu_name=gpu_name,
+            arch=arch,
+            emit_nvvm=need_nvvm,
+            emit_ptx=need_ptx,
+            opt_level=compiler_options.opt_level,
+            generate_line_info=compiler_options.debug_info == "line",
+            ptx_compiler_options=ptx_compiler_options,
+            emit_timings=need_timings,
+        )
+    if compiled.timings_ns is not None:
+        timer.add_phases("mlir2cubin", compiled.timings_ns)
 
     if compiled.stderr and ptx_compiler_options:
         _dump("PTX compiler", compiled.stderr.decode())
@@ -332,10 +403,16 @@ def compile_simt(
     if log_flags.log_ptx:
         _dump("PTX", compiled.ptx)
 
+    timings = timer.finish() if need_timings else None
+    if log_flags.log_timings:
+        assert timings is not None
+        _dump("Timings", timings.format_summary())
+
     return CompilationResult(
         kernel_signatures=[signature],
         dyn_smem_size_program=dyn_smem_size_program,
         hoisted_tensor_maps=hoisted_tensor_maps,
+        timings=timings if keep_timings else None,
         hir=func_hir if keep_hir else None,
         final_ir=flattened_ir if keep_final_ir else None,
         mlir=mlir_text if keep_mlir else None,

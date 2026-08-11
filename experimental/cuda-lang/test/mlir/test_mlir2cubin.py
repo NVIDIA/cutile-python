@@ -2,9 +2,11 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-import torch
-import pytest
+from pathlib import Path
 from types import SimpleNamespace
+
+import pytest
+import torch
 
 import cuda.lang._mlir as mlir
 import cuda.lang._compile as compile_module
@@ -33,6 +35,12 @@ def test_mlir2cubin_debug_options(monkeypatch):
     def run(argv, **kwargs):
         nonlocal compiler_argv
         compiler_argv = argv
+        timing_arg = next(arg for arg in argv if arg.startswith("--timing-output="))
+        timing_filename = timing_arg.removeprefix("--timing-output=")
+        Path(timing_filename).write_text(
+            "parse_mlir=12\nnested.phase=34\ntotal=56\n",
+            encoding="utf-8",
+        )
         return SimpleNamespace(stdout=b"cubin", stderr=b"")
 
     monkeypatch.setattr(compile_module.subprocess, "run", run)
@@ -43,12 +51,32 @@ def test_mlir2cubin_debug_options(monkeypatch):
         arch="compute_80",
         opt_level=1,
         generate_line_info=True,
+        emit_timings=True,
     )
 
     assert result.cubin == b"cubin"
     assert compiler_argv is not None
     assert "--opt=1" in compiler_argv
     assert "--generate-device-line-info" in compiler_argv
+    assert any(arg.startswith("--timing-output=") for arg in compiler_argv)
+    assert result.timings_ns == {"parse_mlir": 12, "nested.phase": 34}
+
+
+def test_mlir2cubin_does_not_emit_timings_by_default(monkeypatch):
+    compiler_argv = None
+
+    def run(argv, **kwargs):
+        nonlocal compiler_argv
+        compiler_argv = argv
+        return SimpleNamespace(stdout=b"cubin", stderr=b"")
+
+    monkeypatch.setattr(compile_module.subprocess, "run", run)
+
+    result = mlir2cubin("module", gpu_name="sm_80", arch="compute_80")
+
+    assert compiler_argv is not None
+    assert not any(arg.startswith("--timing-output=") for arg in compiler_argv)
+    assert result.timings_ns is None
 
 
 def construct_1d_memref_from(
