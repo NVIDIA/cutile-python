@@ -73,7 +73,7 @@ def dtype_to_mlir_type(dtype: datatype.DType) -> mlir.Type:
             return mlir.IntegerType(
                 width=64, signedness=mlir.SignednessSemantics.SIGNLESS
             )
-        case datatype.clusterlaunchcontrol_token:
+        case datatype.cluster_launch_control_token:
             return mlir.IntegerType(
                 width=128, signedness=mlir.SignednessSemantics.SIGNLESS
             )

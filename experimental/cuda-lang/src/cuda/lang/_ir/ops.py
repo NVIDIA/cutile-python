@@ -111,7 +111,7 @@ from .type_checking_helpers import (
     require_boolean_scalar_type,
     require_pointer_type,
     require_signed_int_scalar_or_tuple,
-    require_clusterlaunchcontrol_token_type,
+    require_cluster_launch_control_token_type,
     is_none,
     require_tensor_map_ty,
     validate_tensor_map_load_mode,
@@ -142,8 +142,11 @@ from .ir import (
     format_var,
     LocalArrayContextManagerValue,
 )
-from .._stub.cluster_launch_control import clusterlaunchcontrol_try_cancel, \
-    clusterlaunchcontrol_is_canceled, clusterlaunchcontrol_get_first_block_index
+from .._stub.cluster_launch_control import (
+    cluster_launch_control_try_cancel,
+    cluster_launch_control_is_canceled,
+    cluster_launch_control_get_first_block_index,
+)
 from .._enums import SwizzleMode, TensorMapL2Promotion, TMALoadMode
 from .._stub import (
     foreign_function,
@@ -790,15 +793,15 @@ def tensor_map_as_opaque_ptr_impl(self: Var):
     return add_operation(TensorMapAsOpaquePtr, result_ty, tensor_map=self)
 
 
-@impl(clusterlaunchcontrol_try_cancel)
-def clusterlaunchcontrol_try_cancel_impl(addr: Var, mbar: Var, multicast: Var) -> None:
+@impl(cluster_launch_control_try_cancel)
+def cluster_launch_control_try_cancel_impl(addr: Var, mbar: Var, multicast: Var) -> None:
     addr_info = PointerInfo(require_pointer_type(addr).pointer_dtype)
     mbar_info = PointerInfo(require_pointer_type(mbar).pointer_dtype)
     multicast = require_constant_bool(multicast)
 
     if (
         addr_info.opaque
-        or addr_info.pointee_dtype is not datatype.clusterlaunchcontrol_token
+        or addr_info.pointee_dtype is not datatype.cluster_launch_control_token
         or addr_info.memory_space is not MemorySpace.SHARED
     ):
         raise TypeCheckingError(
@@ -828,9 +831,9 @@ def clusterlaunchcontrol_try_cancel_impl(addr: Var, mbar: Var, multicast: Var) -
     )
 
 
-@impl(clusterlaunchcontrol_is_canceled)
-def clusterlaunchcontrol_is_canceled_impl(token: Var) -> Var:
-    require_clusterlaunchcontrol_token_type(token)
+@impl(cluster_launch_control_is_canceled)
+def cluster_launch_control_is_canceled_impl(token: Var) -> Var:
+    require_cluster_launch_control_token_type(token)
     return add_operation(
         RawNVVMIntrinsic,
         ScalarTy(datatype.bool_),
@@ -839,9 +842,9 @@ def clusterlaunchcontrol_is_canceled_impl(token: Var) -> Var:
     )
 
 
-@impl(clusterlaunchcontrol_get_first_block_index)
-def clusterlaunchcontrol_get_first_block_index_impl(token: Var, axis: Var) -> Var:
-    require_clusterlaunchcontrol_token_type(token)
+@impl(cluster_launch_control_get_first_block_index)
+def cluster_launch_control_get_first_block_index_impl(token: Var, axis: Var) -> Var:
+    require_cluster_launch_control_token_type(token)
     if not axis.is_constant():
         raise TypeCheckingError(
             f"Expected axis to be constant int or None, but got {axis=}"

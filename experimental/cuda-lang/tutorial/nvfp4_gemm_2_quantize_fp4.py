@@ -77,7 +77,7 @@ TMEM_BARRIER_THREADS = (EPILOGUE_WARPS + 1) * WARP_SIZE
 ACC_EMPTY_THREADS = EPILOGUE_WARPS * WARP_SIZE * CLUSTER_M
 SCHEDULER_CONSUMER_WARPS = 3 + EPILOGUE_WARPS
 SCHEDULER_CONSUMERS = SCHEDULER_CONSUMER_WARPS * WARP_SIZE * CLUSTER_M
-CLC_BYTES = cl.clusterlaunchcontrol_token.bitwidth // 8
+CLC_BYTES = cl.cluster_launch_control_token.bitwidth // 8
 
 _DEFAULT_MNKL = (512, 512, 256, 1)
 _DEFAULT_TOLERANCE = 1.0e-1
@@ -93,10 +93,10 @@ def _initial_work_tile():
 
 
 def _work_tile_from_clc_token(token):
-    has_work = cl.clusterlaunchcontrol_is_canceled(token)
-    tile_m = cl.clusterlaunchcontrol_get_first_block_index(token, axis=0) // CLUSTER_M
-    tile_n = cl.clusterlaunchcontrol_get_first_block_index(token, axis=1)
-    tile_l = cl.clusterlaunchcontrol_get_first_block_index(token, axis=2)
+    has_work = cl.cluster_launch_control_is_canceled(token)
+    tile_m = cl.cluster_launch_control_get_first_block_index(token, axis=0) // CLUSTER_M
+    tile_n = cl.cluster_launch_control_get_first_block_index(token, axis=1)
+    tile_l = cl.cluster_launch_control_get_first_block_index(token, axis=2)
     return tile_m, tile_n, tile_l, has_work
 
 
@@ -253,7 +253,7 @@ def _kernel(
     )
     clc_tokens = cl.shared_array(
         SCHEDULER_PIPELINE_STAGES,
-        cl.clusterlaunchcontrol_token,
+        cl.cluster_launch_control_token,
         alignment=16,
     )
     tmem_storage = cl.shared_array(
@@ -347,7 +347,7 @@ def _kernel(
             clc_barrier = clc_barriers.get_element_pointer(slot)
             clc_token = clc_tokens.get_element_pointer(slot)
             if is_leader and cl.elect_sync():
-                cl.clusterlaunchcontrol_try_cancel(
+                cl.cluster_launch_control_try_cancel(
                     clc_token, clc_barrier, multicast=True
                 )
             if cl.elect_sync():

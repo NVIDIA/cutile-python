@@ -584,7 +584,7 @@ def test_tma_tcgen05():
     torch.testing.assert_close(c, a @ b, atol=1e-1, rtol=1e-2)
 
 
-CLC_BYTES = cl.clusterlaunchcontrol_token.bitwidth // 8
+CLC_BYTES = cl.cluster_launch_control_token.bitwidth // 8
 
 
 def fence_clc_acquire():
@@ -745,7 +745,7 @@ def matmul_multicta_kernel(
     scheduler_ready = cl.shared_array(acc_stages, cl.mbarrier, alignment=8)
     scheduler_consumed = cl.shared_array(acc_stages, cl.mbarrier, alignment=8)
     clc_token = cl.shared_array(
-        1, cl.clusterlaunchcontrol_token, alignment=16
+        1, cl.cluster_launch_control_token, alignment=16
     ).get_base_pointer()
     next_tile = cl.shared_array(acc_stages, cl.int32)
     next_has_work = cl.shared_array(acc_stages, cl.int32)
@@ -792,7 +792,7 @@ def matmul_multicta_kernel(
                 )
             if rank == 0 and cl.elect_sync():
                 fence_clc_acquire()
-                cl.clusterlaunchcontrol_try_cancel(clc_token, clc_bar, multicast=True)
+                cl.cluster_launch_control_try_cancel(clc_token, clc_bar, multicast=True)
             if cl.elect_sync():
                 cl.mbarrier_arrive_expect_transaction(
                     clc_bar,
@@ -802,11 +802,11 @@ def matmul_multicta_kernel(
                 )
             cl.mbarrier_wait_parity(clc_bar, clc_phase, scope=cl.MbarrierScope.CLUSTER)
             token = clc_token.load()
-            scheduler_has_work = cl.clusterlaunchcontrol_is_canceled(token)
+            scheduler_has_work = cl.cluster_launch_control_is_canceled(token)
             if cl.elect_sync():
                 next_has_work[slot] = cl.int32(scheduler_has_work)
                 if scheduler_has_work:
-                    block = cl.clusterlaunchcontrol_get_first_block_index(token, axis=0)
+                    block = cl.cluster_launch_control_get_first_block_index(token, axis=0)
                     stolen_tile = block // 2
                     next_tile[slot] = stolen_tile
                     fence_clc_release()

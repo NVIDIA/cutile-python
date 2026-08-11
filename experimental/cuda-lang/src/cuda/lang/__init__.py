@@ -249,9 +249,9 @@ from cuda.lang._stub.barrier import (
 )
 
 from cuda.lang._stub.cluster_launch_control import (
-    clusterlaunchcontrol_try_cancel,
-    clusterlaunchcontrol_is_canceled,
-    clusterlaunchcontrol_get_first_block_index,
+    cluster_launch_control_try_cancel,
+    cluster_launch_control_is_canceled,
+    cluster_launch_control_get_first_block_index,
 )
 
 from ._datatype import (
@@ -273,7 +273,7 @@ from ._datatype import (
     uint32,
     uint64,
     mbarrier,
-    clusterlaunchcontrol_token,
+    cluster_launch_control_token,
 )
 
 from . import _debug
@@ -424,10 +424,10 @@ __all__ = (
     "barrier_arrive_cluster",
     "barrier_wait_cluster",
     "barrier_sync_cluster",
-    "clusterlaunchcontrol_token",
-    "clusterlaunchcontrol_try_cancel",
-    "clusterlaunchcontrol_is_canceled",
-    "clusterlaunchcontrol_get_first_block_index",
+    "cluster_launch_control_token",
+    "cluster_launch_control_try_cancel",
+    "cluster_launch_control_is_canceled",
+    "cluster_launch_control_get_first_block_index",
     "memory_barrier",
     "grid_dependency_control_wait",
     "grid_dependency_control_launch_dependents",

@@ -525,7 +525,7 @@ def _fp8_b200_gemm_persistent_kernel(
     ).get_base_pointer()
     clc_token = cl.shared_array(
         1,
-        cl.clusterlaunchcontrol_token,
+        cl.cluster_launch_control_token,
         alignment=16,
     ).get_base_pointer()
     next_tile = cl.shared_array(1, cl.int32)
@@ -579,7 +579,7 @@ def _fp8_b200_gemm_persistent_kernel(
                 cl.mbarrier_wait_parity(schedule_consumed, phase ^ 1)
             if rank == 0 and cl.elect_sync():
                 fence_clc_acquire()
-                cl.clusterlaunchcontrol_try_cancel(
+                cl.cluster_launch_control_try_cancel(
                     clc_token,
                     clc_bar,
                     multicast=True,
@@ -593,11 +593,11 @@ def _fp8_b200_gemm_persistent_kernel(
                 )
             cl.mbarrier_wait_parity(clc_bar, phase, scope=cl.MbarrierScope.CLUSTER)
             token = clc_token.load()
-            scheduling = cl.clusterlaunchcontrol_is_canceled(token)
+            scheduling = cl.cluster_launch_control_is_canceled(token)
             if cl.elect_sync():
                 next_has_work[0] = cl.int32(scheduling)
                 if scheduling:
-                    block = cl.clusterlaunchcontrol_get_first_block_index(
+                    block = cl.cluster_launch_control_get_first_block_index(
                         token,
                         axis=0,
                     )

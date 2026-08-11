@@ -78,7 +78,7 @@ KV_STAGE_ELEMENTS = MMA_N * HEAD_DIM
 O_STAGE_ELEMENTS = MMA_M * HEAD_DIM
 TMA_TILE_BYTES = MMA_M * HEAD_DIM * 2
 TMA_KV_L2_CACHE_HINT = 0x1000000000000000
-CLC_BYTES = cl.clusterlaunchcontrol_token.bitwidth // 8
+CLC_BYTES = cl.cluster_launch_control_token.bitwidth // 8
 
 TMEM_ALLOC_BARRIER = 2
 TMEM_ALLOC_THREADS = (len(CORRECTION_WARPS) + 1) * WARP_SIZE
@@ -271,14 +271,14 @@ def _query_next_work_tile(
             CLC_BYTES,
             scope=cl.MbarrierScope.BLOCK,
         )
-        cl.clusterlaunchcontrol_try_cancel(clc_token.get_base_pointer(), clc_full)
+        cl.cluster_launch_control_try_cancel(clc_token.get_base_pointer(), clc_full)
     _wait_mbarrier(clc_full, clc_full_phase)
 
     token = clc_token[0]
-    has_more = cl.clusterlaunchcontrol_is_canceled(token)
+    has_more = cl.cluster_launch_control_is_canceled(token)
     next_linear = cl.int32(0)
     if has_more:
-        next_linear = cl.clusterlaunchcontrol_get_first_block_index(token, axis=0)
+        next_linear = cl.cluster_launch_control_get_first_block_index(token, axis=0)
     cl.fence_proxy_bidirectional(
         cl.FenceProxy.ASYNC,
         restriction=cl.FenceRestriction.shared_block(),
@@ -785,7 +785,7 @@ def _fmha_prefill_kernel(
 
     clc_bar = cl.shared_array(1, cl.mbarrier, alignment=8)
     clc_empty = cl.shared_array(1, cl.mbarrier, alignment=8)
-    clc_token = cl.shared_array(1, cl.clusterlaunchcontrol_token, alignment=16)
+    clc_token = cl.shared_array(1, cl.cluster_launch_control_token, alignment=16)
     sched_full = cl.shared_array(1, cl.mbarrier, alignment=8)
     sched_empty = cl.shared_array(1, cl.mbarrier, alignment=8)
     sched_tile = cl.shared_array(3, cl.int32, alignment=16)

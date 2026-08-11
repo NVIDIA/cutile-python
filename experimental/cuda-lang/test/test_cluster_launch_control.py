@@ -13,27 +13,27 @@ cc = get_compute_capability()
 if cc < (10, 0):
     pytest.skip(allow_module_level=True)
 
-clc_bytes = cl.clusterlaunchcontrol_token.bitwidth // 8
+clc_bytes = cl.cluster_launch_control_token.bitwidth // 8
 
 
 @cl.kernel
 def bad_clc_memspace_1():
     smem = cl.shared_array(1, cl.mbarrier).get_base_pointer()
-    with cl.local_array(1, cl.clusterlaunchcontrol_token) as larr:
-        cl.clusterlaunchcontrol_try_cancel(larr.get_base_pointer(), smem)
+    with cl.local_array(1, cl.cluster_launch_control_token) as larr:
+        cl.cluster_launch_control_try_cancel(larr.get_base_pointer(), smem)
 
 
 @cl.kernel
 def bad_clc_memspace_2():
-    smem = cl.shared_array(1, cl.clusterlaunchcontrol_token).get_base_pointer()
+    smem = cl.shared_array(1, cl.cluster_launch_control_token).get_base_pointer()
     with cl.local_array(1, cl.mbarrier) as larr:
-        cl.clusterlaunchcontrol_try_cancel(smem, larr.get_base_pointer())
+        cl.cluster_launch_control_try_cancel(smem, larr.get_base_pointer())
 
 
 @cl.kernel
 def bad_clc_type():
     smem = cl.shared_array(2, cl.int64).get_base_pointer()
-    cl.clusterlaunchcontrol_is_canceled(smem)
+    cl.cluster_launch_control_is_canceled(smem)
 
 
 @pytest.mark.parametrize(
@@ -51,7 +51,7 @@ def bad_clc_type():
         ),
         pytest.param(
             bad_clc_type,
-            "Expected a clusterlaunchcontrol_token",
+            "Expected a cluster_launch_control_token",
             id="bad clc token type",
         ),
     ),
@@ -67,7 +67,7 @@ def compute():
 
 @cl.kernel
 def worksteal(data, n: cl.Constant[int], stolen):
-    clc_resp = cl.shared_array(1, cl.clusterlaunchcontrol_token, alignment=16).get_base_pointer()
+    clc_resp = cl.shared_array(1, cl.cluster_launch_control_token, alignment=16).get_base_pointer()
     mbar = cl.shared_array(1, cl.mbarrier, alignment=8).get_base_pointer()
 
     tx = cl.thread_index(0)
@@ -90,7 +90,7 @@ def worksteal(data, n: cl.Constant[int], stolen):
                 to_proxy=cl.FenceProxy.ASYNC,
                 restriction=cl.FenceRestriction.shared_cluster(),
             )
-            cl.clusterlaunchcontrol_try_cancel(clc_resp, mbar)
+            cl.cluster_launch_control_try_cancel(clc_resp, mbar)
             cl.mbarrier_arrive_expect_transaction(
                 mbar,
                 clc_bytes,
@@ -105,12 +105,12 @@ def worksteal(data, n: cl.Constant[int], stolen):
         phase ^= 1
 
         tok = clc_resp.load()
-        if not cl.clusterlaunchcontrol_is_canceled(tok):
+        if not cl.cluster_launch_control_is_canceled(tok):
             break
 
         if tx == 0:
             cl.atomic_add(stolen.get_element_pointer(0), 1)
-        bx = cl.clusterlaunchcontrol_get_first_block_index(tok, axis=0)
+        bx = cl.cluster_launch_control_get_first_block_index(tok, axis=0)
         cl.fence(
             cl.MemoryOrder.RELEASE,
             cl.MemoryScope.CLUSTER,
@@ -122,7 +122,7 @@ def worksteal(data, n: cl.Constant[int], stolen):
 
 @cl.kernel
 def worksteal_cluster(data, n: cl.Constant[int], stolen):
-    clc_resp = cl.shared_array(1, cl.clusterlaunchcontrol_token, alignment=16).get_base_pointer()
+    clc_resp = cl.shared_array(1, cl.cluster_launch_control_token, alignment=16).get_base_pointer()
     mbar = cl.shared_array(1, cl.mbarrier, alignment=8).get_base_pointer()
 
     tx = cl.thread_index(0)
@@ -153,7 +153,7 @@ def worksteal_cluster(data, n: cl.Constant[int], stolen):
                 to_proxy=cl.FenceProxy.ASYNC,
                 restriction=cl.FenceRestriction.shared_cluster(),
             )
-            cl.clusterlaunchcontrol_try_cancel(clc_resp, mbar, multicast=True)
+            cl.cluster_launch_control_try_cancel(clc_resp, mbar, multicast=True)
 
         if tx == 0:
             cl.mbarrier_arrive_expect_transaction(
@@ -171,13 +171,13 @@ def worksteal_cluster(data, n: cl.Constant[int], stolen):
         phase ^= 1
 
         token = clc_resp.load()
-        if not cl.clusterlaunchcontrol_is_canceled(token):
+        if not cl.cluster_launch_control_is_canceled(token):
             break  # no more work to steal
 
         if local_block == 0 and tx == 0:
             cl.atomic_add(stolen.get_element_pointer(0), 1)
 
-        bx = cl.clusterlaunchcontrol_get_first_block_index(token, axis=0) + local_block
+        bx = cl.cluster_launch_control_get_first_block_index(token, axis=0) + local_block
         cl.fence(
             cl.MemoryOrder.RELEASE,
             cl.MemoryScope.CLUSTER,

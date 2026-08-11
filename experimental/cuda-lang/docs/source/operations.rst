@@ -339,9 +339,9 @@ Cluster Launch Control
    :toctree: generated
    :nosignatures:
 
-    clusterlaunchcontrol_try_cancel
-    clusterlaunchcontrol_is_canceled
-    clusterlaunchcontrol_get_first_block_index
+    cluster_launch_control_try_cancel
+    cluster_launch_control_is_canceled
+    cluster_launch_control_get_first_block_index
 
 Programmatic Dependent Launch
 -----------------------------

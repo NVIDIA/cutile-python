@@ -24,7 +24,7 @@ from cuda.tile._ir.ops_utils import promote_types
 from cuda.tile._ir.type import PointerInfo, TupleTy, TupleValue
 from cuda.tile._datatype import is_integral, is_signed
 from cuda.lang._datatype import (
-    clusterlaunchcontrol_token,
+    cluster_launch_control_token,
     is_boolean,
     is_float,
     mbarrier,
@@ -127,10 +127,10 @@ def require_boolean_scalar_type(var: Var):
         raise make_type_checking_error(f"Expected boolean scalar but got {ty}", var)
 
 
-def require_clusterlaunchcontrol_token_type(var: Var) -> ScalarTy:
+def require_cluster_launch_control_token_type(var: Var) -> ScalarTy:
     ty = var.get_type()
-    if ty != ScalarTy(clusterlaunchcontrol_token):
-        raise make_type_checking_error(f"Expected a clusterlaunchcontrol_token,"
+    if ty != ScalarTy(cluster_launch_control_token):
+        raise make_type_checking_error(f"Expected a cluster_launch_control_token,"
                                        f" but given value has type {ty}")
     return ty
 

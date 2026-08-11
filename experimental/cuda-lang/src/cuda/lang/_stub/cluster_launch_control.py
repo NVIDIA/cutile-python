@@ -5,7 +5,7 @@
 from .core_api import Pointer
 from cuda.lang._datatype import (
     bool_,
-    clusterlaunchcontrol_token,
+    cluster_launch_control_token,
     mbarrier,
     int32,
 )
@@ -14,8 +14,8 @@ from cuda.lang._execution import stub
 
 
 @stub
-def clusterlaunchcontrol_try_cancel(
-    addr: "Pointer[clusterlaunchcontrol_token, MemorySpace.SHARED]",
+def cluster_launch_control_try_cancel(
+    addr: "Pointer[cluster_launch_control_token, MemorySpace.SHARED]",
     mbar: "Pointer[mbarrier, MemorySpace.SHARED]",
     multicast: bool = False,
 ) -> None:
@@ -32,7 +32,7 @@ def clusterlaunchcontrol_try_cancel(
 
 
 @stub
-def clusterlaunchcontrol_is_canceled(token: clusterlaunchcontrol_token) -> "bool_":
+def cluster_launch_control_is_canceled(token: cluster_launch_control_token) -> "bool_":
     """Return whether ``token`` represents a canceled block.
 
     Args:
@@ -45,13 +45,13 @@ def clusterlaunchcontrol_is_canceled(token: clusterlaunchcontrol_token) -> "bool
 
 
 @stub
-def clusterlaunchcontrol_get_first_block_index(
-    token: clusterlaunchcontrol_token, axis: int | None = None
+def cluster_launch_control_get_first_block_index(
+    token: cluster_launch_control_token, axis: int | None = None
 ) -> "int32 | tuple[int32, int32, int32]":
     """Return the first block index encoded in ``token``.
 
     Args:
-        token: Response token for which :func:`clusterlaunchcontrol_is_canceled`
+        token: Response token for which :func:`cluster_launch_control_is_canceled`
             returned True.
         axis: Values 0, 1, or 2 select axis x, y, or z. None returns the tuple
             of all three.
