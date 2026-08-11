@@ -33,6 +33,22 @@ def test_ir2mlir():
     filecheck(result.mlir, get_source())
 
 
+def test_ir2mlir_preserves_static_shared_memory_order():
+    # CHECK: "llvm.mlir.global"()
+    # CHECK-SAME: global_type = !llvm.array<1 x i8>
+    # CHECK: "llvm.mlir.global"()
+    # CHECK-SAME: global_type = !llvm.array<1 x i16>
+    # CHECK: "llvm.mlir.global"()
+    # CHECK-SAME: global_type = !llvm.array<1 x i32>
+    def kernel():
+        cl.shared_array(1, cl.int8)
+        cl.shared_array(1, cl.int16)
+        cl.shared_array(1, cl.int32)
+
+    result = compile_simt(kernel, [KernelSignature(())], keep_mlir=True)
+    filecheck(result.mlir, get_source())
+
+
 def test_ir2mlir_branch():
     @cl.kernel
     def kernel(cond, res):

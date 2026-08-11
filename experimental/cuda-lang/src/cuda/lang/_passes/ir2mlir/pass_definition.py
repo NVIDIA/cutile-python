@@ -1410,7 +1410,7 @@ def lower_alloc_static_shared_memory(
         numElements=operation.count,
     )
     sym = f"static_shared_memory_{operation.result_var.name}"
-    with context.gpu_module.regions[0].blocks[0].prepend_here():
+    with context.gpu_module.regions[0].blocks[0].append_here():
         mlir.llvm.add_GlobalOp(
             global_type=global_type,
             sym_name=sym,
