@@ -478,16 +478,14 @@ def _mangle_string(s: str) -> str:
             chunks.append(s[start:match_start])
         start = match_end
         match m.group(0):
+            case "": break
             case "_": chunks.append("__")
             case "K": chunks.append("_k")
-            case ".": chunks.append("_d")  # for "dot"
-            case "<": chunks.append("_l")  # for "less", for supporting "<locals>" in __qualname__
-            case ">": chunks.append("_g")  # for "greater"
-            case "": break
+            case c if ord(c) <= 0xff: chunks.append(f"_{ord(c):02x}")
             case c if ord(c) <= 0xff_ff: chunks.append(f"_u{ord(c):04x}")
-            case c: chunks.append(f"_U{ord(c):08x}")
+            case c: chunks.append(f"_w{ord(c):08x}")
     assert start == len(s)
-    chunks.append("_e")  # for "end"
+    chunks.append("_z")  # end marker
     return "".join(chunks)
 
 
@@ -500,20 +498,19 @@ def _demangle_string(cursor: _Cursor) -> str:
             chunks.append(alphanumeric_chunk)
 
         cursor.expect("_", "Expected an underscore")
-        match cursor.expect("[_kdlgeuU]", "Expected a valid character escape"):
+        match cursor.expect("[_0-9a-fkzuw]", "Expected a valid character escape"):
             case "_": chunks.append("_")
             case "k": chunks.append("K")
-            case "d": chunks.append(".")
-            case "l": chunks.append("<")
-            case "g": chunks.append(">")
-            case "e": break
+            case "z": break
             case "u":
                 digits = cursor.expect("[0-9a-f]{4}", "Expected 4 hex digits after '_u' escape")
                 chunks.append(chr(int(digits, base=16)))
-            case "U":
+            case "w":
                 digits = cursor.expect("[0-9a-f]{8}", "Expected 8 hex digits after '_u' escape")
                 chunks.append(chr(int(digits, base=16)))
-            case _: assert False
+            case c:
+                digits = c + cursor.expect("[0-9a-f]", "Expected 2 hex digits after '_' escape")
+                chunks.append(chr(int(digits, base=16)))
     return "".join(chunks)
 
 

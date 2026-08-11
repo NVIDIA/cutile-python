@@ -291,15 +291,15 @@ def test_demangle_static_shape_with_v1_raises():
 
 
 @pytest.mark.parametrize("s, expected", [
-    ("", "_e"),
-    ("0123foobarBAZQUX456", "0123foobarBAZQUX456_e"),
-    ("a_b", "a__b_e"),
-    ("_.<>", "___d_l_g_e"),
-    ("буквы 🤔", "_u0431_u0443_u043a_u0432_u044b_u0020_U0001f914_e"),
-    ("A_BC.DEF<G>HIJ", "A__BC_dDEF_lG_gHIJ_e"),
-    ("K", "_k_e"),  # make sure to escape "K" because "_K" is used to separate the mangled name
-    ("Kk", "_kk_e"),
-    ("kK", "k_k_e"),
+    ("", "_z"),
+    ("0123foobarBAZQUX456", "0123foobarBAZQUX456_z"),
+    ("a_b", "a__b_z"),
+    ("_.<>", "___2e_3c_3e_z"),
+    ("буквы 🤔", "_u0431_u0443_u043a_u0432_u044b_20_w0001f914_z"),
+    ("A_BC.DEF<G>HIJK", "A__BC_2eDEF_3cG_3eHIJ_k_z"),
+    ("K", "_k_z"),  # make sure to escape "K" because "_K" is used to separate the mangled name
+    ("Kk", "_kk_z"),
+    ("kK", "k_k_z"),
 ])
 def test_mangle_string(s, expected):
     mangled = _mangle_string(s)
@@ -341,7 +341,7 @@ def _make_local_dclass():
 
 _LOCAL_DCLASS = _make_local_dclass()
 
-_MOD = "test__name__mangling_e"
+_MOD = "test__name__mangling_z"
 
 
 @pytest.mark.parametrize("parameters, expected_suffix", [
@@ -349,7 +349,7 @@ _MOD = "test__name__mangling_e"
     pytest.param(
         [DataclassConstraint(DClassTwoFields, [ScalarConstraint(int32),
                                                ScalarConstraint(float32)])],
-        f"_D{_MOD}DClassTwoFields_e2Si32Sf32",
+        f"_D{_MOD}DClassTwoFields_z2Si32Sf32",
         id="dataclass_simple",
     ),
 
@@ -357,7 +357,7 @@ _MOD = "test__name__mangling_e"
     pytest.param(
         [DataclassConstraint(First.Third,
                              [DataclassConstraint(First.Second, [ScalarConstraint(int32)])])],
-        f"_D{_MOD}First_dThird_e1D{_MOD}First_dSecond_e1Si32",
+        f"_D{_MOD}First_2eThird_z1D{_MOD}First_2eSecond_z1Si32",
         id="dataclass_qualname_dotted",
     ),
 
@@ -365,14 +365,14 @@ _MOD = "test__name__mangling_e"
     # "_"->"__", "."->"_d", "<"->"_l", ">"->"_g", "K"->"_k".
     pytest.param(
         [DataclassConstraint(_LOCAL_DCLASS, [ScalarConstraint(int32)])],
-        f"_D{_MOD}__make__local__dclass_d_llocals_g_dLocal___k__Class_e1Si32",
+        f"_D{_MOD}__make__local__dclass_2e_3clocals_3e_2eLocal___k__Class_z1Si32",
         id="dataclass_qualname_all_escapes",
     ),
 
     # Array and scalar fields.
     pytest.param(
         [DataclassConstraint(DClassTwoFields, [_SIMPLE_2D, ScalarConstraint(int32)])],
-        f"_D{_MOD}DClassTwoFields_e2A2f32_3l0Si32",
+        f"_D{_MOD}DClassTwoFields_z2A2f32_3l0Si32",
         id="dataclass_array_and_scalar_fields",
     ),
 
@@ -382,7 +382,7 @@ _MOD = "test__name__mangling_e"
                              [ListConstraint(_SIMPLE_2D, alias_groups=(),
                                              elements_may_alias=False),
                               42])],
-        f"_D{_MOD}DClassTwoFields_e2LA2f32_3l0I42",
+        f"_D{_MOD}DClassTwoFields_z2LA2f32_3l0I42",
         id="dataclass_list_and_constant_fields",
     ),
 
@@ -391,7 +391,7 @@ _MOD = "test__name__mangling_e"
         [DataclassConstraint(DClassOneField,
                              [TupleConstraint([ScalarConstraint(int32),
                                                ScalarConstraint(float32)])])],
-        f"_D{_MOD}DClassOneField_e1T2Si32Sf32",
+        f"_D{_MOD}DClassOneField_z1T2Si32Sf32",
         id="dataclass_containing_tuple",
     ),
 
@@ -399,7 +399,7 @@ _MOD = "test__name__mangling_e"
     pytest.param(
         [DataclassConstraint(DClassOneField,
                              [DataclassConstraint(DClassOneField, [ScalarConstraint(int32)])])],
-        f"_D{_MOD}DClassOneField_e1D{_MOD}DClassOneField_e1Si32",
+        f"_D{_MOD}DClassOneField_z1D{_MOD}DClassOneField_z1Si32",
         id="dataclass_nested",
     ),
 
@@ -408,7 +408,7 @@ _MOD = "test__name__mangling_e"
         [TupleConstraint([DataclassConstraint(DClassOneField, [ScalarConstraint(int32)]),
                           DataclassConstraint(DClassTwoFields, [ScalarConstraint(int32),
                                                                 ScalarConstraint(float32)])])],
-        f"_T2D{_MOD}DClassOneField_e1Si32D{_MOD}DClassTwoFields_e2Si32Sf32",
+        f"_T2D{_MOD}DClassOneField_z1Si32D{_MOD}DClassTwoFields_z2Si32Sf32",
         id="tuple_of_two_dataclasses",
     ),
 
@@ -417,7 +417,7 @@ _MOD = "test__name__mangling_e"
         [DataclassConstraint(DClassOneField, [ScalarConstraint(int32)]),
          DataclassConstraint(DClassTwoFields, [ScalarConstraint(int32),
                                                ScalarConstraint(float32)])],
-        f"_D{_MOD}DClassOneField_e1Si32_D{_MOD}DClassTwoFields_e2Si32Sf32",
+        f"_D{_MOD}DClassOneField_z1Si32_D{_MOD}DClassTwoFields_z2Si32Sf32",
         id="two_top_level_dataclasses",
     ),
 
@@ -426,7 +426,7 @@ _MOD = "test__name__mangling_e"
         [_SIMPLE_2D,
          DataclassConstraint(DClassOneField, [ScalarConstraint(int32)]),
          ScalarConstraint(float32)],
-        f"_A2f32_3l0_D{_MOD}DClassOneField_e1Si32_Sf32",
+        f"_A2f32_3l0_D{_MOD}DClassOneField_z1Si32_Sf32",
         id="dataclass_among_other_params",
     ),
 ] if cconv_v3_enabled() else [])
@@ -448,13 +448,13 @@ def test_name_mangling_cutile_python_v3(parameters, expected_suffix):
 
 @pytest.mark.skipif(not cconv_v3_enabled(), reason="Requires cconv3 enabled")
 def test_demangle_dataclass_with_v2_raises():
-    symbol = f"my_kernel_Kt2_D{_MOD}DClassOneField_e1Si32"
+    symbol = f"my_kernel_Kt2_D{_MOD}DClassOneField_z1Si32"
     with pytest.raises(ValueError, match="version >= 3"):
         _demangle_kernel_name(symbol, None, allowed_dataclasses=[DClassOneField])
 
 
 @pytest.mark.skipif(not cconv_v3_enabled(), reason="Requires cconv3 enabled")
 def test_demangle_dataclass_class_not_allowed_raises():
-    symbol = f"my_kernel_Kt2_D{_MOD}DClassOneField_e1Si32"
+    symbol = f"my_kernel_Kt2_D{_MOD}DClassOneField_z1Si32"
     with pytest.raises(ValueError, match="not found in the 'allowed_dataclasses' list"):
         demangle_kernel_name(symbol)

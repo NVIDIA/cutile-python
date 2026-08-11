@@ -243,7 +243,7 @@ def test_export_compat_cutile_python_v3_dataclass():
                                  output_format="cubin")
     out = torch.zeros((), dtype=torch.float32, device="cuda")
     _call_kernel(io.getvalue(),
-                 "kernel_3_Kt3_Dtest__export__compat_e_kernel3Args_e2Si32Sf32_A0f32",
+                 "kernel_3_Kt3_Dtest__export__compat_z_kernel3Args_z2Si32Sf32_A0f32",
                  (Kernel3Args(3, 7.5), out))
     assert out.item() == 37.5
 
