@@ -914,6 +914,8 @@ __all__ = (
     "AssumeBounded",
     "AssumeDivBy",
     "Branch",
+    "BitCast",
+    "InlinePTX",
     "CondBranch",
     "MakeTensorView",
     "MakeDummy",

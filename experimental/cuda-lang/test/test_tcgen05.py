@@ -636,7 +636,13 @@ def test_load_rejects_unusable_dtype(dtype, element_count, match):
 
 
 ORDINARY_MMA_KINDS = (
-    cl.Tcgen05MMAKind.I8,
+    pytest.param(
+        cl.Tcgen05MMAKind.I8,
+        marks=pytest.mark.skipif(
+            tuple(cc) == (10, 3),
+            reason="tcgen05 MMA kind I8 is not supported on compute capability 10.3",
+        ),
+    ),
     cl.Tcgen05MMAKind.F8F6F4,
     cl.Tcgen05MMAKind.F16,
     cl.Tcgen05MMAKind.TF32,
