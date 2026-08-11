@@ -358,7 +358,7 @@ cuda.to_device(numpy.ones(10))
                             capture_output=True)
     if result.returncode != 0:
         pytest.xfail(f"Numba smoke test failed {result.returncode}. Skip.")
-    import numba
+    import numba.cuda
     return numba.cuda
 
 

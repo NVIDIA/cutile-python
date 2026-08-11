@@ -244,6 +244,10 @@ void log_python_error(const char* filename, int line, const char* level, SavedEx
 #define LOG_PYTHON_ERROR(level, exc, ...) \
         log_python_error(__FILE__, __LINE__, level, exc, __VA_ARGS__)
 
+static inline PyPtr getattr(PyObject* obj, PyObject* attrname) {
+    return steal(PyObject_GetAttr(obj, attrname));
+}
+
 static inline PyPtr getattr(PyObject* obj, const char* attrname) {
     return steal(PyObject_GetAttrString(obj, attrname));
 }

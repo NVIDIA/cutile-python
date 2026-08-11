@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import atexit
 import itertools
-import os
 import secrets
 import subprocess
 import sys
@@ -85,12 +84,9 @@ class _TimedBenchmarkRunner:
         authkey = secrets.token_bytes(32)
         listener = Listener(authkey=authkey)
         try:
-            worker_env = os.environ.copy()
-            worker_env["CUDA_TILE_IPC_BENCHMARK_WORKER"] = "1"
             process = subprocess.Popen(
                 [sys.executable, "-m", "cuda.tile.tune._benchmark_worker",
                  listener.address, authkey.hex()],
-                env=worker_env,
             )
 
             parent_conn = self._accept_worker_connection(listener, process)

@@ -38,12 +38,14 @@ static PyObject* g_block_in_cluster_count_pyunicode;
 static PyObject* g_preferred_block_in_cluster_count_pyunicode;
 static PyObject* g_programmatic_dependent_launch_pyunicode;
 static PyObject* g___dataclass_fields___pyunicode;
+static PyObject* g_torch_pyunicode;
+static PyObject* g_cupy_pyunicode;
+static PyObject* g_cuda_stream_pyunicode;
+static PyObject* g_ptr_pyunicode;
+static PyObject* g_numba_cuda_pyunicode;
+static PyObject* g_cuda_bindings_driver_pyunicode;
 
 static PyObject* g_enum_Enum_type;
-
-static PyTypeObject* g_torch_Tensor_type;
-static PyTypeObject* g_torch_cuda_Stream_type;
-static PyObject* g_torch_to_dlpack_func;
 
 static PyObject* g_default_tile_context;
 
@@ -77,11 +79,85 @@ static PyObject* get_signature_module() {
     return m;
 }
 
+namespace { struct ImportedTypeChecker {
+    PyTypeObject* cached_super_type_;
+    bool is_cached_;
 
-static PyTypeObject* g_cupy_cuda_Stream_type;
+    // Check whether `sub_ty` is a subtype of
+    //     "super_module_name[.super_submodule_name].super_type_name"
+    // without importing the `super_module_name`.
+    bool is_subtype_of(PyTypeObject* sub_ty,
+                       PyObject* super_module_name,
+                       const char* super_submodule_name,  // may be null
+                       const char* super_type_name) {
+        if (!is_cached_) {
+            // Use PyImport_GetModule() rather than PyImport_Import() to avoid importing the module.
+            // If the module is not in sys.modules, then there is no way there can be a subtype
+            // of a type defined in that module.
+            ErrorGuard guard;
+            PyPtr mod = steal(PyImport_GetModule(super_module_name));
+            // Can't flip is_cached_ to true just yet -- the module may get imported later.
+            if (!mod) return false;
 
-static PyTypeObject* g_numba_cuda_Stream_type;
-static PyTypeObject* g_cuda_bindings_CUstream_type;
+            is_cached_ = true;
+
+            if (super_submodule_name) {
+                mod = try_getattr(mod, super_submodule_name);
+                if (!mod) return false;
+            }
+
+            PyPtr item = try_getattr(mod, super_type_name);
+            if (!item || !PyType_Check(item.get()))
+                return false;
+
+            cached_super_type_ = reinterpret_cast<PyTypeObject*>(item.get());
+        }
+        return cached_super_type_ && PyType_IsSubtype(sub_ty, cached_super_type_);
+    }
+}; }
+
+// Must be holding GIL or g_launch_mutex to call this
+static bool is_torch_tensor_subtype(PyTypeObject* ty) {
+    static ImportedTypeChecker checker;
+    return checker.is_subtype_of(ty, g_torch_pyunicode, nullptr, "Tensor");
+}
+
+// Must be holding GIL or g_launch_mutex to call this
+static bool is_torch_cuda_stream_subtype(PyTypeObject* ty) {
+    static ImportedTypeChecker checker;
+    return checker.is_subtype_of(ty, g_torch_pyunicode, "cuda", "Stream");
+}
+
+// Must be holding GIL or g_launch_mutex to call this
+static bool is_cupy_cuda_stream_subtype(PyTypeObject* ty) {
+    static ImportedTypeChecker checker;
+    return checker.is_subtype_of(ty, g_cupy_pyunicode, "cuda", "Stream");
+}
+
+// Must be holding GIL or g_launch_mutex to call this
+static bool is_numba_cuda_driver_stream_subtype(PyTypeObject* ty) {
+    static ImportedTypeChecker checker;
+    return checker.is_subtype_of(ty, g_numba_cuda_pyunicode, "driver", "Stream");
+}
+
+// Must be holding GIL or g_launch_mutex to call this
+static bool is_cuda_bindings_driver_custream_subtype(PyTypeObject* ty) {
+    static ImportedTypeChecker checker;
+    return checker.is_subtype_of(ty, g_cuda_bindings_driver_pyunicode, nullptr, "CUstream");
+}
+
+// Must be holding GIL or g_launch_mutex to call this
+static PyObject* try_get_torch_to_dlpack_func() {
+    static PyObject* func;
+    static bool cached;
+    if (!cached) {
+        cached = true;
+        if (PyPtr torch_C = try_import("torch._C"))
+            func = try_getattr(torch_C, "_to_dlpack").release();
+    }
+    return func;
+}
+
 
 constexpr uint8_t BYTE_BITWIDTH = 8;
 
@@ -875,11 +951,11 @@ static std::optional<PythonArgKind> classify_nonconstant_arg(PyObject* arg) {
     if (PyList_Check(arg))
         return PythonArgKind::PyList;
 
-    if (g_torch_Tensor_type && PyObject_TypeCheck(arg, g_torch_Tensor_type)) {
+    if (is_torch_tensor_subtype(Py_TYPE(arg))) {
         // Calling torch._C._to_dlpack(arg) is much faster than calling arg.__dlpack__()
         // because it goes straight into C++ code, with no Python in between.
         // So we always prefer that.
-        if (g_torch_to_dlpack_func)
+        if (try_get_torch_to_dlpack_func())
             return PythonArgKind::TorchTensorDlpack;
     }
 
@@ -1822,8 +1898,10 @@ static Result<ArrayRepr> arrayrepr_torch_tensor_pymethod(PyObject* tensor, unsig
 
 static Result<ArrayRepr> arrayrepr_torch_tensor_dlpack(PyObject* pyobj, unsigned index_bitwidth,
                                                        Arena& arena) {
+    // Safe to assume try_get_torch_to_dlpack_func() is not null because we wouldn't have produced
+    // a PythonArgKind::TorchTensorDlpack value otherwise.
     PyPtr dlpack_capsule = steal(PyObject_CallFunctionObjArgs(
-                g_torch_to_dlpack_func, pyobj, nullptr));
+                try_get_torch_to_dlpack_func(), pyobj, nullptr));
 
     if (!dlpack_capsule) {
         SavedException exc = save_raised_exception();
@@ -2908,60 +2986,104 @@ static Result<TileKernel> compile(const DriverApi* driver,
                       std::move(hoisted_tensor_maps)};
 }
 
-static Result<CUstream> parse_stream(PyObject* py_stream) {
-    PyPtr py_raw_stream;
-    if (g_torch_cuda_Stream_type && PyObject_TypeCheck(py_stream, g_torch_cuda_Stream_type)) {
-        py_raw_stream = getattr(py_stream, "cuda_stream");
-        if (!py_raw_stream) return ErrorRaised;
+enum class StreamKind {
+    Error = 0,
+    Torch,
+    Cupy,
+    NumbaCuda,
+    RawInt,
+};
 
-    } else if (g_cupy_cuda_Stream_type && PyObject_TypeCheck(py_stream, g_cupy_cuda_Stream_type)) {
-        py_raw_stream = getattr(py_stream, "ptr");
-        if (!py_raw_stream) return ErrorRaised;
-
-    } else if (g_numba_cuda_Stream_type
-            && PyObject_TypeCheck(py_stream, g_numba_cuda_Stream_type)) {
-        PyPtr py_stream_handle = getattr(py_stream, "handle");
-        if (!py_stream_handle) return ErrorRaised;
-
-        // numba-cuda >= 0.30: handle is cuda.bindings.driver.CUstream
-        // numba-cuda < 0.30: handle is ctypes c_void_p
-        if (g_cuda_bindings_CUstream_type
-                && PyObject_TypeCheck(py_stream_handle.get(),
-                                      g_cuda_bindings_CUstream_type)) {
-            py_raw_stream = steal(PyNumber_Long(py_stream_handle.get()));
-            if (!py_raw_stream) return ErrorRaised;
-        } else {
-            PyPtr py_stream_handle_value = getattr(py_stream_handle, "value");
-            if (!py_stream_handle_value) return ErrorRaised;
-
-            // numba stream.handle.value is None for default stream
-            if (py_stream_handle_value.get() == Py_None)
-                return static_cast<CUstream>(nullptr);
-
-            if (PyLong_Check(py_stream_handle_value.get()))
-                py_raw_stream = py_stream_handle_value;
-        }
-
-    } else if (PyLong_Check(py_stream)) {
-        py_raw_stream = newref(py_stream);
-    } else if (py_stream == Py_None) {
-        return raise(PyExc_TypeError, "Stream is required, got None");
+static StreamKind do_classify_stream_type(PyTypeObject* ty) {
+    if (is_torch_cuda_stream_subtype(ty)) {
+        return StreamKind::Torch;
+    } else if (is_cupy_cuda_stream_subtype(ty)) {
+        return StreamKind::Cupy;
+    } else if (is_numba_cuda_driver_stream_subtype(ty)) {
+        return StreamKind::NumbaCuda;
+    } else if (PyType_IsSubtype(ty, &PyLong_Type)) {
+        return StreamKind::RawInt;
+    } else if (ty == Py_TYPE(Py_None)) {
+        raise(PyExc_TypeError, "Stream is required, got None");
+        return StreamKind::Error;
     } else {
-        return raise(PyExc_TypeError, "Unsupported stream type %s.",
-                     Py_TYPE(py_stream)->tp_name);
+        // TODO: support more stream types, for example, cuda.core.experimental._stream.Stream
+        raise(PyExc_TypeError, "Unsupported stream type %s.", ty->tp_name);
+        return StreamKind::Error;
     }
+}
 
-    // TODO: support more stream types, for example, cuda.core.experimental._stream.Stream
+// Must be holding GIL or g_launch_mutex to call this
+static StreamKind classify_stream(PyObject* py_stream) {
+    // Cache the last stream type we were called with.
+    // The hypothesis is that the user is probably using one host framework to make all the
+    // launches, so we will nearly always get a cache hit here. And comparing a single pointer
+    // is much faster than performing a hash map lookup.
+    // The cache miss path is reasonably efficient as well, so it's not the end of the world
+    // if our guess is wrong. If necessary, we could add another level of caching here.
+    static PyTypeObject* last_ty = nullptr;
+    static StreamKind last_kind = StreamKind::Error;
 
-    if (!PyLong_Check(py_raw_stream.get())) {
-        return raise(PyExc_TypeError, "Raw stream pointer must be a long, got %s",
-                     Py_TYPE(py_raw_stream.get())->tp_name);
+    PyTypeObject* ty = Py_TYPE(py_stream);
+    if (ty == last_ty) return last_kind;
+
+    StreamKind res = do_classify_stream_type(ty);
+    if (res != StreamKind::Error) {
+        Py_XDECREF(last_ty);
+        last_ty = reinterpret_cast<PyTypeObject*>(Py_NewRef(ty));
+        last_kind = res;
     }
+    return res;
+}
 
-    CUstream stream = static_cast<CUstream>(PyLong_AsVoidPtr(py_raw_stream.get()));
-    if (PyErr_Occurred()) return ErrorRaised;
 
-    return stream;
+static Result<CUstream> parse_stream(PyObject* py_stream) {
+    auto from_raw = [] (PyObject* raw) -> Result<CUstream> {
+        if (!raw) return ErrorRaised;
+        CUstream stream = static_cast<CUstream>(PyLong_AsVoidPtr(raw));
+        if (PyErr_Occurred()) {
+            if (!PyLong_Check(raw))
+                raise(PyExc_TypeError, "Raw stream pointer must be a long, got %s",
+                      Py_TYPE(raw)->tp_name);
+            return ErrorRaised;
+        }
+        return stream;
+    };
+
+    StreamKind kind = classify_stream(py_stream);
+    switch (kind) {
+    case StreamKind::Error:
+        return ErrorRaised;
+    case StreamKind::Torch:
+        return from_raw(getattr(py_stream, g_cuda_stream_pyunicode).get());
+    case StreamKind::Cupy:
+        return from_raw(getattr(py_stream, g_ptr_pyunicode).get());
+    case StreamKind::NumbaCuda:
+        {
+            PyPtr py_stream_handle = getattr(py_stream, "handle");
+            if (!py_stream_handle) return ErrorRaised;
+
+            // numba-cuda >= 0.30: handle is cuda.bindings.driver.CUstream
+            // numba-cuda < 0.30: handle is ctypes c_void_p
+            if (is_cuda_bindings_driver_custream_subtype(Py_TYPE(py_stream_handle.get()))) {
+                PyPtr pylong = steal(PyNumber_Long(py_stream_handle.get()));
+                return from_raw(pylong.get());
+            } else {
+                PyPtr py_stream_handle_value = getattr(py_stream_handle, "value");
+                if (!py_stream_handle_value) return ErrorRaised;
+
+                // numba stream.handle.value is None for default stream
+                if (py_stream_handle_value.get() == Py_None)
+                    return static_cast<CUstream>(nullptr);
+
+                return from_raw(py_stream_handle_value.get());
+            }
+        }
+        break;
+    case StreamKind::RawInt:
+        return from_raw(py_stream);
+    }
+    CHECK_UNREACHABLE;
 }
 
 
@@ -4690,25 +4812,6 @@ static Status init_default_tile_context() {
 };
 
 
-static Result<bool> py_environ_has(const char* name) {
-    PyPtr os = steal(PyImport_ImportModule("os"));
-    if (!os) return ErrorRaised;
-
-    PyPtr py_environ = steal(PyObject_GetAttrString(os.get(), "environ"));
-    if (!py_environ) return ErrorRaised;
-
-    PyPtr value = steal(PyMapping_GetItemString(py_environ.get(), name));
-    if (value) {
-        return true;
-    } else {
-        if (PyErr_ExceptionMatches(PyExc_KeyError)) {
-            PyErr_Clear();
-            return false;
-        }
-        return ErrorRaised;
-    }
-}
-
 static Status get_standard_globals() {
     PyPtr enum_mod = steal(PyImport_ImportModule("enum"));
     if (!enum_mod) return ErrorRaised;
@@ -4720,73 +4823,6 @@ static Status get_standard_globals() {
     return OK;
 }
 
-static void try_get_torch_globals() {
-    PyPtr torch = try_import("torch");
-    if (!torch) return;
-
-    // Save a reference to torch.Tensor
-    if (PyPtr torch_Tensor = try_getattr(torch, "Tensor")) {
-        if (PyType_Check(torch_Tensor.get()))
-            g_torch_Tensor_type = reinterpret_cast<PyTypeObject*>(torch_Tensor.release());
-    }
-
-    // Save references to torch.cuda.Stream
-    if (PyPtr torch_cuda = try_getattr(torch, "cuda")) {
-        if (PyPtr torch_cuda_Stream = try_getattr(torch_cuda, "Stream")) {
-            if (PyType_Check(torch_cuda_Stream.get())) {
-                g_torch_cuda_Stream_type = reinterpret_cast<PyTypeObject*>(
-                        torch_cuda_Stream.release());
-            }
-        }
-    }
-
-    // Save references to torch._C._to_dlpack
-    if (PyPtr torch_C = try_getattr(torch, "_C")) {
-        g_torch_to_dlpack_func = try_getattr(torch_C, "_to_dlpack").release();
-    }
-}
-
-static void try_get_cupy_globals() {
-    PyPtr cupy = try_import("cupy");
-    if (!cupy) return;
-
-    // Save references to cupy.cuda.Stream
-    if (PyPtr cupy_cuda = try_getattr(cupy, "cuda")) {
-        if (PyPtr cupy_cuda_Stream = try_getattr(cupy_cuda, "Stream")) {
-            if (PyType_Check(cupy_cuda_Stream.get())) {
-                g_cupy_cuda_Stream_type = reinterpret_cast<PyTypeObject*>(
-                        cupy_cuda_Stream.release());
-            }
-        }
-    }
-}
-
-static void try_get_numba_globals() {
-    PyPtr numba_cuda = try_import("numba.cuda");
-    if (!numba_cuda) return;
-
-    // Save a reference to numba.cuda.driver.Stream
-    if (PyPtr numba_cuda_driver = try_getattr(numba_cuda, "driver")) {
-        if (PyPtr numba_cuda_Stream = try_getattr(numba_cuda_driver, "Stream")) {
-            if (PyType_Check(numba_cuda_Stream.get())) {
-                g_numba_cuda_Stream_type = reinterpret_cast<PyTypeObject*>(
-                        numba_cuda_Stream.release());
-            }
-        }
-    }
-}
-
-static void try_get_cuda_bindings_globals() {
-    PyPtr cuda_bindings_driver = try_import("cuda.bindings.driver");
-    if (!cuda_bindings_driver) return;
-
-    if (PyPtr CUstream = try_getattr(cuda_bindings_driver, "CUstream")) {
-        if (PyType_Check(CUstream.get())) {
-            g_cuda_bindings_CUstream_type = reinterpret_cast<PyTypeObject*>(
-                    CUstream.release());
-        }
-    }
-}
 
 static PyObject* dev_features_enabled(PyObject*, PyObject*) {
 #ifdef CUDA_TILE_ENABLE_DEV_FEATURES
@@ -4864,23 +4900,32 @@ static Status add_launch_extended_func(PyObject* m) {
     return OK;
 }
 
-#define INIT_STRING_CONSTANT(ident) \
-    if (!(g_##ident##_pyunicode = PyUnicode_InternFromString(#ident))) return ErrorRaised;
+#define INIT_STRING_CONSTANT(name, value) \
+    if (!(name = PyUnicode_InternFromString(value))) return ErrorRaised
+
+#define INIT_STRING_IDENT(ident) INIT_STRING_CONSTANT(g_##ident##_pyunicode, #ident)
+
 
 Status tile_kernel_init(PyObject* m) {
-    INIT_STRING_CONSTANT(__cuda_array_interface__);
-    INIT_STRING_CONSTANT(typestr);
-    INIT_STRING_CONSTANT(shape);
-    INIT_STRING_CONSTANT(data);
-    INIT_STRING_CONSTANT(strides);
-    INIT_STRING_CONSTANT(__dlpack__);
-    INIT_STRING_CONSTANT(compile);
-    INIT_STRING_CONSTANT(dynamic_shared_memory_bytes);
-    INIT_STRING_CONSTANT(cooperative);
-    INIT_STRING_CONSTANT(block_in_cluster_count);
-    INIT_STRING_CONSTANT(preferred_block_in_cluster_count);
-    INIT_STRING_CONSTANT(programmatic_dependent_launch);
-    INIT_STRING_CONSTANT(__dataclass_fields__);
+    INIT_STRING_IDENT(__cuda_array_interface__);
+    INIT_STRING_IDENT(typestr);
+    INIT_STRING_IDENT(shape);
+    INIT_STRING_IDENT(data);
+    INIT_STRING_IDENT(strides);
+    INIT_STRING_IDENT(__dlpack__);
+    INIT_STRING_IDENT(compile);
+    INIT_STRING_IDENT(dynamic_shared_memory_bytes);
+    INIT_STRING_IDENT(cooperative);
+    INIT_STRING_IDENT(block_in_cluster_count);
+    INIT_STRING_IDENT(preferred_block_in_cluster_count);
+    INIT_STRING_IDENT(programmatic_dependent_launch);
+    INIT_STRING_IDENT(__dataclass_fields__);
+    INIT_STRING_IDENT(torch);
+    INIT_STRING_IDENT(cupy);
+    INIT_STRING_IDENT(cuda_stream);
+    INIT_STRING_IDENT(ptr);
+    INIT_STRING_CONSTANT(g_numba_cuda_pyunicode, "numba.cuda");
+    INIT_STRING_CONSTANT(g_cuda_bindings_driver_pyunicode, "cuda.bindings.driver");
 
     if (!get_standard_globals()) return ErrorRaised;
 
@@ -4891,23 +4936,6 @@ Status tile_kernel_init(PyObject* m) {
         return ErrorRaised;
 
     g_stream_buffer_pool_by_ctx_id = new StreamBufferPoolMap();
-
-    Result<bool> is_ipc_benchmark_worker = py_environ_has(
-            "CUDA_TILE_IPC_BENCHMARK_WORKER");
-    if (!is_ipc_benchmark_worker.is_ok()) return ErrorRaised;
-
-    // The IPC benchmark worker receives an already serialized launch and does
-    // not inspect Python framework objects. Avoid importing several large,
-    // optional framework packages in that short-lived helper process.
-    if (!*is_ipc_benchmark_worker) {
-        try_get_torch_globals();
-
-        try_get_cupy_globals();
-
-        try_get_numba_globals();
-
-        try_get_cuda_bindings_globals();
-    }
 
     if (PyType_Ready(&CallingConvention::pytype) < 0)
         return ErrorRaised;
