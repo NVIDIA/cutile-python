@@ -815,7 +815,8 @@ def lower_dummy(
     result_type = ir_type_to_mlir_type(operation.result_var.get_type())
     if isinstance(result_type, mlir.llvm.LLVMPointerType):
         return [mlir.llvm.add_ZeroOp(res_type=result_type)]
-    return [mlir_constant_of_type(result_type, 0)]
+    zero = 0.0 if isinstance(result_type, mlir.FloatType) else 0
+    return [mlir_constant_of_type(result_type, zero)]
 
 
 class DeviceIR2MLIR:

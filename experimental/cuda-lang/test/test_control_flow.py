@@ -2,10 +2,14 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+from test.util import compile_kernel
 import pytest
 import cuda.lang as cl
 from cuda.lang._exception import TypeCheckingError
+from cuda.lang.compilation import KernelSignature
 import torch
+
+from test.util import make_symbolic_tensor
 
 
 def test_if_else():
@@ -65,16 +69,10 @@ def test_negative_stride():
             pass
 
     with pytest.raises(TypeCheckingError, match="Step must be positive, got -1"):
-        cl.launch(
-            torch.cuda.current_stream(),
-            (),
-            (),
-            kernel,
-            (),
-        )
+        cl.launch(torch.cuda.current_stream(), (1,), (1,), kernel, ())
 
 
-def test_static_eval_return_with_static_assert_else_makedummy():
+def test_static_phi_int():
     @cl.function
     def choose(flag: cl.Constant[int]):
         if cl.static_eval(flag == 0):
@@ -89,6 +87,22 @@ def test_static_eval_return_with_static_assert_else_makedummy():
     out = torch.empty(1, dtype=torch.int32, device="cuda")
     cl.launch(torch.cuda.current_stream(), (1,), (1,), kernel, (0, out))
     assert out.cpu().item() == 7
+
+
+def test_static_phi_float():
+    @cl.function
+    def choose(flag: cl.Constant[int]):
+        if cl.static_eval(flag == 0):
+            return cl.float16(7.0)
+        else:
+            cl.static_assert(False, "unsupported flag")
+
+    @cl.kernel
+    def kernel(flag: cl.Constant[int], out):
+        out[0] = choose(flag)
+
+    sig = KernelSignature((0, make_symbolic_tensor((1,), cl.float16)))
+    compile_kernel(kernel, signature=sig, assert_in_mlir="0x0000 : f16")
 
 
 # TODO: test while loop inside a for loop to ensure continue correctly
