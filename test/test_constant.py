@@ -92,3 +92,22 @@ def test_none_kernel_argument():
     out = torch.full((), -1, dtype=torch.int32, device="cuda")
     ct.launch(torch.cuda.current_stream(), (1,), kern, (123, out))
     assert out.tolist() == 0
+
+
+@pytest.mark.skipif(not cconv_v3_enabled(), reason="Requires cconv3 enabled")
+def test_str_kernel_argument():
+    @ct.kernel
+    def kern(c: ct.Constant, out):
+        ct.scatter(out, 0, c == "hello")
+        ct.scatter(out, 1, c == "test string for test_str_kernel_argument!")
+
+    # Repeat a few times to make sure we exercise different branches that depend on string interning
+    for i in range(3):
+        out = torch.full((2,), -1, dtype=torch.int32, device="cuda")
+        ct.launch(torch.cuda.current_stream(), (1,), kern, ("hello", out))
+        assert out.tolist() == [1, 0]
+
+        out = torch.full((2,), -1, dtype=torch.int32, device="cuda")
+        ct.launch(torch.cuda.current_stream(), (1,), kern,
+                  ("test string for test_str_kernel_argument!", out))
+        assert out.tolist() == [0, 1]

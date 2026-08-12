@@ -212,6 +212,8 @@ def _mangle_constraint(p: ParameterConstraint, alias_group_map: dict[str, int],
                 return "F" + f"{i:016x}"
             case ConstantKind.None_:
                 return "Cn_"
+            case ConstantKind.String:
+                return "Cs_" + _mangle_string(p.value)
             case ConstantKind.Enum:
                 assert cconv_v3_enabled()
                 return "Ce_" + _mangle_enum_constant(p.value, collected_globals)
@@ -249,6 +251,8 @@ def _demangle_constraint(cursor: _Cursor,
         return ConstantConstraint(f)
     elif c == "Cn_" and cconv_v3_enabled():
         return ConstantConstraint(None)
+    elif c == "Cs_" and cconv_v3_enabled():
+        return ConstantConstraint(_demangle_string(cursor))
     elif c == "Ce_" and cconv_v3_enabled():
         return ConstantConstraint(_demangle_enum_constant(cursor, allowed_globals))
     elif c == "Cd_" and cconv_v3_enabled():

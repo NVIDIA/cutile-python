@@ -458,6 +458,13 @@ class MyEnum(Enum):
         "_Cn__I123_Cn_",
         id="none_constant",
     ),
+
+    # String constant
+    pytest.param(
+        ["Hello", "world!"],
+        "_Cs_Hello_z_Cs_world_21_z",
+        id="string_constant",
+    ),
 ] if cconv_v3_enabled() else [])
 @pytest.mark.skipif(not cconv_v3_enabled(), reason="Requires cconv3 enabled")
 def test_name_mangling_cutile_python_v3(parameters, expected_suffix):

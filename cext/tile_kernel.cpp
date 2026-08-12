@@ -573,6 +573,7 @@ struct AggregateArgType {
     X(Int) \
     X(Float) \
     X(None_) \
+    X(String) \
     X(Enum) \
     X(NativeDType) \
     X(ForeignDType)
@@ -651,6 +652,7 @@ enum class PythonArgKind : uint8_t {
     ConstantInt,
     ConstantFloat,
     ConstantNone,
+    ConstantString,
     IdentityConstant,
     ForeignDTypeConstant,
     // A torch.Tensor that we can access via torch._C._to_dlpack
@@ -675,6 +677,7 @@ static inline PythonArgKind constant_kind_as_arg_kind(ConstantKind kind) {
     case ConstantKind::Int: return PythonArgKind::ConstantInt;
     case ConstantKind::Float: return PythonArgKind::ConstantFloat;
     case ConstantKind::None_: return PythonArgKind::ConstantNone;
+    case ConstantKind::String: return PythonArgKind::ConstantString;
     case ConstantKind::Enum: return PythonArgKind::IdentityConstant;
     case ConstantKind::NativeDType: return PythonArgKind::IdentityConstant;
     case ConstantKind::ForeignDType: return PythonArgKind::ForeignDTypeConstant;
@@ -689,6 +692,7 @@ static ParameterKind::Category param_category_from_pyarg_kind(PythonArgKind k) {
     case PythonArgKind::ConstantInt: return ParameterKind::ConstantInt;
     case PythonArgKind::ConstantFloat: return ParameterKind::ConstantFloat;
     case PythonArgKind::ConstantNone: return ParameterKind::ConstantNone;
+    case PythonArgKind::ConstantString: return ParameterKind::IdentityConstant;
     case PythonArgKind::IdentityConstant: return ParameterKind::IdentityConstant;
     case PythonArgKind::ForeignDTypeConstant: return ParameterKind::IdentityConstant;
     case PythonArgKind::TorchTensorDlpack: return ParameterKind::Array;
@@ -914,6 +918,9 @@ static std::optional<ConstantKind> classify_constant(PyObject* obj, bool kernel_
 
     if (obj == Py_None)
         return ConstantKind::None_;
+
+    if (PyUnicode_CheckExact(obj))
+        return ConstantKind::String;
 
     if (PyObject_TypeCheck(obj, reinterpret_cast<PyTypeObject*>(g_enum_Enum_type)))
         return ConstantKind::Enum;
@@ -2097,6 +2104,7 @@ static void extract_identity_constant(PyObject* object, Vec<int64_t>* constants,
     identity_constants->push_back(object);
 }
 
+
 static PyPtr parse_identity_constant_constraint(ConstantCursor& cursor,
                                                 const Vec<PyObject*>& identity_constants) {
     int64_t address = cursor.next();
@@ -2105,6 +2113,21 @@ static PyPtr parse_identity_constant_constraint(ConstantCursor& cursor,
             return make_constant_constraint(obj);
     }
     CHECK_UNREACHABLE;
+}
+
+static Status extract_string_constant(PyObject* pyobj, Vec<int64_t>* constants,
+                                      Vec<PyObject*>* identity_constants,
+                                      Vec<PyPtr>* pyarg_refs) {
+    if (!PyUnicode_CHECK_INTERNED(pyobj)) {
+        PyPtr ref = newref(pyobj);
+        pyunicode_intern_in_place(&ref);
+        if (!PyUnicode_CHECK_INTERNED(ref.get()))
+            return raise(PyExc_RuntimeError, "Failed to intern a string kernel argument");
+        pyobj = ref.get();
+        pyarg_refs->push_back(std::move(ref));
+    }
+    extract_identity_constant(pyobj, constants, identity_constants);
+    return OK;
 }
 
 static Status extract_foreign_dtype_constant(PyObject* object, Vec<int64_t>* constants,
@@ -2408,6 +2431,9 @@ static Status extract_arg(const DriverApi* driver, PyObject* obj, PythonArgKind 
         return OK;
     case PythonArgKind::ConstantNone:
         return OK;
+    case PythonArgKind::ConstantString:
+        return extract_string_constant(obj, &helper.constants, &helper.identity_constants,
+                                       &helper.pyarg_refs);
     case PythonArgKind::IdentityConstant:
         extract_identity_constant(obj, &helper.constants, &helper.identity_constants);
         return OK;

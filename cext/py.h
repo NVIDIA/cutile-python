@@ -256,6 +256,12 @@ static inline PyPtr getattr(const PyPtr& obj, const char* attrname) {
     return getattr(obj.get(), attrname);
 }
 
+static inline void pyunicode_intern_in_place(PyPtr* s) {
+    PyObject* raw = s->release();
+    PyUnicode_InternInPlace(&raw);
+    *s = steal(raw);
+}
+
 struct ErrorGuard {
     SavedException exc;
 

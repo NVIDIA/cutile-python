@@ -137,6 +137,8 @@ def type_of_constant_python_value(val, typing_hooks: TypingHooks) -> Type:
             return typing_hooks.get_tensor_like_type(dtype_of_constant_scalar(val), ())
         case ConstantKind.None_:
             return NONE
+        case ConstantKind.String:
+            return StringTy(val)
         case ConstantKind.Enum:
             return EnumTy(val)
         case ConstantKind.NativeDType:
@@ -145,8 +147,6 @@ def type_of_constant_python_value(val, typing_hooks: TypingHooks) -> Type:
             return _get_dtype_spec(foreign_dtype_object_to_native(val))
         case _: assert False
 
-    if isinstance(val, str):
-        return StringTy(val)
     if val is Ellipsis:
         return ELLIPSIS
     if isinstance(val, slice):
