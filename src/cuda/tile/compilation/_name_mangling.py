@@ -210,6 +210,8 @@ def _mangle_constraint(p: ParameterConstraint, alias_group_map: dict[str, int],
             case ConstantKind.Float:
                 [i] = struct.unpack("<Q", struct.pack("<d", p.value))
                 return "F" + f"{i:016x}"
+            case ConstantKind.None_:
+                return "Cn_"
             case ConstantKind.Enum:
                 assert cconv_v3_enabled()
                 return "Ce_" + _mangle_enum_constant(p.value, collected_globals)
@@ -245,6 +247,8 @@ def _demangle_constraint(cursor: _Cursor,
         i = int(cursor.expect("[0-9a-f]{16}", "Expected 16 hex digits"), base=16)
         [f] = struct.unpack("<d", struct.pack("<Q", i))
         return ConstantConstraint(f)
+    elif c == "Cn_" and cconv_v3_enabled():
+        return ConstantConstraint(None)
     elif c == "Ce_" and cconv_v3_enabled():
         return ConstantConstraint(_demangle_enum_constant(cursor, allowed_globals))
     elif c == "Cd_" and cconv_v3_enabled():

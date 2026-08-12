@@ -451,6 +451,13 @@ class MyEnum(Enum):
         "_Cd_f32_Cd_i32",
         id="dtype_constant",
     ),
+
+    # None constant
+    pytest.param(
+        [None, 123, None],
+        "_Cn__I123_Cn_",
+        id="none_constant",
+    ),
 ] if cconv_v3_enabled() else [])
 @pytest.mark.skipif(not cconv_v3_enabled(), reason="Requires cconv3 enabled")
 def test_name_mangling_cutile_python_v3(parameters, expected_suffix):

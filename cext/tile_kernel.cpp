@@ -572,6 +572,7 @@ struct AggregateArgType {
     X(Bool) \
     X(Int) \
     X(Float) \
+    X(None_) \
     X(Enum) \
     X(NativeDType) \
     X(ForeignDType)
@@ -614,6 +615,7 @@ struct ParameterKind {
         ConstantBool,
         ConstantInt,
         ConstantFloat,
+        ConstantNone,
         IdentityConstant,  // constant that can be compared via object identity, e.g. an Enum value
         Array,
         Boolean,
@@ -648,6 +650,7 @@ enum class PythonArgKind : uint8_t {
     ConstantBool,
     ConstantInt,
     ConstantFloat,
+    ConstantNone,
     IdentityConstant,
     ForeignDTypeConstant,
     // A torch.Tensor that we can access via torch._C._to_dlpack
@@ -671,6 +674,7 @@ static inline PythonArgKind constant_kind_as_arg_kind(ConstantKind kind) {
     case ConstantKind::Bool: return PythonArgKind::ConstantBool;
     case ConstantKind::Int: return PythonArgKind::ConstantInt;
     case ConstantKind::Float: return PythonArgKind::ConstantFloat;
+    case ConstantKind::None_: return PythonArgKind::ConstantNone;
     case ConstantKind::Enum: return PythonArgKind::IdentityConstant;
     case ConstantKind::NativeDType: return PythonArgKind::IdentityConstant;
     case ConstantKind::ForeignDType: return PythonArgKind::ForeignDTypeConstant;
@@ -684,6 +688,7 @@ static ParameterKind::Category param_category_from_pyarg_kind(PythonArgKind k) {
     case PythonArgKind::ConstantBool: return ParameterKind::ConstantBool;
     case PythonArgKind::ConstantInt: return ParameterKind::ConstantInt;
     case PythonArgKind::ConstantFloat: return ParameterKind::ConstantFloat;
+    case PythonArgKind::ConstantNone: return ParameterKind::ConstantNone;
     case PythonArgKind::IdentityConstant: return ParameterKind::IdentityConstant;
     case PythonArgKind::ForeignDTypeConstant: return ParameterKind::IdentityConstant;
     case PythonArgKind::TorchTensorDlpack: return ParameterKind::Array;
@@ -906,6 +911,9 @@ static std::optional<ConstantKind> classify_constant(PyObject* obj, bool kernel_
 #ifndef ENABLE_CCONV_V3
     if (!kernel_arg) {
 #endif
+
+    if (obj == Py_None)
+        return ConstantKind::None_;
 
     if (PyObject_TypeCheck(obj, reinterpret_cast<PyTypeObject*>(g_enum_Enum_type)))
         return ConstantKind::Enum;
@@ -2398,6 +2406,8 @@ static Status extract_arg(const DriverApi* driver, PyObject* obj, PythonArgKind 
     case PythonArgKind::ConstantFloat:
         extract_float_constant(obj, &helper.constants);
         return OK;
+    case PythonArgKind::ConstantNone:
+        return OK;
     case PythonArgKind::IdentityConstant:
         extract_identity_constant(obj, &helper.constants, &helper.identity_constants);
         return OK;
@@ -2454,6 +2464,8 @@ static PyPtr parse_element_constraint(ConstantCursor& cursor, ParameterKind::Cat
         return parse_int_constant_constraint(cursor);
     case ParameterKind::ConstantFloat:
         return parse_float_constant_constraint(cursor);
+    case ParameterKind::ConstantNone:
+        return make_constant_constraint(Py_None);
     case ParameterKind::IdentityConstant:
         return parse_identity_constant_constraint(cursor, identity_constants);
     case ParameterKind::Array:

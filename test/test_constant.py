@@ -77,3 +77,18 @@ def test_dtype_kernel_argument():
     out = torch.full((2,), -1, dtype=torch.int32, device="cuda")
     ct.launch(torch.cuda.current_stream(), (1,), kern, (torch.int32, out))
     assert out.tolist() == [0, 1]
+
+
+@pytest.mark.skipif(not cconv_v3_enabled(), reason="Requires cconv3 enabled")
+def test_none_kernel_argument():
+    @ct.kernel
+    def kern(c: ct.Constant, out):
+        ct.scatter(out, (), c is None)
+
+    out = torch.full((), -1, dtype=torch.int32, device="cuda")
+    ct.launch(torch.cuda.current_stream(), (1,), kern, (None, out))
+    assert out.item() == 1
+
+    out = torch.full((), -1, dtype=torch.int32, device="cuda")
+    ct.launch(torch.cuda.current_stream(), (1,), kern, (123, out))
+    assert out.tolist() == 0
