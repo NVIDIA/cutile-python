@@ -49,7 +49,7 @@ struct IpcPayloadReader {
     Status read(const char* field_name, T* out) {
         if (sizeof(T) > size - offset) {
             return raise(PyExc_ValueError,
-                         "Truncated IPC benchmark payload while reading %s", field_name);
+                         "Truncated IPC benchmark payload while reading ", field_name);
         }
         mem_copy(out, data + offset, sizeof(T));
         offset += sizeof(T);
@@ -62,12 +62,12 @@ struct IpcPayloadReader {
         if (!read(field_name, &count)) return ErrorRaised;
         if (count > SIZE_MAX / sizeof(T)) {
             return raise(PyExc_OverflowError,
-                         "IPC benchmark payload %s is too large", field_name);
+                         "IPC benchmark payload ", field_name, " is too large");
         }
         size_t nbytes = count * sizeof(T);
         if (nbytes > size - offset) {
             return raise(PyExc_ValueError,
-                         "Truncated IPC benchmark payload while reading %s", field_name);
+                         "Truncated IPC benchmark payload while reading ", field_name);
         }
         out->resize(count);
         if (nbytes)

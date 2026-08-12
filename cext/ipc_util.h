@@ -48,7 +48,7 @@ struct IpcHandleExporter {
         CUresult res = driver->cuDeviceGetAttribute(
                 &supported, CU_DEVICE_ATTRIBUTE_IPC_EVENT_SUPPORTED, device);
         if (res != CUDA_SUCCESS) {
-            return raise(PyExc_RuntimeError, "cuDeviceGetAttribute: %s",
+            return raise(PyExc_RuntimeError, "cuDeviceGetAttribute: ",
                          get_cuda_error(driver, res));
         }
         return supported != 0;
@@ -66,7 +66,7 @@ struct IpcHandleExporter {
             // allocation that should silently fall back.
             return raise(
                     PyExc_RuntimeError,
-                    "cuPointerGetAttribute(IS_LEGACY_CUDA_IPC_CAPABLE): %s",
+                    "cuPointerGetAttribute(IS_LEGACY_CUDA_IPC_CAPABLE): ",
                     get_cuda_error(driver, res));
         }
 
@@ -81,7 +81,7 @@ struct IpcHandleExporter {
         size_t allocation_size = 0;
         CUresult res = driver->cuMemGetAddressRange(&base, &allocation_size, dptr);
         if (res != CUDA_SUCCESS) {
-            return raise(PyExc_RuntimeError, "cuMemGetAddressRange: %s",
+            return raise(PyExc_RuntimeError, "cuMemGetAddressRange: ",
                          get_cuda_error(driver, res));
         }
         if (dptr < base)
@@ -96,7 +96,7 @@ struct IpcHandleExporter {
             CUipcMemHandle handle;
             res = driver->cuIpcGetMemHandle(&handle, base);
             if (res != CUDA_SUCCESS) {
-                return raise(PyExc_RuntimeError, "cuIpcGetMemHandle: %s",
+                return raise(PyExc_RuntimeError, "cuIpcGetMemHandle: ",
                              get_cuda_error(driver, res));
             }
             handle_index = ipc_mem_handles.size();
@@ -127,7 +127,7 @@ struct IpcHandleCreator {
             CUresult res = driver->cuIpcOpenMemHandle(
                     &mapped_ptr, ipc_mem_handle, CU_IPC_MEM_LAZY_ENABLE_PEER_ACCESS);
             if (res != CUDA_SUCCESS) {
-                return raise(PyExc_RuntimeError, "cuIpcOpenMemHandle: %s",
+                return raise(PyExc_RuntimeError, "cuIpcOpenMemHandle: ",
                              get_cuda_error(driver, res));
             }
             mapped_handles.push_back(mapped_ptr);

@@ -19,17 +19,15 @@ Status check_driver_version(const DriverApi* driver, int minimum_version) {
     int version;
     CUresult res = driver->cuDriverGetVersion(&version);
     if (res != CUDA_SUCCESS) {
-        PyErr_Format(PyExc_RuntimeError, "cuDriverGetVersion: %s", get_cuda_error(driver, res));
-        return ErrorRaised;
+        return raise(PyExc_RuntimeError, "cuDriverGetVersion: ", get_cuda_error(driver, res));
     }
     if (version < minimum_version) {
         int major = version / 1000;
         int minor = (version % 1000) / 10;
         int required_major = minimum_version / 1000;
-        PyErr_Format(PyExc_RuntimeError,
-                     "Minimum driver version required is %d.0, got %d.%d",
-                     required_major, major, minor);
-        return ErrorRaised;
+        return raise(PyExc_RuntimeError,
+                     "Minimum driver version required is ", required_major, ".0, got ",
+                     major, ".", minor);
     }
     return OK;
 }
@@ -44,8 +42,10 @@ PyObject* get_max_grid_size(PyObject *self, PyObject *args) {
 
     CUdevice dev;
     CUresult res = (*driver)->cuDeviceGet(&dev, device_id);
-    if (res != CUDA_SUCCESS)
-        return PyErr_Format(PyExc_RuntimeError, "cuDeviceGet: %s", get_cuda_error(*driver, res));
+    if (res != CUDA_SUCCESS) {
+        raise(PyExc_RuntimeError, "cuDeviceGet: ", get_cuda_error(*driver, res));
+        return nullptr;
+    }
 
     int max_grid_size[3];
     for (int i = 0; i < 3; ++i) {
@@ -53,8 +53,8 @@ PyObject* get_max_grid_size(PyObject *self, PyObject *args) {
             static_cast<CUdevice_attribute>(CU_DEVICE_ATTRIBUTE_MAX_GRID_DIM_X + i),
             dev);
         if (res != CUDA_SUCCESS) {
-            return PyErr_Format(PyExc_RuntimeError,
-                                "cuDeviceGetAttribute: %s", get_cuda_error(*driver, res));
+            raise(PyExc_RuntimeError, "cuDeviceGetAttribute: ", get_cuda_error(*driver, res));
+            return nullptr;
         }
     }
     return Py_BuildValue("(iii)", max_grid_size[0], max_grid_size[1], max_grid_size[2]);
@@ -74,7 +74,7 @@ static const Vec<ComputeCapability>* get_compute_capability_by_device(const Driv
     int device_count = 0;
     CUresult res = driver->cuDeviceGetCount(&device_count);
     if (res != CUDA_SUCCESS) {
-        PyErr_Format(PyExc_RuntimeError, "cuDeviceGetCount: %s", get_cuda_error(driver, res));
+        raise(PyExc_RuntimeError, "cuDeviceGetCount: ", get_cuda_error(driver, res));
         return nullptr;
     }
 
@@ -107,14 +107,14 @@ Result<ComputeCapability> get_device_compute_capability(const DriverApi* driver,
 
     size_t device_count = compute_capability_by_device->size();
     if (device_id < 0 || static_cast<size_t>(device_id) >= device_count) {
-        return raise(PyExc_RuntimeError, "invalid device ordinal %d (%zu device(s) present)",
-                     device_id, device_count);
+        return raise(PyExc_RuntimeError, "invalid device ordinal ", device_id, " (",
+                device_count, " device(s) present)");
     }
 
     const ComputeCapability& entry = (*compute_capability_by_device)[device_id];
     if (entry.major == kDeviceCapabilityUnavailable) {
         return raise(PyExc_RuntimeError,
-                     "Failed to query the compute capability of device %d", device_id);
+                     "Failed to query the compute capability of device ", device_id);
     }
     return entry;
 }
@@ -141,7 +141,8 @@ PyObject* get_driver_version(PyObject *self, PyObject *Py_UNUSED(ignored)) {
 
     CUresult res = d->cuDriverGetVersion(&major);
     if (res != CUDA_SUCCESS) {
-        return PyErr_Format(PyExc_RuntimeError, "cuDriverGetVersion: %s", get_cuda_error(d, res));
+        raise(PyExc_RuntimeError, "cuDriverGetVersion: ", get_cuda_error(d, res));
+        return nullptr;
     }
     minor = (major % 1000) / 10;
     major = major / 1000;
@@ -157,8 +158,8 @@ PyObject* synchronize_context(PyObject* self, PyObject* Py_UNUSED(ignored)) {
 
     CUresult res = d->cuCtxSynchronize();
     if (res != CUDA_SUCCESS) {
-        return PyErr_Format(PyExc_RuntimeError,
-                            "cuCtxSynchronize: %s", get_cuda_error(d, res));
+        raise(PyExc_RuntimeError, "cuCtxSynchronize: ", get_cuda_error(d, res));
+        return nullptr;
     }
     Py_RETURN_NONE;
 }
@@ -173,8 +174,8 @@ PyObject* create_stream(PyObject* self, PyObject* Py_UNUSED(ignored)) {
     CUstream stream;
     CUresult res = d->cuStreamCreate(&stream, CU_STREAM_NON_BLOCKING);
     if (res != CUDA_SUCCESS) {
-        return PyErr_Format(PyExc_RuntimeError,
-                            "cuStreamCreate: %s", get_cuda_error(d, res));
+        raise(PyExc_RuntimeError, "cuStreamCreate: ", get_cuda_error(d, res));
+        return nullptr;
     }
     return PyLong_FromVoidPtr(stream);
 }
@@ -189,8 +190,8 @@ PyObject* destroy_stream(PyObject* self, PyObject* arg) {
 
     CUresult res = d->cuStreamDestroy(stream);
     if (res != CUDA_SUCCESS) {
-        return PyErr_Format(PyExc_RuntimeError,
-                            "cuStreamDestroy: %s", get_cuda_error(d, res));
+        raise(PyExc_RuntimeError, "cuStreamDestroy: ", get_cuda_error(d, res));
+        return nullptr;
     }
     Py_RETURN_NONE;
 }
@@ -228,8 +229,10 @@ static PyObject* spy_on_cuLaunchKernel_begin(PyObject* self, PyObject* arg) {
 #ifdef Py_GIL_DISABLED
     PyCriticalSectionGuard guard(&g_spy_mutex);
 #endif
-    if (g_real_cuLaunchKernelEx)
-        return PyErr_Format(PyExc_RuntimeError, "Already spying");
+    if (g_real_cuLaunchKernelEx) {
+        raise(PyExc_RuntimeError, "Already spying");
+        return nullptr;
+    }
 
     Result<const DriverApi*> driver_result = get_driver_api();
     if (!driver_result.is_ok()) return nullptr;
@@ -245,8 +248,10 @@ static PyObject* spy_on_cuLaunchKernel_end(PyObject* self, PyObject* arg) {
 #ifdef Py_GIL_DISABLED
     PyCriticalSectionGuard guard(&g_spy_mutex);
 #endif
-    if (!g_real_cuLaunchKernelEx)
-        return PyErr_Format(PyExc_RuntimeError, "Not spying");
+    if (!g_real_cuLaunchKernelEx) {
+        raise(PyExc_RuntimeError, "Not spying");
+        return nullptr;
+    }
 
     Result<const DriverApi*> driver_result = get_driver_api();
     if (!driver_result.is_ok()) return nullptr;

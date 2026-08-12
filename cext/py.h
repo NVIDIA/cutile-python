@@ -8,6 +8,7 @@
 
 #include "check.h"
 #include "ref_ptr.h"
+#include "vec.h"
 #include <Python.h>
 #include <optional>
 
@@ -193,10 +194,278 @@ private:
     std::optional<T> opt_;
 };
 
+struct UseRepr {
+    PyObject* obj;
+};
+
+// Wraps a PyObject* argument to raise()/println()/to_pyunicode()/etc. to indicate that
+// repr() should be used rather than the default str(), e.g.:
+//
+//     println(use_repr(obj));
+static inline UseRepr use_repr(PyObject* obj) {
+    return UseRepr{ obj };
+}
+
+static inline UseRepr use_repr(const PyPtr& obj) {
+    return use_repr(obj.get());
+}
+
+
+#if PY_VERSION_HEX >= 0x030E0000
+class StringBuilderImpl {
+protected:
+    Status init() {
+        writer_ = PyUnicodeWriter_Create(0);
+        if (!writer_) return ErrorRaised;
+        return OK;
+    }
+
+    int write_ascii(const char* str, Py_ssize_t size = -1) {
+        return PyUnicodeWriter_WriteASCII(writer_, str, size);
+    }
+
+    int write_char(Py_UCS4 c) {
+        return PyUnicodeWriter_WriteChar(writer_, c);
+    }
+
+    int write_str(PyObject* obj) {
+        return PyUnicodeWriter_WriteStr(writer_, obj);
+    }
+
+    int write_repr(PyObject* obj) {
+        return PyUnicodeWriter_WriteRepr(writer_, obj);
+    }
+
+    void discard() {
+        PyUnicodeWriter_Discard(writer_);
+        writer_ = nullptr;
+    }
+
+    PyObject* finish() {
+        PyObject* ret = PyUnicodeWriter_Finish(writer_);
+        writer_ = nullptr;
+        return ret;
+    }
+private:
+    PyUnicodeWriter* writer_;
+};
+#else  // PY_VERSION_HEX >= 0x030E0000
+class StringBuilderImpl {
+protected:
+    Status init() {
+        _PyUnicodeWriter_Init(&writer_);
+        return OK;
+    }
+
+    int write_ascii(const char* str, Py_ssize_t size = -1) {
+        return _PyUnicodeWriter_WriteASCIIString(&writer_, str, size);
+    }
+
+    int write_char(Py_UCS4 c) {
+        return _PyUnicodeWriter_WriteChar(&writer_, c);
+    }
+
+    int write_str(PyObject* obj) {
+        PyPtr str = steal(PyObject_Str(obj));
+        if (!str) return -1;
+        return _PyUnicodeWriter_WriteStr(&writer_, str.get());
+    }
+
+    int write_repr(PyObject* obj) {
+        PyPtr str = steal(PyObject_Repr(obj));
+        if (!str) return -1;
+        return _PyUnicodeWriter_WriteStr(&writer_, str.get());
+    }
+
+    void discard() {
+        _PyUnicodeWriter_Dealloc(&writer_);
+    }
+
+    PyObject* finish() {
+        return _PyUnicodeWriter_Finish(&writer_);
+    }
+private:
+    _PyUnicodeWriter writer_;
+};
+#endif  // PY_VERSION_HEX >= 0x030E0000
+
+
+class StringBuilder : StringBuilderImpl {
+public:
+    StringBuilder() {
+        error_ = !init();
+    }
+
+    StringBuilder(const StringBuilder&) = delete;
+    void operator=(const StringBuilder&) = delete;
+
+    ~StringBuilder() {
+        discard();
+    }
+
+    void append(const char* s) {
+        handle_error([=] { return write_ascii(s); });
+    }
+
+    void append(char c) {
+        Py_UCS4 usc4 = static_cast<unsigned char>(c);
+        handle_error([=] { return write_char(usc4); });
+    }
+
+    void append(unsigned int x) {
+        append_sprintf<30>("%u", x);
+    }
+
+    void append(int x) {
+        append_sprintf<30>("%d", x);
+    }
+
+    void append(unsigned long x) {
+        append_sprintf<30>("%lu", x);
+    }
+
+    void append(long x) {
+        append_sprintf<30>("%ld", x);
+    }
+
+    void append(unsigned long long x) {
+        append_sprintf<30>("%llu", x);
+    }
+
+    void append(long long x) {
+        append_sprintf<30>("%lld", x);
+    }
+
+    void append(PyObject* obj) {
+        handle_error([=] { return obj ? write_str(obj) : write_ascii("(null)"); });
+    }
+
+    void append(UseRepr u) {
+        handle_error([=] { return u.obj ? write_repr(u.obj) : write_ascii("(null)"); });
+    }
+
+    void append(const PyPtr& obj) {
+        append(obj.get());
+    }
+
+    template <typename T, typename = std::enable_if_t<std::is_enum_v<T>>>
+    void append(const T& value) {
+        append(static_cast<std::underlying_type_t<T>>(value));
+    }
+
+    template <typename T>
+    void append(const T* ptr) {
+        append_sprintf<30>("%p", ptr);
+    }
+
+    template <typename T>
+    void append(const Vec<T>& vec) {
+        append("[");
+        const char* comma = "";
+        for (const T& x : vec) {
+            append(comma);
+            append(x);
+            comma = ", ";
+        }
+        append("]");
+    }
+
+    template <typename T>
+    void append(const Result<T>& res) {
+        if (res.is_ok()) {
+            append("OK(");
+            append(*res);
+            append(")");
+        } else {
+            append("ErrorRaised");
+        }
+    }
+
+    template <typename T>
+    void append(const std::optional<T>& opt) {
+        if (opt.has_value()) {
+            append("std::optional{");
+            append(*opt);
+            append("}");
+        } else {
+            append("std::nullopt");
+        }
+    }
+
+    template <typename... Args>
+    void append_many(Args&&... args) {
+        (append(std::forward<Args>(args)), ...);
+    }
+
+    PyPtr build() {
+        if (error_) return {};
+        return steal(finish());
+    }
+
+    ErrorRaised_t raise(PyObject* exctype) {
+        PyPtr message = build();
+        if (message)
+            PyErr_Format(exctype, "%U", message.get());  // noqa
+        else
+            PyErr_SetString(exctype, "Failed to format error message");
+        return ErrorRaised;
+    }
+
+private:
+    bool error_;
+
+    template <size_t BufSize, typename... Args>
+    void append_sprintf(const char* fmt, Args&&... args) {
+        handle_error([&] {
+            char buf[BufSize];
+            int r = PyOS_snprintf(buf, sizeof buf, fmt, std::forward<Args>(args)...);
+            if (r < 0 || r >= (int) sizeof buf) {
+                PyErr_SetString(PyExc_RuntimeError, "snprintf() failed");
+                return -1;
+            }
+            return write_ascii(buf, r);
+        });
+    }
+
+    template <typename F>
+    void handle_error(F&& func) {
+        if (!error_) {
+            if (func() < 0)
+                error_ = true;
+        }
+    }
+};
+
 template <typename... Args>
-ErrorRaised_t raise(PyObject* exctype, const char* fmt, Args&&... args) {
-    PyErr_Format(exctype, fmt, std::forward<Args>(args)...);
-    return ErrorRaised;
+ErrorRaised_t raise(PyObject* exctype, Args&&... message) {
+    StringBuilder builder;
+    builder.append_many(std::forward<Args>(message)...);
+    return builder.raise(exctype);
+}
+
+template <typename... Args>
+PyPtr to_pyunicode(Args&&... pieces) {
+    StringBuilder builder;
+    builder.append_many(std::forward<Args>(pieces)...);
+    return builder.build();
+}
+
+template <typename... Args>
+void println(Args&&... message) {
+    StringBuilder builder;
+    builder.append_many(std::forward<Args>(message)...);
+    PyPtr s = builder.build();
+    CHECK(s);
+    PySys_FormatStdout("%U\n", s.get());
+}
+
+template <typename... Args>
+void println_err(Args&&... message) {
+    StringBuilder builder;
+    builder.append_many(std::forward<Args>(message)...);
+    PyPtr s = builder.build();
+    CHECK(s);
+    PySys_FormatStderr("%U\n", s.get());
 }
 
 struct SavedException {
@@ -243,6 +512,7 @@ void log_python_error(const char* filename, int line, const char* level, SavedEx
 
 #define LOG_PYTHON_ERROR(level, exc, ...) \
         log_python_error(__FILE__, __LINE__, level, exc, __VA_ARGS__)
+
 
 static inline PyPtr getattr(PyObject* obj, PyObject* attrname) {
     return steal(PyObject_GetAttr(obj, attrname));

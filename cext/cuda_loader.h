@@ -75,6 +75,13 @@ struct DriverApi {
     FOREACH_CUDA_FUNCTION_TO_LOAD(DECLARE_CUDA_FUNC_EXTERN)
 };
 
+
+typedef CUresult (*cuGetProcAddress_v2_t)
+    (const char *symbol, void **funcPtr, int cudaVersion,
+     cuuint64_t flags, CUdriverProcAddressQueryResult *symbolStatus);
+
+Status driver_api_init(DriverApi* driver_api, cuGetProcAddress_v2_t _cuGetProcAddress);
+
 Result<const DriverApi*> get_driver_api();
 
 

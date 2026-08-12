@@ -214,12 +214,12 @@ namespace { struct CallingConvention {
 
 static PyObject* CallingConvention_get_name(PyObject* self, void*) {
     CallingConvention& cconv = py_unwrap<CallingConvention>(self);
-    return PyUnicode_FromFormat("cutile_python_v%d", cconv.version);
+    return to_pyunicode("cutile_python_v", static_cast<int>(cconv.version)).release();
 }
 
 static PyObject* CallingConvention_get_code(PyObject* self, void*) {
     CallingConvention& cconv = py_unwrap<CallingConvention>(self);
-    return PyUnicode_FromFormat("t%d", cconv.version);
+    return to_pyunicode("t", static_cast<int>(cconv.version)).release();
 }
 
 static PyObject* CallingConvention_get_version(PyObject* self, void*) {
@@ -228,11 +228,11 @@ static PyObject* CallingConvention_get_version(PyObject* self, void*) {
 }
 
 static PyObject* CallingConvention_repr(PyObject* self) {
-    PyPtr name = steal(PyObject_GetAttrString(self, "name"));
+    PyPtr name = getattr(self, "name");
     if (!name) return nullptr;
-    PyPtr code = steal(PyObject_GetAttrString(self, "code"));
+    PyPtr code = getattr(self, "code");
     if (!code) return nullptr;
-    return PyUnicode_FromFormat("CallingConvention(%R, %R)", name.get(), code.get());
+    return to_pyunicode("CallingConvention(", use_repr(name), ", ", use_repr(code), ")").release();
 }
 
 static PyGetSetDef CallingConvention_getsetters[] = {
@@ -298,7 +298,8 @@ static PyObject* CallingConvention_from_code(PyObject*, PyObject* args) {
         PyPtr ret = parse_cutile_python_calling_convention(code + 1);
         if (ret) return ret.release();
     }
-    return PyErr_Format(PyExc_ValueError, "Unknown calling convention code '%s'", code);
+    raise(PyExc_ValueError, "Unknown calling convention code '", code, "'");
+    return nullptr;
 }
 
 
@@ -343,7 +344,7 @@ static Status enable_maximum_dynamic_shared_memory(const DriverApi *driver,
     int device_count;
     CUresult res = driver->cuDeviceGetCount(&device_count);
     if (res != CUDA_SUCCESS) {
-        return raise(PyExc_RuntimeError, "Failed to get device count: %s",
+        return raise(PyExc_RuntimeError, "Failed to get device count: ",
                      get_cuda_error(driver, res));
     }
 
@@ -352,8 +353,8 @@ static Status enable_maximum_dynamic_shared_memory(const DriverApi *driver,
         CUdevice device;
         res = driver->cuDeviceGet(&device, device_ordinal);
         if (res != CUDA_SUCCESS) {
-            return raise(PyExc_RuntimeError, "Failed to get device %d: %s",
-                         device_ordinal, get_cuda_error(driver, res));
+            return raise(PyExc_RuntimeError, "Failed to get device ", device_ordinal, ": ",
+                         get_cuda_error(driver, res));
         }
 
         int max_smem;
@@ -362,8 +363,8 @@ static Status enable_maximum_dynamic_shared_memory(const DriverApi *driver,
             device);
         if (res != CUDA_SUCCESS) {
             return raise(PyExc_RuntimeError,
-                         "Failed to get maximum shared memory for device %d: %s",
-                         device_ordinal, get_cuda_error(driver, res));
+                         "Failed to get maximum shared memory for device ", device_ordinal, ": ",
+                         get_cuda_error(driver, res));
         }
 
         int static_smem;
@@ -371,8 +372,8 @@ static Status enable_maximum_dynamic_shared_memory(const DriverApi *driver,
             &static_smem, CU_FUNC_ATTRIBUTE_SHARED_SIZE_BYTES, kernel, device);
         if (res != CUDA_SUCCESS) {
             return raise(PyExc_RuntimeError,
-                         "Failed to get static shared memory for kernel %s: %s",
-                         func_name, get_cuda_error(driver, res));
+                         "Failed to get static shared memory for kernel ", func_name, ": ",
+                         get_cuda_error(driver, res));
         }
 
         if (max_smem < static_smem) {
@@ -389,8 +390,8 @@ static Status enable_maximum_dynamic_shared_memory(const DriverApi *driver,
             largest_possible_dynamic_smem, kernel, device);
         if (res != CUDA_SUCCESS) {
             return raise(PyExc_RuntimeError,
-                         "Failed to set dynamic shared memory for kernel %s: %s",
-                         func_name, get_cuda_error(driver, res));
+                         "Failed to set dynamic shared memory for kernel ", func_name, ": ",
+                         get_cuda_error(driver, res));
         }
     }
 
@@ -424,7 +425,7 @@ enum class SizeOpcode : uint8_t {
 static Result<SizeOpcode> size_opcode_parse(PyObject* opcode_str,
                                             int* num_attrs, int* min_stack, int* stack_effect) {
     FOREACH_SIZE_OPCODE(SIZE_OPCODE_PARSE);
-    return raise(PyExc_ValueError, "Invalid opcode string %R", opcode_str);
+    return raise(PyExc_ValueError, "Invalid opcode string ", use_repr(opcode_str));
 }
 
 namespace { struct HostProgram {
@@ -1232,8 +1233,7 @@ static Result<DLDataType> parse_typestr(PyObject* typestr) {
     if (!str) return ErrorRaised;
 
     if (len < 3) {
-        PyErr_Format(PyExc_TypeError, "__cuda_array_interface__['typestr'] has invalid value %S",
-                     typestr);
+        raise(PyExc_TypeError, "__cuda_array_interface__['typestr'] has invalid value ", typestr);
         return ErrorRaised;
     }
 
@@ -1254,8 +1254,7 @@ static Result<DLDataType> parse_typestr(PyObject* typestr) {
     case 'V': ret.code = kDLBfloat; break;
     case 'c': ret.code = kDLComplex; break;
     default:
-        PyErr_Format(PyExc_TypeError, "Unsupported type code %c", str[1]);
-        return ErrorRaised;
+        return raise(PyExc_TypeError, "Unsupported type code ", str[1]);
     }
 
     // str[3] is safe to index because there is always a NUL byte at the end
@@ -1271,8 +1270,7 @@ static Result<DLDataType> parse_typestr(PyObject* typestr) {
         }
         [[fallthrough]];
     default:
-        PyErr_Format(PyExc_TypeError, "Unsupported byte size in typestr: %s", str + 2);
-        return ErrorRaised;
+        return raise(PyExc_TypeError, "Unsupported byte size in typestr: ", str + 2);
     }
 
     return ret;
@@ -1448,8 +1446,7 @@ static Result<size_t> normalize_dim(int64_t signed_dim, size_t ndim, const char*
         signed_dim += ndim_i64;
     if (signed_dim < 0 || signed_dim >= ndim_i64)
         return raise(PyExc_ValueError,
-                     "%s contains axis %lld, but array rank is %zu",
-                     annotation, static_cast<long long>(signed_dim), ndim);
+                      annotation, " contains axis ", signed_dim, " but array rank is ", ndim);
     return static_cast<size_t>(signed_dim);
 }
 
@@ -1476,10 +1473,8 @@ struct ArrayTypeConstantBuilder {
             int64_t actual = words[*normalized_dim].i64;
             if (expected != actual)
                 return raise(PyExc_ValueError,
-                             "Arrays in list vary in static %s at axis %zu (%lld vs %lld)",
-                             what, *normalized_dim,
-                             static_cast<long long>(expected),
-                             static_cast<long long>(actual));
+                             "Arrays in list vary in static ", what, " at axis ", *normalized_dim,
+                             " (", expected, " vs ", actual, ")");
         }
         return OK;
     }
@@ -1556,8 +1551,7 @@ static Status read_static_axis_values(const Vec<int64_t>& dims, PyObject* target
         CHECK(axis.is_ok());  // finalize() already range-checked this axis
 
         if (PyList_GET_ITEM(target, *axis) != Py_None)
-            return raise(PyExc_ValueError, "%s contains duplicate axis %lld",
-                         annotation, static_cast<long long>(dim));
+            return raise(PyExc_ValueError, annotation, " contains duplicate axis ", dim);
 
         int64_t value = cursor.next();
         PyPtr value_obj = steal(PyLong_FromLongLong(value));
@@ -1679,8 +1673,8 @@ static PyPtr parse_array_constraint(ConstantCursor& cursor, const Vec<int64_t>& 
 
 #define ASSERT_NDIM(ndim) \
     if (static_cast<uintmax_t>(ndim) > INT32_MAX) \
-        return raise(PyExc_TypeError, "Input array exceeds max supported dimensions: %ld > %u", \
-                     ndim, INT32_MAX);
+        return raise(PyExc_TypeError, "Input array exceeds max supported dimensions: ",\
+                      ndim, " > ", INT32_MAX);
 
 
 static Result<ArrayRepr> arrayrepr_cuda_array_iface(PyObject* pyobj, unsigned index_bitwidth,
@@ -1749,7 +1743,7 @@ static Result<ArrayRepr> arrayrepr_cuda_array_iface(PyObject* pyobj, unsigned in
         }
     } else {
         return raise(PyExc_TypeError, "__cuda_array_interface['strides'] can only be"
-                                      " absent, None, or a tuple");
+                                       " absent, None, or a tuple");
     }
 
     return ArrayRepr {
@@ -2149,16 +2143,15 @@ static Result<ArrayRepr> get_array_repr(PythonArgKind kind, PyObject* pyobj,
         case PythonArgKind::CudaArray:
             return arrayrepr_cuda_array_iface(pyobj, index_bitwidth, arena);
         default:
-            return raise(PyExc_AssertionError, "Unexpected argument kind for array: %d",
-                         static_cast<int>(kind));
+            return raise(PyExc_AssertionError, "Unexpected argument kind for array: ", kind);
     }
 }
 
 static Result<PythonArgKind> classify_list_item(PyObject* item, size_t index) {
     std::optional<PythonArgKind> res = classify_nonconstant_arg(item);
     if (!res.has_value()) {
-        return raise(PyExc_TypeError, "Invalid list item #%zu: unsupported object type '%s'",
-                index, Py_TYPE(item)->tp_name);
+        return raise(PyExc_TypeError, "Invalid list item #", index, ": unsupported object type '",
+                      Py_TYPE(item)->tp_name, "'");
     }
     return *res;
 }
@@ -2180,7 +2173,7 @@ static Status extract_py_list(const DriverApi* driver, PyObject* pyobj,
     if (!first_item_res.is_ok()) return ErrorRaised;
 
     if (param_category_from_pyarg_kind(*first_item_res) != ParameterKind::Array) {
-        return raise(PyExc_TypeError, "Expected list items to be arrays, got %s",
+        return raise(PyExc_TypeError, "Expected list items to be arrays, got ",
                      Py_TYPE(first_item)->tp_name);
     }
 
@@ -2375,9 +2368,8 @@ struct HeterogeneousTupleNode : ParameterAnnotationNode {
         }
         if (item_idx != items.size())
             return raise(PyExc_TypeError,
-                         "Received a tuple of length %zu"
-                         " for a parameter annotated as a tuple of length %zu",
-                         item_idx, items.size());
+                         "Received a tuple of length ", item_idx,
+                         " for a parameter annotated as a tuple of length ", items.size());
         return OK;
     }
 };
@@ -2701,9 +2693,9 @@ static Result<HostProgram> host_program_parse(PyObject* prog_pyobj, int expected
 
         if (remaining_attrs < opcode_attrs)
             return raise(PyExc_ValueError,
-                         "Invalid host program (at op #%zd): not enough attributes"
-                         " for opcode %u (need %d, have %zd)",
-                         i, static_cast<unsigned>(*opcode_res), opcode_attrs, remaining_attrs);
+                         "Invalid host program (at op #", i, "): not enough attributes"
+                         " for opcode ", *opcode_res, " (need ", opcode_attrs,
+                         ", have ", remaining_attrs,")");
         remaining_attrs -= opcode_attrs;
 
         if (depth < min_stack)
@@ -2719,8 +2711,8 @@ static Result<HostProgram> host_program_parse(PyObject* prog_pyobj, int expected
         return raise(PyExc_ValueError, "Invalid host program: too many attributes");
     if (depth != expected_results)
         return raise(PyExc_ValueError,
-                     "Invalid host program: expected exactly %zu result(s) on stack at the end,"
-                     " got %d", expected_results, depth);
+                     "Invalid host program: expected exactly ", expected_results,
+                     " result(s) on stack at the end, got ", depth);
 
     for (Py_ssize_t i = 0; i < num_attrs; ++i) {
         PyObject* py_attr = PyList_GetItem(attrs_pylist.get(), i);
@@ -2797,8 +2789,7 @@ static Result<uint32_t> tensor_map_item_size(CUtensorMapDataType dtype) {
     case CU_TENSOR_MAP_DATA_TYPE_FLOAT64:
         return 8;
     default:
-        return raise(PyExc_ValueError, "Can't create tensor map: unsupported data type %d",
-                     static_cast<int>(dtype));
+        return raise(PyExc_ValueError, "Can't create tensor map: unsupported data type ", dtype);
     }
 }
 
@@ -2896,8 +2887,8 @@ static Status hoisted_tensor_map_encode(const DriverApi& driver,
         int64_t stride0 = stack[rank];
         if (stride0 != 1) {
             return raise(PyExc_ValueError,
-                    "Can't create a tensor map: stride of last array dimension must be 1, got %lld",
-                    static_cast<long long>(stride0));
+                    "Can't create a tensor map: stride of last array dimension must be 1, got ",
+                    stride0);
         }
 
         uint64_t global_strides[HoistedTensorMap::kMaxRank - 1];
@@ -2905,14 +2896,12 @@ static Status hoisted_tensor_map_encode(const DriverApi& driver,
             int64_t s = stack[rank + i];
             if (s < 0)
                 return raise(PyExc_ValueError,
-                        "Can't create a tensor map: strides must be positive, got %lld",
-                        static_cast<long long>(s));
+                        "Can't create a tensor map: strides must be positive, got ", s);
             uint64_t u = s;
             uint64_t bytes = u * m.item_size;
             if (bytes / m.item_size != u)
                 return raise(PyExc_OverflowError,
-                        "Can't create a tensor map: stride %lld is too big",
-                        static_cast<long long>(s));
+                        "Can't create a tensor map: stride ", s, " is too big");
             global_strides[i - 1] = static_cast<uint32_t>(bytes);
         }
 
@@ -2931,7 +2920,7 @@ static Status hoisted_tensor_map_encode(const DriverApi& driver,
             m.oob_fill
         );
         if (res != CUDA_SUCCESS)
-            return raise(PyExc_RuntimeError, "Failed to encode tiled tensor map: %s",
+            return raise(PyExc_RuntimeError, "Failed to encode tiled tensor map: ",
                          get_cuda_error(&driver, res));
 
         helper.cuarg_offsets.push_back(tensor_map_offset);
@@ -2960,12 +2949,12 @@ static Result<TileKernel> compile(const DriverApi* driver,
     if (!compile_result) return ErrorRaised;
 
     if (!PyTuple_Check(compile_result.get()))
-        return raise(PyExc_TypeError, "Expected compile() to return a tuple, got %s",
+        return raise(PyExc_TypeError, "Expected compile() to return a tuple, got ",
                      Py_TYPE(compile_result.get())->tp_name);
 
     if (PyTuple_GET_SIZE(compile_result.get()) != 4)
-        return raise(PyExc_TypeError, "Expected compile() to return a 4-tuple, got length %zd",
-                     PyTuple_GET_SIZE(compile_result.get()));
+        return raise(PyExc_TypeError, "Expected compile() to return a 4-tuple, got length ",
+                      PyTuple_GET_SIZE(compile_result.get()));
 
     PyObject* py_cubin_bytes = PyTuple_GET_ITEM(compile_result.get(), 0);
     PyObject* py_cufunc_name = PyTuple_GET_ITEM(compile_result.get(), 1);
@@ -2977,9 +2966,10 @@ static Result<TileKernel> compile(const DriverApi* driver,
             || (py_hoisted_tensor_maps != Py_None && !PyList_Check(py_hoisted_tensor_maps))) {
         return raise(PyExc_TypeError,
                      "Expected compile() to return (bytes, str, HostProgram|None, list|None),"
-                     " got %s, %s",
-                     Py_TYPE(py_cubin_bytes)->tp_name,
-                     Py_TYPE(py_cufunc_name)->tp_name);
+                     " got ", Py_TYPE(py_cubin_bytes)->tp_name,
+                     ", ", Py_TYPE(py_cufunc_name)->tp_name,
+                     ", ", Py_TYPE(py_dyn_smem_size_prog)->tp_name,
+                     ", ", Py_TYPE(py_hoisted_tensor_maps)->tp_name);
     }
 
     char* cubin_data;
@@ -3046,7 +3036,7 @@ static StreamKind do_classify_stream_type(PyTypeObject* ty) {
         return StreamKind::Error;
     } else {
         // TODO: support more stream types, for example, cuda.core.experimental._stream.Stream
-        raise(PyExc_TypeError, "Unsupported stream type %s.", ty->tp_name);
+        raise(PyExc_TypeError, "Unsupported stream type '", ty->tp_name, "'.");
         return StreamKind::Error;
     }
 }
@@ -3081,7 +3071,7 @@ static Result<CUstream> parse_stream(PyObject* py_stream) {
         CUstream stream = static_cast<CUstream>(PyLong_AsVoidPtr(raw));
         if (PyErr_Occurred()) {
             if (!PyLong_Check(raw))
-                raise(PyExc_TypeError, "Raw stream pointer must be a long, got %s",
+                raise(PyExc_TypeError, "Raw stream pointer must be a long, got ",
                       Py_TYPE(raw)->tp_name);
             return ErrorRaised;
         }
@@ -3136,7 +3126,7 @@ static Result<StreamBufferPool*> get_stream_buffer_pool(const DriverApi* driver,
     if (!ctx) {
         CUresult res = driver->cuCtxGetCurrent(&ctx);
         if (res != CUDA_SUCCESS) {
-            return raise(PyExc_RuntimeError, "Failed to get current CUDA context: %s",
+            return raise(PyExc_RuntimeError, "Failed to get current CUDA context: ",
                          get_cuda_error(driver, res));
         }
     }
@@ -3145,7 +3135,7 @@ static Result<StreamBufferPool*> get_stream_buffer_pool(const DriverApi* driver,
     CUresult res = driver->cuCtxGetId(ctx, &ctx_id);
     if (res != CUDA_SUCCESS)
         return raise(PyExc_RuntimeError,
-                     "Failed to get CUDA context ID: %s", get_cuda_error(driver, res));
+                     "Failed to get CUDA context ID: ", get_cuda_error(driver, res));
 
     StreamBufferPoolMap::Item* item = g_stream_buffer_pool_by_ctx_id->find(ctx_id);
     if (item) {
@@ -3162,21 +3152,19 @@ struct Grid {
     unsigned dims[Len];
 };
 
-static bool validate_grid(const Grid& grid) {
+static Status validate_grid(const Grid& grid) {
     constexpr unsigned kMaxGridDim = (1 << 24) - 1;
     for (int i = 0; i < Grid::Len; ++i) {
         // Restrict grid dims to 2^24 due to an OCG bug.
         // Larger dimensions may result in incorrect tile block ID calculations.
         if (grid.dims[i] > kMaxGridDim) {
-            raise(
+            return raise(
                 PyExc_ValueError,
-                "Grid[%d] exceeds 24-bit limit: max=%d, got=%lu. "
-                "Use multiple kernel launches for larger workloads.",
-                i, kMaxGridDim, grid.dims[i]);
-            return false;
+                "Grid[", i, "] exceeds 24-bit limit: max=", kMaxGridDim, ", got=", grid.dims[i],". "
+                "Use multiple kernel launches for larger workloads.");
         }
     }
-    return true;
+    return OK;
 }
 
 static bool try_clarify_invalid_value_error(const DriverApi* driver, const Grid& grid) {
@@ -3191,8 +3179,7 @@ static bool try_clarify_invalid_value_error(const DriverApi* driver, const Grid&
         if (driver->cuDeviceGetAttribute(&v, attr, dev) != CUDA_SUCCESS) return false;
 
         if (grid.dims[i] > static_cast<unsigned>(v)) {
-            raise(PyExc_ValueError, "Grid[%d] is too big: max=%d, got=%lu",
-                  i, v, grid.dims[i]);
+            raise(PyExc_ValueError, "Grid[", i, "] is too big: max=", v, ", got=", grid.dims[i]);
             return true;
         }
     }
@@ -3214,7 +3201,7 @@ static Result<CUcontext> get_stream_context(const DriverApi* driver, CUstream st
     // no active context in current thread. We will still get the context
     // from the array arguments later during `extract_cuda_args`.
     if (res != CUDA_SUCCESS && res != CUDA_ERROR_INVALID_CONTEXT) {
-        return raise(PyExc_RuntimeError, "Failed to get a CUDA context from a stream: %s",
+        return raise(PyExc_RuntimeError, "Failed to get a CUDA context from a stream: ",
                      get_cuda_error(driver, res));
     }
     return ctx;
@@ -3234,7 +3221,7 @@ static Status stage_list_args_on_stream(const DriverApi* driver,
         CUstreamCaptureStatus status;
         CUresult res = driver->cuStreamIsCapturing(launch_stream, &status);
         if (res != CUDA_SUCCESS)
-            return raise(PyExc_RuntimeError, "Failed to check stream capturing status: %s",
+            return raise(PyExc_RuntimeError, "Failed to check stream capturing status: ",
                     get_cuda_error(driver, res));
         if (status != CU_STREAM_CAPTURE_STATUS_NONE)
             return raise(PyExc_RuntimeError, "List argument in CUDAGraph isn't supported yet");
@@ -3267,7 +3254,7 @@ static Status stage_list_args_on_stream(const DriverApi* driver,
 
     CUresult res = driver->cuMemcpyHtoDAsync(ptr.device, ptr.host, size, launch_stream);
     if (res != CUDA_SUCCESS) {
-        return raise(PyExc_RuntimeError, "Failed to copy memory from host to device: %s",
+        return raise(PyExc_RuntimeError, "Failed to copy memory from host to device: ",
                      get_cuda_error(driver, res));
     }
 
@@ -3329,39 +3316,36 @@ static ErrorRaised_t raise_invalid_kernel_arg_type_impl(
     CHECK(path[0].depth_first_idx == SIZE_MAX);
 
     // Walk the path backwards and build the message
-    PyPtr ret = steal(PyUnicode_FromString("Invalid "));
-    if (!ret) return {};
+    StringBuilder builder;
+    builder.append("Invalid ");
 
     for (size_t i = path.size() - 1; i > 0; --i) {
         const std::optional<AggregateArgType>& agg_type = agg_types[path[i].depth_first_idx];
         CHECK(agg_type.has_value());
 
-        PyPtr new_str;
         switch (agg_type->kind) {
         case AggregateArgType::Tuple:
-            new_str = steal(PyUnicode_FromFormat("%Uitem #%zu of ", ret.get(), path[i].item_idx));
+            builder.append_many("item #", path[i].item_idx, " of ");
             break;
 #ifdef ENABLE_CCONV_V3
         case AggregateArgType::Dataclass:
             CHECK(path[i].item_idx < agg_type->dataclass_info->field_names.size());
-            new_str = steal(PyUnicode_FromFormat("%Ufield '%U' of ", ret.get(),
-                    agg_type->dataclass_info->field_names[path[i].item_idx].get()));
+            builder.append_many("field '", agg_type->dataclass_info->field_names[path[i].item_idx],
+                                "' of ");
             break;
 #endif
         }
-        if (!new_str) return {};
-        ret = std::move(new_str);
     }
-    return raise(PyExc_TypeError,
-            "%Ukernel argument #%zu: %U", ret.get(), path[0].item_idx, message);
+    builder.append_many("kernel argument #", path[0].item_idx, ": ", message);
+    return builder.raise(PyExc_TypeError);
 }
 
 template <typename... Args>
 ErrorRaised_t raise_invalid_kernel_arg_type(const Vec<PyTypeObject*>& pyarg_types_depth_first,
                                             const Vec<std::optional<AggregateArgType>>& agg_types,
                                             size_t culprit_leaf_idx,
-                                            const char* fmt, Args&&... args) {
-    PyPtr msg = steal(PyUnicode_FromFormat(fmt, std::forward<Args>(args)...));
+                                            Args&&... message) {
+    PyPtr msg = to_pyunicode(std::forward<Args>(message)...);
     if (!msg) return ErrorRaised;
 
     return raise_invalid_kernel_arg_type_impl(
@@ -3384,8 +3368,8 @@ get_pyarg_kinds(const Vec<PyTypeObject*>& pyarg_types_depth_first,
             if (!kind.has_value()) {
                 return raise_invalid_kernel_arg_type(
                         pyarg_types_depth_first, agg_types, i,
-                        "Could not interpret object of type '%s' as a constant.",
-                        Py_TYPE(obj)->tp_name);
+                        "Could not interpret object of type '", Py_TYPE(obj)->tp_name,
+                        "' as a constant.");
             }
             ret.push_back(constant_kind_as_arg_kind(*kind));
         } else {
@@ -3394,19 +3378,18 @@ get_pyarg_kinds(const Vec<PyTypeObject*>& pyarg_types_depth_first,
                 if (PyType_IsSubtype(Py_TYPE(obj), &PyTuple_Type)) {
                     return raise_invalid_kernel_arg_type(
                             pyarg_types_depth_first, agg_types, i,
-                            "'%s' is a subclass of 'tuple'. Only plain tuples are accepted.",
-                            Py_TYPE(obj)->tp_name);
+                            "'", Py_TYPE(obj)->tp_name, "' is a subclass of 'tuple'."
+                            " Only plain tuples are accepted.");
                 }
                 if (classify_constant(obj, true).has_value()) {
                     return raise_invalid_kernel_arg_type(
                             pyarg_types_depth_first, agg_types, i,
-                            "Objects of type '%s' are only accepted"
-                            " for parameters annotated as Constant.",
-                            Py_TYPE(obj)->tp_name);
+                            "Objects of type '", Py_TYPE(obj)->tp_name,"' are only accepted"
+                            " for parameters annotated as Constant.");
                 }
                 return raise_invalid_kernel_arg_type(
                         pyarg_types_depth_first, agg_types, i,
-                        "Objects of type '%s' are not supported.", Py_TYPE(obj)->tp_name);
+                        "Objects of type '", Py_TYPE(obj)->tp_name, "' are not supported.");
             }
             ret.push_back(*kind);
         }
@@ -3672,11 +3655,9 @@ static PythonArgProfile* python_arg_profile_lookup_impl(
             // Slower path: allocate a new ProfileMapNode.
 
             if (depth == 0 && (size_t)num_pyargs != param_annotations.size()) {
-                raise(PyExc_TypeError, "Kernel expects %zu %s but %zd %s given",
-                        param_annotations.size(),
-                        param_annotations.size() == 1 ? "argument" : "arguments",
-                        num_pyargs,
-                        num_pyargs == 1 ? "was" : "were");
+                raise(PyExc_TypeError, "Kernel expects ", param_annotations.size(),
+                      param_annotations.size() == 1 ? " argument" : " arguments",
+                      " but ", num_pyargs, num_pyargs == 1 ? " was given" : " were given");
                 return nullptr;
             }
 
@@ -3754,7 +3735,7 @@ static PythonArgProfile* python_arg_profile_lookup_impl(
     }
 
     raise(PyExc_RecursionError,
-          "Argument nesting exceeds maximum depth of %d", kMaxAggregateNestingDepth);
+          "Argument nesting exceeds maximum depth of ", kMaxAggregateNestingDepth);
     return nullptr;
 }
 
@@ -3785,7 +3766,6 @@ static Result<PreparedLaunch> prepare_launch(
         bool stage_list_args,
         StreamBufferTransaction& tx,
         CudaContextGuard& ctx_guard) {
-
     LaunchHelperPtr helper = launch_helper_get();
 
     Result<CUcontext> stream_context = get_stream_context(driver, launch_stream);
@@ -3807,7 +3787,7 @@ static Result<PreparedLaunch> prepare_launch(
     CUdevice dev;
     CUresult dev_res = driver->cuCtxGetDevice_v2(&dev, helper->cuda_context);
     if (dev_res != CUDA_SUCCESS) {
-        return raise(PyExc_RuntimeError, "Failed to get current CUDA device: %s",
+        return raise(PyExc_RuntimeError, "Failed to get current CUDA device: ",
                      get_cuda_error(driver, dev_res));
     }
 
@@ -3921,7 +3901,7 @@ static Status launch(const DriverApi* driver,
         if (res == CUDA_ERROR_INVALID_VALUE && try_clarify_invalid_value_error(driver, grid))
             return ErrorRaised;
 
-        return raise(PyExc_RuntimeError, "Failed to launch cuTile kernel: %s",
+        return raise(PyExc_RuntimeError, "Failed to launch cuTile kernel: ",
                      get_cuda_error(driver, res));
     }
 
@@ -3939,7 +3919,7 @@ static Result<double> benchmark(const DriverApi* driver,
     do { \
         CUresult res = (expr); \
         if (res != CUDA_SUCCESS) \
-            return raise(PyExc_RuntimeError, name ": %s", get_cuda_error(driver, res)); \
+            return raise(PyExc_RuntimeError, name ": ", get_cuda_error(driver, res)); \
     } while (0)
 
     CUdevice device;
@@ -4088,8 +4068,8 @@ static Status extract_dim_tuple_attr(PyObject* py_array_annotation, const char* 
     if (!dims) return ErrorRaised;
 
     if (!PyTuple_Check(dims.get()))
-        return raise(PyExc_TypeError, "`ArrayAnnotation.%s` must be a tuple, got %s",
-                     attr_name, Py_TYPE(dims.get())->tp_name);
+        return raise(PyExc_TypeError, "`ArrayAnnotation.", attr_name, "` must be a tuple, got ",
+                     Py_TYPE(dims.get())->tp_name);
     Py_ssize_t nd = PyTuple_GET_SIZE(dims.get());
 
     dst->reserve(nd);
@@ -4175,7 +4155,7 @@ static RefPtr<ParameterAnnotationNode> parse_parameter_annotation_node(PyObject*
         PyPtr items = getattr(obj, "items");
         if (!items) return {};
         if (!PyTuple_Check(items.get())) {
-            raise(PyExc_TypeError, "heterogeneous_tuple `items` must be a tuple, got %s",
+            raise(PyExc_TypeError, "heterogeneous_tuple `items` must be a tuple, got ",
                   Py_TYPE(items.get())->tp_name);
             return {};
         }
@@ -4192,7 +4172,7 @@ static RefPtr<ParameterAnnotationNode> parse_parameter_annotation_node(PyObject*
     } else {
         raise(PyExc_TypeError,
               "expected a ParameterAnnotationNode (leaf/homogeneous_tuple/heterogeneous_tuple),"
-              " got KIND=%R", kind.get());
+              " got KIND=", use_repr(kind));
         return {};
     }
 }
@@ -4356,8 +4336,8 @@ static Result<Grid> parse_grid(PyObject* tuple) {
 
     Py_ssize_t tuple_size = PyTuple_GET_SIZE(tuple);
     if (tuple_size > Grid::Len)
-        return raise(PyExc_ValueError, "Grid dimensions must be at most %d, got length %zd",
-                     Grid::Len, tuple_size);
+        return raise(PyExc_ValueError, "Grid dimensions must be at most ", Grid::Len,
+                     ", got length ", tuple_size);
 
     Grid grid;
     for (int i = 0; i < Grid::Len; ++i) {
@@ -4367,8 +4347,7 @@ static Result<Grid> parse_grid(PyObject* tuple) {
             val = PyLong_AsUnsignedLong(PyTuple_GET_ITEM(tuple, i));
             if (PyErr_Occurred()) return ErrorRaised;
             if (val > UINT_MAX)
-                return raise(PyExc_ValueError, "Grid[%d] value too big: got=%lu",
-                             i, val);
+                return raise(PyExc_ValueError, "Grid[", i, "] value too big: ", val);
         }
         grid.dims[i] = val;
     }
@@ -4407,13 +4386,12 @@ static Result<unsigned> parse_tile_launch_kwargs(PyObject *const *args,
         if (PyUnicode_Compare(keyword, g_programmatic_dependent_launch_pyunicode) == 0) {
             if (!PyBool_Check(kwarg))
                 return raise(PyExc_TypeError,
-                             "expected argument %U to have type bool", keyword);
+                             "expected argument ", keyword, " to have type bool");
             CUlaunchAttribute *attr = &launch_attrs[num_attrs++];
             attr->id = CU_LAUNCH_ATTRIBUTE_PROGRAMMATIC_STREAM_SERIALIZATION;
             attr->value.programmaticStreamSerializationAllowed = Py_IsTrue(kwarg);
         } else {
-            return raise(PyExc_RuntimeError, "Unexpected keyword argument %U",
-                         keyword);
+            return raise(PyExc_RuntimeError, "Unexpected keyword argument ", keyword);
         }
     }
 
@@ -4444,14 +4422,14 @@ static Result<unsigned> parse_lang_launch_kwargs(PyObject *const *args,
         if (PyUnicode_Compare(keyword, g_cooperative_pyunicode) == 0) {
             if (!PyBool_Check(kwarg))
                 return raise(PyExc_TypeError,
-                             "expected argument %U to have type bool", keyword);
+                             "expected argument ", keyword, " to have type bool");
             CUlaunchAttribute *attr = &launch_attrs[num_attrs++];
             attr->id = CU_LAUNCH_ATTRIBUTE_COOPERATIVE;
             attr->value.cooperative = Py_IsTrue(kwarg);
         } else if (PyUnicode_Compare(keyword, g_programmatic_dependent_launch_pyunicode) == 0) {
             if (!PyBool_Check(kwarg))
                 return raise(PyExc_TypeError,
-                             "expected argument %U to have type bool", keyword);
+                             "expected argument ", keyword, " to have type bool");
             CUlaunchAttribute *attr = &launch_attrs[num_attrs++];
             attr->id = CU_LAUNCH_ATTRIBUTE_PROGRAMMATIC_STREAM_SERIALIZATION;
             attr->value.programmaticStreamSerializationAllowed = Py_IsTrue(kwarg);
@@ -4480,8 +4458,7 @@ static Result<unsigned> parse_lang_launch_kwargs(PyObject *const *args,
                 .x = dims[0], .y = dims[1], .z = dims[2]};
             has_preferred_block_in_cluster_count = true;
         } else {
-            return raise(PyExc_RuntimeError, "Unexpected keyword argument %U",
-                         keyword);
+            return raise(PyExc_RuntimeError, "Unexpected keyword argument ", keyword);
         }
     }
 
@@ -4491,9 +4468,8 @@ static Result<unsigned> parse_lang_launch_kwargs(PyObject *const *args,
     // "regular" dims were not.
     if (has_preferred_block_in_cluster_count && !has_block_in_cluster_count)
         return raise(PyExc_ValueError,
-                     "Keyword argument %U requires that %U is also passed",
-                     g_preferred_block_in_cluster_count_pyunicode,
-                     g_block_in_cluster_count_pyunicode);
+                     "Keyword argument ", g_preferred_block_in_cluster_count_pyunicode,
+                     " requires that ", g_block_in_cluster_count_pyunicode, " is also passed");
 
     return num_attrs;
 }
@@ -4501,7 +4477,7 @@ static Result<unsigned> parse_lang_launch_kwargs(PyObject *const *args,
 static Status parse_launch_args(PyObject* const* args, Py_ssize_t nargs, const char* signature,
                                 bool with_block, LaunchArgs* out) {
     if (nargs != 4 + with_block)
-        return raise(PyExc_TypeError, "Wrong number of arguments to %s", signature);
+        return raise(PyExc_TypeError, "Wrong number of arguments to ", signature);
 
     PyObject* stream_pyobj = args[0];
     Result<CUstream> stream_res = parse_stream(stream_pyobj);
@@ -4526,8 +4502,8 @@ static Status parse_launch_args(PyObject* const* args, Py_ssize_t nargs, const c
     if (!PyObject_TypeCheck(dispatcher_pyobj, &TileDispatcher::pytype)) {
         const char* which = with_block ? "fourth" : "third";
         return raise(PyExc_TypeError,
-                "%s expects a tile kernel as the %s argument, got %s",
-                signature, which, Py_TYPE(dispatcher_pyobj)->tp_name);
+                signature, " expects a tile kernel as the ", which, " argument, got ",
+                Py_TYPE(dispatcher_pyobj)->tp_name);
     }
     out->dispatcher = dispatcher_pyobj;
 
@@ -4535,8 +4511,8 @@ static Status parse_launch_args(PyObject* const* args, Py_ssize_t nargs, const c
     if (!PyTuple_Check(kernel_args_pyobj)) {
         const char* which = with_block ? "fifth" : "fourth";
         return raise(PyExc_TypeError,
-                "%s expects a tuple as the %s argument, got %s",
-                signature, which, Py_TYPE(kernel_args_pyobj)->tp_name);
+                signature, " expects a tuple as the ", which, " argument, got ",
+                Py_TYPE(kernel_args_pyobj)->tp_name);
     }
 
     out->kernel_args = reinterpret_cast<PyTupleObject*>(kernel_args_pyobj)->ob_item;
@@ -4672,7 +4648,7 @@ static PyObject* cuda_tile_export_ipc_benchmark_payload(PyObject*, PyObject* con
     CUdevice device;
     CUresult res = (*driver)->cuCtxGetDevice(&device);
     if (res != CUDA_SUCCESS) {
-        raise(PyExc_RuntimeError, "Failed to get current CUDA device: %s",
+        raise(PyExc_RuntimeError, "Failed to get current CUDA device: ",
               get_cuda_error(*driver, res));
         return nullptr;
     }
@@ -4729,7 +4705,7 @@ static PyObject* cuda_tile_export_ipc_benchmark_payload(PyObject*, PyObject* con
     // the same stream. So synchronize the stream before returning the payload.
     res = (*driver)->cuStreamSynchronize(launch_args.stream);
     if (res != CUDA_SUCCESS) {
-        raise(PyExc_RuntimeError, "Failed to synchronize stream for IPC benchmark payload: %s",
+        raise(PyExc_RuntimeError, "Failed to synchronize stream for IPC benchmark payload: ",
               get_cuda_error(*driver, res));
         return nullptr;
     }
@@ -4745,7 +4721,7 @@ static PyObject* cuda_tile_benchmark_with_ipc_payload(PyObject*, PyObject* const
     PyCriticalSectionGuard guard(&g_launch_mutex);
 #endif
     if (nargs != 1) {
-        raise(PyExc_TypeError, "Wrong number of arguments to %s",
+        raise(PyExc_TypeError, "Wrong number of arguments to ",
               BENCHMARK_WITH_IPC_PAYLOAD_SIGNATURE);
         return nullptr;
     }
@@ -4779,14 +4755,14 @@ static PyObject* cuda_tile_benchmark_with_ipc_payload(PyObject*, PyObject* const
     CUdevice device;
     CUresult res = (*driver)->cuDeviceGet(&device, device_id);
     if (res != CUDA_SUCCESS) {
-        raise(PyExc_RuntimeError, "cuDeviceGet: %s", get_cuda_error(*driver, res));
+        raise(PyExc_RuntimeError, "cuDeviceGet: ", get_cuda_error(*driver, res));
         return nullptr;
     }
 
     CUcontext ctx;
     res = (*driver)->cuDevicePrimaryCtxRetain(&ctx, device);
     if (res != CUDA_SUCCESS) {
-        raise(PyExc_RuntimeError, "cuDevicePrimaryCtxRetain: %s",
+        raise(PyExc_RuntimeError, "cuDevicePrimaryCtxRetain: ",
               get_cuda_error(*driver, res));
         return nullptr;
     }

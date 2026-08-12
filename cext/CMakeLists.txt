@@ -102,28 +102,28 @@ target_include_directories(_cext_shared PRIVATE ${cext_include_dirs})
 target_link_options(_cext_shared PUBLIC ${cext_link_flags} ${nostdlib_flags} -Wl,--no-undefined)
 
 # Tests
+function(add_test_executable)
+    if (ARGC LESS 1)
+        message(FATAL_ERROR "add_test_executable() needs at least one argument (executable name)")
+    endif()
+    set(name ${ARGV0})
+    list(REMOVE_AT ARGV 0)
+    add_executable(${name} ${ARGV})
 
-add_executable(test_stream_buffer
-    test/test_stream_buffer.cpp
-    cuda_loader.cpp
-    cuda_helper.cpp
-    memory.cpp
-    )
-target_compile_options(test_stream_buffer PUBLIC ${cext_compile_flags} ${test_coverage_options})
-target_include_directories(test_stream_buffer PRIVATE ${cext_include_dirs})
-target_link_libraries(test_stream_buffer PRIVATE ${Python_LIBRARIES})
-target_link_options(test_stream_buffer PRIVATE ${test_coverage_options})
+    target_compile_options(${name} PUBLIC ${cext_compile_flags} ${test_coverage_options})
+    target_include_directories(${name} PRIVATE ${cext_include_dirs})
+    target_link_libraries(${name} PRIVATE ${Python_LIBRARIES})
+    target_link_options(${name} PRIVATE ${test_coverage_options})
 
-
-add_executable(test_hash_map test/test_hash_map.cpp memory.cpp)
-target_include_directories(test_hash_map PRIVATE ${cext_include_dirs})
-target_compile_options(test_hash_map PUBLIC ${cext_compile_flags} ${test_coverage_options})
-target_link_options(test_hash_map PRIVATE ${test_coverage_options})
-target_link_libraries(test_hash_map PRIVATE ${Python_LIBRARIES})
+    add_test(NAME ${name} COMMAND ${name})
+endfunction()
 
 
-add_executable(test_vec test/test_vec.cpp memory.cpp)
-target_include_directories(test_vec PRIVATE ${cext_include_dirs})
-target_compile_options(test_vec PUBLIC ${cext_compile_flags} ${test_coverage_options})
-target_link_options(test_vec PRIVATE ${test_coverage_options})
-target_link_libraries(test_vec PRIVATE ${Python_LIBRARIES})
+add_test_executable(test_stream_buffer
+    test/test_stream_buffer.cpp cuda_loader.cpp cuda_helper.cpp memory.cpp)
+
+add_test_executable(test_hash_map test/test_hash_map.cpp memory.cpp)
+
+add_test_executable(test_vec test/test_vec.cpp memory.cpp)
+
+add_test_executable(test_string_builder test/test_string_builder.cpp py.cpp)

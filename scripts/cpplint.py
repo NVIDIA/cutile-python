@@ -56,6 +56,11 @@ def lint(paths):
                             )
                         if length > 0 and line[length - 1].isspace():
                             report_error("Trailing whitespace at the end of the line")
+
+                        if "PyErr_Format" in line:
+                            report_error("Please use raise() over PyErr_Format()")
+                        if "PyUnicode_FromFormat" in line:
+                            report_error("Please use to_pyunicode() over PyUnicode_FromFormat()")
                 num_files += 1
 
     if num_errors > 0:

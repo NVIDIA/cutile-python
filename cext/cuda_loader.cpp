@@ -9,10 +9,6 @@
 namespace {
 
 
-typedef CUresult (*cuGetProcAddress_v2_t)
-    (const char *symbol, void **funcPtr, int cudaVersion,
-     cuuint64_t flags, CUdriverProcAddressQueryResult *symbolStatus);
-
 
 void* do_get_proc_address(cuGetProcAddress_v2_t getter,
                           const char* name, int cuda_version) {
@@ -20,15 +16,14 @@ void* do_get_proc_address(cuGetProcAddress_v2_t getter,
     CUresult res = getter(name, &ret, cuda_version, CU_GET_PROC_ADDRESS_DEFAULT, nullptr);
     if (res != CUDA_SUCCESS) {
         raise(PyExc_RuntimeError,
-              "Failed to load '%s' from the CUDA library: cuGetProcAddress_v2 returned %d",
-              static_cast<int>(res));
+              "Failed to load '", name, "' from the CUDA library: cuGetProcAddress_v2 returned ",
+              res);
         return nullptr;
     }
 
     if (!ret) {
         raise(PyExc_RuntimeError,
-              "Function '%s' is not available in the CUDA library",
-              static_cast<int>(res));
+              "Function '", name,"' is not available in the CUDA library");
         return nullptr;
     }
 
@@ -50,12 +45,17 @@ F get_proc_address(cuGetProcAddress_v2_t getter,
 FOREACH_CUDA_FUNCTION_TO_LOAD(DEFINE_CUDA_FUNCTION_GLOBAL)
 
 #define GET_PROC_ADDRESS(name, key, cuda_ver) \
-        if (!(driver_api.name = \
+        if (!(driver_api->name = \
                     get_proc_address<decltype(name)*>(_cuGetProcAddress, key, cuda_ver))) \
             return ErrorRaised;
 
 
-static Status cuda_loader_init(DriverApi& driver_api) {
+Status driver_api_init(DriverApi* driver_api, cuGetProcAddress_v2_t _cuGetProcAddress) {
+    FOREACH_CUDA_FUNCTION_TO_LOAD(GET_PROC_ADDRESS)
+    return OK;
+}
+
+static Result<cuGetProcAddress_v2_t> get_cuGetProcAddress_from_python() {
     PyPtr load_libcuda_mod = steal(PyImport_ImportModule("cuda.tile._load_libcuda"));
     if (!load_libcuda_mod) return ErrorRaised;
 
@@ -67,11 +67,7 @@ static Status cuda_loader_init(DriverApi& driver_api) {
             PyLong_AsSize_t(cuGetProcAddr_pyobj.get()));
     if (PyErr_Occurred()) return ErrorRaised;
 
-    cuGetProcAddress_v2_t _cuGetProcAddress = *cuGetProcAddr_pp;
-
-    FOREACH_CUDA_FUNCTION_TO_LOAD(GET_PROC_ADDRESS)
-
-    return OK;
+    return *cuGetProcAddr_pp;
 }
 
 
@@ -81,11 +77,14 @@ Result<const DriverApi*> get_driver_api() {
     static bool initialized;
     static DriverApi instance;
     if (!initialized) {
-        if (!cuda_loader_init(instance))
+        Result<cuGetProcAddress_v2_t> proc_addr_res = get_cuGetProcAddress_from_python();
+        if (!proc_addr_res.is_ok())
+            return ErrorRaised;
+        if (!driver_api_init(&instance, *proc_addr_res))
             return ErrorRaised;
         CUresult res = instance.cuInit(0);
         if (res != CUDA_SUCCESS)
-            return raise(PyExc_RuntimeError, "cuInit: %s", get_cuda_error(&instance, res));
+            return raise(PyExc_RuntimeError, "cuInit: ", get_cuda_error(&instance, res));
         if (!check_driver_version(&instance, MIN_DRIVER_VERSION))
             return ErrorRaised;
         initialized = true;
@@ -124,7 +123,7 @@ static Result<CudaLibrary> load_cuda_library(const DriverApi* driver, const void
     if (res == CUDA_SUCCESS)
         return CudaLibrary(driver, lib);
 
-    return raise(PyExc_RuntimeError, "Failed to load CUDA library: %s",
+    return raise(PyExc_RuntimeError, "Failed to load CUDA library: ",
                  get_cuda_error(driver, res));
 }
 
@@ -144,8 +143,8 @@ Result<CudaKernel> load_cuda_kernel(
     if (res == CUDA_SUCCESS)
         return CudaKernel{std::move(*lib), kernel};
 
-    return raise(PyExc_RuntimeError, "Failed to get kernel %s from library: %s",
-                 func_name, get_cuda_error(driver, res));
+    return raise(PyExc_RuntimeError, "Failed to get kernel ", func_name, " from library: ",
+                 get_cuda_error(driver, res));
 }
 
 
@@ -155,14 +154,14 @@ Status CudaContextGuard::switch_to(CUcontext target) {
     CUcontext current;
     CUresult res = driver->cuCtxGetCurrent(&current);
     if (res != CUDA_SUCCESS) {
-        return raise(PyExc_RuntimeError, "Failed to get current CUDA context: %s",
+        return raise(PyExc_RuntimeError, "Failed to get current CUDA context: ",
                      get_cuda_error(driver, res));
     }
     if (current == target) return OK;
 
     res = driver->cuCtxPushCurrent(target);
     if (res != CUDA_SUCCESS) {
-        return raise(PyExc_RuntimeError, "Failed to switch CUDA context: %s",
+        return raise(PyExc_RuntimeError, "Failed to switch CUDA context: ",
                      get_cuda_error(driver, res));
     }
     need_to_pop = true;

@@ -27,7 +27,7 @@ void log_python_error(const char* filename, int line, const char* level, SavedEx
     PyOS_vsnprintf(buf, sizeof buf, fmt, a);
     va_end(a);
 
-    PyPtr formatted_message = steal(PyUnicode_FromFormat("%s:%d: %s", filename, line, buf));
+    PyPtr formatted_message = to_pyunicode(filename, ":", line, ": ", buf);
     if (!formatted_message) return;
 
     PyPtr func = getattr(logging, level);
