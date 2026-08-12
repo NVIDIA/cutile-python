@@ -3396,12 +3396,17 @@ get_pyarg_kinds(const Vec<PyTypeObject*>& pyarg_types_depth_first,
                             pyarg_types_depth_first, agg_types, i,
                             "'%s' is a subclass of 'tuple'. Only plain tuples are accepted.",
                             Py_TYPE(obj)->tp_name);
-                } else {
+                }
+                if (classify_constant(obj, true).has_value()) {
                     return raise_invalid_kernel_arg_type(
                             pyarg_types_depth_first, agg_types, i,
-                            "Objects of type '%s' are not supported as non-constant arguments.",
+                            "Objects of type '%s' are only accepted"
+                            " for parameters annotated as Constant.",
                             Py_TYPE(obj)->tp_name);
                 }
+                return raise_invalid_kernel_arg_type(
+                        pyarg_types_depth_first, agg_types, i,
+                        "Objects of type '%s' are not supported.", Py_TYPE(obj)->tp_name);
             }
             ret.push_back(*kind);
         }

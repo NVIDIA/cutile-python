@@ -2,6 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 import enum
+import re
 
 import pytest
 import torch
@@ -111,3 +112,15 @@ def test_str_kernel_argument():
         ct.launch(torch.cuda.current_stream(), (1,), kern,
                   ("test string for test_str_kernel_argument!", out))
         assert out.tolist() == [0, 1]
+
+
+@pytest.mark.skipif(not cconv_v3_enabled(), reason="Requires cconv3 enabled")
+def test_str_passed_for_nonconstant_param():
+    @ct.kernel
+    def kern(x):
+        print(x)
+
+    with pytest.raises(TypeError,
+                       match=re.escape("Invalid kernel argument #0: Objects of type 'str' are only"
+                                       " accepted for parameters annotated as Constant.")):
+        ct.launch(torch.cuda.current_stream(), (1,), kern, ("hello",))
