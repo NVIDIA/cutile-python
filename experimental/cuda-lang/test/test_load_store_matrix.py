@@ -8,14 +8,11 @@ import cuda.lang as cl
 from cuda.lang._compile import KernelSignature
 from cuda.lang._exception import InvalidValueError
 
-from .util import (
-    compile_kernel,
-    make_symbolic_tensor,
-    require_blackwell_or_newer,
-    require_hopper_or_newer,
-)
+from .util import compile_kernel, make_symbolic_tensor
 
 
+HOPPER_TARGET = {"gpu_name": "sm_90", "arch": "compute_90"}
+SM100_TARGET = {"gpu_name": "sm_100a", "arch": "compute_100a"}
 SIG_I32 = KernelSignature([make_symbolic_tensor((4,), cl.int32)])
 
 
@@ -55,7 +52,6 @@ def test_load_matrix_vector():
     )
 
 
-@require_blackwell_or_newer()
 def test_load_matrix_packed_m16n16():
     def kernel(output):
         smem = cl.shared_array(256, cl.int8, alignment=16)
@@ -73,10 +69,10 @@ def test_load_matrix_packed_m16n16():
         kernel,
         signature=SIG_I32,
         assert_in_ptx="ldmatrix.sync.aligned.m16n16.x1.trans",
+        **SM100_TARGET,
     )
 
 
-@require_hopper_or_newer()
 @pytest.mark.parametrize("trans", (True, False))
 def test_store_matrix_vector(trans):
     def kernel():
@@ -97,10 +93,10 @@ def test_store_matrix_vector(trans):
             + (".trans" if trans else "")
             + ".shared.b16"
         ),
+        **HOPPER_TARGET,
     )
 
 
-@require_blackwell_or_newer()
 def test_store_matrix_m16n8():
     def kernel():
         smem = cl.shared_array(128, cl.int8, alignment=16)
@@ -114,6 +110,7 @@ def test_store_matrix_m16n8():
     compile_kernel(
         kernel,
         assert_in_ptx="stmatrix.sync.aligned.m16n8.x2.trans",
+        **SM100_TARGET,
     )
 
 

@@ -7,7 +7,7 @@ import torch
 
 import cuda.lang as cl
 from cuda.lang._exception import TypeCheckingError
-from .util import require_blackwell_or_newer
+from .util import require_hopper_or_newer
 
 
 @pytest.mark.parametrize("src_dtype", [torch.float16, torch.float32])
@@ -70,7 +70,7 @@ def test_any_pointer_arg_intrinsic():
         assert val == ((2*i + 1) << 16) + 2*i
 
 
-@require_blackwell_or_newer()
+@require_hopper_or_newer()
 def test_smem_pointer_arg_intrinsic():
     @cl.kernel
     def kern(y):
@@ -85,7 +85,7 @@ def test_smem_pointer_arg_intrinsic():
     assert y.tolist() == [13]
 
 
-@require_blackwell_or_newer()
+@require_hopper_or_newer()
 def test_generic_pointer_arg_intrinsic():
     @cl.kernel
     def kern(y):

@@ -15,7 +15,6 @@ from .util import (
     make_symbolic_tensor,
     make_symbolic_scalar,
     compile_kernel,
-    require_blackwell_cc100,
 )
 
 
@@ -605,7 +604,6 @@ def test_pointer_setitem():
     assert arr.cpu().item() == 5
 
 
-@require_blackwell_cc100()
 @pytest.mark.parametrize("cluster", (False, True))
 def test_map_shared_to_leader_block(cluster):
     """
@@ -643,6 +641,8 @@ def test_map_shared_to_leader_block(cluster):
         CHECK: and.b32
         CHECK-SAME: {constant}
         """,
+        gpu_name="sm_100a",
+        arch="compute_100a",
     )
 
 

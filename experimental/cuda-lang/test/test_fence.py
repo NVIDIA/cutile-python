@@ -7,15 +7,12 @@ from itertools import product
 import pytest
 
 import cuda.lang as cl
-from cuda.lang._compile import KernelSignature, get_compute_capability
+from cuda.lang._compile import KernelSignature
 from cuda.lang._enums import MemoryScope, MemoryOrder
 from cuda.lang._exception import TypeCheckingError, CompilerExecutionError
 from test.util import make_symbolic_tensor, compile_kernel
 
-cc = get_compute_capability()
-if cc < (9, 0):
-    pytest.skip("Requires hopper", True)
-
+HOPPER_TARGET = {"gpu_name": "sm_90", "arch": "compute_90"}
 
 MEMORY_SCOPE_PTX = {
     MemoryScope.BLOCK: "cta",
@@ -55,7 +52,11 @@ def test_fence(order, scope, expect):
     def func():
         cl.fence(order, scope)
 
-    compile_empty_kernel_with_call(func, assert_in_ptx=expect)
+    compile_empty_kernel_with_call(
+        func,
+        assert_in_ptx=expect,
+        **HOPPER_TARGET,
+    )
 
 
 def test_fence_defaults():
@@ -111,7 +112,11 @@ def test_fence_restricted(order, restrict, expect):
             restriction=restrict,
         )
 
-    compile_empty_kernel_with_call(func, assert_in_ptx=expect)
+    compile_empty_kernel_with_call(
+        func,
+        assert_in_ptx=expect,
+        **HOPPER_TARGET,
+    )
 
 
 @pytest.mark.parametrize(
@@ -143,7 +148,11 @@ def test_fence_proxy_bidirectional(proxy, restriction, expect):
             restriction=restriction,
         )
 
-    compile_empty_kernel_with_call(func, assert_in_ptx=expect)
+    compile_empty_kernel_with_call(
+        func,
+        assert_in_ptx=expect,
+        **HOPPER_TARGET,
+    )
 
 
 @pytest.mark.parametrize("scope, scope_ptx", MEMORY_SCOPE_PTX.items())
@@ -158,6 +167,7 @@ def test_fence_proxy_tensormap_release(scope, scope_ptx):
 
     compile_empty_kernel_with_call(
         func,
+        **HOPPER_TARGET,
         assert_in_ptx=f"fence.proxy.tensormap::generic.release.{scope_ptx}",
     )
 
@@ -177,6 +187,7 @@ def test_fence_proxy_tensormap_acquire(scope, scope_ptx):
     compile_kernel(
         kernel,
         signature=KernelSignature([make_symbolic_tensor((1,), cl.int32)]),
+        **HOPPER_TARGET,
         assert_in_ptx=f"fence.proxy.tensormap::generic.acquire.{scope_ptx}",
     )
 
@@ -208,7 +219,11 @@ def test_fence_proxy_async_split(order, restrict, expect):
             restriction=restrict,
         )
 
-    compile_empty_kernel_with_call(func, assert_in_ptx=expect)
+    compile_empty_kernel_with_call(
+        func,
+        assert_in_ptx=expect,
+        **HOPPER_TARGET,
+    )
 
 
 @pytest.mark.parametrize(
@@ -292,6 +307,7 @@ def test_fence_invalid_combination(order, scope, from_proxy, to_proxy, restricti
     compile_empty_kernel_with_call(
         func,
         raises=pytest.raises(Exception),
+        **HOPPER_TARGET,
     )
 
 
@@ -315,7 +331,11 @@ def test_fence_proxy_fabric_unsupported(from_proxy, to_proxy):
             to_proxy=to_proxy,
         )
 
-    compile_empty_kernel_with_call(func, raises=pytest.raises(Exception))
+    compile_empty_kernel_with_call(
+        func,
+        raises=pytest.raises(Exception),
+        **HOPPER_TARGET,
+    )
 
 
 @pytest.mark.parametrize(
@@ -331,7 +351,11 @@ def test_fence_proxy_bidirectional_invalid(proxy, restriction):
     def func():
         cl.fence_proxy_bidirectional(proxy, restriction=restriction)
 
-    compile_empty_kernel_with_call(func, raises=pytest.raises(Exception))
+    compile_empty_kernel_with_call(
+        func,
+        raises=pytest.raises(Exception),
+        **HOPPER_TARGET,
+    )
 
 
 def test_fence_proxy_tensormap_invalid_address_size():
@@ -391,7 +415,11 @@ def test_fence_non_proxy_address_restriction():
             ),
         )
 
-    compile_kernel(kernel, raises=pytest.raises(Exception))
+    compile_kernel(
+        kernel,
+        raises=pytest.raises(Exception),
+        **HOPPER_TARGET,
+    )
 
 
 def test_fence_proxy_bidirectional_address_restriction():
@@ -405,7 +433,11 @@ def test_fence_proxy_bidirectional_address_restriction():
             ),
         )
 
-    compile_kernel(kernel, raises=pytest.raises(CompilerExecutionError))
+    compile_kernel(
+        kernel,
+        raises=pytest.raises(CompilerExecutionError),
+        **HOPPER_TARGET,
+    )
 
 
 @pytest.mark.parametrize(

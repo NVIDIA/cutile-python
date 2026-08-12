@@ -2,7 +2,6 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-from cuda.lang._compile import get_compute_capability
 import pytest
 
 import cuda.lang as cl
@@ -10,10 +9,7 @@ from cuda.lang._compile import KernelSignature
 
 from test.util import compile_kernel, make_symbolic_tensor
 
-
-cc = get_compute_capability()
-if tuple(cc) < (9, 0):
-    pytest.skip('Requires hopper or greater', True)
+HOPPER_TARGET = {"gpu_name": "sm_90", "arch": "compute_90"}
 
 SIG_I32 = KernelSignature([make_symbolic_tensor((16,), cl.int32)])
 
@@ -80,6 +76,7 @@ def test_prefetch(memory_space, level, eviction_priority):
     compile_kernel(
         kernel,
         assert_in_ptx=expected_ptx,
+        **HOPPER_TARGET,
     )
 
 
@@ -94,6 +91,7 @@ def test_prefetch_uniform():
     compile_kernel(
         kernel,
         assert_in_ptx="prefetchu.L1",
+        **HOPPER_TARGET,
     )
 
 
@@ -108,4 +106,5 @@ def test_prefetch_tensor_map(predicated):
         kernel,
         signature=SIG_I32,
         assert_in_ptx="prefetch.tensormap",
+        **HOPPER_TARGET,
     )

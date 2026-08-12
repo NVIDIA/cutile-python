@@ -162,7 +162,6 @@ def test_memory_scope_enum_mappings(enum, expect):
         )
 
 
-@require_hopper_or_newer()
 @pytest.mark.parametrize(
     "enum,expect",
     (
@@ -184,6 +183,8 @@ def test_memory_space_enum_mappings(enum, expect):
                 CompilerExecutionError,
                 match=r"acquire.*release",
             ),
+            gpu_name="sm_90",
+            arch="compute_90",
         )
     else:
         compile_kernel(
@@ -192,4 +193,6 @@ def test_memory_space_enum_mappings(enum, expect):
             CHECK: nvvm.fence.sync_restrict
             CHECK-SAME: order = #nvvm<mem_order <{expect}>>
             """,
+            gpu_name="sm_90",
+            arch="compute_90",
         )

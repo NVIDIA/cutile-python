@@ -12,9 +12,11 @@ from .util import (
     compile_kernel,
     make_symbolic_scalar,
     make_symbolic_tensor,
-    require_blackwell_cc100,
-    require_hopper_or_newer,
 )
+
+
+HOPPER_TARGET = {"gpu_name": "sm_90", "arch": "compute_90"}
+SM100_TARGET = {"gpu_name": "sm_100a", "arch": "compute_100a"}
 
 
 class CopyAsyncPtxTestBase:
@@ -32,7 +34,6 @@ class CopyAsyncPtxTestBase:
         )
 
 
-@require_hopper_or_newer()
 class TestG2S(CopyAsyncPtxTestBase):
     @pytest.mark.parametrize("cluster", (True, False))
     def test_minimal(self, cluster):
@@ -53,10 +54,12 @@ class TestG2S(CopyAsyncPtxTestBase):
             ".global.tile.mbarrier::complete_tx::bytes"
         )
         compile_kernel(
-            kernel, signature=self.signature(), assert_in_ptx=expect
+            kernel,
+            signature=self.signature(),
+            assert_in_ptx=expect,
+            **HOPPER_TARGET,
         )
 
-    @require_blackwell_cc100()
     @pytest.mark.parametrize(
         "cta_group,expect_group",
         (
@@ -87,9 +90,9 @@ class TestG2S(CopyAsyncPtxTestBase):
                 "cp.async.bulk.tensor.2d.shared::cluster.global",
                 expect_group,
             ),
+            **SM100_TARGET,
         )
 
-    @require_blackwell_cc100()
     def test_shared_cluster_group_with_predicate_and_multicast(self):
         @cl.kernel
         def kernel(x, pred, i, j, H: cl.Constant[int], W: cl.Constant[int]):
@@ -115,9 +118,9 @@ class TestG2S(CopyAsyncPtxTestBase):
                 "cp.async.bulk.tensor.2d.shared::cluster.global",
                 "multicast::cluster",
             ),
+            **SM100_TARGET,
         )
 
-    @require_blackwell_cc100()
     def test_shared_cluster_mbarrier_address_space(self):
         @cl.kernel
         def kernel(x, pred, i, j, H: cl.Constant[int], W: cl.Constant[int]):
@@ -223,7 +226,6 @@ class TestG2S(CopyAsyncPtxTestBase):
             ),
         )
 
-    @require_blackwell_cc100()
     @pytest.mark.parametrize("cluster", (True, False))
     def test_tile_gather4_load_mode(self, cluster):
         @cl.kernel
@@ -249,7 +251,10 @@ class TestG2S(CopyAsyncPtxTestBase):
             ".global.tile::gather4.mbarrier::complete_tx::bytes"
         )
         compile_kernel(
-            kernel, signature=self.signature(), assert_in_ptx=expect
+            kernel,
+            signature=self.signature(),
+            assert_in_ptx=expect,
+            **SM100_TARGET,
         )
 
     @pytest.mark.parametrize(
@@ -320,6 +325,7 @@ class TestG2S(CopyAsyncPtxTestBase):
                 ]
             ),
             assert_in_ptx="cp.async.bulk.tensor.3d.shared::cta.global.im2col",
+            **HOPPER_TARGET,
         )
 
     def test_tile_gather4_rejects_im2col_offsets(self):
@@ -370,7 +376,6 @@ class TestG2S(CopyAsyncPtxTestBase):
         )
 
 
-@require_hopper_or_newer()
 class TestS2G(CopyAsyncPtxTestBase):
     def test_minimal(self):
         @cl.kernel
@@ -388,6 +393,7 @@ class TestS2G(CopyAsyncPtxTestBase):
             kernel,
             signature=self.signature(),
             assert_in_ptx="cp.async.bulk.tensor.2d.global.shared::cta",
+            **HOPPER_TARGET,
         )
 
     def test_predicate(self):
@@ -407,9 +413,9 @@ class TestS2G(CopyAsyncPtxTestBase):
             kernel,
             signature=self.signature(),
             assert_in_ptx="cp.async.bulk.tensor.2d.global.shared::cta",
+            **HOPPER_TARGET,
         )
 
-    @require_blackwell_cc100()
     def test_tile_scatter4_store_mode(self):
         @cl.kernel
         def kernel(x, pred, i, j, H: cl.Constant[int], W: cl.Constant[int]):
@@ -429,6 +435,7 @@ class TestS2G(CopyAsyncPtxTestBase):
             assert_in_ptx=(
                 "cp.async.bulk.tensor.2d.global.shared::cta.tile::scatter4"
             ),
+            **SM100_TARGET,
         )
 
     def test_im2col_store_mode_rank2_is_rejected(self):
@@ -448,6 +455,7 @@ class TestS2G(CopyAsyncPtxTestBase):
             kernel,
             signature=self.signature(),
             raises=pytest.raises(Exception, match="im2col|IM2COL|expected"),
+            **HOPPER_TARGET,
         )
 
     def test_im2col_store_mode_rank3(self):
@@ -487,10 +495,10 @@ class TestS2G(CopyAsyncPtxTestBase):
                 ]
             ),
             assert_in_ptx="cp.async.bulk.tensor.3d.global.shared::cta.im2col",
+            **HOPPER_TARGET,
         )
 
 
-@require_hopper_or_newer()
 def test_copy_async_bulk_wait_group_read():
     def k():
         cl.copy_async_bulk_wait_group(0, read=False)
@@ -503,10 +511,10 @@ def test_copy_async_bulk_wait_group_read():
         CHECK: cp.async.bulk.wait_group 0
         CHECK-NEXT: cp.async.bulk.wait_group 1
         """,
+        **HOPPER_TARGET,
     )
 
 
-@require_hopper_or_newer()
 def test_copy_async_bulk_wait_group():
     def k():
         cl.copy_async_bulk_wait_group(0, read=True)
@@ -518,10 +526,10 @@ def test_copy_async_bulk_wait_group():
         CHECK: cp.async.bulk.wait_group.read 0
         CHECK-NEXT: cp.async.bulk.wait_group.read 1
         """,
+        **HOPPER_TARGET,
     )
 
 
-@require_hopper_or_newer()
 def test_copy_async_bulk_commit_group():
     def k():
         cl.copy_async_bulk_commit_group()
@@ -529,10 +537,10 @@ def test_copy_async_bulk_commit_group():
     compile_kernel(
         k,
         assert_in_ptx="cp.async.bulk.commit_group",
+        **HOPPER_TARGET,
     )
 
 
-@require_hopper_or_newer()
 def test_copy_async_bulk_wait_group_non_immediate_group():
     def k(input):
         cl.copy_async_bulk_wait_group(input[0])
@@ -544,7 +552,6 @@ def test_copy_async_bulk_wait_group_non_immediate_group():
     )
 
 
-@require_hopper_or_newer()
 def test_copy_async_bulk_wait_group_non_immediate_read():
     def k(input):
         cl.copy_async_bulk_wait_group(0, read=input[0] > 0)

@@ -4,7 +4,7 @@
 
 import cuda.lang as cl
 from cuda.lang._exception import TypeCheckingError
-from test.util import compile_kernel, require_hopper_or_newer
+from test.util import compile_kernel
 import pytest
 import torch
 
@@ -33,7 +33,6 @@ def test_full_debug_info_is_not_implemented():
             pass
 
 
-@require_hopper_or_newer()
 @pytest.mark.parametrize(
     "kwarg",
     (
@@ -104,7 +103,6 @@ def test_max_threads_per_block():
     )
 
 
-@require_hopper_or_newer()
 def test_max_blocks_per_cluster():
     @cl.kernel(max_blocks_per_cluster=2)
     def foo():
@@ -117,6 +115,8 @@ def test_max_blocks_per_cluster():
         CHECK: .entry foo
         CHECK-NEXT: .maxclusterrank 2
         """,
+        gpu_name="sm_90",
+        arch="compute_90",
     )
 
 

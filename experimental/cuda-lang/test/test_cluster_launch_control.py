@@ -10,8 +10,6 @@ import pytest
 from cuda.lang._exception import TypeCheckingError
 
 cc = get_compute_capability()
-if cc < (10, 0):
-    pytest.skip(allow_module_level=True)
 
 clc_bytes = cl.cluster_launch_control_token.bitwidth // 8
 
@@ -206,6 +204,10 @@ def launch_configs():
     ),
 )
 @pytest.mark.parametrize("grid,block", launch_configs())
+@pytest.mark.skipif(
+    cc < (10, 0),
+    reason="Cluster Launch Control requires compute capability 10.0 or newer",
+)
 def test_worksteal(kernel, block_in_cluster_count, grid, block):
     # Adapted from programming guide examples with added output tensor
     # to track number of stolen jobs.

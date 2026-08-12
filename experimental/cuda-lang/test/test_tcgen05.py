@@ -5,7 +5,7 @@
 import pytest
 
 import cuda.lang as cl
-from cuda.lang._compile import KernelSignature, get_compute_capability
+from cuda.lang._compile import KernelSignature
 from cuda.lang._exception import (
     TypeCheckingError,
     InvalidValueError,
@@ -14,10 +14,7 @@ from cuda.lang._exception import (
 from test.util import make_symbolic_tensor, compile_kernel
 
 
-cc = get_compute_capability()
-
-if cc.major != 10:
-    pytest.skip(reason="Blackwell only", allow_module_level=True)
+SM100_TARGET = {"gpu_name": "sm_100a", "arch": "compute_100a"}
 
 
 @pytest.mark.parametrize(
@@ -47,7 +44,11 @@ def test_commit(mc_mask, cta_group, expect):
         mbar = cl.shared_array(1, cl.mbarrier).get_base_pointer()
         cl.tcgen05_commit(mbar, multicast_mask=mc_mask, cta_group=cta_group)
 
-    compile_kernel(kernel, assert_in_ptx=expect)
+    compile_kernel(
+        kernel,
+        assert_in_ptx=expect,
+        **SM100_TARGET,
+    )
 
 
 @pytest.mark.parametrize(
@@ -69,10 +70,7 @@ def test_alloc(cta_group, expect):
         p3 = cl.shared_array(1, cl.uint32).get_base_pointer()
         cl.tcgen05_allocate(p3, 5, cta_group=cta_group)
 
-    compiled = cl.compile_simt(kernel, [KernelSignature([])], keep_ptx=True)
-    ptx = compiled.ptx
-    assert ptx is not None
-    assert expect in ptx, ptx
+    compile_kernel(kernel, assert_in_ptx=expect, **SM100_TARGET)
 
 
 def test_dealloc_requires_tensor_pointer():
@@ -111,10 +109,7 @@ def test_dealloc(cta_group, expect):
         tmem_ptr = smem[0]
         cl.tcgen05_deallocate(tmem_ptr, 128, cta_group=cta_group)
 
-    compiled = cl.compile_simt(kernel, [KernelSignature([])], keep_ptx=True)
-    ptx = compiled.ptx
-    assert ptx is not None
-    assert expect in ptx, ptx
+    compile_kernel(kernel, assert_in_ptx=expect, **SM100_TARGET)
 
 
 def test_tmem_offset():
@@ -133,7 +128,11 @@ def test_tmem_offset():
             cl.int32(0),
         )
 
-    compile_kernel(kernel, assert_in_ptx="tcgen05.st.sync.aligned.32x32b.x1.b32")
+    compile_kernel(
+        kernel,
+        assert_in_ptx="tcgen05.st.sync.aligned.32x32b.x1.b32",
+        **SM100_TARGET,
+    )
 
 
 def test_tmem_offset_with_lane_offset():
@@ -256,7 +255,7 @@ def test_store_default_int32(shape, num, unpack):
         + (".unpack::16b" if unpack else "")
         + ".b32"
     )
-    compile_kernel(kernel, assert_in_ptx=expect)
+    compile_kernel(kernel, assert_in_ptx=expect, **SM100_TARGET)
 
 
 def test_store_accepts_typed_value():
@@ -272,7 +271,11 @@ def test_store_accepts_typed_value():
         cl.tcgen05_wait_store()
         cl.tcgen05_deallocate(smem[0], 128)
 
-    compile_kernel(kernel, assert_in_ptx="tcgen05.st.sync.aligned.16x64b.x1.b32")
+    compile_kernel(
+        kernel,
+        assert_in_ptx="tcgen05.st.sync.aligned.16x64b.x1.b32",
+        **SM100_TARGET,
+    )
 
 
 def test_store_rejects_bool_value():
@@ -407,6 +410,12 @@ def test_copy(shape, cta_group, multicast, source_format):
         cl.Tcgen05CopyShape.SHAPE_32x128b: (cl.Tcgen05CopyMulticast.WARPX4,),
     }
 
+    well_typed = (
+        cta_group in tuple(cl.CTAGroup)
+        and shape in tuple(cl.Tcgen05CopyShape)
+        and multicast in (*tuple(cl.Tcgen05CopyMulticast), None)
+        and source_format in (*tuple(cl.Tcgen05CopySourceFormat), None)
+    )
     expect = None
     raises = None
     if cta_group not in tuple(cl.CTAGroup):
@@ -439,7 +448,12 @@ def test_copy(shape, cta_group, multicast, source_format):
             f"tcgen05.cp.{group_str}.{shape_str}" + multicast_str + source_format_str
         )
 
-    compile_kernel(kernel, assert_in_ptx=expect, raises=raises)
+    compile_kernel(
+        kernel,
+        assert_in_ptx=expect,
+        raises=raises,
+        **(SM100_TARGET if well_typed else {}),
+    )
 
 
 @pytest.mark.parametrize("shape", tuple(cl.Tcgen05LoadStoreShape))
@@ -490,6 +504,7 @@ def test_load_default_int32(shape, num, pack, offset):
         raises=pytest.raises((TypeCheckingError, InvalidValueError))
         if bad_args
         else None,
+        **({} if bad_args else SM100_TARGET),
     )
 
 
@@ -534,6 +549,7 @@ def test_load_store_with_dtype(shape, dtype):
             f"tcgen05.ld.sync.aligned.{shape.value}.x{num}.b32",
             f"tcgen05.st.sync.aligned.{shape.value}.x{num}.b32",
         ),
+        **SM100_TARGET,
     )
 
 
@@ -565,7 +581,11 @@ def test_load_dtype_element_count(shape, dtype, num):
         cl.tcgen05_wait_store()
         cl.tcgen05_deallocate(tmem_ptr, 128)
 
-    compile_kernel(kernel, assert_in_ptx="tcgen05.ld.sync.aligned")
+    compile_kernel(
+        kernel,
+        assert_in_ptx="tcgen05.ld.sync.aligned",
+        **SM100_TARGET,
+    )
 
 
 @pytest.mark.parametrize("shape", tuple(cl.Tcgen05LoadStoreShape))
@@ -606,6 +626,7 @@ def test_load_packed_16_bit_dtype(shape):
             f"tcgen05.st.sync.aligned.{shape.value}.x{num}.unpack::16b.b32",
             "add.bf16x2",
         ),
+        **SM100_TARGET,
     )
 
 
@@ -636,13 +657,7 @@ def test_load_rejects_unusable_dtype(dtype, element_count, match):
 
 
 ORDINARY_MMA_KINDS = (
-    pytest.param(
-        cl.Tcgen05MMAKind.I8,
-        marks=pytest.mark.skipif(
-            tuple(cc) == (10, 3),
-            reason="tcgen05 MMA kind I8 is not supported on compute capability 10.3",
-        ),
-    ),
+    cl.Tcgen05MMAKind.I8,
     cl.Tcgen05MMAKind.F8F6F4,
     cl.Tcgen05MMAKind.F16,
     cl.Tcgen05MMAKind.TF32,
@@ -653,7 +668,7 @@ ORDINARY_MMA_KINDS = (
 @pytest.mark.parametrize("kind", ORDINARY_MMA_KINDS)
 @pytest.mark.parametrize("cta_group", tuple(cl.CTAGroup))
 @pytest.mark.parametrize("collector_op", tuple(cl.Tcgen05MMACollectorOp))
-def test_mma_valid_enum_combinations(sparse, kind, cta_group, collector_op, request):
+def test_mma_valid_enum_combinations(sparse, kind, cta_group, collector_op):
 
     def kernel():
         tmem_dtype = cl.pointer_dtype(cl.int8, cl.MemorySpace.TENSOR)
@@ -675,6 +690,7 @@ def test_mma_valid_enum_combinations(sparse, kind, cta_group, collector_op, requ
         kernel,
         assert_in_ptx="tcgen05.mma.sp" if sparse else "tcgen05.mma",
         assert_not_in_ptx=None if sparse else "tcgen05.mma.sp",
+        **SM100_TARGET,
     )
 
 
@@ -751,6 +767,7 @@ def test_mma_block_scale_valid_enum_combinations(
             assert_not_in_ptx=None if sparse else "tcgen05.mma.sp",
             filecheck_ptx=f"""CHECK: {"tcgen05.mma.sp" if sparse else "tcgen05.mma"}
                              CHECK-SAME: .block_scale""",
+            **SM100_TARGET,
         )
     else:
         compile_kernel(
@@ -791,6 +808,7 @@ def test_mma_weight_stationary_valid_enum_combinations(
         kernel,
         assert_in_ptx="tcgen05.mma.ws.sp" if sparse else "tcgen05.mma.ws",
         assert_not_in_ptx=None if sparse else "tcgen05.mma.ws.sp",
+        **SM100_TARGET,
     )
 
 
@@ -837,7 +855,7 @@ def test_mma_optional_operands(cta_group, scale_input_d, disable_output_lane):
             else None,
         )
 
-    compile_kernel(kernel, assert_in_ptx="tcgen05.mma")
+    compile_kernel(kernel, assert_in_ptx="tcgen05.mma", **SM100_TARGET)
 
 
 def test_mma_matrix_a_validation():
@@ -874,7 +892,7 @@ def test_wait(op, expect):
     def kernel():
         op()
 
-    compile_kernel(kernel, assert_in_ptx=expect)
+    compile_kernel(kernel, assert_in_ptx=expect, **SM100_TARGET)
 
 
 @pytest.mark.parametrize(
@@ -894,7 +912,7 @@ def test_fence(op, expect):
     def kernel():
         op()
 
-    compile_kernel(kernel, assert_in_ptx=expect)
+    compile_kernel(kernel, assert_in_ptx=expect, **SM100_TARGET)
 
 
 @pytest.mark.parametrize(
@@ -914,7 +932,7 @@ def test_relinquish(group, expect):
     def kernel():
         cl.tcgen05_relinquish_allocation_permit(group)
 
-    compile_kernel(kernel, assert_in_ptx=expect)
+    compile_kernel(kernel, assert_in_ptx=expect, **SM100_TARGET)
 
 
 def test_relinquish_bad_group():
@@ -937,7 +955,7 @@ def test_shift(group, expect):
         tmem_smem = cl.shared_array(1, tmem_dtype, alignment=4)
         cl.tcgen05_shift_down(tmem_smem[0], group)
 
-    compile_kernel(kernel, assert_in_ptx=expect)
+    compile_kernel(kernel, assert_in_ptx=expect, **SM100_TARGET)
 
 
 def test_shift_bad_group():

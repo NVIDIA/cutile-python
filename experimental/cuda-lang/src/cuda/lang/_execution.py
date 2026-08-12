@@ -150,9 +150,11 @@ class kernel(_cext.TileDispatcher):
             opt_level (int | None): Optimization level applied to the kernel.
             debug_info: Debug information mode. ``"line"`` adds source line
                 information. ``"none"`` does not add debug information.
-            arch (str): GPU architecture this kernel should be compiled for.
+            arch (str | None): GPU architecture this kernel should be compiled
+                for, such as ``"compute_100a"``.
                 ``None`` selects an appropriate value for the current device.
-            gpu_name (str): GPU name this kernel should be compiled for.
+            gpu_name (str | None): GPU name this kernel should be compiled for,
+                such as ``"sm_100a"``.
                 ``None`` selects an appropriate value for the current device.
             max_threads_per_block (tuple[int, int, int] | None):
             max_blocks_per_cluster (int | None):

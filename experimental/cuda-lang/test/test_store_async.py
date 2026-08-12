@@ -7,14 +7,12 @@ import pytest
 import cuda.lang as cl
 import cuda.lang._datatype as datatype
 
-from .util import (
-    compile_kernel,
-    require_blackwell_or_newer,
-    require_hopper_or_newer,
-)
+from .util import compile_kernel
+
+HOPPER_TARGET = {"gpu_name": "sm_90", "arch": "compute_90"}
+SM100_TARGET = {"gpu_name": "sm_100a", "arch": "compute_100a"}
 
 
-@require_hopper_or_newer()
 @pytest.mark.parametrize(
     ("dtype", "count", "instruction"),
     (
@@ -37,10 +35,9 @@ def test_store_async_cluster(dtype, count, instruction):
         cl.store_async_cluster(destination, value, remote_mbarrier)
 
     expect = f"st.async.shared::cluster.mbarrier::complete_tx::bytes{instruction}"
-    compile_kernel(kernel, assert_in_ptx=(expect))
+    compile_kernel(kernel, assert_in_ptx=expect, **HOPPER_TARGET)
 
 
-@require_blackwell_or_newer()
 @pytest.mark.parametrize(
     "dtype",
     (
@@ -60,10 +57,9 @@ def test_store_async_global(dtype):
         cl.store_async_global(ptr, dtype(1))
 
     expect = f"st.async.release.gpu.global.b{dtype.bitwidth}"
-    compile_kernel(kernel, assert_in_ptx=expect)
+    compile_kernel(kernel, assert_in_ptx=expect, **SM100_TARGET)
 
 
-@require_blackwell_or_newer()
 @pytest.mark.parametrize(
     ("scope", "is_multimem", "instruction"),
     (
@@ -79,4 +75,6 @@ def test_store_async_global_mode(scope, is_multimem, instruction):
         ptr = cl.address_space_cast(ptr, cl.MemorySpace.GENERIC)
         cl.store_async_global(ptr, 1, scope=scope, is_multimem=is_multimem)
 
-    compile_kernel(kernel, assert_in_ptx=f"{instruction}.global.b32")
+    compile_kernel(
+        kernel, assert_in_ptx=f"{instruction}.global.b32", **SM100_TARGET
+    )

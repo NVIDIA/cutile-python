@@ -37,7 +37,6 @@ def _make_expected_tile(x, row, column, tile_height, tile_width):
     return expected
 
 
-@require_hopper_or_newer()
 @pytest.mark.parametrize(
     "dtype",
     (
@@ -64,7 +63,6 @@ def test_tmadesc_byte_types(dtype):
     assert cres.hoisted_tensor_maps[0].data_type == _cext.CU_TENSOR_MAP_DATA_TYPE_UINT8
 
 
-@require_hopper_or_newer()
 @pytest.mark.parametrize("l2_promotion", tuple(cl.TensorMapL2Promotion))
 def test_tensor_map_l2_promotion_metadata(l2_promotion):
     def kernel(x):

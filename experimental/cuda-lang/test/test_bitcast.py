@@ -10,13 +10,15 @@ import torch
 
 from cuda.lang._exception import CompilerExecutionError, TypeCheckingError
 from cuda.lang.compilation import KernelSignature
-from .util import filecheck, make_symbolic_tensor, require_hopper_or_newer
+from .util import filecheck, make_symbolic_tensor
 
 MEMORY_SPACE_32B = (
     cl.MemorySpace.SHARED,
     cl.MemorySpace.SHARED_CLUSTER,
     cl.MemorySpace.TENSOR,
 )
+
+HOPPER_TARGET = {"gpu_name": "sm_90", "arch": "compute_90"}
 
 
 @pytest.mark.parametrize(
@@ -123,7 +125,6 @@ def test_bitcast_between_pointers():
     assert got == 0xDEADBEEF, f"0x{got:x}"
 
 
-@require_hopper_or_newer()  # Feature '::cluster' requires .target sm_90 or higher
 @pytest.mark.parametrize("from_mspace", cl.MemorySpace._member_map_.values())
 @pytest.mark.parametrize("to_mspace", cl.MemorySpace._member_map_.values())
 def test_pointer_address_space_bitcast_compile_only(from_mspace, to_mspace):
@@ -166,6 +167,7 @@ def test_pointer_address_space_bitcast_compile_only(from_mspace, to_mspace):
                     [make_symbolic_tensor(1, cl.int32 if to_32b else cl.int64)]
                 )
             ],
+            **({} if from_32b != to_32b else HOPPER_TARGET),
         )
 
 

@@ -11,6 +11,8 @@ from cuda.lang.compilation import KernelSignature
 
 from .util import compile_kernel, require_hopper_or_newer
 
+HOPPER_TARGET = {"gpu_name": "sm_90", "arch": "compute_90"}
+
 
 @require_hopper_or_newer()
 def test_cluster_barriers():
@@ -72,7 +74,10 @@ SCOPES = [cl.MbarrierScope.BLOCK, cl.MbarrierScope.CLUSTER]
 
 def _get_intrinsics(kernel):
     result = compile_kernel(
-        kernel, signature=KernelSignature(()), keep_final_ir=True
+        kernel,
+        signature=KernelSignature(()),
+        keep_final_ir=True,
+        **HOPPER_TARGET,
     )
     return [
         op.intrinsic
@@ -82,7 +87,6 @@ def _get_intrinsics(kernel):
     ]
 
 
-@require_hopper_or_newer()
 def test_initialize_and_invalidate():
     @cl.kernel
     def kernel():
@@ -101,7 +105,6 @@ ARRIVE_MEMORY_ORDERS = [cl.MemoryOrder.RELEASE, cl.MemoryOrder.RELAXED]
 WAIT_MEMORY_ORDERS = [cl.MemoryOrder.ACQUIRE, cl.MemoryOrder.RELAXED]
 
 
-@require_hopper_or_newer()
 @pytest.mark.parametrize("scope", SCOPES)
 @pytest.mark.parametrize("memory_order", ARRIVE_MEMORY_ORDERS)
 @pytest.mark.parametrize("drop", [False, True])
@@ -130,7 +133,6 @@ def test_arrive_intrinsic_name(expect_transaction, drop, memory_order, scope):
     assert expected in _get_intrinsics(kernel)
 
 
-@require_hopper_or_newer()
 @pytest.mark.parametrize("scope", SCOPES)
 @pytest.mark.parametrize(
     ("operation", "intrinsic"),
@@ -152,7 +154,6 @@ def test_expect_complete_transaction_intrinsic_name(operation, intrinsic, scope)
     assert expected in _get_intrinsics(kernel)
 
 
-@require_hopper_or_newer()
 @pytest.mark.parametrize("scope", SCOPES)
 @pytest.mark.parametrize("memory_order", WAIT_MEMORY_ORDERS)
 @pytest.mark.parametrize("parity", [False, True])
@@ -176,7 +177,6 @@ def test_test_wait_intrinsic_name(parity, memory_order, scope):
     assert expected in _get_intrinsics(kernel)
 
 
-@require_hopper_or_newer()
 @pytest.mark.parametrize("scope", SCOPES)
 @pytest.mark.parametrize("time_hint", [None, 1000])
 @pytest.mark.parametrize("memory_order", WAIT_MEMORY_ORDERS)

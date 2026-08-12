@@ -5,8 +5,10 @@
 import cuda.lang as cl
 from cuda.lang._exception import CompilerExecutionError
 from cuda.tile import TileStaticAssertionError
-from .util import compile_kernel, require_hopper_or_newer
+from .util import compile_kernel
 import pytest
+
+HOPPER_TARGET = {"gpu_name": "sm_90", "arch": "compute_90"}
 
 
 def barrier_sync_block_cases():
@@ -165,7 +167,6 @@ def barrier_arrive_cluster_cases():
                 yield aligned, order, expect, None
 
 
-@require_hopper_or_newer()
 @pytest.mark.parametrize(
     "aligned, order, expect, raises", barrier_arrive_cluster_cases()
 )
@@ -173,10 +174,14 @@ def test_barrier_arrive_cluster(aligned, order, expect, raises):
     def kernel():
         cl.barrier_arrive_cluster(aligned=aligned, memory_order=order)
 
-    compile_kernel(kernel, assert_in_ptx=expect, raises=raises)
+    compile_kernel(
+        kernel,
+        assert_in_ptx=expect,
+        raises=raises,
+        **HOPPER_TARGET,
+    )
 
 
-@require_hopper_or_newer()
 @pytest.mark.parametrize(
     "aligned, expect, raises",
     (
@@ -190,10 +195,14 @@ def test_barrier_wait_cluster(aligned, expect, raises):
     def kernel():
         cl.barrier_wait_cluster(aligned=aligned)
 
-    compile_kernel(kernel, assert_in_ptx=expect, raises=raises)
+    compile_kernel(
+        kernel,
+        assert_in_ptx=expect,
+        raises=raises,
+        **HOPPER_TARGET,
+    )
 
 
-@require_hopper_or_newer()
 @pytest.mark.parametrize(
     "aligned, expect, raises",
     (
@@ -215,7 +224,12 @@ def test_barrier_sync_cluster(aligned, expect, raises):
     def kernel():
         cl.barrier_sync_cluster(aligned=aligned)
 
-    compile_kernel(kernel, assert_in_ptx=expect, raises=raises)
+    compile_kernel(
+        kernel,
+        assert_in_ptx=expect,
+        raises=raises,
+        **HOPPER_TARGET,
+    )
 
 
 def test_barrier_sync_warp():

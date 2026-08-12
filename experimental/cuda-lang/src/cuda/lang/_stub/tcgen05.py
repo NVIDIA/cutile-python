@@ -2,6 +2,18 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+"""Fifth-generation Tensor Memory APIs.
+
+These APIs lower directly to target-specific PTX ``tcgen05`` instructions.
+Availability depends on the specific operation and modifiers, the selected
+CUDA target, and the CUDA toolchain version.
+
+Target support is not monotonic by compute capability. See the documentation
+and Target ISA Notes for each tcgen05 instruction for the authoritative target
+requirements:
+https://docs.nvidia.com/cuda/parallel-thread-execution/#tensorcore-5th-generation-instructions
+"""
+
 from dataclasses import dataclass
 from enum import IntEnum
 from typing import Any, Literal
