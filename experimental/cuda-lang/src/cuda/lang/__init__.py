@@ -246,6 +246,11 @@ from cuda.lang._stub.barrier import (
     barrier_arrive_cluster,
     barrier_wait_cluster,
     barrier_sync_cluster,
+    syncthreads,
+    syncwarp,
+    syncthreads_count,
+    syncthreads_and,
+    syncthreads_or,
 )
 
 from cuda.lang._stub.cluster_launch_control import (
@@ -424,6 +429,11 @@ __all__ = (
     "barrier_arrive_cluster",
     "barrier_wait_cluster",
     "barrier_sync_cluster",
+    "syncthreads",
+    "syncwarp",
+    "syncthreads_count",
+    "syncthreads_and",
+    "syncthreads_or",
     "cluster_launch_control_token",
     "cluster_launch_control_try_cancel",
     "cluster_launch_control_is_canceled",

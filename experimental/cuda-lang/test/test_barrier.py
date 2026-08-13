@@ -237,3 +237,29 @@ def test_barrier_sync_warp():
         cl.barrier_sync_warp(32)
 
     compile_kernel(kernel, assert_in_ptx="bar.warp.sync")
+
+
+def test_syncthreads():
+    def kernel():
+        cl.syncthreads()
+
+    compile_kernel(kernel, assert_in_ptx="bar.sync")
+
+
+def test_syncwarp():
+    def kernel():
+        cl.syncwarp(32)
+
+    compile_kernel(kernel, assert_in_ptx="bar.warp.sync")
+
+
+@pytest.mark.parametrize(
+    "op, expected_ptx, expected_dtype", ((cl.syncthreads_count, "bar.red.popc", cl.int32),
+                                         (cl.syncthreads_and, "bar.red.and", cl.bool_),
+                                         (cl.syncthreads_or, "bar.red.or", cl.bool_)))
+def test_syncthreads_count(op, expected_ptx, expected_dtype):
+    def kernel():
+        res = op(True)
+        cl.static_assert(cl.dtype_of(res) == expected_dtype)
+
+    compile_kernel(kernel, assert_in_ptx=expected_ptx)

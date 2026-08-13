@@ -162,6 +162,68 @@ def barrier_sync_warp(mask: int = FULL_MASK) -> None:
     _nvvm.bar_warp_sync(mask)
 
 
+@function()
+def syncthreads() -> None:
+    """Synchronize all threads in the current block.
+
+    CUDA C++ style convenience wrapper around
+    :func:`barrier_sync_block` with its default arguments.
+    """
+    barrier_sync_block()
+
+
+@function()
+def syncwarp(mask: int = FULL_MASK) -> None:
+    """Synchronize the warp lanes selected by ``mask``.
+
+    CUDA C++ style convenience wrapper around
+    :func:`barrier_sync_warp`.
+
+    Args:
+        mask: Mask indicating membership where the ith bit selects lane i.
+    """
+    barrier_sync_warp(mask)
+
+
+@function()
+def syncthreads_count(predicate: bool) -> int:
+    """Synchronize the block and count threads for which ``predicate`` is true.
+
+    CUDA C++ style convenience wrapper around
+    :func:`barrier_reduce_block` with ``op=BarrierReductionKind.POP_COUNT``
+
+    Args:
+        predicate: The per-thread predicate fed into the reduction.
+    """
+    return barrier_reduce_block(BarrierReductionKind.POP_COUNT, predicate)
+
+
+@function()
+def syncthreads_and(predicate: bool) -> bool:
+    """Synchronize the block and return whether ``predicate`` is true for all threads.
+
+    CUDA C++ style convenience wrapper around
+    :func:`barrier_reduce_block` with ``op=BarrierReductionKind.AND``
+
+    Args:
+        predicate: The per-thread predicate fed into the reduction.
+    """
+    return barrier_reduce_block(BarrierReductionKind.AND, predicate)
+
+
+@function()
+def syncthreads_or(predicate: bool) -> bool:
+    """Synchronize the block and return whether ``predicate`` is true for any thread.
+
+    CUDA C++ style convenience wrapper around
+    :func:`barrier_reduce_block` with ``op=BarrierReductionKind.OR``
+
+    Args:
+        predicate: The per-thread predicate fed into the reduction.
+    """
+    return barrier_reduce_block(BarrierReductionKind.OR, predicate)
+
+
 __all__ = (
     "BarrierReductionKind",
     "barrier_sync_warp",
@@ -171,4 +233,9 @@ __all__ = (
     "barrier_arrive_cluster",
     "barrier_wait_cluster",
     "barrier_sync_cluster",
+    "syncthreads",
+    "syncwarp",
+    "syncthreads_count",
+    "syncthreads_and",
+    "syncthreads_or",
 )

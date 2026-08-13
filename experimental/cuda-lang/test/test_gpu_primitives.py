@@ -696,6 +696,76 @@ class TestBarrierSync:
         assert (out.cpu() == expected).all()
 
 
+class TestSyncAliases:
+    """
+    Functional tests for CUDA C++ synchronization aliases.
+    """
+
+    def test_syncwarp(self):
+        @cl.kernel
+        def kernel(out):
+            shmem = cl.shared_array(shape=(32,), dtype=cl.int32)
+            lane = cl.thread_index(0)
+
+            shmem[lane] = lane
+            cl.syncwarp()
+            out[lane] = shmem[lane ^ 1]
+
+        out = torch.zeros(32, dtype=torch.int32, device="cuda")
+        cl.launch(torch.cuda.current_stream(), (1,), (32,), kernel, (out,))
+        expected = torch.tensor(
+            [lane ^ 1 for lane in range(32)],
+            dtype=torch.int32,
+        )
+        assert (out.cpu() == expected).all()
+
+    def test_syncthreads_shared_exchange(self):
+        @cl.kernel
+        def kernel(out):
+            lane = cl.thread_index(0)
+            shmem = cl.shared_array(shape=(32,), dtype=cl.int32)
+
+            shmem[lane] = lane * 2
+            cl.syncthreads()
+
+            if lane < 16:
+                out[lane] = shmem[lane + 16]
+            else:
+                out[lane] = shmem[lane - 16]
+
+        out = torch.zeros(32, dtype=torch.int32, device="cuda")
+        cl.launch(torch.cuda.current_stream(), (1,), (32,), kernel, (out,))
+        expected = torch.tensor(
+            [2 * (lane + 16) for lane in range(16)]
+            + [2 * (lane - 16) for lane in range(16, 32)],
+            dtype=torch.int32,
+        )
+        assert (out.cpu() == expected).all()
+
+    def test_syncthreads_reductions(self):
+        @cl.kernel
+        def kernel(count_out, and_out, or_out):
+            lane = cl.thread_index(0)
+
+            count_out[lane] = cl.syncthreads_count(lane < 16)
+            and_out[lane] = cl.syncthreads_and(lane != 0)
+            or_out[lane] = cl.syncthreads_or(lane == 0)
+
+        count_out = torch.zeros(32, dtype=torch.int32, device="cuda")
+        and_out = torch.zeros(32, dtype=torch.bool, device="cuda")
+        or_out = torch.zeros(32, dtype=torch.bool, device="cuda")
+
+        cl.launch(torch.cuda.current_stream(), (1,), (32,), kernel, (count_out, and_out, or_out))
+
+        count_out_expected = torch.full((32,), 16, dtype=torch.int32)
+        and_out_expected = torch.zeros(32, dtype=torch.bool)
+        or_out_expected = torch.ones(32, dtype=torch.bool)
+
+        assert (count_out.cpu() == count_out_expected).all()
+        assert (and_out.cpu() == and_out_expected).all()
+        assert (or_out.cpu() == or_out_expected).all()
+
+
 class TestVoteSync:
     """
     Vote tests based on simpleVoteIntrinsics and the CUDA guide's warp vote

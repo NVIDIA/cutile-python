@@ -246,9 +246,20 @@ TensorMap Async Copy
 
 Synchronization
 ---------------
+``syncwarp`` and the ``syncthreads`` family provide CUDA C++ style convenience functions.
+They call more explicit underlying barrier APIs which offer richer interfaces. Use the
+barrier APIs directly for features such as named or partial block barriers, cluster barriers,
+and shared-memory mbarriers.
+
 .. autosummary::
    :toctree: generated
    :nosignatures:
+
+    syncwarp
+    syncthreads
+    syncthreads_count
+    syncthreads_and
+    syncthreads_or
 
     barrier_sync_warp
     barrier_sync_block
