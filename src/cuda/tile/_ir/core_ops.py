@@ -330,6 +330,11 @@ def tuple_overload_dispatcher(iterable: Var):
         raise TileTypeError(f"Object of type {ty} cannot be converted to a tuple")
 
 
+@impl(tuple, overload=(TupleTy,))
+def tuple_tuple_impl(iterable: Var[TupleTy]):
+    return iterable
+
+
 @overload_dispatcher(hir_stubs.enter_context)
 def enter_context_overload_dispatcher(manager: Var):
     ty = manager.get_type()
