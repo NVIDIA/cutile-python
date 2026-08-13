@@ -604,6 +604,56 @@ def _static_extent(ctx: BytecodeContext, var: Var) -> int | None:
     return None
 
 
+def _lower_tensor_view_extents(
+        ctx: BytecodeContext,
+        array_ty: ArrayTy,
+        shape: tuple[Var, ...],
+        strides: tuple[Var, ...],
+) -> tuple[bc.TypeId, tuple[bc.Value, ...], tuple[bc.Value, ...]]:
+    static_shape: list[int | None] = []
+    static_strides: list[int | None] = []
+    dynamic_shape: list[bc.Value] = []
+    dynamic_strides: list[bc.Value] = []
+
+    bits_per_16_bytes = 16 * 8
+    singleton_stride_divisor = (
+        bits_per_16_bytes // array_ty.dtype.bitwidth
+        if bits_per_16_bytes % array_ty.dtype.bitwidth == 0 else 1
+    )
+
+    for shape_var, stride_var in zip(shape, strides, strict=True):
+        shape_value = _static_extent(ctx, shape_var)
+        static_shape.append(shape_value)
+        if shape_value is None:
+            dynamic_shape.append(ctx.get_value(shape_var))
+
+        stride_value = _static_extent(ctx, stride_var)
+        # This is a local workaround.
+        # A unit stride on a singleton dimension may be chosen as the contiguous dimension
+        # and inhibit optimization. The stride is irrelevant to addressing on that dimension,
+        # so keep it dynamic in the tensor-view type and preserve the 16-byte alignment.
+        is_singleton = shape_value == 1
+        if is_singleton and stride_value == 1:
+            stride_value = None
+        static_strides.append(stride_value)
+        if stride_value is None:
+            dynamic_stride = ctx.get_value(stride_var)
+            if (is_singleton and singleton_stride_divisor > 1
+                    and not CUDA_TILE_TESTING_DISABLE_DIV):
+                dynamic_stride = bc.encode_AssumeOp(
+                    ctx.builder, ctx.typeid_of(stride_var), dynamic_stride,
+                    bc.DivBy(singleton_stride_divisor))
+            dynamic_strides.append(dynamic_stride)
+
+    view_type_id = tensor_view_typeid(
+        ctx.type_table, array_ty, tuple(static_shape), tuple(static_strides))
+    return (
+        view_type_id,
+        tuple(dynamic_shape),
+        tuple(dynamic_strides),
+    )
+
+
 @dataclass(eq=False)
 class MakeTensorView(Operation, opcode="make_tensor_view"):
     base_ptr: Var = operand()
@@ -613,20 +663,15 @@ class MakeTensorView(Operation, opcode="make_tensor_view"):
     @override
     def generate_bytecode(self, ctx: BytecodeContext) -> bc.Value:
         array_ty: ArrayTy = self.result_var.get_type()
-        shape_values = tuple(_static_extent(ctx, s) for s in self.shape)
-        stride_values = tuple(_static_extent(ctx, s) for s in self.strides)
-        view_type_id = tensor_view_typeid(ctx.type_table, array_ty, shape_values, stride_values)
+        view_type_id, dynamic_shape, dynamic_strides = _lower_tensor_view_extents(
+            ctx, array_ty, self.shape, self.strides)
         ctx.set_array_tv_id(self.result_var, view_type_id)
-        base_ptr = ctx.get_value(self.base_ptr)
-        dynamic_shape = tuple(ctx.get_value(s) for s, v in zip(self.shape, shape_values)
-                              if v is None)
-        dynamic_strides = tuple(ctx.get_value(s) for s, v in zip(self.strides, stride_values)
-                                if v is None)
-        return bc.encode_MakeTensorViewOp(ctx.builder,
-                                          result_type=view_type_id,
-                                          base=base_ptr,
-                                          dynamicShape=dynamic_shape,
-                                          dynamicStrides=dynamic_strides)
+        return bc.encode_MakeTensorViewOp(
+            ctx.builder,
+            result_type=view_type_id,
+            base=ctx.get_value(self.base_ptr),
+            dynamicShape=dynamic_shape,
+            dynamicStrides=dynamic_strides)
 
 
 @dataclass(eq=False)

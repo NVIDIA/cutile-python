@@ -138,32 +138,14 @@ def _get_array_predicates(constraint: ArrayConstraint, alias_set_mapper: "_Alias
                          div_by=constraint.base_addr_divisible_by,
                          may_alias_internally=constraint.may_alias_internally)]
 
-    # Shape predicates.
-    for static, div_by in zip(
-            constraint.shape_constant, constraint.shape_divisible_by, strict=True):
-        if static is not None:
-            div_by = static
+    # Shape and stride predicates.
+    for static_value, div_by in itertools.chain(
+            zip(constraint.shape_constant, constraint.shape_divisible_by, strict=True),
+            zip(constraint.stride_constant, constraint.stride_divisible_by, strict=True)):
+        if static_value is not None:
+            div_by = static_value
         ret.append(DataPredicate(alias_set=ALIAS_UNIVERSE, div_by=div_by,
-                                 may_alias_internally=True, const_value=static))
-
-    # Stride predicates.
-    for static, div_by, static_shape in zip(
-            constraint.stride_constant,
-            constraint.stride_divisible_by,
-            constraint.shape_constant,
-            strict=True):
-        if static_shape == 1:
-            # A singleton axis has no address contribution. For a dynamic physical stride,
-            # expose the strongest useful alignment fact without claiming an exact stride value.
-            # Also revert the stride 1 statement to keep its physical stride dynamic.
-            div_by = (16 * 8 // constraint.dtype.bitwidth
-                      if (16 * 8) % constraint.dtype.bitwidth == 0 else 1)
-            if static == 1:
-                static = None
-        elif static is not None:
-            div_by = static
-        ret.append(DataPredicate(alias_set=ALIAS_UNIVERSE, div_by=div_by,
-                                 may_alias_internally=True, const_value=static))
+                                 may_alias_internally=True, const_value=static_value))
     return ret
 
 

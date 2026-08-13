@@ -100,15 +100,6 @@ def test_seed_from_array_arg():
     assert get_op_divby(body, MakeTensorView) == [{'base_ptr': 16, 'shape[0]': 4, 'stride[0]': 8}]
 
 
-def test_singleton_shape_strengthens_dynamic_stride_divisibility():
-    def kernel(x):
-        ct.store(x, (0, 0), 0)
-
-    body = get_ir(kernel, (array_arg(
-        ndim=2, shape_const=(None, 1), stride_const=(None, None)),))
-    assert get_op_divby(body, MakeTensorView) == [{'stride[1]': 4}]
-
-
 def test_static_shape_seed_from_array_arg():
     def kernel(x: Annotated[ct.Array, ct.ArrayAnnotation(static_shape_dims=(0,))]):
         ct.store(x, (0, 0), 0)
