@@ -262,17 +262,21 @@ _FTOF_ROUNDING_ROWS = (
 
         {(i, F64): (RoundingMode.RM, B134) for i in ALL},
         {(i, F32): (RoundingMode.RM, B134) for i in ALL if i not in {F8E8M0FNU}},
-        {(i, F16): (RoundingMode.RM, B134) for i in ALL if i not in {F64, F32, TF32, F8E8M0FNU}},
+        {(i, F16): (RoundingMode.RM, B134) for i in ALL if i not in {F64, F32, TF32, F8E8M0FNU,
+                                                                     F8E5M3FNU}},
+
         {(i, F64): (RoundingMode.RP, B134) for i in ALL},
         {(i, F32): (RoundingMode.RP, B134) for i in ALL if i not in {F8E8M0FNU}},
-        {(i, F16): (RoundingMode.RP, B134) for i in ALL if i not in {F64, F32, TF32, F8E8M0FNU}},
+        {(i, F16): (RoundingMode.RP, B134) for i in ALL if i not in {F64, F32, TF32, F8E8M0FNU,
+                                                                     F8E5M3FNU}},
         {(i, F8E8M0FNU): (RoundingMode.RP, B133) for i in ALL if i not in {F64, F8E5M2, F8E4M3FN}},
         {(i, F8E8M0FNU): (RoundingMode.RP, B134) for i in (F64, F8E5M2, F8E4M3FN)},
 
         {(i, F64): (RoundingMode.RA, B134) for i in ALL},
         {(i, F32): (RoundingMode.RA, B134) for i in ALL if i not in {F64, F8E8M0FNU}},
         {(i, TF32): (RoundingMode.RA, B134) for i in ALL if i not in {F64, F8E8M0FNU}},
-        {(i, F16): (RoundingMode.RA, B134) for i in ALL if i not in {F64, F32, TF32, F8E8M0FNU}}
+        {(i, F16): (RoundingMode.RA, B134) for i in ALL if i not in {F64, F32, TF32, F8E8M0FNU,
+                                                                     F8E5M3FNU}}
 )
 
 # {(from, to): {RoundingMode_1: BC_Version, RoundingMode_2: BC_Version}}

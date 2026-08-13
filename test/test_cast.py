@@ -16,6 +16,8 @@ from cuda.tile._exception import TileTypeError, TileUnsupportedFeatureError
 from cuda.tile._cext import CallingConvention
 from conftest import float_dtypes, int_dtypes, bool_dtypes, dtype_id
 from cuda.tile._bytecode.version import BytecodeVersion
+from cuda.tile._bytecode import SimpleType
+from cuda.tile._bytecode.float import float_to_bits
 from conftest import requires_tileiras
 
 
@@ -148,14 +150,42 @@ def make_astype_to_kernel(rounding_mode, from_dtype, to_dtype):
     return kernel
 
 
-def make_f8e5m3fnu_astype_kernel(from_dtype, to_dtype, use_method):
+def make_from_f8e5m3fnu_astype_kernel(to_dtype, use_method):
     @ct.kernel
     def kernel(y):
-        tx = ct.full((4,), 1.5, dtype=from_dtype)
+        tx = ct.full((4,), 1.5, dtype=ct.float8_e5m3fnu)
         if use_method:
             ty = tx.astype(to_dtype)
         else:
             ty = ct.astype(tx, to_dtype)
+        ct.store(y, index=(0,), tile=ty)
+    return kernel
+
+
+def make_from_f8e5m3fnu_rounding_kernel(to_dtype, use_method, rounding_mode):
+    @ct.kernel
+    def kernel(x, y):
+        bid = ct.bid(0)
+        tx = ct.load(x, index=(bid,), shape=(4,))
+        tx = ct.unpack_from_bytes(tx, ct.float8_e5m3fnu)
+        if use_method:
+            ty = tx.astype(to_dtype, rounding_mode=rounding_mode)
+        else:
+            ty = ct.astype(tx, to_dtype, rounding_mode=rounding_mode)
+        ct.store(y, index=(0,), tile=ty)
+    return kernel
+
+
+def make_to_f8e5m3fnu_astype_kernel(use_method):
+    @ct.kernel
+    def kernel(x, y, TILE: ct.Constant[int]):
+        bid = ct.bid(0)
+        tx = ct.load(x, index=(bid,), shape=(TILE,))
+        if use_method:
+            ty = tx.astype(ct.float8_e5m3fnu)
+        else:
+            ty = ct.astype(tx, ct.float8_e5m3fnu)
+        ty = ct.pack_to_bytes(ty)
         ct.store(y, index=(0,), tile=ty)
     return kernel
 
@@ -170,13 +200,79 @@ def make_f8e5m3fnu_astype_kernel(from_dtype, to_dtype, use_method):
                           (ct.bfloat16, torch.bfloat16),
                           (ct.float8_e5m2, torch.float8_e5m2),
                           (ct.float8_e4m3fn, torch.float8_e4m3fn)],
-                         ids=["f16", "f32", "f16", "bf16", "f8e5m2", "f8e4m3fn"])
+                         ids=["f64", "f32", "f16", "bf16", "f8e5m2", "f8e4m3fn"])
 def test_astype_from_f8e5m3fnu(to_dtype, torch_dtype, use_method):
     y = torch.empty((4,), dtype=torch_dtype, device="cuda")
     ref = torch.full((4,), 1.5, dtype=torch_dtype, device="cuda")
-    kernel = make_f8e5m3fnu_astype_kernel(ct.float8_e5m3fnu, to_dtype, use_method)
+    kernel = make_from_f8e5m3fnu_astype_kernel(to_dtype, use_method)
 
     ct.launch(torch.cuda.current_stream(), (1,), kernel, (y,))
+    assert_equal(y, ref)
+
+
+@require_rubin_cc107()
+@requires_tileiras(BytecodeVersion.V_13_4)
+@pytest.mark.parametrize("use_method", [True, False])
+@pytest.mark.parametrize("rounding_mode", [ct.RoundingMode.RN, ct.RoundingMode.RZ,
+                                           ct.RoundingMode.RM, ct.RoundingMode.RP,
+                                           ct.RoundingMode.RA])
+@pytest.mark.parametrize("to_dtype,torch_dtype",
+                         [(ct.float64, torch.float64),
+                          (ct.float32, torch.float32)])
+def test_rounding_from_f8e5m3fnu(use_method, rounding_mode, to_dtype, torch_dtype):
+
+    vals = [1.0, 1.125, 1.25, 1.375]
+
+    x = [float_to_bits(i, SimpleType.F8E5M3FNU) for i in vals]
+    x = torch.tensor(x, dtype=torch.uint8, device="cuda")
+
+    ref = torch.tensor(vals, dtype=torch_dtype, device='cuda')
+    y = torch.zeros_like(ref)
+
+    kernel = make_from_f8e5m3fnu_rounding_kernel(to_dtype, use_method, rounding_mode)
+    ct.launch(torch.cuda.current_stream(), (1,), kernel, (x, y))
+    assert_equal(y, ref)
+
+
+@require_rubin_cc107()
+@requires_tileiras(BytecodeVersion.V_13_4)
+@pytest.mark.parametrize("use_method", [True, False])
+@pytest.mark.parametrize("from_torch_dtype",
+                         [torch.float64, torch.float32, torch.float16, torch.bfloat16,
+                          torch.float8_e5m2, torch.float8_e4m3fn, torch.float8_e8m0fnu],
+                         ids=["f64", "f32", "f16", "bf16", "f8e5m2", "f8e4m3fn", "f8e8m0fnu"])
+def test_astype_to_f8e5m3fnu(from_torch_dtype, use_method):
+    x = torch.full((4,), 0.5, dtype=from_torch_dtype, device="cuda")
+    y = torch.empty((4,), dtype=torch.uint8, device="cuda")
+
+    ref = [float_to_bits(i, SimpleType.F8E5M3FNU) for i in
+           torch.full((4,), 0.5, dtype=torch.float32)]
+    ref = torch.tensor(ref, dtype=torch.uint8, device="cuda")
+
+    kernel = make_to_f8e5m3fnu_astype_kernel(use_method)
+
+    ct.launch(torch.cuda.current_stream(), (1,), kernel, (x, y, 4))
+    assert_equal(y, ref)
+
+
+@require_rubin_cc107()
+@requires_tileiras(BytecodeVersion.V_13_4)
+@pytest.mark.parametrize("use_method", [True, False])
+@pytest.mark.parametrize("from_torch_dtype",
+                         [torch.float64, torch.float32, torch.float16],
+                         ids=["f64", "f32", "f16"])
+def test_rounding_to_f8e5m3fnu(from_torch_dtype, use_method):
+    x = [1.0625, 1.1875]
+    x = torch.tensor(x, dtype=from_torch_dtype, device="cuda")
+    y = torch.empty((2,), dtype=torch.uint8, device="cuda")
+
+    ref = [1.0, 1.25]
+    ref = [float_to_bits(i, SimpleType.F8E5M3FNU) for i in ref]
+    ref = torch.tensor(ref, dtype=torch.uint8, device="cuda")
+
+    kernel = make_to_f8e5m3fnu_astype_kernel(use_method)
+
+    ct.launch(torch.cuda.current_stream(), (1,), kernel, (x, y, 2))
     assert_equal(y, ref)
 
 
