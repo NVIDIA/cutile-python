@@ -15,7 +15,7 @@ from .. import TileTypeError
 from .._coroutine_util import resume_after, run_coroutine
 from .._dispatch_mode import StaticEvalMode
 from .._exception import Loc, FunctionDesc, TileInternalError, TileError, TileRecursionError, \
-    TileValueError, UnsupportedCallError, TypeCheckingError
+    TileValueError, UnsupportedCallError, TypeCheckingError, UnsupportedSyntaxError
 from .._execution import is_stub, is_static_def
 from .._ir.hir import StaticEvalKind
 from .._ir import hir, ir, hir_stubs
@@ -283,7 +283,11 @@ async def _call_function(callee: Callable,
     elif is_static_def(callee):
         return _call_static_def_function(callee, args, kwargs)
     else:
-        callee_hir = get_function_hir(callee, mode=HirMode.HELPER_FUNCTION)
+        try:
+            callee_hir = get_function_hir(callee, mode=HirMode.HELPER_FUNCTION)
+        except UnsupportedSyntaxError as e:
+            e.loc = retarget_loc(e.loc, Scope.get_current())
+            raise
         sig = get_signature(callee)
         arg_list = _bind_args(sig, callee.__name__, args, kwargs)
         return await _call_user_defined(callee_hir, arg_list, builder)
