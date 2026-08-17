@@ -9,14 +9,26 @@ from cuda.lang._enums import RoundingMode, SaturationMode
 @stub(static_eval_ok=True)
 def add(x, y, /, *, rounding_mode: RoundingMode | None = None,
         flush_to_zero: bool = False):
-    """Compute ``x + y``."""
+    """Compute ``x + y``.
+
+    Args:
+        rounding_mode: The rounding mode.
+        flush_to_zero: Whether to flush subnormal inputs and results to
+            sign-preserving zero.
+    """
     ...
 
 
 @stub(static_eval_ok=True)
 def sub(x, y, /, *, rounding_mode: RoundingMode | None = None,
         flush_to_zero: bool = False):
-    """Compute ``x - y``."""
+    """Compute ``x - y``.
+
+    Args:
+        rounding_mode: The rounding mode.
+        flush_to_zero: Whether to flush subnormal inputs and results to
+            sign-preserving zero.
+    """
     ...
 
 
@@ -360,12 +372,14 @@ __all__ = (
     "floordiv",
     "mod",
     "integer_remainder",
+    "divmod",
     "negative",
     "ceil",
     "exp",
     "exp2",
     "sin",
     "cos",
+    "sincos",
     "tan",
     "sinh",
     "cosh",
@@ -377,10 +391,6 @@ __all__ = (
     "log2",
     "abs",
     "atan2",
-    "isnan",
-    "isinf",
-    "isfinite",
-    "isnormal",
     "isnan",
     "isinf",
     "isfinite",
