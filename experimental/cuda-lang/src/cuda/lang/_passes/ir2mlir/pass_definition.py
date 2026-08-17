@@ -35,6 +35,14 @@ from .type_conversion import (
 from .location import ir_loc_to_mlir_location
 
 
+_NVVM_ROUNDING_MODES = {
+    RoundingMode.RM: mlir.nvvm.FPRoundingMode.RM,
+    RoundingMode.RN: mlir.nvvm.FPRoundingMode.RN,
+    RoundingMode.RP: mlir.nvvm.FPRoundingMode.RP,
+    RoundingMode.RZ: mlir.nvvm.FPRoundingMode.RZ,
+}
+
+
 def _expect_arith_type(ty: ir_type.Type) -> ir_type.TensorLikeTy:
     assert isinstance(ty, ir_type.TensorLikeTy)
     assert datatype.is_arithmetic(ty.tensor_dtype())
@@ -482,14 +490,8 @@ def lower_fma(
         context.get_var(operation.z),
     )
     mlir_result_type = ir_type_to_mlir_type(result_type)
-    rounding_modes = {
-        RoundingMode.RM: mlir.nvvm.FPRoundingMode.RM,
-        RoundingMode.RN: mlir.nvvm.FPRoundingMode.RN,
-        RoundingMode.RP: mlir.nvvm.FPRoundingMode.RP,
-        RoundingMode.RZ: mlir.nvvm.FPRoundingMode.RZ,
-    }
     rnd = mlir.nvvm.FPRoundingModeAttr(
-        value=rounding_modes[operation.rounding_mode]
+        value=_NVVM_ROUNDING_MODES[operation.rounding_mode]
     )
     saturation_modes = {
         SaturationMode.NONE: _FmaSaturationMode.NONE,
@@ -645,6 +647,74 @@ def lower_raw_unary_arith(
     return [mlir_op(operand=context.get_var(operation.operand))]
 
 
+def _lower_binary_arith_with_nvvm_modifiers(
+    context: MLIRLoweringContext,
+    operation: ops.RawBinaryArithmeticOperation,
+    res_type: ir_type.TensorLikeTy,
+) -> Sequence[mlir.Value]:
+    res_dtype = res_type.tensor_dtype()
+    rounding_mode = operation.rounding_mode or RoundingMode.RN
+    result_mlir_type = ir_type_to_mlir_type(res_type)
+    operands = (
+        context.get_var(operation.lhs),
+        context.get_var(operation.rhs),
+    )
+    attributes = (
+        (
+            "rnd",
+            mlir.nvvm.FPRoundingModeAttr(
+                value=_NVVM_ROUNDING_MODES[rounding_mode]
+            ),
+        ),
+        ("ftz", mlir.BoolAttr(value=operation.flush_to_zero)),
+    )
+
+    packed_f32x2 = (
+        isinstance(res_type, ir_type.VectorTy)
+        and res_type.length >= 2
+        and res_type.length % 2 == 0
+        and res_dtype == datatype.float32
+    )
+    if packed_f32x2 and context.target_info.supports(TargetFeature.PACKED_F32X2):
+        result = mlir.add_operation(
+            name=f"nvvm.{operation.fn}.packed.f32x2",
+            result_type=result_mlir_type,
+            operands=operands,
+            properties=(),
+            attributes=attributes,
+        )
+        return [result]
+
+    def _lower_nvvm_op(lhs, rhs):
+        return mlir.add_operation(
+            name=f"nvvm.{operation.fn}f",
+            result_type=lhs.type,
+            operands=(lhs, rhs),
+            properties=(),
+            attributes=attributes,
+        )
+
+    if not isinstance(res_type, ir_type.VectorTy) or res_type.length == 2:
+        return [_lower_nvvm_op(*operands)]
+
+    result = mlir.llvm.add_PoisonOp(res_type=result_mlir_type)
+    for index in range(res_type.length):
+        position = mlir_constant_of_type(T.i32(), index)
+        elements = tuple(
+            mlir.llvm.add_ExtractElementOp(
+                vector=operand,
+                position=position,
+            )
+            for operand in operands
+        )
+        result = mlir.llvm.add_InsertElementOp(
+            vector=result,
+            value=_lower_nvvm_op(*elements),
+            position=position,
+        )
+    return [result]
+
+
 def _lower_raw_binary_arith(
     context: MLIRLoweringContext,
     operation: ops.RawBinaryArithmeticOperation | ops.RawBinaryBitwiseOperation,
@@ -654,39 +724,15 @@ def _lower_raw_binary_arith(
     res_type = _expect_arith_type(operation.result_var.get_type())
     assert lhs_type == rhs_type == res_type
 
-    res_dtype = res_type.tensor_dtype()
-    packed_f32x2_add = (
-        operation.fn == "add"
-        and isinstance(res_type, ir_type.VectorTy)
-        and res_type.length >= 2
-        and res_type.length % 2 == 0
-        and res_dtype == datatype.float32
-    )
-    if packed_f32x2_add and context.target_info.supports(TargetFeature.PACKED_F32X2):
-        # TODO: Propagate rounding and FTZ once cl.add exposes these options.
-        result = mlir.add_operation(
-            name="nvvm.add.packed.f32x2",
-            result_type=ir_type_to_mlir_type(res_type),
-            operands=(
-                context.get_var(operation.lhs),
-                context.get_var(operation.rhs),
-            ),
-            properties=(),
-            attributes=(
-                (
-                    "rnd",
-                    mlir.nvvm.FPRoundingModeAttr(
-                        value=mlir.nvvm.FPRoundingMode.RN
-                    ),
-                ),
-                (
-                    "ftz",
-                    mlir.BoolAttr(value=False),
-                ),
-            ),
+    if isinstance(operation, ops.RawBinaryArithmeticOperation) and (
+        operation.rounding_mode is not None or operation.flush_to_zero
+    ):
+        assert operation.fn in ("add", "sub")
+        return _lower_binary_arith_with_nvvm_modifiers(
+            context, operation, res_type
         )
-        return [result]
 
+    res_dtype = res_type.tensor_dtype()
     mlir_op = _get_mlir_op_for_op_and_dtype(operation.fn, res_dtype)
     if mlir_op is None:
         raise NotImplementedError(

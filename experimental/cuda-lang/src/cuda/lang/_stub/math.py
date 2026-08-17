@@ -7,13 +7,15 @@ from cuda.lang._enums import RoundingMode, SaturationMode
 
 
 @stub(static_eval_ok=True)
-def add(x, y, /):
+def add(x, y, /, *, rounding_mode: RoundingMode | None = None,
+        flush_to_zero: bool = False):
     """Compute ``x + y``."""
     ...
 
 
 @stub(static_eval_ok=True)
-def sub(x, y, /):
+def sub(x, y, /, *, rounding_mode: RoundingMode | None = None,
+        flush_to_zero: bool = False):
     """Compute ``x - y``."""
     ...
 

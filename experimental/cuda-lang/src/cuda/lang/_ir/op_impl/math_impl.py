@@ -49,6 +49,7 @@ from cuda.tile._ir.op_impl import (
     ImplRegistry,
     require_constant_bool,
     require_constant_enum,
+    require_optional_constant_enum,
 )
 from cuda.lang._enums import RoundingMode, SaturationMode
 from ..._stub import math as cl_math
@@ -63,14 +64,34 @@ def math_impl_registry() -> ImplRegistry:
 
 
 @impl(cdiv, fixed_args=["cdiv"])
-@impl(cl_math.add, fixed_args=["add"])
-@impl(cl_math.sub, fixed_args=["sub"])
 @impl(cl_math.mul, fixed_args=["mul"])
 @impl(cl_math.floordiv, fixed_args=["floordiv"])
 def math_binary_arithmetic_impl(fn: str, x: Var, y: Var):
     require_scalar_or_vector_type(x)
     require_scalar_or_vector_type(y)
     return binary_arithmetic_tensorlike(fn, x, y)
+
+
+@impl(cl_math.add, fixed_args=["add"])
+@impl(cl_math.sub, fixed_args=["sub"])
+def math_binary_arithmetic_with_options_impl(
+    fn: str,
+    x: Var,
+    y: Var,
+    rounding_mode: Var,
+    flush_to_zero: Var,
+):
+    rounding_mode = require_optional_constant_enum(rounding_mode, RoundingMode)
+    flush_to_zero = require_constant_bool(flush_to_zero)
+    require_scalar_or_vector_type(x)
+    require_scalar_or_vector_type(y)
+    return binary_arithmetic_tensorlike(
+        fn,
+        x,
+        y,
+        rounding_mode=rounding_mode,
+        flush_to_zero=flush_to_zero,
+    )
 
 
 @impl(cl_math.fma)

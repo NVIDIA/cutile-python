@@ -18,6 +18,7 @@ from cuda.lang._stub import math as device_math
 from cuda.lang.compilation import KernelSignature
 from cuda.lang._exception import CompilerExecutionError, TypeCheckingError
 from cuda.lang._fp_utils import _FLOAT_SMALLEST_NORMAL, isnormal
+from cuda.lang._target import TargetFeature, TargetInfo
 from .util import make_symbolic_tensor
 
 
@@ -648,7 +649,7 @@ def test_math_fma(dtype, vector):
     assert torch.equal(out.cpu(), expected)
 
 
-_FMA_ROUNDING_MODES = (
+_ROUNDING_MODES = (
     cl.RoundingMode.RM,
     cl.RoundingMode.RN,
     cl.RoundingMode.RP,
@@ -700,7 +701,7 @@ def _fma_supported_options(dtype):
         )
     elif dtype == cl.float32:
         yield from itertools.product(
-            _FMA_ROUNDING_MODES,
+            _ROUNDING_MODES,
             (cl.SaturationMode.NONE, cl.SaturationMode.SAT),
             (False, True),
             (False,),
@@ -708,7 +709,7 @@ def _fma_supported_options(dtype):
         )
     elif dtype == cl.float64:
         yield from itertools.product(
-            _FMA_ROUNDING_MODES,
+            _ROUNDING_MODES,
             (cl.SaturationMode.NONE,),
             (False,),
             (False,),
@@ -724,7 +725,7 @@ def _fma_supported_cases():
 
 def _fma_all_options():
     yield from itertools.product(
-        _FMA_ROUNDING_MODES,
+        _ROUNDING_MODES,
         _FMA_SATURATION_MODES,
         (False, True),
         (False, True),
@@ -1481,11 +1482,11 @@ def test_add_f32x2_target_lowering(vector_length):
 
     compile_kernel(
         kernel,
-        filecheck_mlir="CHECK-COUNT-1: nvvm.add.packed.f32x2",
-        filecheck_nvvm="CHECK-COUNT-1: llvm.nvvm.add.packed.f32x2",
-        filecheck_ptx=(
-            f"CHECK-COUNT-{vector_length // 2}: add.rn.f32x2"
-        ),
+        filecheck_mlir="""
+            CHECK: arith.addf
+            CHECK-NOT: nvvm.add.packed.f32x2
+        """,
+        filecheck_ptx=f"CHECK-COUNT-{vector_length // 2}: add.f32x2",
         gpu_name="sm_100a",
         arch="compute_100a",
     )
@@ -1499,6 +1500,123 @@ def test_add_f32x2_target_lowering(vector_length):
         filecheck_ptx=f"CHECK-COUNT-{vector_length}: add.f32",
         gpu_name="sm_100a",
         arch="compute_90",
+    )
+
+
+@pytest.mark.parametrize(
+    "op_name,device_op",
+    (("add", cl.add), ("sub", cl.sub)),
+)
+@pytest.mark.parametrize("rounding_mode", (*_ROUNDING_MODES, None))
+@pytest.mark.parametrize("flush_to_zero", (False, True))
+def test_arith_f32x2_modes(op_name, device_op, rounding_mode, flush_to_zero):
+    def kernel():
+        values = cl.shared_array(2, cl.float32)
+        ptr = values.get_base_pointer()
+        value = ptr.load(count=2)
+        ptr.store(device_op(
+            value,
+            value,
+            rounding_mode=rounding_mode,
+            flush_to_zero=flush_to_zero,
+        ))
+
+    rnd = "rn" if rounding_mode is None else rounding_mode.name.lower()
+    ftz = ".ftz" if flush_to_zero else ""
+    explicit_packed = rounding_mode is not None or flush_to_zero
+    if explicit_packed:
+        filecheck_mlir = f"CHECK-COUNT-1: nvvm.{op_name}.packed.f32x2"
+        filecheck_nvvm = (
+            f"CHECK-COUNT-1: llvm.nvvm.{op_name}{ftz}.packed.f32x2"
+        )
+        filecheck_ptx = f"CHECK-COUNT-1: {op_name}.{rnd}{ftz}.f32x2"
+    else:
+        filecheck_mlir = f"""
+            CHECK: arith.{op_name}f
+        """
+        filecheck_nvvm = None
+        filecheck_ptx = f"CHECK-COUNT-1: {op_name}.f32x2"
+    compile_kernel(
+        kernel,
+        filecheck_mlir=filecheck_mlir,
+        filecheck_nvvm=filecheck_nvvm,
+        filecheck_ptx=filecheck_ptx,
+        gpu_name="sm_100a",
+        arch="compute_100a",
+    )
+
+
+@pytest.mark.parametrize(
+    "op_name,device_op",
+    (("add", cl.add), ("sub", cl.sub)),
+)
+@pytest.mark.parametrize("rounding_mode", _ROUNDING_MODES)
+@pytest.mark.parametrize("flush_to_zero", (False, True))
+def test_arith_f32_scalar_modes(
+    op_name, device_op, rounding_mode, flush_to_zero
+):
+    def kernel():
+        values = cl.shared_array(1, cl.float32)
+        ptr = values.get_base_pointer()
+        value = ptr.load()
+        ptr.store(device_op(
+            value,
+            value,
+            rounding_mode=rounding_mode,
+            flush_to_zero=flush_to_zero,
+        ))
+
+    rnd = rounding_mode.name.lower()
+    ftz = ".ftz" if flush_to_zero else ""
+    compile_kernel(
+        kernel,
+        assert_in_mlir=f"nvvm.{op_name}f",
+        filecheck_ptx=f"CHECK-COUNT-1: {op_name}.{rnd}{ftz}.f32",
+        gpu_name="sm_100a",
+        arch="compute_100a",
+    )
+
+
+@pytest.mark.parametrize(
+    "op_name,device_op",
+    (("add", cl.add), ("sub", cl.sub)),
+)
+@pytest.mark.parametrize("rounding_mode", _ROUNDING_MODES)
+@pytest.mark.parametrize("flush_to_zero", (False, True))
+def test_arith_f32x2_nvvm_toolchain_packing(
+    monkeypatch, op_name, device_op, rounding_mode, flush_to_zero
+):
+    original_supports = TargetInfo.supports
+
+    def supports_without_packed_f32x2(self, feature):
+        if feature is TargetFeature.PACKED_F32X2:
+            return False
+        return original_supports(self, feature)
+
+    monkeypatch.setattr(TargetInfo, "supports", supports_without_packed_f32x2)
+
+    def kernel():
+        values = cl.shared_array(2, cl.float32)
+        ptr = values.get_base_pointer()
+        value = ptr.load(count=2)
+        ptr.store(device_op(
+            value,
+            value,
+            rounding_mode=rounding_mode,
+            flush_to_zero=flush_to_zero,
+        ))
+
+    rnd = rounding_mode.name.lower()
+    ftz = ".ftz" if flush_to_zero else ""
+    # If this starts emitting packed PTX, remove the special PACKED_F32X2
+    # target lowering and rely on the toolchain to pack nvvm.addf/subf.
+    compile_kernel(
+        kernel,
+        assert_in_mlir=f"nvvm.{op_name}f",
+        assert_not_in_ptx="f32x2",
+        filecheck_ptx=f"CHECK-COUNT-2: {op_name}.{rnd}{ftz}.f32",
+        gpu_name="sm_100a",
+        arch="compute_100a",
     )
 
 
