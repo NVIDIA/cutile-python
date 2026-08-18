@@ -76,8 +76,7 @@ class BuildExtWithCmake(build_ext):
             ext_path = self.get_ext_fullpath(ext.name)
             # Create a symlink to the build directory if in editable mode, otherwise copy
             link = "sym" if self.editable_mode else None
-            file_util.copy_file(ext_build_path, ext_path, update=1, link=link,
-                                dry_run=self.dry_run)
+            file_util.copy_file(ext_build_path, ext_path, update=1, link=link,)
 
 
 def _get_csrc_dir(ext_name: str):
