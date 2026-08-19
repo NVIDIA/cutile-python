@@ -2,15 +2,10 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-import pytest
-
-pytest.importorskip("cuda.lang", reason="Skipping task_scheduling test: module not found")
-pytest.importorskip("task_scheduling", reason="Skipping task_scheduling test: module not found")
+from task_scheduling_test_requirements import cuda_lang, task_scheduling
 
 
 def test_imports():
-    import cuda.lang
-    import task_scheduling
-
-    assert cuda.lang is not None
+    assert cuda_lang is not None
     assert task_scheduling is not None
+    assert not hasattr(task_scheduling, "TaskLocalVariable")

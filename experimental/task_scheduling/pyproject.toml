@@ -9,7 +9,10 @@ requires = ["setuptools", "wheel"]
 [project]
 name = "task-scheduling"
 version = "0.0.1"
+description = "Experimental task scheduling for CUDA Lang"
+readme = "README.md"
 requires-python = ">=3.10, <3.15"
+dependencies = ["cuda-lang"]
 
 [tool.setuptools]
 package-dir = {"" = "src"}
