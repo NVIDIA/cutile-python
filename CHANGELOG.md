@@ -4,6 +4,113 @@
 Release Notes
 =============
 
+{#release-1-6-0}
+1.6.0 (2026-08-24)
+------------------
+
+This release adds finer control over compilation and execution with static
+array strides, unchecked memory accesses, programmatic dependent launch, and
+portable TileIR bytecode export. It expands the supported Python subset with
+user-defined context managers, dataclass methods, `break` in non-static loops,
+and integer `divmod`. Autotuning, JAX interoperability, diagnostics, and
+floating-point behavior are also improved.
+
+### CTK 13.4 features
+- Add Programmatic Dependent Launch support with
+  {py:func}`ct.grid_dependency_control_launch_dependents() <cuda.tile.grid_dependency_control_launch_dependents>`,
+  {py:func}`ct.grid_dependency_control_wait() <cuda.tile.grid_dependency_control_wait>`,
+  and the `programmatic_dependent_launch` option for {py:func}`ct.launch() <cuda.tile.launch>`.
+- Add a `check_bounds` option to {py:func}`ct.load() <cuda.tile.load>`,
+  {py:func}`ct.store() <cuda.tile.store>`, and the
+  {py:meth}`TiledView.load() <cuda.tile.TiledView.load>` and
+  {py:meth}`TiledView.store() <cuda.tile.TiledView.store>` methods. It defaults
+  to `True`. Setting it to `False` declares that every tile element is within
+  the array bounds and skips bounds checking for faster access.
+- Add {py:func}`ct.insert() <cuda.tile.insert>` and
+  {py:meth}`Tile.insert() <cuda.tile.Tile.insert>` to create a new tile by 
+  replacing a subtile of a larger tile. This operation is the inverse
+  of {py:func}`ct.extract() <cuda.tile.extract>`. The original tile remains unchanged.
+- Add `float8_e5m3fnu` scale dtype support for FP4 block-scaled MMA on Rubin (`sm_107`).
+
+### Features
+- Add support for specializing array stride dimensions to their launch-time
+  values, making them compile-time constants inside the kernel. Use
+  {py:class}`ct.ArrayAnnotation <cuda.tile.ArrayAnnotation>` as `Annotated`
+  metadata and list the dimensions to specialize, for example,
+  `Annotated[ct.Array, ct.ArrayAnnotation(static_stride_dims=(0, 1))]`.
+  Once any static stride is specified, the dispatcher stops automatically
+  inferring `stride == 1` for all dimensions, so list the contiguous dimension
+  explicitly if it should remain a compile-time constant.
+- Add {py:func}`ct.ensure_constant() <cuda.tile.ensure_constant>`, which
+  statically asserts that a value is a compile-time constant.
+- Add IEEE rounding-mode support to floating-point `astype()` conversions.
+- Add a `propagate_nan` option to {py:func}`ct.min() <cuda.tile.min>`,
+  {py:func}`ct.max() <cuda.tile.max>`,
+  {py:func}`ct.argmin() <cuda.tile.argmin>`,
+  {py:func}`ct.argmax() <cuda.tile.argmax>`,
+  {py:func}`ct.minimum() <cuda.tile.minimum>`, and
+  {py:func}`ct.maximum() <cuda.tile.maximum>`. By default, NaN values are
+  ignored. When enabled, a NaN propagates, min/max/minimum/maximum return NaN and
+  argmin/argmax return the index of the first NaN.
+
+### Python Features
+- Add support for `break` in non-static `for` loops.
+- Add support for user-defined context managers created with
+  `@contextlib.contextmanager`.
+- Add support for user-defined dataclass methods: `__post_init__()`,
+  `__call__()`, `__getitem__()`, `__setitem__()`, `__repr__()`, and `__str__()`.
+- Add {py:func}`ct.divmod() <cuda.tile.divmod>`, as well as support for
+  built-in `divmod()`, for integer inputs only.
+- Allow basic symbolic expressions to be constructed inside
+  {py:func}`ct.static_eval() <cuda.tile.static_eval>`.
+
+### Enhancements
+- An array dimension whose stride is inferred to be one is no longer encoded
+  as a static stride in the array's type unless it is explicitly selected with
+  `ArrayAnnotation(static_stride_dims=...)`. This allows more permissive type
+  unification in control flow.
+- Allow {py:func}`ct.tune.exhaustive_search() <cuda.tile.tune.exhaustive_search>`
+  to accept a function for its `kernel` argument that maps each configuration
+  to the kernel to tune. Passing a fixed kernel continues to work as before.
+- Allow {py:func}`export_kernel() <cuda.tile.compilation.export_kernel>` to
+  export TileIR bytecode without specifying `gpu_code` when
+  `output_format="tileir_bytecode"`. This requires bytecode version 13.3 or
+  later.
+- Specialize the sliced axis produced by
+  {py:meth}`Array.slice() <cuda.tile.Array.slice>` to a compile-time constant
+  dimension when both `start` and `stop` are compile-time constants.
+- On TileIR 13.4 or later, lower `x ** y` and `ct.pow(x, y)` to integer-exponent
+  `FPowI` when `x` is an unrestricted float and `y` is an integer whose value
+  range fits in a signed 32-bit integer. Other cases continue to promote the
+  exponent to floating point and use `FPowF`.
+- Improve the diagnostic for a function whose return type differs across
+  control-flow paths.
+- Change the second element of each entry in
+  {py:attr}`TuningResult.failures <cuda.tile.tune.TuningResult.failures>` from
+  an exception class name to the exception class itself.
+
+### Bug Fixes
+- Make {py:func}`ct.argmin() <cuda.tile.argmin>` and
+  {py:func}`ct.argmax() <cuda.tile.argmax>` ignore NaN values by default,
+  consistent with `ct.min()` and `ct.max()`.
+- Fix {py:func}`ct.launch() <cuda.tile.launch>` compiling kernels for 
+  CUDA device 0 rather than for the device being launched on. Kernels are now
+  compiled for the launch device's architecture. Devices with the same architecture
+  can still share a compiled kernel.
+- Fix an `AttributeError` when compiler crash dumps are enabled with
+  `CUDA_TILE_ENABLE_CRASH_DUMP=1`.
+- Fix an internal compiler error when a runtime loop conditionally updates a
+  loop-carried scalar.
+
+### Tooling
+- Add `cutile-cache log`, a command-line interface for inspecting compilation
+  history. Cache metadata includes mangled kernel names, compiler versions,
+  compilation dates and durations, and, with TileIR 13.4, `tileiras` compiler
+  remarks.
+
+### Ecosystem
+- Add support for tuple parameters in the JAX FFI integration.
+
 {#release-1-5-0}
 1.5.0 (2026-07-08)
 ------------------

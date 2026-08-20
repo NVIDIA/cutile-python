@@ -1,1 +1,0 @@
-- Allow building basic symbolic expressions inside ``static_eval()``.

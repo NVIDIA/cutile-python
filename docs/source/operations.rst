@@ -218,6 +218,8 @@ Utility
    print
    assert_
    assume_divisible_by
+   grid_dependency_control_launch_dependents
+   grid_dependency_control_wait
 
 
 .. _operations-metaprogramming:

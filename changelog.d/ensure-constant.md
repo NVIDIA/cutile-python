@@ -1,1 +1,0 @@
-- Added `ct.ensure_constant()` that statically asserts that a value is a compile-time constant.
