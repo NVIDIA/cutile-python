@@ -269,6 +269,7 @@ class CompilerExecutionError(InternalCompilerError):
                  stderr: str,
                  compiler_flags: str,
                  compiler_version: Optional[str]):
+        self.return_code = return_code
         message, loc = _parse_tileir_stderr(stderr)
         if loc is None:
             loc = _unknown_loc

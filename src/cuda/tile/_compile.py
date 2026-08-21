@@ -6,7 +6,7 @@ import math
 import re
 import warnings
 import contextlib
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import datetime
 import functools
 from functools import cache
@@ -607,6 +607,29 @@ def compile_tile(ann_func: AnnotatedFunction | FunctionType,
                                        timeout_sec=context.config.compiler_timeout_sec,
                                        remarks_output_file=remarks_file)
         except TileCompilerError as e:
+            if (isinstance(e, TileCompilerExecutionError)
+                    and getattr(e, "return_code", None) == -11
+                    and compiler_options.occupancy is not None):
+                fallback_options = replace(compiler_options, occupancy=None)
+                warnings.warn(
+                    "tileiras terminated with SIGSEGV while processing the requested "
+                    f"occupancy hint {compiler_options.occupancy!r}; retrying without an "
+                    "occupancy hint.",
+                    UserWarning,
+                    stacklevel=3,
+                )
+                return compile_tile(
+                    ann_func,
+                    signatures,
+                    sm_arch=sm_arch,
+                    compiler_options=fallback_options,
+                    context=context,
+                    bytecode_version=bytecode_version,
+                    return_final_ir=return_final_ir,
+                    return_bytecode=return_bytecode,
+                    return_cubin=return_cubin,
+                )
+
             if context.config.enable_crash_dump:
                 anonymized_bytecode = _get_bytecode(ir_keeper, compiler_options,
                                                     anonymize_debug_info=True)
