@@ -3049,7 +3049,9 @@ def reduce(x, /, axis, func, identity, *, keepdims=False):
             `lambda a, b: a + b` or `operator.add` can be used to implement the sum reduction.
             If `x` is a tuple of N tiles, then the function takes 2N tiles and returns a tuple
             of N combined tiles. The first N arguments correspond to one of the groups of values
-            being combined, while the rest correspond to the other.
+            being combined, while the rest correspond to the other. The function may capture
+            scalar compile-time constants from its enclosing scope. Capturing runtime values or
+            shaped constants is unsupported and rejected during compilation.
         identity: a constant scalar or a tuple of constant scalars that specifies the identity
             element of the `func`.
         keepdims (bool): True to keep the axis of size 1, False to remove the reduced axis.
@@ -3160,7 +3162,9 @@ def scan(x, /, axis, func, identity, *, reverse=False):
             `lambda a, b: a + b` or `operator.add` can be used to implement cumsum.
             If `x` is a tuple of N tiles, then the function takes 2N tiles and returns a tuple
             of N combined tiles. The first N arguments correspond to one of the groups of values
-            being combined, while the rest correspond to the other.
+            being combined, while the rest correspond to the other. The function may capture
+            scalar compile-time constants from its enclosing scope. Capturing runtime values or
+            shaped constants is unsupported and rejected during compilation.
         identity: a constant scalar or a tuple of constant scalars that specifies the identity
             element of the `func`.
         reverse (bool): if True, the scan is performed in the reverse direction along the axis.
