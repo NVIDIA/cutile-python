@@ -65,6 +65,11 @@ from cuda.tile._passes.dataflow_analysis import DataflowResult, dataflow_analysi
 from cuda.tile._passes.check_dtype_support import check_dtype_support
 from cuda.tile._passes.dce import dead_code_elimination_pass
 from cuda.tile._passes.materialize_constants import materialize_constants_pass
+from cuda.tile._passes.isolate_reduce_scan import (
+    _remember_reduce_scan_capture_names,
+    legalize_reduce_scan_captures,
+    verify_reduce_scan_isolation,
+)
 from cuda.tile._passes.propagate_divby import add_divby_pass
 from cuda.tile._passes.token_order import token_order_pass
 from cutile_cache._cache import MetadataV1, cache_key, cache_lookup, cache_store, evict_lru
@@ -102,12 +107,14 @@ def _transform_ir(func_body: ir.Block,
                   bytecode_version: bc.BytecodeVersion,
                   param_constraints: Sequence[tuple[tuple[ir.Var, ...], ParameterConstraint]]
                   ) -> DataflowResult:
+    _remember_reduce_scan_capture_names(func_body)
     eliminate_assign_ops(func_body)
     lower_for_with_break(func_body)
     dead_code_elimination_pass(func_body)
     dataflow_result = dataflow_analysis(func_body, param_constraints)
 
     materialize_constants_pass(func_body, dataflow_result)
+    legalize_reduce_scan_captures(func_body)
 
     if not CUDA_TILE_TESTING_DISABLE_DIV:
         add_divby_pass(func_body, dataflow_result)
@@ -128,6 +135,7 @@ def _transform_ir(func_body: ir.Block,
 
     split_loops(func_body)
     dead_code_elimination_pass(func_body)
+    verify_reduce_scan_isolation(func_body)
 
     return dataflow_result
 
