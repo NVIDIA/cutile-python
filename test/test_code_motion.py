@@ -10,7 +10,8 @@ import torch
 import cuda.tile as ct
 from cuda.tile.compilation import CallingConvention
 from cuda.tile._ir.ir import Operation
-from cuda.tile._ir.ops import Loop, IfElse, TileExtract
+from cuda.tile._ir.core_ops import TypedConst
+from cuda.tile._ir.ops import Loop, IfElse, TileExtract, TileReduce
 from cuda.tile._ir.arithmetic_ops import Unary
 from cuda.tile._compile import compile_tile
 
@@ -249,3 +250,32 @@ def test_hoisting(kernel, op_finder, expected_x):
     ct.launch(torch.cuda.current_stream(), (1,), kernel, (x, a, 4.0))
     ref = torch.tensor(expected_x, dtype=torch.float32, device="cuda")
     assert_close(x, ref)
+
+
+def test_reduce_body_is_licm_barrier():
+    @ct.kernel
+    def kernel(x, y):
+        xt = ct.load(x, (0, 0), (16, 16))
+        yt = ct.reduce(xt, -1, lambda a, b: (a + b) % 5, 0)
+        ct.store(y, (0,), yt)
+
+    x = torch.zeros((16, 16), dtype=torch.int32, device="cuda")
+    y = torch.zeros((16,), dtype=torch.int32, device="cuda")
+    sig = ct.compilation.KernelSignature.from_kernel_args(
+        kernel, (x, y), CallingConvention.cutile_python_v1()
+    )
+    [root_block] = compile_tile(
+        kernel._pyfunc, [sig], return_final_ir=True, return_cubin=False
+    ).final_ir
+
+    [reduce] = [op for op in root_block.traverse() if isinstance(op, TileReduce)]
+    modulo_ops = [
+        op
+        for op in reduce.body.operations
+        if isinstance(op, TypedConst) and op.value == 5
+    ]
+    assert len(modulo_ops) == 1
+    [modulo] = modulo_ops
+
+    assert modulo in reduce.body.operations
+    assert modulo not in root_block.operations

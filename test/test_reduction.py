@@ -563,6 +563,21 @@ def test_custom_reduction_minimum_with_index():
     assert_equal(yi, yi_ref)
 
 
+def test_custom_reduction_with_constant_capture():
+    @ct.kernel
+    def kernel(x, y):
+        modulo = 5
+        xt = ct.load(x, (0, 0), (16, 16))
+        yt = ct.reduce(xt, -1, lambda a, b: (a + b) % modulo, 0)
+        ct.store(y, (0,), yt)
+
+    x = torch.arange(256, dtype=torch.int32, device="cuda").reshape(16, 16)
+    ref = torch.sum(x, -1, dtype=torch.int32) % 5
+    y = torch.zeros((16,), dtype=torch.int32, device="cuda")
+    ct.launch(torch.cuda.current_stream(), (1,), kernel, (x, y))
+    assert_equal(y, ref)
+
+
 def test_custom_reduction_with_capture():
     @ct.kernel
     def kernel(x, p, y):
@@ -573,10 +588,9 @@ def test_custom_reduction_with_capture():
 
     x = torch.arange(256, dtype=torch.int32, device="cuda").reshape(16, 16)
     p = torch.tensor(5, dtype=torch.int32, device="cuda")
-    ref = torch.sum(x, -1, dtype=torch.int32) % 5
     y = torch.zeros((16,), dtype=torch.int32, device="cuda")
-    ct.launch(torch.cuda.current_stream(), (1,), kernel, (x, p, y))
-    assert_equal(y, ref)
+    with pytest.raises(TileSyntaxError, match="captures runtime value 'modulo'"):
+        ct.launch(torch.cuda.current_stream(), (1,), kernel, (x, p, y))
 
 
 def test_custom_reduction_welford():

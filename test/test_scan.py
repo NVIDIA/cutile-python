@@ -288,6 +288,38 @@ def test_custom_scan_last_axis():
     torch.testing.assert_close(y, ref)
 
 
+def test_custom_scan_with_constant_capture():
+    @ct.kernel
+    def kernel(x, y):
+        scale = 2
+        xt = ct.load(x, (0, 0), (16, 16))
+        yt = ct.scan(xt, axis=-1, func=lambda a, b: (a + b) % scale, identity=0)
+        ct.store(y, (0, 0), yt)
+
+    x = torch.arange(256, dtype=torch.int32, device="cuda").reshape(16, 16)
+    ref = torch.cumsum(x, -1, dtype=torch.int32) % 2
+    y = torch.zeros((16, 16), dtype=torch.int32, device="cuda")
+    ct.launch(torch.cuda.current_stream(), (1,), kernel, (x, y))
+    torch.testing.assert_close(y, ref)
+
+
+def test_custom_scan_with_runtime_capture():
+    @ct.kernel
+    def kernel(x, p, y):
+        modulo = ct.gather(p, ())
+        xt = ct.load(x, (0, 0), (16, 16))
+        yt = ct.scan(xt, axis=-1, func=lambda a, b: (a + b) % modulo, identity=0)
+        ct.store(y, (0, 0), yt)
+
+    x = torch.arange(256, dtype=torch.int32, device="cuda").reshape(16, 16)
+    p = torch.tensor(5, dtype=torch.int32, device="cuda")
+    y = torch.zeros((16, 16), dtype=torch.int32, device="cuda")
+    with pytest.raises(
+        TileSyntaxError, match="scan body captures runtime value 'modulo'"
+    ):
+        ct.launch(torch.cuda.current_stream(), (1,), kernel, (x, p, y))
+
+
 def test_custom_scan_none_axis():
     @ct.kernel
     def kernel(x, y):
