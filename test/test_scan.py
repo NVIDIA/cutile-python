@@ -297,7 +297,10 @@ def test_custom_scan_with_constant_capture():
         ct.store(y, (0, 0), yt)
 
     x = torch.arange(256, dtype=torch.int32, device="cuda").reshape(16, 16)
-    ref = torch.cumsum(x, -1, dtype=torch.int32) % 2
+    ref = torch.empty_like(x)
+    ref[:, 0] = x[:, 0]
+    for i in range(1, x.shape[1]):
+        ref[:, i] = (ref[:, i - 1] + x[:, i]) % 2
     y = torch.zeros((16, 16), dtype=torch.int32, device="cuda")
     ct.launch(torch.cuda.current_stream(), (1,), kernel, (x, y))
     torch.testing.assert_close(y, ref)

@@ -11,7 +11,7 @@ import cuda.tile as ct
 from cuda.tile.compilation import CallingConvention
 from cuda.tile._ir.ir import Operation
 from cuda.tile._ir.core_ops import TypedConst
-from cuda.tile._ir.ops import Loop, IfElse, TileExtract, TileReduce
+from cuda.tile._ir.ops import Loop, IfElse, TileExtract, TileReduce, TileScan
 from cuda.tile._ir.arithmetic_ops import Unary
 from cuda.tile._compile import compile_tile
 
@@ -197,6 +197,22 @@ def carried_from_nested_loop_no(x, a, t):
         ct.store(x, i, val)
 
 
+@ct.kernel
+def entire_reduce_op_yes(x, y):
+    xt = ct.load(x, (0, 0), (16, 16))
+    for i in range(y.shape[0]):
+        yt = ct.reduce(xt, -1, lambda a, b: a + b, 0)
+        ct.store(y, (i, 0), yt)
+
+
+@ct.kernel
+def entire_scan_op_yes(x, y):
+    xt = ct.load(x, (0, 0), (16, 16))
+    for i in range(y.shape[0]):
+        yt = ct.scan(xt, -1, lambda a, b: a + b, 0)
+        ct.store(y, (i, 0, 0), yt)
+
+
 def make_cases(tuples):
     return [pytest.param(kernel, op_finder, expected_x, id=kernel._pyfunc.__name__)
             for kernel, op_finder, expected_x in tuples]
@@ -279,3 +295,25 @@ def test_reduce_body_is_licm_barrier():
 
     assert modulo in reduce.body.operations
     assert modulo not in root_block.operations
+
+
+@pytest.mark.parametrize(
+    "kernel, op_type, x_shape, y_shape",
+    [
+        (entire_reduce_op_yes, TileReduce, (16, 16), (3, 16)),
+        (entire_scan_op_yes, TileScan, (16, 16), (3, 16, 16)),
+    ],
+)
+def test_entire_aggregate_op_can_be_hoisted(kernel, op_type, x_shape, y_shape):
+    x = torch.zeros(x_shape, dtype=torch.float32, device="cuda")
+    y = torch.zeros(y_shape, dtype=torch.float32, device="cuda")
+    sig = ct.compilation.KernelSignature.from_kernel_args(
+        kernel, (x, y), CallingConvention.cutile_python_v1()
+    )
+    [root_block] = compile_tile(
+        kernel._pyfunc, [sig], return_final_ir=True, return_cubin=False
+    ).final_ir
+
+    [aggregate] = [op for op in root_block.traverse() if isinstance(op, op_type)]
+    [loop] = [op for op in root_block.traverse() if isinstance(op, Loop)]
+    assert not _is_inside_loop(aggregate, loop)

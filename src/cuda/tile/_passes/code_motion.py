@@ -86,7 +86,7 @@ def _hoist(block: Block, stack: list[_StackItem], def_depth: dict[str, int], is_
             for var in op.body.params:
                 def_depth[var.name] = depth + 1
 
-            body_res = _hoist(op.body, stack, def_depth, True)
+            body_res = _hoist(op.body, stack, def_depth, isinstance(op, Loop))
             if body_res.mobility == _BlockMobility.IMMOVABLE:
                 # Propagate IMMOVABLE to all ancestors.
                 ret.mobility = _BlockMobility.IMMOVABLE
