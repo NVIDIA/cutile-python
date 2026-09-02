@@ -200,17 +200,31 @@ def carried_from_nested_loop_no(x, a, t):
 @ct.kernel
 def entire_reduce_op_yes(x, y):
     xt = ct.load(x, (0, 0), (16, 16))
-    for i in range(y.shape[0]):
-        yt = ct.reduce(xt, -1, lambda a, b: a + b, 0)
-        ct.store(y, (i, 0), yt)
+    for i in range(y.shape[1]):
+        yt = ct.reduce(xt, -1, lambda a, b: a + b, 0, keepdims=True)
+        ct.store(y, (0, i), yt)
 
 
 @ct.kernel
 def entire_scan_op_yes(x, y):
     xt = ct.load(x, (0, 0), (16, 16))
-    for i in range(y.shape[0]):
+    for i in range(y.shape[1] // 16):
         yt = ct.scan(xt, -1, lambda a, b: a + b, 0)
-        ct.store(y, (i, 0, 0), yt)
+        ct.store(y, (0, i), yt)
+
+
+@ct.kernel
+def reduce_body_modulo(x, y):
+    xt = ct.load(x, (0, 0), (16, 16))
+    yt = ct.reduce(xt, -1, lambda a, b: (a + b) % 5, 0)
+    ct.store(y, (0,), yt)
+
+
+@ct.kernel
+def scan_body_modulo(x, y):
+    xt = ct.load(x, (0, 0), (16, 16))
+    yt = ct.scan(xt, -1, lambda a, b: (a + b) % 5, 0)
+    ct.store(y, (0, 0), yt)
 
 
 def make_cases(tuples):
@@ -268,52 +282,56 @@ def test_hoisting(kernel, op_finder, expected_x):
     assert_close(x, ref)
 
 
-def test_reduce_body_is_licm_barrier():
-    @ct.kernel
-    def kernel(x, y):
-        xt = ct.load(x, (0, 0), (16, 16))
-        yt = ct.reduce(xt, -1, lambda a, b: (a + b) % 5, 0)
-        ct.store(y, (0,), yt)
-
-    x = torch.zeros((16, 16), dtype=torch.int32, device="cuda")
-    y = torch.zeros((16,), dtype=torch.int32, device="cuda")
+def _final_ir(kernel, args):
     sig = ct.compilation.KernelSignature.from_kernel_args(
-        kernel, (x, y), CallingConvention.cutile_python_v1()
+        kernel, args, CallingConvention.cutile_python_v1()
     )
     [root_block] = compile_tile(
         kernel._pyfunc, [sig], return_final_ir=True, return_cubin=False
     ).final_ir
-
-    [reduce] = [op for op in root_block.traverse() if isinstance(op, TileReduce)]
-    modulo_ops = [
-        op
-        for op in reduce.body.operations
-        if isinstance(op, TypedConst) and op.value == 5
-    ]
-    assert len(modulo_ops) == 1
-    [modulo] = modulo_ops
-
-    assert modulo in reduce.body.operations
-    assert modulo not in root_block.operations
+    return root_block
 
 
 @pytest.mark.parametrize(
-    "kernel, op_type, x_shape, y_shape",
+    "kernel, op_type, y_shape",
     [
-        (entire_reduce_op_yes, TileReduce, (16, 16), (3, 16)),
-        (entire_scan_op_yes, TileScan, (16, 16), (3, 16, 16)),
+        (reduce_body_modulo, TileReduce, (16,)),
+        (scan_body_modulo, TileScan, (16, 16)),
     ],
+    ids=["reduce", "scan"],
 )
-def test_entire_aggregate_op_can_be_hoisted(kernel, op_type, x_shape, y_shape):
-    x = torch.zeros(x_shape, dtype=torch.float32, device="cuda")
+def test_aggregate_body_is_licm_barrier(kernel, op_type, y_shape):
+    x = torch.zeros((16, 16), dtype=torch.int32, device="cuda")
+    y = torch.zeros(y_shape, dtype=torch.int32, device="cuda")
+    root_block = _final_ir(kernel, (x, y))
+
+    [aggregate] = [op for op in root_block.traverse() if isinstance(op, op_type)]
+
+    def is_modulo_const(op):
+        return isinstance(op, TypedConst) and op.value == 5
+
+    assert sum(map(is_modulo_const, aggregate.body.operations)) == 1
+    assert not any(map(is_modulo_const, root_block.operations))
+
+
+@pytest.mark.parametrize(
+    "kernel, op_type, y_shape, reference",
+    [
+        (entire_reduce_op_yes, TileReduce, (16, 3),
+         lambda x: x.sum(-1, keepdim=True).expand(16, 3)),
+        (entire_scan_op_yes, TileScan, (16, 48),
+         lambda x: torch.cumsum(x, -1).repeat(1, 3)),
+    ],
+    ids=["reduce", "scan"],
+)
+def test_entire_aggregate_op_can_be_hoisted(kernel, op_type, y_shape, reference):
+    x = torch.arange(256, dtype=torch.float32, device="cuda").reshape(16, 16)
     y = torch.zeros(y_shape, dtype=torch.float32, device="cuda")
-    sig = ct.compilation.KernelSignature.from_kernel_args(
-        kernel, (x, y), CallingConvention.cutile_python_v1()
-    )
-    [root_block] = compile_tile(
-        kernel._pyfunc, [sig], return_final_ir=True, return_cubin=False
-    ).final_ir
+    root_block = _final_ir(kernel, (x, y))
 
     [aggregate] = [op for op in root_block.traverse() if isinstance(op, op_type)]
     [loop] = [op for op in root_block.traverse() if isinstance(op, Loop)]
     assert not _is_inside_loop(aggregate, loop)
+
+    ct.launch(torch.cuda.current_stream(), (1,), kernel, (x, y))
+    assert_close(y, reference(x))
