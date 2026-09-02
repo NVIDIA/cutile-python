@@ -14,7 +14,6 @@ from cuda.tile._exception import Loc, TileInternalError, TileSyntaxError
 from cuda.tile._ir.core_ops import Assign, TypedConst
 from cuda.tile._ir.ir import Block, Mapper, Operation, Var
 from cuda.tile._ir.ops import TileReduce, TileScan
-from cuda.tile._ir.type import TensorLikeTy
 
 
 def _definitions(root_block: Block) -> dict[str, Operation]:
@@ -101,15 +100,8 @@ def legalize_reduce_scan_captures(root_block: Block, capture_names: dict[str, st
                     consuming_loc,
                 )
 
-            value_type = value.get_type()
-            if not isinstance(value_type, TensorLikeTy) or value_type.tensor_shape() != ():
-                name = capture_names.get(value.name, value.get_original_name())
-                raise TileSyntaxError(
-                    f"{_kind(region_op)} body captures shaped compile-time constant '{name}'. "
-                    "Only scalar compile-time constants are supported.",
-                    consuming_loc,
-                )
-
+            # Shapes were validated when the body was built (see `_require_scalar_body` in
+            # ops.py), so the capture is a scalar and can simply be cloned into the body.
             local_value = mapper.clone_var(value)
             constants.append(TypedConst(
                 value=constant_value,

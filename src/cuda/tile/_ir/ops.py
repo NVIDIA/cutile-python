@@ -31,6 +31,7 @@ from .arithmetic_ops import reshape, broadcast_to, astype, compare_tensorlike, \
     UNARY_STRICT_FLOAT, UNARY_FLOAT, divmod_tensorlike
 from .cast_ops import implicit_cast
 from .control_flow_ops import Loop, IfElse, control_flow_impl_registry, EndBranch
+from .core_ops import Assign
 from .core_ops import loosely_typed_const, strictly_typed_const, build_tuple, bind_method, \
     sym2var, core_impl_registry, print_impl, TilePrintf, tuple_item
 from .static_eval_ops import static_eval_impl_registry
@@ -61,7 +62,7 @@ from .ops_utils import (
 from .type import (
     PartitionViewTy, StridedViewTy, GatherScatterViewTy, TupleTy, TileTy, NoneType, ArrayTy,
     ListTy, Type, LooselyTypedScalar, TokenTy, TiledViewTy,
-    RawArrayMemoryTy, IndexSliceTy,
+    RawArrayMemoryTy, IndexSliceTy, TensorLikeTy,
 )
 from cuda.tile._datatype import (
     DType, is_integral, is_float, is_signed, is_boolean, PointerInfo,
@@ -2212,6 +2213,29 @@ class TileReduce(Operation, opcode="tile_reduce"):
         return nested_builder.done()
 
 
+def _require_scalar_body(body_block: Block, op_name: Literal["reduction", "scan"]) -> None:
+    """Reject non-scalar tiles inside a reduce/scan body.
+
+    The body combines 0-d elements, and keeping every value inside it 0-d keeps the emitted
+    body self-contained. Non-scalar constants must be reduced to a scalar outside the callback.
+    """
+    # Assign ops are still present at this point; use them to name temporaries after the
+    # variable they were assigned to.
+    aliases = {op.value.name: op.result_var.get_original_name()
+               for op in body_block.operations if isinstance(op, Assign)}
+    for op in body_block.operations:
+        for var in (*op.all_inputs(), *op.result_vars):
+            ty = var.get_type_allow_invalid()
+            if isinstance(ty, TensorLikeTy) and ty.tensor_shape() != ():
+                name = var.get_original_name()
+                if name.startswith("$"):
+                    name = aliases.get(var.name, name)
+                what = "a value" if name.startswith("$") else f"'{name}'"
+                raise TileSyntaxError(
+                    f"{op_name} body must only operate on scalar tiles, but {what} has shape "
+                    f"{ty.tensor_shape()}", op.loc)
+
+
 async def _get_reduce_scan_body_block(
     xs: tuple[Var, ...],
     body: Callable,
@@ -2255,6 +2279,7 @@ async def _get_reduce_scan_body_block(
 
         add_operation_variadic(EndBranch, (), outputs=body_results)
 
+    _require_scalar_body(body_block, op_name)
     return body_block
 
 

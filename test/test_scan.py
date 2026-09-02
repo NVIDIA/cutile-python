@@ -306,6 +306,27 @@ def test_custom_scan_with_constant_capture():
     torch.testing.assert_close(y, ref)
 
 
+def test_custom_scan_with_shaped_constant_capture():
+    @ct.kernel
+    def kernel(x, y):
+        scale = ct.full((1,), 2, dtype=ct.int32)
+        xt = ct.load(x, (0, 0), (16, 16))
+
+        def combine(a, b):
+            return (a + b) % ct.extract(scale, index=(0,), shape=())
+
+        yt = ct.scan(xt, axis=-1, func=combine, identity=0)
+        ct.store(y, (0, 0), yt)
+
+    x = torch.arange(256, dtype=torch.int32, device="cuda").reshape(16, 16)
+    y = torch.zeros((16, 16), dtype=torch.int32, device="cuda")
+    with pytest.raises(
+        TileSyntaxError,
+        match=r"scan body must only operate on scalar tiles, but 'scale' has shape \(1,\)",
+    ):
+        ct.launch(torch.cuda.current_stream(), (1,), kernel, (x, y))
+
+
 def test_custom_scan_with_runtime_capture():
     @ct.kernel
     def kernel(x, p, y):

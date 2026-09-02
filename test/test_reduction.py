@@ -595,8 +595,28 @@ def test_custom_reduction_with_shaped_constant_capture():
     y = torch.zeros((16,), dtype=torch.int32, device="cuda")
     with pytest.raises(
         TileSyntaxError,
-        match="captures shaped compile-time constant 'modulo'.*"
-              "Only scalar compile-time constants are supported",
+        match=r"reduction body must only operate on scalar tiles, but 'modulo' has shape \(1,\)",
+    ):
+        ct.launch(torch.cuda.current_stream(), (1,), kernel, (x, y))
+
+
+def test_custom_reduction_with_shaped_constant_in_body():
+    @ct.kernel
+    def kernel(x, y):
+        xt = ct.load(x, (0, 0), (16, 16))
+
+        def combine(a, b):
+            modulo = ct.full((1,), 5, dtype=ct.int32)
+            return (a + b) % ct.extract(modulo, index=(0,), shape=())
+
+        yt = ct.reduce(xt, -1, combine, 0)
+        ct.store(y, (0,), yt)
+
+    x = torch.arange(256, dtype=torch.int32, device="cuda").reshape(16, 16)
+    y = torch.zeros((16,), dtype=torch.int32, device="cuda")
+    with pytest.raises(
+        TileSyntaxError,
+        match=r"reduction body must only operate on scalar tiles, but 'modulo' has shape \(1,\)",
     ):
         ct.launch(torch.cuda.current_stream(), (1,), kernel, (x, y))
 
