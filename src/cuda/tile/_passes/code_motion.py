@@ -86,6 +86,9 @@ def _hoist(block: Block, stack: list[_StackItem], def_depth: dict[str, int], is_
             for var in op.body.params:
                 def_depth[var.name] = depth + 1
 
+            # Only loop bodies are hoisting sources. A reduce/scan body is a self-contained
+            # combine function: nothing may move out of it, although the operation as a whole
+            # can still be hoisted together with its body.
             body_res = _hoist(op.body, stack, def_depth, isinstance(op, Loop))
             if body_res.mobility == _BlockMobility.IMMOVABLE:
                 # Propagate IMMOVABLE to all ancestors.

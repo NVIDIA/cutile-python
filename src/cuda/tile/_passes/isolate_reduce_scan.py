@@ -2,6 +2,14 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+"""Keep custom reduce and scan callback bodies self-contained.
+
+A reduce or scan callback is a pure combine function of its block parameters, so the body we
+emit for it should not depend on anything from the enclosing scope. Compile-time constants the
+callback uses are materialized inside the body, while captures of runtime values are rejected
+with a source-level diagnostic.
+"""
+
 from cuda.tile._exception import Loc, TileInternalError, TileSyntaxError
 from cuda.tile._ir.core_ops import Assign, TypedConst
 from cuda.tile._ir.ir import Block, Mapper, Operation, Var
@@ -18,6 +26,8 @@ def _definitions(root_block: Block) -> dict[str, Operation]:
 
 
 def _captures(body: Block) -> list[tuple[Var, Loc]]:
+    """Return the values used in `body` but defined outside of it, with the location of their
+    first use. Reduce and scan bodies contain no nested blocks, so one level suffices."""
     local_names = {var.name for var in body.params}
     local_names.update(
         result.name
@@ -39,32 +49,36 @@ def _kind(op: TileReduce | TileScan) -> str:
     return "reduction" if isinstance(op, TileReduce) else "scan"
 
 
-def _remember_reduce_scan_capture_names(root_block: Block) -> None:
-    """Record source-level capture names before Assign operations are removed."""
+def collect_reduce_scan_capture_names(root_block: Block) -> dict[str, str]:
+    """Map the values captured by reduce/scan bodies to their source-level names.
+
+    This must run before `eliminate_assign_ops`: a variable such as `m = ct.gather(...)` is an
+    Assign of a temporary, and once the Assign is gone only the temporary's name is left for
+    diagnostics. The keys are the names of the values that remain after Assign elimination.
+    """
     definitions = _definitions(root_block)
-    names = {}
+    names: dict[str, str] = {}
     for region_op in root_block.traverse():
         if not isinstance(region_op, TileReduce | TileScan):
             continue
         for value, _ in _captures(region_op.body):
-            canonical_value = value
-            defining_op = definitions.get(canonical_value.name)
+            canonical = value
+            defining_op = definitions.get(canonical.name)
             while isinstance(defining_op, Assign):
-                canonical_value = defining_op.value
-                defining_op = definitions.get(canonical_value.name)
-            key = (region_op.op, region_op.loc, canonical_value.name)
-            names.setdefault(key, value.get_original_name())
-    root_block.ctx._reduce_scan_capture_names = names
+                canonical = defining_op.value
+                defining_op = definitions.get(canonical.name)
+            names.setdefault(canonical.name, value.get_original_name())
+    return names
 
 
-def _original_capture_name(region_op: TileReduce | TileScan, value: Var) -> str:
-    names = getattr(value.ctx, "_reduce_scan_capture_names", {})
-    key = (region_op.op, region_op.loc, value.name)
-    return names.get(key, value.get_original_name())
+def legalize_reduce_scan_captures(root_block: Block, capture_names: dict[str, str]) -> None:
+    """Rematerialize constant captures inside each body and reject runtime captures.
 
-
-def legalize_reduce_scan_captures(root_block: Block) -> None:
-    """Rematerialize constant captures and reject runtime captures."""
+    This must run after `materialize_constants_pass`: that pass emits every dataflow-proven
+    constant at the start of the root block, which turns uses inside a callback body into
+    captures. Cloning such constants back into the body keeps the body self-contained.
+    `capture_names` comes from `collect_reduce_scan_capture_names`.
+    """
     definitions = _definitions(root_block)
 
     for region_op in root_block.traverse():
@@ -80,19 +94,19 @@ def legalize_reduce_scan_captures(root_block: Block) -> None:
             elif isinstance(defining_op, TypedConst):
                 constant_value = defining_op.value
             else:
-                original_name = _original_capture_name(region_op, value)
+                name = capture_names.get(value.name, value.get_original_name())
                 raise TileSyntaxError(
-                    f"{_kind(region_op)} body captures runtime value '{original_name}'. "
-                    "Only function arguments and compile-time constants are supported.",
+                    f"{_kind(region_op)} body captures runtime value '{name}'. Only the "
+                    "callback's own parameters and scalar compile-time constants are supported.",
                     consuming_loc,
                 )
 
             value_type = value.get_type()
             if not isinstance(value_type, TensorLikeTy) or value_type.tensor_shape() != ():
-                original_name = _original_capture_name(region_op, value)
+                name = capture_names.get(value.name, value.get_original_name())
                 raise TileSyntaxError(
-                    f"{_kind(region_op)} body captures shaped compile-time constant "
-                    f"'{original_name}'. Only scalar compile-time constants are supported.",
+                    f"{_kind(region_op)} body captures shaped compile-time constant '{name}'. "
+                    "Only scalar compile-time constants are supported.",
                     consuming_loc,
                 )
 
@@ -110,7 +124,7 @@ def legalize_reduce_scan_captures(root_block: Block) -> None:
 
 
 def verify_reduce_scan_isolation(root_block: Block) -> None:
-    """Verify that reduce and scan bodies only use available region-local values."""
+    """Verify that reduce and scan bodies only use their parameters and body-local values."""
     for region_op in root_block.traverse():
         if not isinstance(region_op, TileReduce | TileScan):
             continue
