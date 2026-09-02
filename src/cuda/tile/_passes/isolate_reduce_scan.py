@@ -6,6 +6,7 @@ from cuda.tile._exception import Loc, TileInternalError, TileSyntaxError
 from cuda.tile._ir.core_ops import Assign, TypedConst
 from cuda.tile._ir.ir import Block, Mapper, Operation, Var
 from cuda.tile._ir.ops import TileReduce, TileScan
+from cuda.tile._ir.type import TensorLikeTy
 
 
 def _definitions(root_block: Block) -> dict[str, Operation]:
@@ -52,7 +53,7 @@ def _remember_reduce_scan_capture_names(root_block: Block) -> None:
                 canonical_value = defining_op.value
                 defining_op = definitions.get(canonical_value.name)
             key = (region_op.op, region_op.loc, canonical_value.name)
-            names[key] = value.get_original_name()
+            names.setdefault(key, value.get_original_name())
     root_block.ctx._reduce_scan_capture_names = names
 
 
@@ -83,6 +84,15 @@ def legalize_reduce_scan_captures(root_block: Block) -> None:
                 raise TileSyntaxError(
                     f"{_kind(region_op)} body captures runtime value '{original_name}'. "
                     "Only function arguments and compile-time constants are supported.",
+                    consuming_loc,
+                )
+
+            value_type = value.get_type()
+            if not isinstance(value_type, TensorLikeTy) or value_type.tensor_shape() != ():
+                original_name = _original_capture_name(region_op, value)
+                raise TileSyntaxError(
+                    f"{_kind(region_op)} body captures shaped compile-time constant "
+                    f"'{original_name}'. Only scalar compile-time constants are supported.",
                     consuming_loc,
                 )
 

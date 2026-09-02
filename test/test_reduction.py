@@ -578,12 +578,38 @@ def test_custom_reduction_with_constant_capture():
     assert_equal(y, ref)
 
 
+def test_custom_reduction_with_shaped_constant_capture():
+    @ct.kernel
+    def kernel(x, y):
+        modulo = ct.full((1,), 5, dtype=ct.int32)
+        xt = ct.load(x, (0, 0), (16, 16))
+
+        def combine(a, b):
+            scalar_modulo = ct.extract(modulo, index=(0,), shape=())
+            return (a + b) % scalar_modulo
+
+        yt = ct.reduce(xt, -1, combine, 0)
+        ct.store(y, (0,), yt)
+
+    x = torch.arange(256, dtype=torch.int32, device="cuda").reshape(16, 16)
+    y = torch.zeros((16,), dtype=torch.int32, device="cuda")
+    with pytest.raises(
+        TileSyntaxError,
+        match="captures shaped compile-time constant 'modulo'.*"
+              "Only scalar compile-time constants are supported",
+    ):
+        ct.launch(torch.cuda.current_stream(), (1,), kernel, (x, y))
+
+
 def test_custom_reduction_with_capture():
     @ct.kernel
     def kernel(x, p, y):
         modulo = ct.gather(p, ())
+        same_modulo = modulo
         xt = ct.load(x, (0, 0), (16, 16))
-        yt = ct.reduce(xt, -1, lambda a, b: (a + b) % modulo, 0)
+        yt = ct.reduce(
+            xt, -1, lambda a, b: ((a + b) % modulo) % same_modulo, 0
+        )
         ct.store(y, (0,), yt)
 
     x = torch.arange(256, dtype=torch.int32, device="cuda").reshape(16, 16)
