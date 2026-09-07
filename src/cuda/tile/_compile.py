@@ -502,7 +502,8 @@ def compile_tile(ann_func: AnnotatedFunction | FunctionType,
                  bytecode_version: bc.BytecodeVersion | None = None,
                  return_final_ir: bool = False,
                  return_bytecode: bool = False,
-                 return_cubin: bool = True) -> CompilationResult:
+                 return_cubin: bool = True,
+                 dump_mlir_dir: str | None = None) -> CompilationResult:
     if isinstance(ann_func, FunctionType):
         ann_func = get_annotated_function(ann_func)
     elif not isinstance(ann_func, AnnotatedFunction):
@@ -552,13 +553,14 @@ def compile_tile(ann_func: AnnotatedFunction | FunctionType,
             f.write(bytecode_buf)
 
     # Write MLIR module to file
-    if CUDA_TILE_DUMP_TILEIR is not None:
+    if CUDA_TILE_DUMP_TILEIR is not None or dump_mlir_dir is not None:
         try:
             from cuda.tile_internal._internal_cext import bytecode_to_mlir_text
             mlir_text = bytecode_to_mlir_text(bytecode_buf)
-            if not os.path.isdir(CUDA_TILE_DUMP_TILEIR):
-                os.makedirs(CUDA_TILE_DUMP_TILEIR)
-            with unique_path_from_func_desc(CUDA_TILE_DUMP_TILEIR,
+            dump_dir = dump_mlir_dir if dump_mlir_dir else CUDA_TILE_DUMP_TILEIR
+            if not os.path.isdir(dump_dir):
+                os.makedirs(dump_dir)
+            with unique_path_from_func_desc(dump_dir,
                                             func_desc, '.tileir', mode="w") as f:
                 print(f"Dumping TILEIR MLIR module to file: {f.name}", file=sys.stderr)
                 f.write(mlir_text)
