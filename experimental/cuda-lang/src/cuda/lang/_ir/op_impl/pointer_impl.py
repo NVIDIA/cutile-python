@@ -228,6 +228,14 @@ def pointer_getitem(object: Var[PointerTy], key: Var[Type]):
     )
 
 
+def _require_tensor_map_descriptor_value(value: Var) -> None:
+    value_ty = require_scalar_type(value)
+    if value_ty.dtype is not datatype.tensor_map_descriptor:
+        raise TypeCheckingError(
+            "Tensor-map descriptor stores require a tensor_map_descriptor value"
+        )
+
+
 @impl(operator.setitem, overload=(PointerTy, WILDCARD, WILDCARD))
 def pointer_setitem(object: Var[PointerTy], key: Var[Type], value: Var[Type]):
     ptr_ty = require_concrete_pointer_type(object)
@@ -235,6 +243,8 @@ def pointer_setitem(object: Var[PointerTy], key: Var[Type], value: Var[Type]):
     if is_pointer_dtype(ptr_ty.pointee_dtype):
         require_pointer_type(value)
         value = implicit_cast(value, ptr_ty.pointee_dtype, "cast stored value")
+    elif ptr_ty.pointee_dtype is datatype.tensor_map_descriptor:
+        _require_tensor_map_descriptor_value(value)
     else:
         require_scalar_type(value)
         value = astype(value, ptr_ty.pointee_dtype)
@@ -266,6 +276,8 @@ def array_setitem(object: Var, key: Var, value: Var):
     if is_pointer_dtype(array_ty.dtype):
         require_pointer_type(value)
         value = implicit_cast(value, array_ty.dtype, "cast value to array dtype")
+    elif array_ty.dtype is datatype.tensor_map_descriptor:
+        _require_tensor_map_descriptor_value(value)
     else:
         require_scalar_type(value)
         value = astype(value, array_ty.dtype)
@@ -316,8 +328,11 @@ def pointer_store(
     alignment = require_optional_alignment(alignment)
 
     pointee_dtype = pointer_ty.pointee_dtype
-    value = implicit_cast(value, pointee_dtype,
-                          "Stored value type is incompatible with pointer type")
+    if pointee_dtype is datatype.tensor_map_descriptor:
+        _require_tensor_map_descriptor_value(value)
+    else:
+        value = implicit_cast(value, pointee_dtype,
+                              "Stored value type is incompatible with pointer type")
 
     add_operation_variadic(
         StorePointer,
@@ -439,10 +454,14 @@ def pointer_atomic_store(
 
 
 def pointer_with_offset(pointer: Var, offset: Var) -> Var:
-    require_pointer_type(pointer)
+    pointer_ty = require_pointer_type(pointer)
+    if pointer_ty.opaque:
+        raise TypeCheckingError(
+            "Opaque pointers do not support pointer arithmetic", loc=pointer.loc
+        )
     ty = require_scalar_type(offset)
     if not datatype.is_integral(ty.dtype):
-        raise TypeCheckingError("Only integers cna be used to take the offset of a pointer")
+        raise TypeCheckingError("Only integers can be used to take the offset of a pointer")
     return add_operation(
         PointerOffset,
         pointer.get_type(),

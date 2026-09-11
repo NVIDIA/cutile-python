@@ -504,11 +504,6 @@ class AtomicLoad(Operation, opcode="atomic_load", memory_effect=MemoryEffect.LOA
         return self.mmio or self.memory_order is MemoryOrder.ACQUIRE
 
 
-@dataclass
-class TensorMapAsOpaquePtr(Operation, opcode="tensor_map_as_opaque_ptr"):
-    tensor_map: Var = operand()
-
-
 @dataclass(eq=False)
 class FmaOperation(Operation, opcode="fma"):
     x: Var = operand()

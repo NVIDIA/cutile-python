@@ -18,11 +18,6 @@ def ir_type_to_mlir_type(ir_type: Any) -> mlir.Type:
 
 
 @ir_type_to_mlir_type.register
-def tensor_map_type_to_mlir_type(src_type: ir_type.TensorMapTy) -> mlir.Type:
-    return mlir.llvm.LLVMPointerType()
-
-
-@ir_type_to_mlir_type.register
 def scalar_type_to_mlir_type(src_type: ir_type.ScalarTy) -> mlir.Type:
     return dtype_to_mlir_type(src_type.dtype)
 
@@ -74,6 +69,11 @@ def dtype_to_mlir_type(dtype: datatype.DType) -> mlir.Type:
             return mlir.Float32Type()
         case datatype.float64:
             return mlir.Float64Type()
+        case datatype.tensor_map_descriptor:
+            return mlir.llvm.LLVMArrayType(
+                elementType=mlir.IntegerType.signless(64),
+                numElements=datatype.tensor_map_descriptor.bitwidth // 64,
+            )
         case datatype.mbarrier:
             return mlir.IntegerType(
                 width=64, signedness=mlir.SignednessSemantics.SIGNLESS

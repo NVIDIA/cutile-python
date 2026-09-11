@@ -9,7 +9,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Sequence
 
-from cuda.tile import _datatype as datatype
+from cuda.tile import _cext
+from cuda.lang import _datatype as datatype
 from cuda.tile._ir.ir import Var
 
 from cuda.lang import _mlir as mlir
@@ -25,6 +26,7 @@ from cuda.lang._passes.ir2mlir.pass_definition import (
     mlir_op_lowering,
 )
 from cuda.lang._passes.ir2mlir.type_conversion import (
+    dtype_to_mlir_type,
     ir_type_to_mlir_type,
     mlir_constant_of_type,
     mlir_integer_cast,
@@ -39,7 +41,8 @@ class _KernelLaunchBinding:
 
 _HOST_ENTRY_SYMBOL = "cuda_lang_host_entry"
 _LAUNCH_KERNEL_BUILTIN = "cuda_lang_runtime_launch_kernel"
-_HOST_ENTRY_PARAMETER_NAMES = ("abi_arguments", "runtime")
+_ENCODE_TENSOR_MAP_TILED_BUILTIN = "cuda_lang_runtime_encode_tensor_map_tiled"
+_HOST_ENTRY_PARAMETER_NAMES = ("abi_arguments", "runtime", "global_lock")
 
 
 @dataclass(frozen=True)
@@ -64,6 +67,7 @@ class _HostRuntimeArguments:
 
     abi_arguments: mlir.Value
     runtime: mlir.Value
+    global_lock: mlir.Value
 
 
 @dataclass(kw_only=True)
@@ -84,6 +88,7 @@ class HostLoweringContext(MLIRLoweringContext):
     print_format_index: int = 0
     printf_declared: bool = False
     launch_kernel_function_type: mlir.llvm.LLVMFunctionType | None = None
+    encode_tensor_map_tiled_function_type: mlir.llvm.LLVMFunctionType | None = None
 
 
 class HostIR2MLIR:
@@ -105,6 +110,7 @@ class HostIR2MLIR:
         entry_type = mlir.llvm.LLVMFunctionType(
             returnType=T.i32(),
             params=(
+                self.context.pointer_type,
                 self.context.pointer_type,
                 self.context.pointer_type,
             ),
@@ -353,52 +359,104 @@ def _store_array_item(
     mlir.llvm.add_StoreOp(value=value, addr=address)
 
 
-def _materialize_launch_argument_array(
+def _materialize_array(
     context: HostLoweringContext,
-    argument_addresses: Sequence[mlir.Value],
+    values: Sequence[mlir.Value],
+    element_type: mlir.Type,
 ) -> mlir.Value:
-    if not argument_addresses:
-        return mlir.llvm.add_ZeroOp(res_type=context.pointer_type)
     storage = _allocate_entry_storage(
         context,
-        len(argument_addresses),
-        context.pointer_type,
+        len(values),
+        element_type,
     )
-    for index, address in enumerate(argument_addresses):
+    for index, value in enumerate(values):
+        if value.type != element_type:
+            raise InternalError(
+                f"array element has type {value.type}, expected {element_type}"
+            )
         _store_array_item(
             context,
             storage,
             index,
-            address,
-            context.pointer_type,
+            value,
+            element_type,
         )
     return storage
 
 
-def _store_launch_argument_value(
+def _materialize_scalar_value(
     context: HostLoweringContext,
-    value: mlir.Value,
+    source: Var,
+    source_type: ScalarTy,
 ) -> mlir.Value:
-    address = _allocate_entry_storage(context, 1, value.type)
-    mlir.llvm.add_StoreOp(value=value, addr=address)
-    return address
+    if source.is_constant():
+        return mlir_constant_of_type(
+            ir_type_to_mlir_type(source_type),
+            source.get_constant(),
+        )
+    return context.get_var(source)
 
 
 def _cast_integer(
     context: HostLoweringContext,
     value: Var,
     target_type: mlir.IntegerType,
+    *,
+    error_message: str,
 ) -> mlir.Value:
     ty = value.get_type()
     if not isinstance(ty, ScalarTy) or not datatype.is_integral(ty.dtype):
-        raise TypeCheckingError(
-            "kernel launch dimensions must be integral scalars",
-            loc=value.loc,
-        )
+        raise TypeCheckingError(error_message, loc=value.loc)
     return mlir_integer_cast(
-        context.get_var(value),
+        _materialize_scalar_value(context, value, ty),
         target_type,
         signed=datatype.is_signed(ty.dtype),
+    )
+
+
+def _materialize_integer_array(
+    context: HostLoweringContext,
+    values: Sequence[Var],
+    element_type: mlir.IntegerType,
+    *,
+    error_message: str,
+) -> mlir.Value:
+    return _materialize_array(
+        context,
+        tuple(
+            _cast_integer(
+                context,
+                value,
+                element_type,
+                error_message=error_message,
+            )
+            for value in values
+        ),
+        element_type,
+    )
+
+
+def _materialize_launch_argument_array(
+    context: HostLoweringContext,
+    argument_addresses: Sequence[mlir.Value],
+) -> mlir.Value:
+    if not argument_addresses:
+        return mlir.llvm.add_ZeroOp(res_type=context.pointer_type)
+    return _materialize_array(
+        context,
+        argument_addresses,
+        context.pointer_type,
+    )
+
+
+def _get_address_of(
+    context: HostLoweringContext,
+    value: mlir.Value,
+) -> mlir.Value:
+    return _materialize_array(
+        context,
+        (value,),
+        value.type,
     )
 
 
@@ -406,7 +464,13 @@ def _pad_dim3(
     context: HostLoweringContext,
     dimensions: Sequence[Var],
 ) -> tuple[mlir.Value, mlir.Value, mlir.Value]:
-    values = [_cast_integer(context, value, T.i64()) for value in dimensions]
+    values = [
+        _cast_integer(
+            context, value, T.i64(),
+            error_message="kernel launch dimensions must be integral scalars",
+        )
+        for value in dimensions
+    ]
     values.extend(
         mlir_constant_of_type(T.i64(), 1) for _ in range(3 - len(values))
     )
@@ -419,36 +483,16 @@ def _materialize_kernel_argument_pointer(
 ) -> mlir.Value:
     source_type = source.get_type()
     if isinstance(source_type, ScalarTy):
-        value = _materialize_scalar_launch_argument(context, source, source_type)
-        return _store_launch_argument_value(context, value)
+        value = _materialize_scalar_value(context, source, source_type)
+        value = _normalize_scalar_launch_argument(context, value, source_type, loc=source.loc)
+        return _get_address_of(context, value)
 
     if source.is_constant():
         raise InternalError(
             "non-scalar constant should not be materialized as a native launch "
             "argument"
         )
-
-    return _store_launch_argument_value(context, context.get_var(source))
-
-
-def _materialize_scalar_launch_argument(
-    context: HostLoweringContext,
-    source: Var,
-    source_type: ScalarTy,
-) -> mlir.Value:
-    if source.is_constant():
-        source_value = mlir_constant_of_type(
-            ir_type_to_mlir_type(source_type),
-            source.get_constant(),
-        )
-    else:
-        source_value = context.get_var(source)
-    return _normalize_scalar_launch_argument(
-        context,
-        source_value,
-        source_type,
-        loc=source.loc,
-    )
+    return _get_address_of(context, context.get_var(source))
 
 
 def _normalize_scalar_launch_argument(
@@ -460,6 +504,8 @@ def _normalize_scalar_launch_argument(
 ) -> mlir.Value:
     del context
     dtype = source_type.dtype
+    if dtype is datatype.tensor_map_descriptor:
+        return value
     if datatype.is_boolean(dtype):
         return mlir.arith.add_ExtUIOp(out_type=T.i64(), in_=value)
     if datatype.is_integral(dtype):
@@ -533,6 +579,44 @@ def _declare_launch_kernel_builtin(
     return function_type
 
 
+def _declare_encode_tensor_map_tiled_builtin(
+    context: HostLoweringContext,
+) -> mlir.llvm.LLVMFunctionType:
+    function_type = context.encode_tensor_map_tiled_function_type
+    if function_type is not None:
+        return function_type
+    pointer_type = context.pointer_type
+    i32 = T.i32()
+    function_type = mlir.llvm.LLVMFunctionType(
+        returnType=i32,
+        params=(
+            pointer_type,  # GlobalLock
+            pointer_type,  # destination CUtensorMap
+            i32,  # CUtensorMapDataType
+            i32,  # rank
+            pointer_type,  # global base address
+            pointer_type,  # global dimensions
+            pointer_type,  # global element strides
+            pointer_type,  # tile dimensions
+            i32,  # CUtensorMapInterleave
+            i32,  # CUtensorMapSwizzle
+            i32,  # CUtensorMapL2promotion
+            i32,  # CUtensorMapFloatOOBfill
+        ),
+        varArg=False,
+    )
+    assert context.module_op is not None
+    with context.module_op.regions[0].blocks[0].prepend_here():
+        mlir.llvm.add_LLVMFuncOp(
+            sym_name=_ENCODE_TENSOR_MAP_TILED_BUILTIN,
+            linkage=mlir.llvm.Linkage.External,
+            body=mlir.Region(),
+            function_type=function_type,
+        )
+    context.encode_tensor_map_tiled_function_type = function_type
+    return function_type
+
+
 def _success_continuation(
     context: HostLoweringContext,
     status: mlir.Value,
@@ -556,6 +640,84 @@ def _success_continuation(
         falseDestOperands=(status,),
     )
     return continuation
+
+
+@mlir_op_lowering(device=False)
+def lower_create_tensor_map(
+    context: HostLoweringContext,
+    operation: ops.CreateTensorMap,
+) -> Sequence[mlir.Value]:
+    rank = len(operation.tile_shape)
+
+    descriptor_type = dtype_to_mlir_type(datatype.tensor_map_descriptor)
+    descriptor = _allocate_entry_storage(
+        context,
+        1,
+        descriptor_type,
+        alignment=_cext._TENSOR_MAP_DESCRIPTOR_ALIGNMENT,
+    )
+    tensor_map_extent_error = (
+        "tensor-map dimensions and strides must be integral scalars"
+    )
+    global_dimensions = _materialize_integer_array(
+        context,
+        operation.array_shape,
+        T.i64(),
+        error_message=tensor_map_extent_error,
+    )
+    global_element_strides = _materialize_integer_array(
+        context,
+        operation.array_strides,
+        T.i64(),
+        error_message=tensor_map_extent_error,
+    )
+    tile_dimensions = _materialize_integer_array(
+        context,
+        operation.tile_shape,
+        T.i64(),
+        error_message="tensor-map tile dimensions must be integral scalars",
+    )
+    function_type = _declare_encode_tensor_map_tiled_builtin(context)
+    runtime_arguments = context.runtime_arguments
+    assert runtime_arguments is not None
+    callee_operands = (
+        runtime_arguments.global_lock,
+        descriptor,
+        mlir_constant_of_type(
+            T.i32(),
+            operation.data_type.value,
+        ),
+        mlir_constant_of_type(T.i32(), rank),
+        context.get_var(operation.base_ptr),
+        global_dimensions,
+        global_element_strides,
+        tile_dimensions,
+        mlir_constant_of_type(T.i32(), operation.interleave.value),
+        mlir_constant_of_type(T.i32(), operation.swizzle.value),
+        mlir_constant_of_type(T.i32(), operation.l2_promotion.value),
+        mlir_constant_of_type(T.i32(), operation.oob_fill.value),
+    )
+    if tuple(value.type for value in callee_operands) != tuple(
+        function_type.params
+    ):
+        raise InternalError(
+            f"lowered operands do not match the ABI of "
+            f"{_ENCODE_TENSOR_MAP_TILED_BUILTIN!r}"
+        )
+    status = mlir.llvm.add_CallOp(
+        result_type=function_type.returnType,
+        callee=_ENCODE_TENSOR_MAP_TILED_BUILTIN,
+        callee_operands=callee_operands,
+        op_bundle_operands=(),
+        op_bundle_sizes=(),
+    )
+    assert status is not None
+    context.insertion_block = _success_continuation(context, status)
+    with context.insertion_block.append_here():
+        return (mlir.llvm.add_LoadOp(
+            res_type=descriptor_type, addr=descriptor,
+            alignment=_cext._TENSOR_MAP_DESCRIPTOR_ALIGNMENT,
+        ),)
 
 
 @mlir_op_lowering(device=False)

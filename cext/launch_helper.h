@@ -49,6 +49,7 @@ struct LaunchHelper {
     Vec<PyObject*> identity_constants;
     CUcontext cuda_context;
     bool can_specialize_for_shape = true;
+    bool has_tensor_map = false;
     LaunchHelper* next_free;
 
     LaunchHelper()

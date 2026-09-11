@@ -47,7 +47,7 @@ from cuda.tile._datatype import (
     PointerInfo,
     numeric_dtype_category,
 )
-
+from cuda.tile import _cext
 
 # Lang-specific types.
 float6_e2m3fn = _define_dtype(
@@ -84,6 +84,10 @@ non_arithmetic_float_dtypes = (
 mbarrier = _define_dtype('mbarrier', _DTypeDefinition(bitwidth=64))
 cluster_launch_control_token = _define_dtype(
     "cluster_launch_control_token", _DTypeDefinition(bitwidth=128)
+)
+tensor_map_descriptor = _define_dtype(
+    "tensor_map_descriptor",
+    _DTypeDefinition(bitwidth=8 * _cext._TENSOR_MAP_DESCRIPTOR_BYTES),
 )
 
 
@@ -165,6 +169,7 @@ __all__ = [
     "float8_e8m0fnu",
     "float4_e2m1fn",
     "mbarrier",
+    "tensor_map_descriptor",
     "cluster_launch_control_token",
     "DType",
     "to_torch_dtype",

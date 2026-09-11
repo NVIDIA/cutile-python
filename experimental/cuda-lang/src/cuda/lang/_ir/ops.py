@@ -18,10 +18,10 @@ from cuda.tile._ir.op_impl import (
     require_constant_enum,
     require_array_type,
     require_constant_bool,
-    require_constant_axis_order,
     ImplRegistry,
 )
-from cuda.tile._ir.type import TensorLikeTy
+from cuda.tile._cext import TensorMapDataType
+from cuda.tile._ir.type import TensorLikeTy, TupleTy
 from cuda.tile._ir.core_ops import (
     TypedConst, core_impl_registry,
 )
@@ -51,7 +51,6 @@ from cuda.tile._ir.ops import (
 from cuda.tile._ir.arithmetic_ops import astype
 from cuda.tile._ir.core_ops import (
     Assign,
-    bind_method,
     build_tuple,
     loosely_typed_const,
     strictly_typed_const,
@@ -77,7 +76,6 @@ import cuda.lang._datatype as datatype
 from cuda.tile._datatype import (
     pointer_dtype,
     PointerInfo,
-    opaque_pointer_dtype,
     int32,
     bool_,
 )
@@ -101,7 +99,6 @@ from .op_defs import (  # noqa: F401
     MathBinaryOperation,
     MathUnaryOperation,
     Tcgen05Copy,
-    TensorMapAsOpaquePtr,
     VectorConstruct,
     VectorGetItem,
     VectorInsert,
@@ -121,15 +118,11 @@ from .type_checking_helpers import (
     require_signed_int_scalar_or_tuple,
     require_cluster_launch_control_token_type,
     is_none,
-    require_tensor_map_ty,
-    validate_tensor_map_load_mode,
 )
 
 from .type import (
     LocalArrayContextManagerTy,
     ContextManagerState,
-    TensorMapTy,
-    dtype_to_tensor_map_type,
     ArrayValue,
     MemorySpace,
     Type,
@@ -157,7 +150,8 @@ from .._stub.cluster_launch_control import (
     cluster_launch_control_is_canceled,
     cluster_launch_control_get_first_block_index,
 )
-from .._enums import SwizzleMode, TensorMapL2Promotion, TMALoadMode
+from .._enums import (SwizzleMode, TensorMapInterleave, TensorMapFloatOOBFill,
+                      TensorMapL2Promotion)
 from .._stub import (
     foreign_function,
     core_api,
@@ -362,6 +356,7 @@ def pointer_add(ptr: Var[PointerTy], offset: Var[TensorLikeTy]):
 def add_impl(x: Var, y: Var) -> Var:
     xty, yty = x.get_type(), y.get_type()
     if isinstance(yty, PointerTy):
+        x, y = y, x
         xty, yty = yty, xty
     if isinstance(xty, PointerTy):
         return pointer_add(x, y)
@@ -778,19 +773,48 @@ def getattr_dtype_bitwidth(object: Var, name: Var):
     return loosely_typed_const(dtype.bitwidth)
 
 
-@impl(getattr, overload=(TensorMapTy, "as_opaque_ptr"))
-@impl(getattr, overload=(TensorMapTy, "get_transaction_bytes"))
-def getattr_tensor_map_method(object: Var, name: Var):
-    name = require_constant_str(name)
-    unbound_func = getattr(tensor_map.TensorMap, name)
-    return bind_method(object, unbound_func)
-
-
 @dataclass(eq=False)
 class CreateTensorMap(Operation, opcode="create_tensor_map"):
     base_ptr: Var = operand()
     array_shape: tuple[Var, ...] = operand()
     array_strides: tuple[Var, ...] = operand()
+    tile_shape: tuple[Var, ...] = operand()
+    data_type: TensorMapDataType = attribute()
+    interleave: TensorMapInterleave = attribute()
+    swizzle: SwizzleMode = attribute()
+    l2_promotion: TensorMapL2Promotion = attribute()
+    oob_fill: TensorMapFloatOOBFill = attribute()
+
+
+_dtype_to_tensor_map_type = {
+    datatype.uint8: TensorMapDataType.UINT8,
+    datatype.int8: TensorMapDataType.UINT8,
+    datatype.float8_e4m3fn: TensorMapDataType.UINT8,
+    datatype.float8_e5m2: TensorMapDataType.UINT8,
+    datatype.float8_e8m0fnu: TensorMapDataType.UINT8,
+    datatype.uint16: TensorMapDataType.UINT16,
+    datatype.uint32: TensorMapDataType.UINT32,
+    datatype.int32: TensorMapDataType.INT32,
+    datatype.uint64: TensorMapDataType.UINT64,
+    datatype.int64: TensorMapDataType.INT64,
+    datatype.float16: TensorMapDataType.FLOAT16,
+    datatype.float32: TensorMapDataType.FLOAT32,
+    datatype.float64: TensorMapDataType.FLOAT64,
+    datatype.bfloat16: TensorMapDataType.BFLOAT16,
+    datatype.tfloat32: TensorMapDataType.TFLOAT32,
+}
+
+
+def _tensor_map_data_type(dtype: datatype.DType):
+    # TODO: Add explicit packed encodings after removing the legacy hoisted
+    # tensor-map creation path. Sub-byte types cannot be inferred here because
+    # the same logical width has multiple CUDA tensor-map encodings.
+    try:
+        return _dtype_to_tensor_map_type[dtype]
+    except KeyError:
+        raise TypeCheckingError(
+            f"Data type {dtype} is not supported by tensor map"
+        ) from None
 
 
 @impl(tensor_map.tensor_map_tiled)
@@ -798,62 +822,46 @@ def tensor_map_tiled_impl(
     array: Var,
     tile_shape: Var,
     order: Var,
+    interleave: Var,
     swizzle: Var,
     l2_promotion: Var,
+    oob_fill: Var,
 ) -> Var:
     array_ty = require_array_type(array)
     array_val = array.get_aggregate()
     assert isinstance(array_val, ArrayValue)
 
-    tile_shape = require_constant_int_tuple(tile_shape, allow_single_int=True)
-    order = require_constant_axis_order(order, array_ty.ndim)
+    if array.ctx.execution_space == "device":
+        require_constant_int_tuple(tile_shape, allow_single_int=True)
+    tile_dimensions = (tile_shape.get_aggregate().items
+                       if isinstance(tile_shape.get_type(), TupleTy)
+                       else (tile_shape,))
+    if len(tile_dimensions) != array_ty.ndim:
+        raise TypeCheckingError("tile shape must match the array rank")
+    for dimension in tile_dimensions:
+        require_integral_scalar_type(dimension)
+    if not order.is_constant():
+        raise TypeCheckingError("Expected a constant string or integer tuple")
+    try:
+        order = tensor_map._normalize_order(order.get_constant(), array_ty.ndim)
+    except (TypeError, ValueError) as error:
+        raise TypeCheckingError(str(error)) from None
+    interleave = require_constant_enum(interleave, TensorMapInterleave)
     swizzle = require_constant_enum(swizzle, SwizzleMode)
     l2_promotion = require_constant_enum(l2_promotion, TensorMapL2Promotion)
-    data_type = dtype_to_tensor_map_type(array_ty.dtype)
-    map_ty = TensorMapTy(data_type=data_type,
-                         element_bitwidth=array_ty.dtype.bitwidth,
-                         tile_shape=tile_shape,
-                         swizzle=swizzle,
-                         l2_promotion=l2_promotion)
+    oob_fill = require_constant_enum(oob_fill, TensorMapFloatOOBFill)
+    data_type = _tensor_map_data_type(array_ty.dtype)
+    map_ty = (ScalarTy(datatype.tensor_map_descriptor)
+              if array.ctx.execution_space == "host"
+              else PointerTy(datatype.pointer_dtype(datatype.tensor_map_descriptor)))
     return add_operation(CreateTensorMap, map_ty,
                          base_ptr=array_val.base_ptr,
                          array_shape=tuple(array_val.shape[i] for i in order),
-                         array_strides=tuple(array_val.strides[i] for i in order))
-
-
-@impl(tensor_map.TensorMap.get_transaction_bytes)
-def tensor_map_get_transaction_bytes_impl(self: Var, mode: Var):
-    map_ty = require_tensor_map_ty(self)
-    mode = require_constant_enum(mode, TMALoadMode)
-
-    if map_ty.element_bitwidth % 8 != 0:
-        raise TypeCheckingError(
-            "Transaction-byte computation does not support sub-byte tensor maps"
-        )
-
-    match mode:
-        case TMALoadMode.TILE:
-            element_count = math.prod(map_ty.tile_shape)
-        case TMALoadMode.TILE_GATHER4:
-            validate_tensor_map_load_mode(map_ty, mode)
-            element_count = 4 * map_ty.tile_shape[0]
-        case _:
-            raise TypeCheckingError(
-                f"Cannot compute {mode.name} transaction bytes from a tiled tensor map"
-            )
-
-    return loosely_typed_const(element_count * map_ty.element_bitwidth // 8)
-
-
-def tensor_map_as_opaque_ptr(self: Var):
-    result_ty = PointerTy(opaque_pointer_dtype())
-    return add_operation(TensorMapAsOpaquePtr, result_ty, tensor_map=self)
-
-
-@impl(tensor_map.TensorMap.as_opaque_ptr)
-def tensor_map_as_opaque_ptr_impl(self: Var):
-    require_tensor_map_ty(self)
-    return tensor_map_as_opaque_ptr(self)
+                         array_strides=tuple(array_val.strides[i] for i in order),
+                         data_type=data_type, tile_shape=tile_dimensions,
+                         interleave=interleave,
+                         swizzle=swizzle, l2_promotion=l2_promotion,
+                         oob_fill=oob_fill)
 
 
 @impl(cluster_launch_control_try_cancel)

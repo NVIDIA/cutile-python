@@ -11,6 +11,7 @@
 #include "xla_ffi_py.h"
 #include "bitstream.h"
 #include "pynvvm.h"
+#include "tensor_map.h"
 
 #ifdef _WIN32
 extern "C" int _fltused = 0;
@@ -43,6 +44,9 @@ PyMODINIT_FUNC PyInit__cext() {
         return nullptr;
 
     if (!coroutine_util_init(m.get()))
+        return nullptr;
+
+    if (!tensor_map_init(m.get()))
         return nullptr;
 
     if (!xla_ffi_init(m.get()))

@@ -5,11 +5,7 @@
 from typing import Any, Callable
 
 import cuda.lang._datatype as datatype
-from cuda.lang._enums import TMALoadMode
-from cuda.lang._ir.ir import add_operation
-from cuda.lang._ir.op_defs import TensorMapAsOpaquePtr
-from cuda.lang._ir.type import MemorySpace, ScalarTy, TensorMapTy, VectorTy, PointerTy
-from cuda.lang._exception import TypeCheckingError
+from cuda.lang._ir.type import MemorySpace, ScalarTy, VectorTy, PointerTy
 from cuda.tile import DType
 from cuda.tile._ir.ir import Var
 from cuda.tile._ir.op_impl import (  # noqa: F401
@@ -28,7 +24,6 @@ from cuda.lang._datatype import (
     is_boolean,
     is_float,
     mbarrier,
-    opaque_pointer_dtype,
 )
 
 
@@ -179,42 +174,21 @@ def require_uniform_int_tuple_type(var: Var):
     )
 
 
-def tensor_map_descriptor_like(var: Var):
+def tensor_map_descriptor_pointer_like(
+    var: Var, *, memory_spaces: tuple[MemorySpace, ...] = (MemorySpace.GENERIC,)
+):
     ty = var.get_type()
-    match ty:
-        case TensorMapTy():
-            result_ty = PointerTy(opaque_pointer_dtype())
-            return add_operation(TensorMapAsOpaquePtr, result_ty, tensor_map=var)
-        case PointerTy(pointer_dtype=dtype):
-            info = PointerInfo(dtype)
-            if not info.opaque or info.memory_space is not MemorySpace.GENERIC:
-                raise make_type_checking_error(
-                    "Expected tensor map or opaque tensor map pointer in generic "
-                    f"memory space but got {ty}",
-                    var,
-                )
+    if isinstance(ty, PointerTy):
+        info = PointerInfo(ty.pointer_dtype)
+        if info.memory_space in memory_spaces and (
+            info.opaque or info.pointee_dtype is datatype.tensor_map_descriptor
+        ):
             return var
-
+    spaces = ", ".join(space.name.lower() for space in memory_spaces)
     raise make_type_checking_error(
-        f"Expected tensor map or tensor map pointer but got {ty}", var
+        f"Expected a tensor-map descriptor pointer in {spaces} memory space, got {ty}",
+        var,
     )
-
-
-def require_tensor_map_ty(var: Var) -> TensorMapTy:
-    ty = var.get_type()
-    if not isinstance(ty, TensorMapTy):
-        raise make_type_checking_error(f"Expected a tensor map, got {ty}", var)
-    return ty
-
-
-def validate_tensor_map_load_mode(map_ty: TensorMapTy, mode: TMALoadMode) -> None:
-    """Validate constraints imposed by a TMA load mode on a typed TensorMap."""
-    if mode is TMALoadMode.TILE_GATHER4 and (
-        len(map_ty.tile_shape) != 2 or map_ty.tile_shape[1] != 1
-    ):
-        raise TypeCheckingError(
-            "TILE_GATHER4 requires a rank-2 tensor map with tile_shape[1] == 1"
-        )
 
 
 def require_optional(var: Var, requirement_if_not_none: Callable[[Var], Any]):

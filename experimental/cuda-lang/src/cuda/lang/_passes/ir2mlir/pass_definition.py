@@ -24,6 +24,7 @@ import cuda.lang._ir.type as ir_type
 from cuda.lang.compilation import KernelSignature
 from cuda.lang._target import TargetFeature, TargetInfo
 import cuda.lang._datatype as datatype
+from cuda.tile import _cext
 from cuda.tile._datatype import PointerInfo, is_integral
 from cuda.lang._exception import InternalError, TypeCheckingError
 from .type_conversion import (
@@ -1064,12 +1065,17 @@ class DeviceIR2MLIR:
 
     def _get_arg_attributes(self, ty: ir_type.Type) -> mlir.DictionaryAttr:
         named_attrs = []
-        if isinstance(ty, ir_type.TensorMapTy):
+        if (isinstance(ty, ir_type.PointerTy)
+                and ty.pointee_dtype is datatype.tensor_map_descriptor):
             i64_ty = mlir.IntegerType.signless(64)
-            i64x16_arr_ty = mlir.llvm.LLVMArrayType(elementType=i64_ty, numElements=16)
-            tensormap_struct_ty = mlir.llvm.LLVMStructType(types=(i64x16_arr_ty,))
+            descriptor_arr_ty = dtype_to_mlir_type(datatype.tensor_map_descriptor)
+            tensormap_struct_ty = mlir.llvm.LLVMStructType(types=(descriptor_arr_ty,))
             named_attrs.append(mlir.NamedAttribute.make(
-                "llvm.align", mlir.IntegerAttr.make(i64_ty, 64)))
+                "llvm.align",
+                mlir.IntegerAttr.make(
+                    i64_ty, _cext._TENSOR_MAP_DESCRIPTOR_ALIGNMENT
+                ),
+            ))
             named_attrs.append(mlir.NamedAttribute.make(
                 "llvm.byval", mlir.TypeAttr(value=tensormap_struct_ty)))
             named_attrs.append(mlir.NamedAttribute.make(
@@ -1510,14 +1516,6 @@ def lower_get_dyn_shared_memory_base_ptr(
     assert isinstance(res_type, mlir.llvm.LLVMPointerType)
     ptr = mlir.llvm.add_AddressOfOp(res_type=res_type, global_name=sym)
     return [ptr]
-
-
-@mlir_op_lowering
-def lower_tensor_map_as_opaque_ptr(
-    context: MLIRLoweringContext, operation: ops.TensorMapAsOpaquePtr
-):
-    tm = context.get_var(operation.tensor_map)
-    return [tm]
 
 
 @mlir_op_lowering(host=False)

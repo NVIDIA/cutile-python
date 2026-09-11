@@ -16,7 +16,6 @@ from cuda.lang._ir.op_defs import (
     CopyAsyncBulkTensorSharedToGlobal,
 )
 from cuda.lang._stub import copy_async
-from cuda.lang._ir.type import TensorMapTy
 from ..type_checking_helpers import (
     optional_cast,
     is_none,
@@ -27,8 +26,7 @@ from ..type_checking_helpers import (
     require_optional,
     require_pointer_in_memory_space,
     require_uniform_int_tuple_type,
-    tensor_map_descriptor_like,
-    validate_tensor_map_load_mode,
+    tensor_map_descriptor_pointer_like,
 )
 from cuda.tile._ir.op_impl import require_constant_enum, require_optional_constant_enum
 
@@ -80,15 +78,12 @@ def copy_async_bulk_tensor_global_to_shared_impl(
     cta_group,
     predicate,
 ):
-    src_tensor_map_ty = src_tensor_map_descriptor.get_type()
     src_coordinate_vars = require_uniform_int_tuple_type(src_coordinates)
     im2col_offset_vars = require_uniform_int_tuple_type(im2col_offsets)
     require_mbarrier_ptr(mbarrier, (MemorySpace.SHARED,))
     mode = require_constant_enum(mode, copy_async.TMALoadMode)
     validate_g2s_mode(mode, len(im2col_offset_vars))
-    if isinstance(src_tensor_map_ty, TensorMapTy):
-        validate_tensor_map_load_mode(src_tensor_map_ty, mode)
-    tensor_map = tensor_map_descriptor_like(src_tensor_map_descriptor)
+    tensor_map = tensor_map_descriptor_pointer_like(src_tensor_map_descriptor)
     dst_ty = require_pointer_in_memory_space(
         dst_memory,
         (MemorySpace.SHARED, MemorySpace.SHARED_CLUSTER),
@@ -150,7 +145,7 @@ def copy_async_bulk_tensor_shared_to_global_impl(
     predicate,
 ):
     require_pointer_in_memory_space(src_memory, (MemorySpace.SHARED,))
-    tensor_map = tensor_map_descriptor_like(dst_tensor_map_descriptor)
+    tensor_map = tensor_map_descriptor_pointer_like(dst_tensor_map_descriptor)
     dst_coordinate_vars = require_uniform_int_tuple_type(dst_coordinates)
     mode = require_constant_enum(mode, copy_async.TMAStoreMode)
     dst_coordinates = tuple(

@@ -74,7 +74,7 @@ from cuda.tile._version import __version__ as cutile_version
 import cuda.tile._bytecode as bc
 from cuda.tile.compilation._signature import KernelSignature, ParameterConstraint, \
     ScalarConstraint, ArrayConstraint, ListConstraint, TupleConstraint, ConstantConstraint, \
-    DataclassConstraint, PointerConstraint, StreamConstraint
+    DataclassConstraint, PointerConstraint, StreamConstraint, TensorMapConstraint
 
 logger = logging.getLogger(__name__)
 
@@ -239,6 +239,11 @@ def _create_parameter(
             raise _make_constraint_error(f"ScalarConstraint.dtype {constraint.dtype} does not match"
                                          f" the annotated dtype {annotation.scalar.dtype}.", path)
         ty = var.ctx.typing_hooks.get_tensor_like_type(constraint.dtype, ())
+    elif isinstance(constraint, TensorMapConstraint):
+        from cuda.lang._datatype import tensor_map_descriptor
+        dtype = (tensor_map_descriptor if var.ctx.execution_space == "host"
+                 else pointer_dtype(tensor_map_descriptor))
+        ty = var.ctx.typing_hooks.get_tensor_like_type(dtype, ())
     elif isinstance(constraint, PointerConstraint):
         ty = var.ctx.typing_hooks.get_tensor_like_type(
             pointer_dtype(constraint.pointee_dtype, MemorySpace.GLOBAL), ()

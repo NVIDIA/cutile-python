@@ -337,7 +337,7 @@ class Vector(Generic[T]):
 
 
 class Pointer(Generic[T]):
-    """Address in a CUDA memory space.
+    """Address in host or CUDA device memory.
 
     A typed pointer identifies the data type at its address. An opaque pointer
     does not identify a data type. Pointer arithmetic and memory access require
@@ -521,7 +521,10 @@ class Pointer(Generic[T]):
     @property
     @stub
     def memory_space(self) -> MemorySpace:
-        """CUDA memory space of this pointer."""
+        """CUDA memory space of this pointer.
+
+        ``GENERIC`` may also refer to host address space for compiled host code.
+        """
 
 
 @stub(static_eval_ok=True)

@@ -38,6 +38,8 @@ def dtype_to_llvm(dtype: datatype.DType, tt: llvm.TypeTable,
         return tt.float(kind)
     elif datatype.is_float(dtype):
         return tt.integer((dtype.bitwidth + 7) // 8 if storage else dtype.bitwidth)
+    elif dtype == datatype.tensor_map_descriptor:
+        return tt.array(tt.integer(64), dtype.bitwidth // 64)
     elif dtype == datatype.mbarrier:
         return tt.integer(64)
     elif dtype == datatype.cluster_launch_control_token:
@@ -54,8 +56,6 @@ def type_to_llvm(ty: ir_type.Type, tt: llvm.TypeTable, storage: bool) -> llvm.Ty
     elif isinstance(ty, ir_type.VectorTy):
         el_ty = dtype_to_llvm(ty.element_dtype, tt, storage)
         return tt.vector(el_ty, ty.length)
-    elif isinstance(ty, ir_type.TensorMapTy):
-        return tt.pointer(0)
     else:
         raise NotImplementedError(f"Unsupported type {ty}")
 

@@ -42,6 +42,22 @@ def test_pointer_dtype():
     cl.launch(torch.cuda.current_stream(), (1,), (1,), kernel, ())
 
 
+def test_tensor_map_dtype():
+    @cl.kernel
+    def kernel():
+        descriptor_dtype = cl.tensor_map_descriptor
+        descriptor_ptr_dtype = cl.pointer_dtype(descriptor_dtype)
+        ptr_info = cl.PointerInfo(descriptor_ptr_dtype)
+
+        cl.static_assert(not cl.is_pointer_dtype(descriptor_dtype))
+        cl.static_assert(cl.is_pointer_dtype(descriptor_ptr_dtype))
+        cl.static_assert(not ptr_info.opaque)
+        cl.static_assert(ptr_info.pointee_dtype == descriptor_dtype)
+        cl.static_assert(ptr_info.memory_space == cl.MemorySpace.GENERIC)
+
+    cl.launch(torch.cuda.current_stream(), (1,), (1,), kernel, ())
+
+
 def test_opaque_pointer_dtype():
     @cl.kernel
     def kernel():

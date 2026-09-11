@@ -52,8 +52,8 @@ def make_mma_kernel(
 
     @cl.kernel
     def mma_kernel(
-        a,
-        b,
+        a_tmap,
+        b_tmap,
         c,
         m: cl.Constant[int],
         n: cl.Constant[int],
@@ -69,17 +69,6 @@ def make_mma_kernel(
         grid_n = n // block_n
         num_tiles = grid_m * grid_n
         num_iters = k_total // BLOCK_K
-
-        a_tmap = cl.tensor_map_tiled(
-            a,
-            (64, BLOCK_M, BLOCK_K // 64),
-            swizzle=cl.SwizzleMode.SWIZZLE_128B,
-        )
-        b_tmap = cl.tensor_map_tiled(
-            b,
-            (64, block_n // cta_group, BLOCK_K // 64),
-            swizzle=cl.SwizzleMode.SWIZZLE_128B,
-        )
 
         a_smem = cl.shared_array(
             (num_stages, BLOCK_M * BLOCK_K), cl.bfloat16, alignment=512
@@ -184,7 +173,7 @@ def make_mma_kernel(
                             )
                         cl.mbarrier_arrive_expect_transaction(
                             tma_expect_mbar,
-                            a_tmap.get_transaction_bytes() + b_tmap.get_transaction_bytes(),
+                            (BLOCK_M + block_n // cta_group) * BLOCK_K * 2,
                             scope=cl.MbarrierScope.BLOCK,
                         )
 
@@ -395,8 +384,17 @@ def test_tcgen05_mma(block_n, cta_group, num_stages, m, n, k):
 
     a_tma_view = make_3d_view(a)
     b_tma_view = make_3d_view(b)
-
-    args = (a_tma_view, b_tma_view, c.reshape(m * n), m, n, k)
+    a_tmap = cl.tensor_map_tiled(
+        a_tma_view,
+        (64, BLOCK_M, BLOCK_K // 64),
+        swizzle=cl.SwizzleMode.SWIZZLE_128B,
+    )
+    b_tmap = cl.tensor_map_tiled(
+        b_tma_view,
+        (64, block_n // cta_group, BLOCK_K // 64),
+        swizzle=cl.SwizzleMode.SWIZZLE_128B,
+    )
+    args = (a_tmap, b_tmap, c.reshape(m * n), m, n, k)
     grid = ((m // BLOCK_M) * (n // block_n), 1, 1)
     if cta_group > 1:
         cl.launch(

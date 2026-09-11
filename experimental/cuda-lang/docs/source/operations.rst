@@ -248,6 +248,7 @@ TensorMap
    :nosignatures:
 
     tensor_map_tiled
+    TensorMap
 
 .. autosummary::
    :toctree: generated
@@ -434,7 +435,6 @@ Classes
    Array
    Pointer
    Vector
-   TensorMap
 
 .. toctree::
    :hidden:

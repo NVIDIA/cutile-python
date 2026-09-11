@@ -7,6 +7,7 @@
 #include "cuda_helper.h"
 #include "cuda_loader.h"
 #include "tile_kernel.h"
+#include "tensor_map.h"
 #include "vec.h"
 
 #include <cuda.h>
@@ -16,7 +17,8 @@
 
 namespace {
 
-using CompiledHostEntryFn = int32_t (*)(void** arguments, void* runtime);
+using CompiledHostEntryFn = int32_t (*)(void** arguments, void* runtime,
+                                       GlobalLock* lock);
 
 
 struct HostRuntimeSymbol {
@@ -86,6 +88,10 @@ const HostRuntimeSymbol host_runtime_symbols[] = {
     {
         "cuda_lang_runtime_launch_kernel",
         reinterpret_cast<void*>(&host_runtime_launch_kernel),
+    },
+    {
+        "cuda_lang_runtime_encode_tensor_map_tiled",
+        reinterpret_cast<void*>(&native_tensor_map_encode_tiled),
     },
 };
 
@@ -190,7 +196,7 @@ PyObject* invoke_host_entry(
         CompiledHostProgram& program,
         void** arguments,
         GlobalLock& lock) {
-    int32_t result = program.executable.entry(arguments, &program.runtime);
+    int32_t result = program.executable.entry(arguments, &program.runtime, &lock);
     if (result < 0) {
         if (PyErr_Occurred()) return nullptr;
         raise(PyExc_RuntimeError, "compiled host code failed with status ", result);

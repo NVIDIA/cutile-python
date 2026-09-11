@@ -169,28 +169,36 @@ pointer operations. For example, :meth:`Pointer.load` returns a vector when a
 Tensor Maps
 -----------
 
-A :class:`TensorMap` describes how a multidimensional global array is accessed
+A tensor-map descriptor describes how a multidimensional global array is accessed
 by TMA operations. It captures the array's element type, logical shape, memory
-layout, tile shape, and swizzle mode in a descriptor that can be passed to
-low-level TMA intrinsics.
+layout, tile shape, interleave mode, and swizzle mode in a descriptor that can
+be passed to low-level TMA intrinsics.
 
 Create a tensor map from a global :class:`Array` with :func:`tensor_map_tiled`.
-The array must be a kernel parameter so the tensor map descriptor can be encoded
-for launch. The tile shape and :class:`SwizzleMode` are compile-time
-constants.
+Call it from ordinary Python or from a :func:`host_entry`, then pass the
+resulting immutable :class:`TensorMap` value in the ``kernel_args`` tuple of
+:func:`launch`. Inside a kernel, the value is a pointer to a
+``tensor_map_descriptor``.
+
+.. code-block:: python
+
+   @cl.kernel
+   def copy_kernel(tensor_map_ptr, output):
+       # Use source_map with a TMA operation.
+       ...
+
+   tensor_map = cl.tensor_map_tiled(source, (32, 16), order="F")
+   cl.launch(stream, grid, block, copy_kernel, (tensor_map, output))
 
 Only tiled tensor map mode is supported today. Other TMA descriptor modes are
 reserved for future support.
 
-Use :meth:`TensorMap.as_opaque_ptr` when passing the descriptor to low-level TMA
-intrinsics.
-
-Use :meth:`TensorMap.get_transaction_bytes` to obtain the shared memory
-destination payload size. This can be used as the byte count expected by
-an mbarrier that tracks a global-to-shared TMA load.
+The returned value contains the descriptor bytes. The caller must keep the memory
+referenced by the descriptor alive until all GPU operations using it have completed.
+Kernel launches copy bytes as grid constant, and the kernel receives
+a pointer with pointee dtype ``tensor_map_descriptor``.
 
 .. seealso::
-  :ref:`cuda.lang.TensorMap class documentation <data-tensor-map-cuda-lang-tensor-map>`
   :ref:`TensorMap operations <operations-tensor-map>`
 
 .. toctree::

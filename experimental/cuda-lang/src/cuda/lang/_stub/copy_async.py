@@ -28,9 +28,12 @@ def copy_async_bulk_tensor_global_to_shared(
     <https://docs.nvidia.com/cuda/cuda-programming-guide/04-special-topics/async-copies.html#table-alignment-multi-dim-tma>`_
     for source and destination alignment requirements.
 
+    See the `CUDA Driver API tensor-map documentation
+    <https://docs.nvidia.com/cuda/cuda-driver-api/cuda_driver_api/group__CUDA__TENSOR__MEMORY.html>`_
+    for swizzle-mode and copy-direction compatibility.
+
     Args:
-        src_tensor_map_descriptor: Source :class:`TensorMap` or opaque pointer
-            to tensor map descriptor.
+        src_tensor_map_descriptor: Pointer to a tensor-map descriptor.
         src_coordinates (tuple[int, ...]): 32-bit integer source coordinates.
         dst_memory: Pointer to the destination in shared or shared-cluster
             memory.
@@ -64,10 +67,13 @@ def copy_async_bulk_tensor_shared_to_global(
     <https://docs.nvidia.com/cuda/cuda-programming-guide/04-special-topics/async-copies.html#table-alignment-multi-dim-tma>`_
     for source and destination alignment requirements.
 
+    See the `CUDA Driver API tensor-map documentation
+    <https://docs.nvidia.com/cuda/cuda-driver-api/cuda_driver_api/group__CUDA__TENSOR__MEMORY.html>`_
+    for swizzle-mode and copy-direction compatibility.
+
     Args:
         src_memory: Pointer to source data in shared memory.
-        dst_tensor_map_descriptor: Destination :class:`TensorMap` or opaque
-            pointer to tensor map descriptor.
+        dst_tensor_map_descriptor: Pointer to a tensor-map descriptor.
         dst_coordinates (tuple[int, ...]): Destination coordinates.
         l2_cache_hint (int | None): Integer-encoded L2 cache policy.
         mode (TMAStoreMode): :class:`TMAStoreMode` selecting the store

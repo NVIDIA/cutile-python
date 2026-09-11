@@ -186,8 +186,11 @@ from cuda.lang._stub import nvvm as _nvvm  # noqa: F401
 
 from cuda.lang._stub.tensor_map import (
     SwizzleMode,
+    TensorMapInterleave,
+    TensorMapFloatOOBFill,
     TensorMapL2Promotion,
     TensorMap,
+    TensorMapDataType,
     tensor_map_tiled,
 )
 
@@ -290,6 +293,7 @@ from ._datatype import (
     uint32,
     uint64,
     mbarrier,
+    tensor_map_descriptor,
     cluster_launch_control_token,
 )
 
@@ -378,8 +382,12 @@ __all__ = (
     "fence_proxy_bidirectional",
     "compile_simt",
     "SwizzleMode",
+    "TensorMapInterleave",
+    "TensorMapFloatOOBFill",
     "TensorMapL2Promotion",
     "TensorMap",
+    "TensorMapDataType",
+    "tensor_map_descriptor",
     "tensor_map_tiled",
     "CTAGroup",
     "Tcgen05MMAKind",

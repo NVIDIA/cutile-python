@@ -3,9 +3,16 @@
 # SPDX-License-Identifier: Apache-2.0
 
 from enum import Enum, auto
-from cuda.tile import _cext
 from cuda.tile._memory_model import MemorySpace, MemoryScope
 from cuda.tile._numeric_semantics import RoundingMode
+from cuda.tile._cext import (
+    SwizzleMode,
+    TensorMapInterleave,
+    TensorMapFloatOOBFill,
+    TensorMapL2Promotion,
+    TMALoadMode,
+    TMAStoreMode,
+)
 
 
 class MemoryOrder(Enum):
@@ -48,46 +55,11 @@ class SaturationMode(Enum):
     """Limit a floating-point result to ``[0.0, 1.0]``."""
 
 
-class SwizzleMode(Enum):
-    """Shared-memory swizzle modes for tensor operations."""
-
-    SWIZZLE_NONE = _cext.CU_TENSOR_MAP_SWIZZLE_NONE
-    SWIZZLE_32B = _cext.CU_TENSOR_MAP_SWIZZLE_32B
-    SWIZZLE_64B = _cext.CU_TENSOR_MAP_SWIZZLE_64B
-    SWIZZLE_128B = _cext.CU_TENSOR_MAP_SWIZZLE_128B
-    SWIZZLE_128B_ATOM_32B = _cext.CU_TENSOR_MAP_SWIZZLE_128B_ATOM_32B
-    SWIZZLE_128B_ATOM_32B_FLIP_8B = _cext.CU_TENSOR_MAP_SWIZZLE_128B_ATOM_32B_FLIP_8B
-    SWIZZLE_128B_ATOM_64B = _cext.CU_TENSOR_MAP_SWIZZLE_128B_ATOM_64B
-
-
-class TensorMapL2Promotion(Enum):
-    """L2-promotion size encoded in a tensor-map descriptor."""
-
-    NONE = _cext.CU_TENSOR_MAP_L2_PROMOTION_NONE
-    L2_64B = _cext.CU_TENSOR_MAP_L2_PROMOTION_L2_64B
-    L2_128B = _cext.CU_TENSOR_MAP_L2_PROMOTION_L2_128B
-    L2_256B = _cext.CU_TENSOR_MAP_L2_PROMOTION_L2_256B
-
-
 class MbarrierScope(Enum):
     """Scope of the threads that observe an mbarrier operation."""
 
     BLOCK = "cta"
     CLUSTER = "cluster"
-
-
-class TMALoadMode(Enum):
-    TILE = 0
-    IM2COL = 1
-    IM2COL_W = 2
-    IM2COL_W_128 = 3
-    TILE_GATHER4 = 4
-
-
-class TMAStoreMode(Enum):
-    TILE = 0
-    IM2COL = 1
-    TILE_SCATTER4 = 2
 
 
 class Tcgen05MMAKind(Enum):
@@ -250,6 +222,8 @@ __all__ = (
     "RoundingMode",
     "SaturationMode",
     "SwizzleMode",
+    "TensorMapInterleave",
+    "TensorMapFloatOOBFill",
     "TensorMapL2Promotion",
     "MbarrierScope",
     "TMALoadMode",

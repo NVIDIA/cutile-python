@@ -883,6 +883,17 @@ def test_map_shared_to_leader_block_rejects_global_pointer():
         )
 
 
+def test_opaque_pointer_arithmetic():
+    def kernel(array):
+        pointer = cl.bitcast(array.pointer(), cl.opaque_pointer_dtype())
+        return pointer + 1
+
+    with pytest.raises(
+        TypeCheckingError, match="Opaque pointers do not support pointer arithmetic"
+    ):
+        get_ir(kernel, (make_symbolic_tensor(1, cl.int32),))
+
+
 def test_opaque_pointer_getitem():
     @cl.kernel
     def kernel(arr):

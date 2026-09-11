@@ -60,6 +60,7 @@ add_library(_cext_static STATIC
     py.cpp
     pynvvm.cpp
     stream_buffer.cpp
+    tensor_map.cpp
     tile_kernel.cpp
     xla_ffi.cpp
     xla_ffi_py.cpp

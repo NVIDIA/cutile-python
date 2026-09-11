@@ -11,7 +11,7 @@ from typing import Sequence, Iterator, TypeAlias, Any, Protocol, ClassVar
 from cuda.tile._execution import kernel
 from cuda.tile._cext import CallingConvention, get_parameter_constraints_from_pyargs, \
     classify_constant, cconv_v3_enabled, ConstantKind
-from cuda.tile._datatype import DType, int32, int64, uint32, is_pointer_dtype
+from cuda.tile._datatype import DType, int32, int64, uint32, is_pointer_dtype, is_numeric
 
 
 @dataclass(frozen=True, init=False)
@@ -27,9 +27,18 @@ class ScalarConstraint:
     def __init__(self, dtype: DType):
         if not isinstance(dtype, DType):
             raise TypeError(f"Expected a DType for the `dtype` parameter, got '{dtype}'")
-        if is_pointer_dtype(dtype):
-            raise TypeError("ScalarConstraint dtype cannot be a pointer dtype")
+        if is_pointer_dtype(dtype) or not is_numeric(dtype):
+            raise TypeError("ScalarConstraint dtype must be a numeric pointee dtype")
         object.__setattr__(self, "dtype", dtype)
+
+
+@dataclass(frozen=True, init=False)
+class TensorMapConstraint:
+    """Describes an opaque tensor-map descriptor parameter without metadata."""
+
+    def __init__(self):
+        if not cconv_v3_enabled():
+            raise NotImplementedError("TensorMapConstraint requires calling convention v3")
 
 
 @dataclass(frozen=True, init=False)
@@ -47,8 +56,8 @@ class PointerConstraint:
 
         if not isinstance(dtype, DType):
             raise TypeError(f"Expected a DType for the `dtype` parameter, got '{dtype}'")
-        if is_pointer_dtype(dtype):
-            raise TypeError("PointerConstraint dtype must be a pointee dtype")
+        if is_pointer_dtype(dtype) or not is_numeric(dtype):
+            raise TypeError("PointerConstraint dtype must be a numeric pointee dtype")
         object.__setattr__(self, "pointee_dtype", dtype)
 
 
@@ -355,7 +364,7 @@ class ConstantConstraint:
         return self.value == other.value
 
 
-ParameterConstraint: TypeAlias = (ScalarConstraint | ArrayConstraint
+ParameterConstraint: TypeAlias = (ScalarConstraint | TensorMapConstraint | ArrayConstraint
                                   | ListConstraint
                                   | TupleConstraint | DataclassConstraint | ConstantConstraint)
 
@@ -615,6 +624,10 @@ def _remove_redundant_divisibility_constraints(static_values: tuple[int, ...],
 def _validate_constraint_support(constraint: ParameterConstraint, cconv: CallingConvention):
     if isinstance(constraint, ScalarConstraint):
         pass
+    elif isinstance(constraint, TensorMapConstraint):
+        if cconv.version < 3:
+            raise ValueError(f"Tensor-map parameters are not supported by calling convention"
+                             f" {cconv.name}; version >= 3 is required")
     elif isinstance(constraint, PointerConstraint):
         if cconv.version < 3:
             raise ValueError(f"Pointer parameters are not supported by calling convention"

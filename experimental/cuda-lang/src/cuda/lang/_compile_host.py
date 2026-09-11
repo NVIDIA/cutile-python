@@ -14,7 +14,7 @@ from types import FunctionType
 from typing import Iterable, Iterator
 
 from cuda.tile import _cext
-from cuda.tile import _datatype as datatype
+from cuda.lang import _datatype as datatype
 from cuda.tile._annotated_function import get_annotated_function
 from cuda.tile._compile import _create_kernel_parameters
 from cuda.tile._ir.ir import Var
@@ -109,6 +109,9 @@ class _FakeFloat(float):
 
 
 def _fake_scalar(dtype: datatype.DType):
+    if dtype is datatype.tensor_map_descriptor:
+        from cuda.lang._stub.tensor_map import TensorMap
+        return TensorMap._from_bytes(bytes(_cext._TENSOR_MAP_DESCRIPTOR_BYTES))
     if datatype.is_boolean(dtype):
         return False
     if datatype.is_integral(dtype):

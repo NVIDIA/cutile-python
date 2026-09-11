@@ -5,15 +5,14 @@
 from dataclasses import dataclass
 from typing import Mapping
 
-from cuda.lang._enums import SwizzleMode, TensorMapL2Promotion
+from cuda.lang._enums import (SwizzleMode, TensorMapInterleave,
+                              TensorMapFloatOOBFill, TensorMapL2Promotion)
 from cuda.lang._ir import ir
 from cuda.lang._ir._host_program import HostProgram
 from cuda.lang._ir.ops import CreateTensorMap
-from cuda.lang._ir.type import TensorMapTy
 from cuda.lang._exception import TypeCheckingError
 from cuda.tile._ir.ir import Var
 from cuda.tile._ir.core_ops import assign
-from cuda.tile import _cext
 
 
 @dataclass
@@ -23,8 +22,10 @@ class HoistedTensorMap:
     base_ptr_param: int
     shape_stride_program: HostProgram
     tile_shape: tuple[int, ...]
+    interleave: TensorMapInterleave
     swizzle: SwizzleMode
     l2_promotion: TensorMapL2Promotion
+    oob_fill: TensorMapFloatOOBFill
 
 
 def hoist_tensor_maps(kernel_body: ir.Block,
@@ -56,8 +57,7 @@ def hoist_tensor_maps(kernel_body: ir.Block,
     with ir.TileBuilder(kernel_body.ctx, kernel_body.loc) as builder:
         for op in ops:
             new_param = builder.ir_ctx.make_temp(op.loc)
-            map_ty: TensorMapTy = op.result_var.get_type()
-            new_param.set_type(map_ty)
+            new_param.set_type(op.result_var.get_type())
             assign(new_param, op.result_var)
             new_params.append(new_param)
 
@@ -69,12 +69,14 @@ def hoist_tensor_maps(kernel_body: ir.Block,
 
             hoisted_maps.append(HoistedTensorMap(
                     rank=len(op.array_shape),
-                    data_type=getattr(_cext, map_ty.data_type),
+                    data_type=op.data_type.value,
                     base_ptr_param=param_idx(op.base_ptr),
                     shape_stride_program=shape_stride_program,
-                    tile_shape=map_ty.tile_shape,
-                    swizzle=map_ty.swizzle,
-                    l2_promotion=map_ty.l2_promotion))
+                    tile_shape=tuple(dim.get_constant() for dim in op.tile_shape),
+                    interleave=op.interleave,
+                    swizzle=op.swizzle,
+                    l2_promotion=op.l2_promotion,
+                    oob_fill=op.oob_fill))
 
     removed_count = kernel_body.remove_if(lambda op: isinstance(op, CreateTensorMap))
     assert removed_count == len(ops)

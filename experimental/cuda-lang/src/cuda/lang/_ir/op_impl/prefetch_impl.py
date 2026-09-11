@@ -3,8 +3,10 @@
 # SPDX-License-Identifier: Apache-2.0
 from cuda.lang._enums import PrefetchLevel, CachePolicy
 from cuda.lang._ir.op_defs import RawLLVMIntrinsic
-from cuda.lang._ir.type import TensorMapTy
-from cuda.lang._ir.type_checking_helpers import require_pointer_type
+from cuda.lang._ir.type_checking_helpers import (
+    require_pointer_type,
+    tensor_map_descriptor_pointer_like,
+)
 from cuda.lang._stub.prefetch import prefetch, prefetch_uniform, prefetch_tensor_map
 from cuda.tile._datatype import PointerInfo
 from cuda.tile._exception import InvalidValueError, TypeCheckingError
@@ -85,17 +87,9 @@ def prefetch_uniform_impl(address: Var):
 
 @impl(prefetch_tensor_map)
 def prefetch_tensor_map_impl(tensor_map: Var):
-    if isinstance(tensor_map.get_type(), TensorMapTy):
-        from cuda.lang._ir.ops import tensor_map_as_opaque_ptr
-        tensor_map = tensor_map_as_opaque_ptr(tensor_map)
-    else:
-        address_ty = require_pointer_type(tensor_map)
-        address_space = PointerInfo(address_ty.pointer_dtype).memory_space
-        valid_spaces = (MemorySpace.GENERIC, MemorySpace.CONSTANT)
-        if address_space not in valid_spaces:
-            valid = ", ".join(x._name_ for x in valid_spaces)
-            raise TypeCheckingError(f"Invalid address space {address_space._name_}."
-                                    f" Accepted address spaces: {valid}")
+    tensor_map = tensor_map_descriptor_pointer_like(
+        tensor_map, memory_spaces=(MemorySpace.GENERIC, MemorySpace.CONSTANT)
+    )
     add_operation_variadic(
         RawLLVMIntrinsic,
         (),

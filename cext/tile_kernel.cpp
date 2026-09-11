@@ -14,6 +14,7 @@
 #include "py.h"
 #include "ref_ptr.h"
 #include "stream_buffer.h"
+#include "tensor_map.h"
 #include "vec.h"
 
 #include <cuda.h>
@@ -53,6 +54,7 @@ static PyObject* g_default_tile_context;
 static constexpr const char* kFakeArrayDTypeAttr = "_cuda_lang_fake_array_dtype";
 static constexpr const char* kFakeArrayNdimAttr = "_cuda_lang_fake_array_ndim";
 static constexpr const char* kFakePointerDTypeAttr = "_cuda_lang_fake_pointer_dtype";
+static constexpr const char* kTensorMapBytesAttr = "_cuda_lang_tensor_map_bytes";
 static constexpr const char* kNativeSourceDTypeAttr = "_native_source_dtype";
 
 
@@ -446,8 +448,7 @@ namespace { struct HostProgram {
 namespace { struct HoistedTensorMap {
     enum { kMaxRank = 5 };
 
-    CUtensorMapDataType dtype;
-    uint32_t item_size;
+    CUtensorMapDataType data_type;
     uint32_t rank;
     uint32_t base_ptr_param_idx;
     HostProgram shape_stride_program;
@@ -632,6 +633,7 @@ struct ParameterKind {
         Array,
         Pointer,
         Stream,
+        TensorMap,
         Boolean,
         Integer,
         Float,
@@ -683,6 +685,8 @@ enum class PythonArgKind : uint8_t {
     FakePointer,
     // A CUDA stream wrapper supported by parse_stream().
     Stream,
+    // A cuda.lang tiled tensor-map descriptor.
+    TensorMap,
     // Python `bool`,
     PyBool,
     // Python `int`,
@@ -723,6 +727,7 @@ static ParameterKind::Category param_category_from_pyarg_kind(PythonArgKind k) {
     case PythonArgKind::FakeArray: return ParameterKind::Array;
     case PythonArgKind::FakePointer: return ParameterKind::Pointer;
     case PythonArgKind::Stream: return ParameterKind::Stream;
+    case PythonArgKind::TensorMap: return ParameterKind::TensorMap;
     case PythonArgKind::PyBool: return ParameterKind::Boolean;
     case PythonArgKind::PyLong: return ParameterKind::Integer;
     case PythonArgKind::PyFloat: return ParameterKind::Float;
@@ -1001,6 +1006,9 @@ static std::optional<PythonArgKind> classify_nonconstant_arg(PyObject* arg, Glob
         if (try_get_torch_to_dlpack_func(lock))
             return PythonArgKind::TorchTensorDlpack;
     }
+
+    if (PyObject_HasAttrString(arg, kTensorMapBytesAttr))
+        return PythonArgKind::TensorMap;
 
 #ifdef ENABLE_CCONV_V3
     if (try_classify_stream_type(Py_TYPE(arg), lock).has_value())
@@ -2175,15 +2183,34 @@ static PyPtr make_scalar_constraint(DLDataType dtype, GlobalLock& lock) {
 
 static PyPtr make_constant_constraint(PyObject* value, GlobalLock& lock) {
     PyObject* signature_module = get_signature_module(lock);
+
     if (!signature_module) return {};
 
     return steal(PyObject_CallMethod(signature_module, "ConstantConstraint", "(O)", value));
+}
+
+static PyPtr parse_tensor_map_constraint(ConstantCursor&,
+        CallConvVersion* minimum_cconv, GlobalLock& lock) {
+#ifdef ENABLE_CCONV_V3
+    require_min_cconv(minimum_cconv, CallConvVersion::CutilePython_V3);
+#else
+    (void)minimum_cconv;
+    raise(PyExc_NotImplementedError,
+          "Tensor-map kernel arguments require calling convention v3");
+    return {};
+#endif
+
+    PyObject* signature_module = get_signature_module(lock);
+    if (!signature_module) return {};
+    return steal(PyObject_CallMethod(
+            signature_module, "TensorMapConstraint", "()"));
 }
 
 static PyPtr parse_bool_constant_value(ConstantCursor& cursor) {
     int64_t val = cursor.next();
     return newref(val ? Py_True : Py_False);
 }
+
 
 static PyPtr parse_bool_constant_constraint(ConstantCursor& cursor, GlobalLock& lock) {
     PyPtr value = parse_bool_constant_value(cursor);
@@ -2671,6 +2698,23 @@ static Status extract_stream(PyObject* pyobj, LaunchHelper& helper, GlobalLock& 
 
 static RefPtr<ParameterAnnotationNode> parse_parameter_annotation_node(PyObject* obj);
 
+static void copy_tensor_map_argument(const void* descriptor, LaunchHelper& helper) {
+    arena_pad_to_alignment<alignof(CUtensorMap)>(helper.arena);
+    ArenaOffset offset = arena_alloc_words(helper.arena, sizeof(CUtensorMap) / sizeof(Word));
+    mem_copy(helper.arena.data() + offset, descriptor, sizeof(CUtensorMap));
+    helper.cuarg_offsets.push_back(offset);
+    helper.has_tensor_map = true;
+}
+
+static Status extract_tensor_map(PyObject* object, LaunchHelper& helper) {
+    PyPtr data = getattr(object, kTensorMapBytesAttr);
+    if (!data) return ErrorRaised;
+    if (!PyBytes_Check(data.get()) || PyBytes_GET_SIZE(data.get()) != sizeof(CUtensorMap))
+        return raise(PyExc_TypeError, "Expected a tensor-map descriptor value");
+    copy_tensor_map_argument(PyBytes_AS_STRING(data.get()), helper);
+    return OK;
+}
+
 static Status extract_arg(const DriverApi* driver, PyObject* obj, PythonArgKind kind,
                           LeafAnnotationNode* annotation,
                           LaunchHelper& helper,
@@ -2707,6 +2751,8 @@ static Status extract_arg(const DriverApi* driver, PyObject* obj, PythonArgKind 
         return extract_fake_pointer(obj, helper);
     case PythonArgKind::Stream:
         return extract_stream(obj, helper, lock);
+    case PythonArgKind::TensorMap:
+        return extract_tensor_map(obj, helper);
     case PythonArgKind::PyBool:
         return extract_py_bool(obj, helper);
     case PythonArgKind::PyLong:
@@ -2728,6 +2774,7 @@ static void reset_extracted_arguments(LaunchHelper& helper) {
     helper.total_list_data_size_words = 0;
     helper.constants.clear();
     helper.identity_constants.clear();
+    helper.has_tensor_map = false;
 }
 
 static Status extract_cuda_args(const DriverApi* driver,
@@ -2814,6 +2861,8 @@ static PyPtr parse_element_constraint(
         return parse_pointer_constraint(cursor, minimum_cconv, lock);
     case ParameterKind::Stream:
         return parse_stream_constraint(minimum_cconv, lock);
+    case ParameterKind::TensorMap:
+        return parse_tensor_map_constraint(cursor, minimum_cconv, lock);
     case ParameterKind::Boolean:
         return make_scalar_constraint(DLDataType{kDLBool, 8, 1}, lock);
     case ParameterKind::Integer:
@@ -3046,86 +3095,78 @@ static Result<HostProgram> host_program_parse(PyObject* prog_pyobj, int expected
     return prog;
 }
 
-#define FOREACH_INTEGER_CONSTANT(X) \
-    X(CU_TENSOR_MAP_DATA_TYPE_UINT8) \
-    X(CU_TENSOR_MAP_DATA_TYPE_UINT16) \
-    X(CU_TENSOR_MAP_DATA_TYPE_UINT32) \
-    X(CU_TENSOR_MAP_DATA_TYPE_INT32) \
-    X(CU_TENSOR_MAP_DATA_TYPE_UINT64) \
-    X(CU_TENSOR_MAP_DATA_TYPE_INT64) \
-    X(CU_TENSOR_MAP_DATA_TYPE_FLOAT16) \
-    X(CU_TENSOR_MAP_DATA_TYPE_FLOAT32) \
-    X(CU_TENSOR_MAP_DATA_TYPE_FLOAT64) \
-    X(CU_TENSOR_MAP_DATA_TYPE_BFLOAT16) \
-    X(CU_TENSOR_MAP_DATA_TYPE_FLOAT32_FTZ) \
-    X(CU_TENSOR_MAP_DATA_TYPE_TFLOAT32) \
-    X(CU_TENSOR_MAP_DATA_TYPE_TFLOAT32_FTZ) \
-    X(CU_TENSOR_MAP_DATA_TYPE_16U4_ALIGN8B) \
-    X(CU_TENSOR_MAP_DATA_TYPE_16U4_ALIGN16B) \
-    X(CU_TENSOR_MAP_DATA_TYPE_16U6_ALIGN16B) \
-    X(CU_TENSOR_MAP_SWIZZLE_NONE) \
-    X(CU_TENSOR_MAP_SWIZZLE_32B) \
-    X(CU_TENSOR_MAP_SWIZZLE_64B) \
-    X(CU_TENSOR_MAP_SWIZZLE_128B) \
-    X(CU_TENSOR_MAP_SWIZZLE_128B_ATOM_32B) \
-    X(CU_TENSOR_MAP_SWIZZLE_128B_ATOM_32B_FLIP_8B) \
-    X(CU_TENSOR_MAP_SWIZZLE_128B_ATOM_64B) \
-    X(CU_TENSOR_MAP_L2_PROMOTION_NONE) \
-    X(CU_TENSOR_MAP_L2_PROMOTION_L2_64B) \
-    X(CU_TENSOR_MAP_L2_PROMOTION_L2_128B) \
-    X(CU_TENSOR_MAP_L2_PROMOTION_L2_256B)
-
-#define INTEGER_CONSTANT_ENTRY(name) {name, #name},
-
-static Status define_integer_constants(PyObject* m) {
-    static const struct {int value; const char* name;} entries[] = {
-        FOREACH_INTEGER_CONSTANT(INTEGER_CONSTANT_ENTRY)
-    };
-    for (size_t i = 0; i < std::size(entries); ++i) {
-        PyPtr val = steal(PyLong_FromLong(entries[i].value));
-        if (!val) return ErrorRaised;
-        if (PyModule_AddObjectRef(m, entries[i].name, val.get()) < 0)
-            return ErrorRaised;
+static PyObject* py_tensor_map_tiled(PyObject*, PyObject* args) {
+    GlobalLock lock;
+    PyObject* array;
+    PyObject* py_tile_shape;
+    PyObject* py_order;
+    int interleave;
+    int swizzle;
+    int l2_promotion;
+    int oob_fill;
+    if (!PyArg_ParseTuple(args, "OOOiiii:_tensor_map_tiled",
+                &array, &py_tile_shape, &py_order,
+                &interleave, &swizzle, &l2_promotion, &oob_fill))
+        return nullptr;
+    std::optional<PythonArgKind> kind = classify_nonconstant_arg(array, lock);
+    if (!kind.has_value()
+            || (*kind != PythonArgKind::TorchTensorDlpack
+                && *kind != PythonArgKind::DlpackArray
+                && *kind != PythonArgKind::CudaArray)) {
+        raise(PyExc_TypeError,
+              "tensor_map_tiled requires a CUDA array, got ",
+              Py_TYPE(array)->tp_name);
+        return nullptr;
     }
-    return OK;
-}
+    Arena arena;
+    Result<ArrayRepr> repr = get_array_repr(*kind, array, 64, arena, lock);
+    if (!repr.is_ok()) return nullptr;
+    size_t rank = repr->arrty.ndim;
+    DLDataType dtype = repr->arrty.dtype;
+    void* global_address = arena[repr->repr].device_ptr;
 
-static Result<uint32_t> tensor_map_item_size(CUtensorMapDataType dtype) {
-    switch (dtype) {
-    case CU_TENSOR_MAP_DATA_TYPE_UINT8:
-        return 1;
-    case CU_TENSOR_MAP_DATA_TYPE_UINT16:
-    case CU_TENSOR_MAP_DATA_TYPE_FLOAT16:
-    case CU_TENSOR_MAP_DATA_TYPE_BFLOAT16:
-        return 2;
-    case CU_TENSOR_MAP_DATA_TYPE_UINT32:
-    case CU_TENSOR_MAP_DATA_TYPE_INT32:
-    case CU_TENSOR_MAP_DATA_TYPE_FLOAT32:
-    case CU_TENSOR_MAP_DATA_TYPE_FLOAT32_FTZ:
-    case CU_TENSOR_MAP_DATA_TYPE_TFLOAT32:
-    case CU_TENSOR_MAP_DATA_TYPE_TFLOAT32_FTZ:
-        return 4;
-    case CU_TENSOR_MAP_DATA_TYPE_UINT64:
-    case CU_TENSOR_MAP_DATA_TYPE_INT64:
-    case CU_TENSOR_MAP_DATA_TYPE_FLOAT64:
-        return 8;
-    default:
-        return raise(PyExc_ValueError, "Can't create tensor map: unsupported data type ", dtype);
+    Vec<int64_t> shape(rank), strides(rank);
+    for (size_t i = 0; i < rank; ++i) {
+        shape[i] = arena[repr->repr + 1 + i].i64;
+        strides[i] = arena[repr->repr + 1 + rank + i].i64;
     }
+    Vec<uint32_t> tile_shape(rank), order(rank);
+    if (!PyTuple_Check(py_order)
+            || static_cast<size_t>(PyTuple_GET_SIZE(py_order)) != rank) {
+        raise(PyExc_TypeError, "normalized order must match the array rank");
+        return nullptr;
+    }
+    for (size_t i = 0; i < rank; ++i) {
+        order[i] = (pylong_as<uint32_t>(PyTuple_GET_ITEM(py_order, i)));
+        if (PyErr_Occurred()) return nullptr;
+    }
+    if (!PyTuple_Check(py_tile_shape)
+            || static_cast<size_t>(PyTuple_GET_SIZE(py_tile_shape)) != rank) {
+        raise(PyExc_TypeError, "normalized tile shape must match the array rank");
+        return nullptr;
+    }
+    for (size_t i = 0; i < rank; ++i) {
+        tile_shape[i] = (pylong_as<uint32_t>(PyTuple_GET_ITEM(py_tile_shape, i)));
+        if (PyErr_Occurred()) return nullptr;
+    }
+    return tensor_map_tiled(
+            dtype, global_address,
+            rank, shape.data(), strides.data(),
+            tile_shape.data(), order.data(),
+            interleave, swizzle, l2_promotion, oob_fill, lock).release();
 }
 
 
 static Result<HoistedTensorMap> hoisted_tensor_map_parse(PyObject* map_pyobj) {
     HoistedTensorMap ret;
 
-    // Data type & item size
+    // Data type
     PyPtr py_data_type = getattr(map_pyobj, "data_type");
     if (!py_data_type) return ErrorRaised;
-    ret.dtype = static_cast<CUtensorMapDataType>(pylong_as<long>(py_data_type));
+    ret.data_type = static_cast<CUtensorMapDataType>(pylong_as<long>(py_data_type));
     if (PyErr_Occurred()) return ErrorRaised;
-    Result<uint32_t> item_size_res = tensor_map_item_size(ret.dtype);
-    if (!item_size_res.is_ok()) return ErrorRaised;
-    ret.item_size = *item_size_res;
+    if (!tensor_map_data_type_bitwidth(ret.data_type).is_ok())
+        return ErrorRaised;
 
     // Base ptr
     PyPtr py_base_ptr_param_idx = getattr(map_pyobj, "base_ptr_param");
@@ -3181,8 +3222,20 @@ static Result<HoistedTensorMap> hoisted_tensor_map_parse(PyObject* map_pyobj) {
             pylong_as<long>(py_l2_promotion_val));
     if (PyErr_Occurred()) return ErrorRaised;
 
-    ret.interleave = CU_TENSOR_MAP_INTERLEAVE_NONE;
-    ret.oob_fill = CU_TENSOR_MAP_FLOAT_OOB_FILL_NONE;
+    PyPtr py_interleave = getattr(map_pyobj, "interleave");
+    if (!py_interleave) return ErrorRaised;
+    PyPtr py_interleave_value = getattr(py_interleave, "value");
+    if (!py_interleave_value) return ErrorRaised;
+    ret.interleave = static_cast<CUtensorMapInterleave>(
+            pylong_as<int>(py_interleave_value));
+    if (PyErr_Occurred()) return ErrorRaised;
+    PyPtr py_oob_fill = getattr(map_pyobj, "oob_fill");
+    if (!py_oob_fill) return ErrorRaised;
+    PyPtr py_oob_fill_value = getattr(py_oob_fill, "value");
+    if (!py_oob_fill_value) return ErrorRaised;
+    ret.oob_fill = static_cast<CUtensorMapFloatOOBfill>(
+            pylong_as<int>(py_oob_fill_value));
+    if (PyErr_Occurred()) return ErrorRaised;
     return ret;
 }
 
@@ -3202,35 +3255,27 @@ static Status hoisted_tensor_map_encode(const DriverApi& driver,
         host_program_eval(m.shape_stride_program, helper.arena, helper.cuarg_offsets, stack);
 
         uint32_t rank = m.rank;
+        if (!tensor_map_validate_tile(
+                    m.data_type, rank, m.box_dim, m.interleave, m.swizzle))
+            return ErrorRaised;
         uint64_t global_dim[HoistedTensorMap::kMaxRank];
-        mem_copy(global_dim, stack, rank * sizeof(global_dim[0]));
-
-        int64_t stride0 = stack[rank];
-        if (stride0 != 1) {
-            return raise(PyExc_ValueError,
-                    "Can't create a tensor map: stride of last array dimension must be 1, got ",
-                    stride0);
-        }
-
+        void* global_address =
+                helper.arena[helper.cuarg_offsets[m.base_ptr_param_idx]].device_ptr;
+        if (!tensor_map_validate_global_address(m.data_type, m.interleave, global_address))
+            return ErrorRaised;
+        if (!tensor_map_encode_global_dimensions(
+                    m.data_type, rank, stack, global_dim))
+            return ErrorRaised;
         uint64_t global_strides[HoistedTensorMap::kMaxRank - 1];
-        for (uint32_t i = 1; i < rank; ++i) {
-            int64_t s = stack[rank + i];
-            if (s < 0)
-                return raise(PyExc_ValueError,
-                        "Can't create a tensor map: strides must be positive, got ", s);
-            uint64_t u = s;
-            uint64_t bytes = u * m.item_size;
-            if (bytes / m.item_size != u)
-                return raise(PyExc_OverflowError,
-                        "Can't create a tensor map: stride ", s, " is too big");
-            global_strides[i - 1] = bytes;
-        }
+        if (!tensor_map_encode_global_strides(
+                    m.data_type, m.interleave, rank, stack + rank, global_strides))
+            return ErrorRaised;
 
         CUresult res = driver.cuTensorMapEncodeTiled(
             dst,
-            m.dtype,
+            m.data_type,
             rank,
-            helper.arena[helper.cuarg_offsets[m.base_ptr_param_idx]].device_ptr,
+            global_address,
             global_dim,
             global_strides,
             m.box_dim,
@@ -4299,6 +4344,13 @@ static Result<NativeArgument> parse_native_pointer_argument(
     return argument;
 }
 
+static Result<NativeArgument> parse_native_tensor_map_argument(
+        ConstantCursor&) {
+    NativeArgument argument;
+    argument.parameter_category = ParameterKind::TensorMap;
+    return argument;
+}
+
 static Status consume_native_scalar_constant(
         ConstantCursor& cursor,
         ParameterKind::Category category) {
@@ -4363,6 +4415,8 @@ static Result<NativeArgument> parse_native_leaf_argument(
     case ParameterKind::Stream:
         return raise(PyExc_TypeError,
                      "a CUDA stream cannot be passed as a kernel argument");
+    case ParameterKind::TensorMap:
+        return parse_native_tensor_map_argument(cursor);
     case ParameterKind::List:
         return raise(PyExc_TypeError,
                      "kernel launch with list argument is not supported in compiled host code");
@@ -4556,6 +4610,7 @@ static Status extract_native_scalar(
     case ParameterKind::Pointer:
     case ParameterKind::Stream:
     case ParameterKind::Array:
+    case ParameterKind::TensorMap:
     case ParameterKind::List:
     case ParameterKind::AggregateBegin:
     case ParameterKind::AggregateEnd:
@@ -4606,6 +4661,15 @@ static Status extract_native_pointer(
 }
 
 
+static Status extract_native_tensor_map(
+        const NativeArgument&,
+        const void* address,
+        LaunchHelper& helper) {
+    copy_tensor_map_argument(address, helper);
+    return OK;
+}
+
+
 static Status extract_native_launch_arguments(
         const DriverApi* driver,
         const NativeLaunchSite& site,
@@ -4638,6 +4702,11 @@ static Status extract_native_launch_arguments(
         case ParameterKind::Stream:
             return raise(PyExc_TypeError,
                          "a CUDA stream cannot be passed as a kernel argument");
+        case ParameterKind::TensorMap:
+            if (!extract_native_tensor_map(
+                        argument, argument_addresses[index++], helper))
+                return ErrorRaised;
+            break;
         case ParameterKind::ConstantBool:
         case ParameterKind::ConstantInt:
         case ParameterKind::ConstantFloat:
@@ -5687,7 +5756,7 @@ static PyObject* cuda_tile_export_ipc_benchmark_payload(PyObject*, PyObject* con
 
     // IPC payload is not supported for hoisted tensor maps yet.
     // TODO: support hoisted tensor maps
-    if (!tile_kernel->hoisted_tensor_maps.empty())
+    if (!tile_kernel->hoisted_tensor_maps.empty() || helper.has_tensor_map)
         Py_RETURN_NONE;
 
     char* cubin_data;
@@ -5929,6 +5998,8 @@ static PyMethodDef functions[] = {
       METH_VARARGS, ""},
     {"classify_constant", py_classify_constant, METH_VARARGS,
       "Classify a constant Python value into a ConstantKind"},
+    {"_tensor_map_tiled", py_tensor_map_tiled, METH_VARARGS,
+      "Create a tiled CUDA tensor-map descriptor."},
     {"foreign_dtype_object_register", foreign_dtype_object_register, METH_VARARGS,
      "Register a foreign dtype object"},
     {"foreign_dtype_object_to_native", foreign_dtype_object_to_native, METH_O,
@@ -6048,9 +6119,6 @@ Status tile_kernel_init(PyObject* m) {
     if (!init_default_tile_context()) return ErrorRaised;
 
     if (PyModule_AddObjectRef(m, "default_tile_context", g_default_tile_context) < 0)
-        return ErrorRaised;
-
-    if (!define_integer_constants(m))
         return ErrorRaised;
 
     return OK;

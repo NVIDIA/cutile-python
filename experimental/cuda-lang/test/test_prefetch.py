@@ -6,7 +6,8 @@ import re
 import pytest
 
 import cuda.lang as cl
-from cuda.lang._compile import KernelSignature
+from cuda.lang.compilation import CallingConvention, KernelSignature, TensorMapConstraint
+from cuda.tile._cext import cconv_v3_enabled
 
 from test.util import compile_kernel, make_symbolic_tensor
 
@@ -106,6 +107,22 @@ def test_prefetch_tensor_map():
     compile_kernel(
         kernel,
         signature=SIG_I32,
+        assert_in_ptx="prefetch.tensormap",
+        **HOPPER_TARGET,
+    )
+
+
+@pytest.mark.skipif(not cconv_v3_enabled(), reason="Requires cconv3 enabled")
+def test_prefetch_tensor_map_parameter():
+    def kernel(tensor_map):
+        cl.prefetch_tensor_map(tensor_map)
+
+    compile_kernel(
+        kernel,
+        signature=KernelSignature(
+            [TensorMapConstraint()],
+            calling_convention=CallingConvention.cutile_python_v3(),
+        ),
         assert_in_ptx="prefetch.tensormap",
         **HOPPER_TARGET,
     )

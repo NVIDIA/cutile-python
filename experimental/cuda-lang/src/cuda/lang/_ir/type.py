@@ -7,7 +7,6 @@ from typing import Sequence
 from typing_extensions import override
 
 from cuda.lang._ir.ir import LocalArrayContextManagerValue
-from cuda.lang._enums import SwizzleMode, TensorMapL2Promotion
 from cuda.lang._stub.types import Scalar, Pointer, Vector
 from cuda.tile._ir.type import (
     Type,
@@ -35,7 +34,7 @@ from cuda.tile._ir.type import (
     SliceType,
     StreamTy,
 )
-import cuda.tile._datatype as datatype
+import cuda.lang._datatype as datatype
 from cuda.tile._datatype import DType, PointerInfo
 from cuda.tile._ir.ir import Var, AggregateValue, TypingHooks
 from cuda.lang._exception import TypeCheckingError
@@ -241,51 +240,6 @@ class LocalArrayContextManagerTy(ContextManagerTy):
         return self.state
 
 
-def dtype_to_tensor_map_type(dtype: datatype.DType) -> str:
-    # NOTE: <8b floats will need an explicit encoding argument since they could
-    # map to 16U4_ALIGN8B or 16U4_ALIGN16B
-    match dtype:
-        case (
-            datatype.uint8
-            | datatype.int8
-            | datatype.float8_e4m3fn
-            | datatype.float8_e5m2
-            | datatype.float8_e8m0fnu
-        ):
-            return "CU_TENSOR_MAP_DATA_TYPE_UINT8"
-        case datatype.uint16:
-            return "CU_TENSOR_MAP_DATA_TYPE_UINT16"
-        case datatype.uint32:
-            return "CU_TENSOR_MAP_DATA_TYPE_UINT32"
-        case datatype.int32:
-            return "CU_TENSOR_MAP_DATA_TYPE_INT32"
-        case datatype.uint64:
-            return "CU_TENSOR_MAP_DATA_TYPE_UINT64"
-        case datatype.int64:
-            return "CU_TENSOR_MAP_DATA_TYPE_INT64"
-        case datatype.float16:
-            return "CU_TENSOR_MAP_DATA_TYPE_FLOAT16"
-        case datatype.float32:
-            return "CU_TENSOR_MAP_DATA_TYPE_FLOAT32"
-        case datatype.float64:
-            return "CU_TENSOR_MAP_DATA_TYPE_FLOAT64"
-        case datatype.bfloat16:
-            return "CU_TENSOR_MAP_DATA_TYPE_BFLOAT16"
-        case datatype.tfloat32:
-            return "CU_TENSOR_MAP_DATA_TYPE_TFLOAT32"
-        case _:
-            raise TypeCheckingError(f"Data type {dtype} is not supported by tensor map")
-
-
-@dataclass(frozen=True)
-class TensorMapTy(Type):
-    data_type: str  # "CU_TENSOR_MAP_DATA_TYPE_*"
-    element_bitwidth: int
-    tile_shape: tuple[int, ...]
-    swizzle: SwizzleMode
-    l2_promotion: TensorMapL2Promotion
-
-
 @dataclass(frozen=True)
 class KernelTy(Type):
     def __str__(self):
@@ -326,16 +280,8 @@ class LangTypingHooks(TypingHooks):
 
 def type_bitwidth(x: Type):
     match x:
-        case TensorMapTy():
-            return 128
         case PointerTy() as pt:
-            info = PointerInfo(pt.pointer_dtype)
-            return (
-                32
-                if info.memory_space
-                in (MemorySpace.SHARED, MemorySpace.SHARED_CLUSTER, MemorySpace.TENSOR)
-                else 64
-            )
+            return pt.pointer_dtype.bitwidth
         case ScalarTy() as st:
             return st.dtype.bitwidth
         case VectorTy() as vt:
