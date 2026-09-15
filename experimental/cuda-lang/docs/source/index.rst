@@ -71,6 +71,8 @@ memory:
    :maxdepth: 2
    :hidden:
 
+   execution
+   metaprogramming
    data
    operations
    private
