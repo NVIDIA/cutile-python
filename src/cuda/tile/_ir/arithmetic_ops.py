@@ -22,7 +22,7 @@ from cuda.tile._numeric_semantics import RoundingMode
 from cuda.tile._ir.core_ops import loosely_typed_const, strictly_typed_const, \
     comparison_operator_impl, build_tuple
 from cuda.tile._ir.ir import operand, Operation, Var, add_operation, Builder, attribute
-from cuda.tile._ir.op_impl import ImplRegistry, ensure_scalar
+from cuda.tile._ir.op_impl import ImplRegistry, ensure_scalar, ensure_tensorlike
 from cuda.tile._ir.ops_utils import is_shape_broadcastable_to, promote_types, \
     broadcast_shapes2, get_dtype, get_default_rounding_mode, rounding_mode_to_bytecode, \
     reraise_tile_exception, check_rd_and_ftz, BINOP_REGISTRY, UNARYOP_REGISTRY
@@ -275,7 +275,7 @@ def dtype_constructor(new_dtype: DType, x: Var) -> Var[TensorLikeTy]:
         ty = x.ctx.typing_hooks.get_tensor_like_type(new_dtype, ())
         return strictly_typed_const(const_value, ty=ty)
 
-    x = ensure_scalar(x)
+    x = ensure_scalar(x, datatype.is_numeric)
     return astype(x, new_dtype)
 
 
@@ -843,7 +843,10 @@ def mod_tensorlike(x: Var[TensorLikeTy], y: Var[TensorLikeTy]) -> Var[TensorLike
 
 @impl(operator.mod, overload=(TensorLikeTy, TensorLikeTy))
 def _mod_tensorlike_impl(x: Var[TensorLikeTy], y: Var[TensorLikeTy]) -> Var[TensorLikeTy]:
-    return mod_tensorlike(x, y)
+    return mod_tensorlike(
+        ensure_tensorlike(x, datatype.is_numeric),
+        ensure_tensorlike(y, datatype.is_numeric),
+    )
 
 
 def divmod_tensorlike(x: Var[TensorLikeTy], y: Var[TensorLikeTy]):
@@ -877,7 +880,10 @@ def divmod_tensorlike(x: Var[TensorLikeTy], y: Var[TensorLikeTy]):
 
 @impl(divmod, overload=(TensorLikeTy, TensorLikeTy))
 def _divmod_tensorlike_impl(x: Var[TensorLikeTy], y: Var[TensorLikeTy]) -> Var[TensorLikeTy]:
-    return divmod_tensorlike(x, y)
+    return divmod_tensorlike(
+        ensure_tensorlike(x, datatype.is_numeric),
+        ensure_tensorlike(y, datatype.is_numeric),
+    )
 
 
 # Does not support broadcasting or type promotion
@@ -1104,6 +1110,7 @@ def pos_impl(x: Var[TensorLikeTy]):
     if isinstance(ty, LooselyTypedScalar):
         return loosely_typed_const(+ty.value)
 
+    x = ensure_tensorlike(x, datatype.is_numeric)
     if ty.tensor_dtype() == datatype.bool_:
         return astype(x, datatype.default_int_type)
     else:

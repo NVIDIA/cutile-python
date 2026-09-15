@@ -28,11 +28,11 @@ from .arithmetic_ops import reshape, broadcast_to, astype, compare_tensorlike, \
     compare_tensorlike_raw, where, binary_bitwise_tensorlike_raw, where_raw, TileReshape, \
     mod_tensorlike, pow_tensorlike, promote_and_broadcast_to, arithmetic_impl_registry, \
     unary, UnaryBehavior, UNARY_INT_FLOAT, UNARY_ANYTHING, UNARY_BOOL_INT, \
-    UNARY_STRICT_FLOAT, UNARY_FLOAT, divmod_tensorlike
+    UNARY_STRICT_FLOAT, UNARY_FLOAT, divmod_tensorlike, logical_not_impl
 from .cast_ops import implicit_cast
 from .control_flow_ops import Loop, IfElse, control_flow_impl_registry, EndBranch
 from .core_ops import loosely_typed_const, strictly_typed_const, build_tuple, bind_method, \
-    sym2var, core_impl_registry, print_impl, TilePrintf, tuple_item
+    sym2var, core_impl_registry, print_impl, TilePrintf, tuple_item, comparison_operator_impl
 from .static_eval_ops import static_eval_impl_registry
 from .type import (
     TupleValue, ArrayValue, ListValue, TiledViewValue, RawArrayMemoryValue,
@@ -41,7 +41,7 @@ from .type import (
 from .op_impl import (
     ImplRegistry, is_scalar, require_constant_int, require_constant_int_tuple,
     require_signed_integer_0d_tile_type,
-    require_tile_type, normalize_axis, require_dtype_spec,
+    require_tile_type, require_foreign_pointer_type, normalize_axis, require_dtype_spec,
     require_constant_bool, require_optional_constant_enum,
     require_constant_str, require_array_type, require_tiled_view_type, require_tuple_type,
     require_list_type, require_0d_tile_type,
@@ -50,7 +50,7 @@ from .op_impl import (
     require_optional_constant_str, PrintfValidator, require_tile_maybe_loose_type,
     require_tile_or_tile_tuple_type, require_constant_scalar_tuple, require_constant_scalar,
     require_callable_type, require_raw_array_memory_type,
-    WILDCARD, ensure_tile)
+    WILDCARD, ensure_tile, ensure_tensorlike)
 from .ops_utils import (
     check_rd_and_ftz, PaddingMode, get_default_order,
     rounding_mode_to_bytecode, get_default_rounding_mode, get_dtype,
@@ -60,7 +60,7 @@ from .ops_utils import (
 )
 from .type import (
     PartitionViewTy, StridedViewTy, GatherScatterViewTy, TupleTy, TileTy, NoneType, ArrayTy,
-    ListTy, Type, LooselyTypedScalar, TokenTy, TiledViewTy,
+    ListTy, Type, TensorLikeTy, LooselyTypedScalar, TokenTy, TiledViewTy,
     RawArrayMemoryTy, IndexSliceTy,
 )
 from cuda.tile._datatype import (
@@ -80,7 +80,26 @@ tile_impl_registry.update(core_impl_registry())
 tile_impl_registry.update(static_eval_impl_registry())
 tile_impl_registry.update(arithmetic_impl_registry())
 tile_impl_registry.update(control_flow_impl_registry())
+
+
+@comparison_operator_impl(tile_impl_registry, TensorLikeTy, TensorLikeTy)
+def tile_comparison_operator_impl(
+    fn: str, x: Var[TensorLikeTy], y: Var[TensorLikeTy]
+) -> Var[TensorLikeTy]:
+    return compare_tensorlike(
+        fn,
+        ensure_tensorlike(x, datatype.is_numeric),
+        ensure_tensorlike(y, datatype.is_numeric)
+    )
+
+
+@tile_impl_registry.impl(operator.not_, overload=(TensorLikeTy,))
+def tile_logical_not_impl(x: Var[TensorLikeTy]) -> Var[TensorLikeTy]:
+    return logical_not_impl(ensure_tensorlike(x, datatype.is_numeric))
+
+
 impl = tile_impl_registry.impl
+
 
 array_impl_registry = ImplRegistry()
 
@@ -135,7 +154,9 @@ class FusedMulAddOperation(Operation, opcode="fma"):
 @impl(ct.less, fixed_args=["lt"])
 @impl(ct.less_equal, fixed_args=["le"])
 def tile_comparison_function_impl(fn: str, x: Var, y: Var):
-    return compare_tensorlike(fn, ensure_tile(x), ensure_tile(y))
+    return compare_tensorlike(
+        fn, ensure_tile(x, datatype.is_numeric), ensure_tile(y, datatype.is_numeric)
+    )
 
 
 @impl(ct.bitwise_and, fixed_args=["and_"])
@@ -190,12 +211,14 @@ def binary_arithmetic_impl_with_rd_and_ftz(fn: str, x: Var, y: Var,
 
 @impl(ct.mod)
 def tile_mod_function_impl(x: Var, y: Var):
-    return mod_tensorlike(ensure_tile(x), ensure_tile(y))
+    return mod_tensorlike(ensure_tile(x, datatype.is_numeric), ensure_tile(y, datatype.is_numeric))
 
 
 @impl(ct.divmod)
 def tile_divmod_function_impl(x: Var, y: Var):
-    return divmod_tensorlike(ensure_tile(x), ensure_tile(y))
+    return divmod_tensorlike(
+        ensure_tile(x, datatype.is_numeric), ensure_tile(y, datatype.is_numeric)
+    )
 
 
 @impl(slice)
@@ -473,6 +496,91 @@ def getattr_array_method(object: Var, name: Var):
     name = require_constant_str(name)
     unbound_func = getattr(ct.Array, name)
     return bind_method(object, unbound_func)
+
+
+@dataclass(eq=False)
+class ForeignPointerCast(Operation, opcode="foreign_pointer_cast"):
+    pointer: Var = operand()
+
+    def generate_bytecode(self, ctx: BytecodeContext):
+        assert ctx.typeid_of(self.pointer) == ctx.typeid_of(self.result_var)
+        return ctx.get_value(self.pointer)
+
+
+@array_impl_registry.impl(getattr, overload=(ArrayTy, "foreign_pointer"))
+def getattr_array_foreign_pointer_impl(object: Var, name: Var) -> Var:
+    array_ty = require_array_type(object)
+    array_value = object.get_aggregate()
+    assert isinstance(array_value, ArrayValue)
+    result_ty = TileTy(datatype.foreign_pointer_dtype(array_ty.dtype), ())
+    return add_operation(
+        ForeignPointerCast,
+        result_ty,
+        pointer=array_value.base_ptr,
+    )
+
+
+def _parse_array_shape_or_strides(values: Var, name: str):
+    ty = require_tuple_type(values)
+    items = values.get_aggregate().items
+    static_values = []
+    max_bitwidth = 32
+    for i, (item, item_ty) in enumerate(zip(items, ty.value_types, strict=True)):
+        if not isinstance(item_ty, TileTy) or item_ty.shape != ():
+            raise TileTypeError(f"{name}[{i}] must be an integer scalar; got {item_ty}")
+        if not is_integral(item_ty.dtype) or not is_signed(item_ty.dtype):
+            raise TileTypeError(f"{name}[{i}] must be a signed integer; got {item_ty}")
+        max_bitwidth = max(max_bitwidth, item_ty.dtype.bitwidth)
+        if item.is_constant():
+            value = item.get_constant()
+            if isinstance(value, bool) or not isinstance(value, int):
+                raise TileTypeError(f"{name}[{i}] must be an integer")
+            if value < 0:
+                raise TileTypeError(f"{name}[{i}] must be non-negative")
+            static_values.append(value)
+        else:
+            static_values.append(None)
+    return items, tuple(static_values), max_bitwidth
+
+
+@impl(ct.Array.from_foreign)
+def array_from_foreign_impl(pointer: Var, shape: Var, strides: Var) -> Var:
+    # process base pointer
+    pointer_ty = require_foreign_pointer_type(pointer, scalar=True)
+    pointee_dtype = datatype.foreign_pointer_pointee_dtype(pointer_ty.dtype)
+    base_ptr = add_operation(
+        ForeignPointerCast,
+        TileTy(datatype.pointer_dtype(pointee_dtype), ()),
+        pointer=pointer,
+    )
+
+    # process shape and strides
+    shape_vars, static_shape, shape_bitwidth = _parse_array_shape_or_strides(shape, "shape")
+    stride_vars, static_strides, stride_bitwidth = _parse_array_shape_or_strides(
+        strides, "strides"
+    )
+    if len(shape_vars) != len(stride_vars):
+        raise TileTypeError("shape and strides must have the same rank")
+
+    index_bitwidth = max(shape_bitwidth, stride_bitwidth)
+    index_dtype = datatype.int64 if index_bitwidth > 32 else datatype.int32
+    shape_vars = tuple(astype(var, index_dtype) for var in shape_vars)
+    stride_vars = tuple(astype(var, index_dtype) for var in stride_vars)
+
+    # construct array type
+    array_ty = ArrayTy(
+        pointee_dtype,
+        shape=static_shape,
+        strides=static_strides,
+        typing_hooks=pointer.ctx.typing_hooks,
+        index_dtype=index_dtype,
+    )
+    [ret] = unflatten_aggregates(
+        (base_ptr, *shape_vars, *stride_vars),
+        (array_ty,),
+        (array_ty,),
+    )
+    return ret
 
 
 # ===========================================================================================
@@ -1870,23 +1978,30 @@ def full(shape: Sequence[int], fill_value: Var, dtype: DType) -> Var:
 
 @impl(ct.full)
 def full_impl(shape: Var, fill_value: Var, dtype: Var) -> Var:
-    require_0d_tile_type(fill_value)
+    require_0d_tile_type(fill_value, datatype.is_numeric)
     shape = require_constant_shape(shape, allow_single_int=True)
-    dtype = require_dtype_spec(dtype)
+    dtype = require_dtype_spec(dtype, datatype.is_numeric)
     return full(shape, fill_value, dtype)
+
+
+@impl(datatype.foreign_pointer_dtype)
+def foreign_pointer_dtype_impl(pointee_dtype: Var) -> Var:
+    return loosely_typed_const(
+        datatype.foreign_pointer_dtype(require_dtype_spec(pointee_dtype))
+    )
 
 
 @impl(ct.ones)
 def ones_impl(shape: Var, dtype: Var) -> Var:
     shape = require_constant_shape(shape, allow_single_int=True)
-    dtype = require_dtype_spec(dtype)
+    dtype = require_dtype_spec(dtype, datatype.is_numeric)
     return _const(shape, 1, dtype)
 
 
 @impl(ct.zeros)
 def zeros_impl(shape: Var, dtype: Var) -> Var:
     shape = require_constant_shape(shape, allow_single_int=True)
-    dtype = require_dtype_spec(dtype)
+    dtype = require_dtype_spec(dtype, datatype.is_numeric)
     return _const(shape, 0, dtype)
 
 
@@ -1945,9 +2060,9 @@ def _cat_tuple(tiles: tuple[Var, ...]) -> Var:
 
 @impl(ct.astile)
 def astile_impl(value: Var, dtype: Var) -> Var:
-    dtype = require_dtype_spec(dtype)
+    dtype = require_dtype_spec(dtype, datatype.is_numeric)
     value_ty = value.get_type()
-    if is_scalar(value_ty):
+    if is_scalar(value_ty, datatype.is_numeric):
         return astype(value, dtype)
 
     if not isinstance(value_ty, TupleTy):
@@ -2034,9 +2149,9 @@ class TileMma(Operation, opcode="tile_mma"):
 @impl(ct.mma)
 def mma_impl(x: Var, y: Var, acc: Var, use_fast_acc: Var) -> Var:
     use_fast_acc = require_constant_bool(use_fast_acc)
-    x_tile_type = require_tile_type(x)
-    y_tile_type = require_tile_type(y)
-    acc_tile_type = require_tile_type(acc)
+    x_tile_type = require_tile_type(x, datatype.is_numeric)
+    y_tile_type = require_tile_type(y, datatype.is_numeric)
+    acc_tile_type = require_tile_type(acc, datatype.is_numeric)
     x_shape_orig = x_tile_type.shape
     y_shape_orig = y_tile_type.shape
     acc_shape_orig = acc_tile_type.shape
@@ -2067,8 +2182,8 @@ def mma_impl(x: Var, y: Var, acc: Var, use_fast_acc: Var) -> Var:
 @impl(ct.matmul)
 @impl(operator.matmul, overload=(TileTy, TileTy))
 def matmul_impl(x: Var, y: Var) -> Var:
-    x_tile_type = require_tile_type(x)
-    y_tile_type = require_tile_type(y)
+    x_tile_type = require_tile_type(x, datatype.is_numeric)
+    y_tile_type = require_tile_type(y, datatype.is_numeric)
     x_shape_orig = x_tile_type.shape
     y_shape_orig = y_tile_type.shape
     x_shape, y_shape, acc_shape, output_shape = _matmul_broadcast_shape(x_shape_orig, y_shape_orig)
@@ -2136,11 +2251,11 @@ def _verify_scaling_block_size(ty: TileTy, scale_ty: TileTy, k_axis: int,
 
 @impl(ct.mma_scaled, min_version=BytecodeVersion.V_13_3)
 def mma_scaled_impl(x: Var, x_scale: Var, y: Var, y_scale: Var, acc: Var) -> Var:
-    x_ty = require_tile_type(x)
-    y_ty = require_tile_type(y)
-    acc_ty = require_tile_type(acc)
-    x_scale_ty = require_tile_type(x_scale)
-    y_scale_ty = require_tile_type(y_scale)
+    x_ty = require_tile_type(x, datatype.is_numeric)
+    y_ty = require_tile_type(y, datatype.is_numeric)
+    acc_ty = require_tile_type(acc, datatype.is_numeric)
+    x_scale_ty = require_tile_type(x_scale, datatype.is_numeric)
+    y_scale_ty = require_tile_type(y_scale, datatype.is_numeric)
 
     for name, shape in [("x", x_ty.shape), ("y", y_ty.shape),
                         ("acc", acc_ty.shape),
@@ -2311,7 +2426,7 @@ async def reduce(xs: tuple[Var, ...], identities: tuple[bool | int | float, ...]
 
     common_input_shape = ()
 
-    x_types = tuple(require_tile_type(x) for x in xs)
+    x_types = tuple(require_tile_type(x, datatype.is_numeric) for x in xs)
     for x_ty in x_types:
         try:
             common_input_shape = broadcast_shapes2(common_input_shape, x_ty.shape)
@@ -2516,7 +2631,7 @@ async def reduce_impl_with_ftz(fn: str, x: Var, axis: Var, keepdims: Var,
 
 async def argmax_argmin(fn: str, x: Var, axis: Optional[int], keepdims: bool,
                         propagate_nan: bool = False) -> Var:
-    require_tile_type(x)
+    require_tile_type(x, datatype.is_numeric)
     final_shape = None
     if axis is None:
         if keepdims:
@@ -2726,7 +2841,7 @@ async def scan_impl(x: Var, axis: Var, func: Var, identity: Var, reverse: Var) -
 
     common_input_shape = ()
 
-    x_types = tuple(require_tile_type(x) for x in xs)
+    x_types = tuple(require_tile_type(x, datatype.is_numeric) for x in xs)
     for x_ty in x_types:
         try:
             common_input_shape = broadcast_shapes2(common_input_shape, x_ty.shape)
@@ -2848,7 +2963,19 @@ def cat_impl(tiles: Var, axis: Var) -> Var:
 
 @impl(ct.where)
 def tile_where_function_impl(cond, x, y):
-    return where(ensure_tile(cond), ensure_tile(x), ensure_tile(y))
+    cond = ensure_tile(cond, datatype.is_numeric)
+    x = ensure_tile(x)
+    y = ensure_tile(y)
+
+    x_dtype = x.get_type().dtype
+    y_dtype = y.get_type().dtype
+    if (datatype.is_foreign_pointer_dtype(x_dtype)
+            or datatype.is_foreign_pointer_dtype(y_dtype)) and x_dtype != y_dtype:
+        raise TileTypeError(
+            "where requires foreign-pointer operands to have the same dtype"
+        )
+
+    return where(cond, x, y)
 
 
 @impl(ct.printf)
@@ -2887,8 +3014,8 @@ def assert_impl(cond: Var, message: Var) -> None:
 
 @impl(ct.astype)
 def astype_impl(x: Var, dtype: Var, rounding_mode: Var) -> Var:
-    x_ty = require_tile_type(x)
-    dtype = require_dtype_spec(dtype)
+    x_ty = require_tile_type(x, datatype.is_numeric)
+    dtype = require_dtype_spec(dtype, datatype.is_numeric)
     rounding_mode = require_optional_constant_enum(rounding_mode, RoundingMode)
 
     is_ftof = datatype.is_float(x_ty.tensor_dtype()) and datatype.is_float(dtype)
@@ -2941,7 +3068,11 @@ def bitcast(x: Var, dtype: DType) -> Var:
 
 @impl(ct.bitcast)
 def bitcast_impl(x: Var, dtype: Var) -> Var:
+    x_dtype = require_tile_type(x).dtype
     dtype_val = require_dtype_spec(dtype)
+    if (datatype.is_foreign_pointer_dtype(x_dtype)
+            or datatype.is_foreign_pointer_dtype(dtype_val)):
+        raise TileTypeError("bitcast to or from a foreign pointer is not supported")
     return bitcast(x, dtype_val)
 
 
@@ -2972,7 +3103,7 @@ def pack(x: Var) -> Var:
 
 @impl(ct.pack_to_bytes, min_version=BytecodeVersion.V_13_3)
 def pack_to_bytes_impl(x: Var):
-    tile_ty = require_tile_type(x)
+    tile_ty = require_tile_type(x, datatype.is_numeric)
     x_dtype = tile_ty.dtype
     x = reshape(x, (-1,))
     if x_dtype == datatype.bool_:
@@ -3011,9 +3142,9 @@ def unpack(x: Var, dtype: DType) -> Var:
 
 @impl(ct.unpack_from_bytes, min_version=BytecodeVersion.V_13_3)
 def unpack_from_bytes_impl(x: Var, dtype: Var):
-    tile_ty = require_tile_type(x)
+    tile_ty = require_tile_type(x, datatype.is_numeric)
     x_dtype = tile_ty.dtype
-    dtype = require_dtype_spec(dtype)
+    dtype = require_dtype_spec(dtype, datatype.is_numeric)
     if tile_ty.ndim != 1:
         raise TileTypeError(
             f"unpack_from_bytes requires a 1D tile, "
@@ -3049,7 +3180,7 @@ def arange(size: int, dtype: DType) -> Var:
 @impl(ct.arange)
 def arange_impl(size: Var, dtype: Var, start: Var, step: Var) -> Var:
     size_val = require_constant_int(size)
-    dtype_val = require_dtype_spec(dtype)
+    dtype_val = require_dtype_spec(dtype, datatype.is_numeric)
     if not _is_power_of_2(size_val):
         raise TileTypeError(f"Result tile shape must be power of 2, got {size_val}")
     result = arange(size_val, dtype_val)

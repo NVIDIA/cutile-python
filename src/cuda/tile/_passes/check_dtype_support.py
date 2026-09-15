@@ -10,7 +10,8 @@ from cuda.tile._ir.ops import TileAtomicRMW, TileAtomicRedView, AtomicRMWMode
 from cuda.tile._ir.type import TileTy, Type
 from cuda.tile._datatype import (
     DType, float4_e2m1fn, float8_e4m3fn, float8_e5m2, float8_e8m0fnu, float8_e5m3fnu,
-    bfloat16, is_pointer_dtype, PointerInfo
+    bfloat16, is_pointer_dtype, PointerInfo, is_foreign_pointer_dtype,
+    foreign_pointer_pointee_dtype
 )
 from cuda.tile._bytecode.version import BytecodeVersion
 from cuda.tile._exception import TileUnsupportedFeatureError, TileValueError
@@ -61,6 +62,9 @@ def _extract_dtypes(ty: Type | None) -> set[DType]:
 
     if isinstance(ty, TileTy):
         dtype = ty.dtype
+        if is_foreign_pointer_dtype(dtype):
+            dtype = foreign_pointer_pointee_dtype(dtype)
+
         while is_pointer_dtype(dtype):
             info = PointerInfo(dtype)
             if info.opaque:

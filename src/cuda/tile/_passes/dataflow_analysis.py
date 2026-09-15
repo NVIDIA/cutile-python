@@ -18,7 +18,8 @@ from cuda.tile._ir.core_ops import TypedConst, Assign, canonicalize_const_value_
 from cuda.tile._ir.arithmetic_ops import Unary
 from cuda.tile._ir.ops import GetArrayListItem, \
     EndBranch, PointerOffset, \
-    TileReshape, AssumeDivBy, TileReduce, TileScan, AssumeBounded
+    TileReshape, TilePermute, AssumeDivBy, TileReduce, TileScan, AssumeBounded, \
+    ForeignPointerCast
 from cuda.tile._ir.control_flow_ops import Loop, IfElse, Continue, Break
 from cuda.tile.compilation._signature import ParameterConstraint, \
     ArrayConstraint, ListConstraint, TupleConstraint, ScalarConstraint, PointerConstraint
@@ -276,6 +277,8 @@ def _analyze_aliases_in_block(block: Block,
     for op in block.operations:
         if isinstance(op, Assign):
             state.propagate(op.value, op.result_var)
+        elif isinstance(op, ForeignPointerCast):
+            state.propagate(op.pointer, op.result_var)
         elif isinstance(op, AssumeDivBy):
             new_pred = state.tracker[op.x].replace(div_by=op.divisor)
             state.tracker.update(op.result_var, new_pred)
@@ -310,7 +313,7 @@ def _analyze_aliases_in_block(block: Block,
             pred = state.tracker[op.pointer].replace(div_by=new_divby)
             state.tracker.update(op.result_var, pred)
             state.list_array_tracker.update(op.result_var, ALWAYS_TRUE_AGG_PREDICATE)
-        elif isinstance(op, TileBroadcast | TileReshape | AssumeBounded):
+        elif isinstance(op, TileBroadcast | TileReshape | TilePermute | AssumeBounded):
             # Needed for tiles of pointers produced by gather/scatter
             state.propagate(op.x, op.result_var)
         elif isinstance(op, TileAsType):

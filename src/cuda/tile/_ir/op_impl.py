@@ -372,13 +372,22 @@ def require_constant_slice(var: Var) -> slice:
     return var.get_constant()
 
 
-def require_dtype_spec(var: Var) -> DType:
+def require_dtype_spec(
+    var: Var,
+    dtype_predicate: Callable[[DType], bool] | None = None,
+) -> DType:
     ty = var.get_type()
     if not isinstance(ty, DTypeSpec):
         raise make_type_checking_error(
             f"Expected a dtype constant, but given value has type {ty}", var
         )
-    return ty.dtype
+    dtype = ty.dtype
+    if dtype_predicate is not None and not dtype_predicate(dtype):
+        raise make_type_checking_error(
+            "Expected dtype to satisfy constraint "
+            f"{dtype_predicate.__name__}, but got {dtype}", var
+        )
+    return dtype
 
 
 def require_constant_pointer_info(var: Var) -> PointerInfo:
@@ -523,17 +532,37 @@ def require_constant_axis_order(var: Var, rank: int) -> Tuple[int, ...]:
     return ret
 
 
-def ensure_tile(var: Var) -> Var[TileTy]:
+def ensure_tile(
+    var: Var,
+    dtype_predicate: Callable[[DType], bool] | None = None,
+) -> Var[TileTy]:
     ty = var.get_type()
     if not isinstance(ty, TileTy):
         raise make_type_checking_error(
             f"Expected a tile, but given value has type {ty}", var
         )
+    if dtype_predicate is not None and not dtype_predicate(ty.dtype):
+        raise make_type_checking_error(
+            "Expected tile dtype to satisfy constraint "
+            f"{dtype_predicate.__name__}, but got {ty}", var
+        )
     return var
 
 
-def require_tile_type(var: Var) -> TileTy:
-    return ensure_tile(var).get_type()
+def require_tile_type(
+    var: Var,
+    dtype_predicate: Callable[[DType], bool] | None = None,
+) -> TileTy:
+    return ensure_tile(var, dtype_predicate).get_type()
+
+
+def require_foreign_pointer_type(pointer: Var, scalar: bool = False) -> TileTy:
+    ty = pointer.get_type()
+    if not isinstance(ty, TileTy) or not datatype.is_foreign_pointer_dtype(ty.dtype):
+        raise TileTypeError(f"expected a foreign pointer tile, got {ty}")
+    if scalar and ty.shape != ():
+        raise TileTypeError(f"expected a scalar foreign pointer, got {ty}")
+    return ty
 
 
 def require_tile_or_tile_tuple_type(var: Var) -> TileTy | TupleTy:
@@ -555,20 +584,53 @@ def require_tile_maybe_loose_type(var: Var) \
     return require_tile_type(var)
 
 
-def require_0d_tile_type(var: Var) -> TileTy:
+def require_0d_tile_type(
+    var: Var,
+    dtype_predicate: Callable[[DType], bool] | None = None,
+) -> TileTy:
     ty = var.get_type()
     if not isinstance(ty, TileTy) or ty.ndim != 0:
         raise make_type_checking_error(
             f"Expected a scalar or a 0D tile, but given value has type {ty}", var
         )
+    if dtype_predicate is not None and not dtype_predicate(ty.dtype):
+        raise make_type_checking_error(
+            "Expected 0D tile dtype to satisfy constraint "
+            f"{dtype_predicate.__name__}, but got {ty}", var
+        )
     return ty
 
 
-def ensure_scalar(var: Var) -> Var[TensorLikeTy]:
+def ensure_scalar(
+    var: Var,
+    dtype_predicate: Callable[[DType], bool] | None = None,
+) -> Var[TensorLikeTy]:
     ty = var.get_type()
     if not isinstance(ty, TensorLikeTy) or ty.tensor_shape() != ():
         raise make_type_checking_error(
             f"Expected a scalar value, but given value has type {ty}", var
+        )
+    if dtype_predicate is not None and not dtype_predicate(ty.tensor_dtype()):
+        raise make_type_checking_error(
+            "Expected scalar dtype to satisfy constraint "
+            f"{dtype_predicate.__name__}, but got {ty}", var
+        )
+    return var
+
+
+def ensure_tensorlike(
+    var: Var,
+    dtype_predicate: Callable[[DType], bool] | None = None,
+) -> Var[TensorLikeTy]:
+    ty = var.get_type()
+    if not isinstance(ty, TensorLikeTy):
+        raise make_type_checking_error(
+            f"Expected a tensor-like value, but got {ty}", var
+        )
+    if dtype_predicate is not None and not dtype_predicate(ty.tensor_dtype()):
+        raise make_type_checking_error(
+            "Expected tensor-like dtype to satisfy constraint "
+            f"{dtype_predicate.__name__}, but got {ty}", var
         )
     return var
 

@@ -7,7 +7,7 @@ from typing import Sequence
 
 from typing_extensions import override
 
-from cuda.tile._datatype import TileTypeError, int64, is_pointer_dtype
+from cuda.tile._datatype import TileTypeError, int64, is_foreign_pointer_dtype, is_pointer_dtype
 from cuda.tile._ir import hir_stubs, hir
 from cuda.tile._ir.aggregate_support import flatten_block_parameters, expand_aggregate_var, \
     flatten_aggregate_types, flatten_aggregates, unflatten_aggregates
@@ -585,7 +585,8 @@ class MakeDummy(Operation, opcode="make_dummy"):
         if isinstance(ty, TokenTy):
             return bc.encode_MakeTokenOp(ctx.builder, ctx.type_table.Token)
         from cuda.tile._ir.type import TileTy
-        if isinstance(ty, TileTy) and is_pointer_dtype(ty.dtype):
+        if (isinstance(ty, TileTy)
+                and (is_pointer_dtype(ty.dtype) or is_foreign_pointer_dtype(ty.dtype))):
             int_ty = TileTy(dtype=int64, shape=ty.shape)
             const = ctx.constant(0, int_ty)
             return bc.encode_IntToPtrOp(ctx.builder, typeid(ctx.type_table, ty), const)

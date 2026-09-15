@@ -293,6 +293,74 @@ class Array:
             :ref:`Tiled Views <data-tiled-views>`
         """
 
+    @property
+    @function
+    def foreign_pointer(self) -> "Tile":
+        """Returns the array base pointer as a foreign pointer.
+
+        A foreign pointer can be passed to a foreign call or used to construct
+        an array with :py:meth:`Array.from_foreign`. It does not support
+        numeric or ordinary pointer operations.
+
+        Returns:
+            Tile: A scalar tile containing the foreign pointer.
+
+        Examples:
+
+            .. testcode::
+                :template: setup_only.py
+
+                @ct.kernel
+                def kernel(x):
+                    pointer = x.foreign_pointer
+                    view = ct.Array.from_foreign(pointer, x.shape, x.strides)
+                    print(ct.load(view, (0,), shape=(4,)))
+
+                x = torch.arange(4, device="cuda:0")
+                ct.launch(stream, (1,), kernel, (x,))
+
+            .. testoutput::
+
+                [0, 1, 2, 3]
+        """
+
+    @staticmethod
+    @stub
+    def from_foreign(pointer, shape, strides) -> "Array":
+        """Constructs an array from a foreign pointer and metadata.
+
+        Shape and strides must be equal-length tuples of non-negative signed integer
+        scalar values.
+
+        Args:
+            pointer (Tile): Scalar foreign pointer as result array's base pointer.
+            shape (tuple[const int | signed integer scalar, ...]): Number of elements in
+                each dimension.
+            strides (tuple[const int | signed integer scalar, ...]): Number of elements
+                to step in each dimension.
+
+        Returns:
+            Array: An array with the foreign pointer's pointee dtype and the supplied metadata.
+
+        Examples:
+
+            .. testcode::
+                :template: setup_only.py
+
+                @ct.kernel
+                def kernel(x):
+                    pointer = x.foreign_pointer
+                    view = ct.Array.from_foreign(pointer, x.shape, x.strides)
+                    print(ct.load(view, (0,), shape=(4,)))
+
+                x = torch.arange(4, device="cuda:0")
+                ct.launch(stream, (1,), kernel, (x,))
+
+            .. testoutput::
+
+                [0, 1, 2, 3]
+        """
+
     @stub
     def get_raw_memory(self) -> "RawArrayMemory":
         """Returns an object that allows loading and storing by element offset.

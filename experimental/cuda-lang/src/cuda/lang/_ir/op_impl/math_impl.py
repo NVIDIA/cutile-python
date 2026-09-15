@@ -261,8 +261,8 @@ def float_modulo_with_corrected_sign(value: Var, y: Var) -> Var:
 @impl(operator.mod, overload=(TensorLikeTy, TensorLikeTy))
 @impl(cl_math.mod)
 def math_mod_impl(x: Var, y: Var):
-    require_scalar_or_vector_type(x)
-    require_scalar_or_vector_type(y)
+    require_scalar_or_vector_type(x, datatype.is_numeric)
+    require_scalar_or_vector_type(y, datatype.is_numeric)
     ty = common_type(x, y)
     dtype = ty.tensor_dtype()
     if not is_float(dtype):
@@ -294,8 +294,8 @@ def math_integer_remainder_impl(x: Var, y: Var):
 
 @impl(cl_math.divmod)
 def math_divmod_impl(x: Var, y: Var):
-    require_scalar_or_vector_type(x)
-    require_scalar_or_vector_type(y)
+    require_scalar_or_vector_type(x, datatype.is_numeric)
+    require_scalar_or_vector_type(y, datatype.is_numeric)
     return divmod_tensorlike(x, y)
 
 

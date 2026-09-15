@@ -20,7 +20,8 @@ __all__ = ["bool_", "uint8", "uint16", "uint32", "uint64",
            "int8", "int16", "int32", "int64",
            "float16", "float32", "float64",
            "bfloat16", "tfloat32", "float8_e4m3fn", "float8_e5m2",
-           "float8_e8m0fnu", "float8_e5m3fnu", "float4_e2m1fn", "DType"]
+           "float8_e8m0fnu", "float8_e5m3fnu", "float4_e2m1fn", "DType",
+           "foreign_pointer_dtype"]
 
 
 class DType:
@@ -148,6 +149,11 @@ class _IntegerDTypeDefinition(_DTypeDefinition):
 class _PointerDTypeDefinition(_DTypeDefinition):
     pointee_dtype: DType | None  # None for opaque pointers
     memory_space: MemorySpace
+
+
+@dataclass(frozen=True, kw_only=True)
+class _ForeignPointerDTypeDefinition(_DTypeDefinition):
+    pointee_dtype: DType
 
 
 _dtype_defs: dict[DType, _DTypeDefinition] = dict()
@@ -736,3 +742,33 @@ def _get_pointer_dtype(pointee_dtype: DType | None, memory_space: MemorySpace) -
                          _PointerDTypeDefinition(bitwidth=bitwidth,
                                                  pointee_dtype=pointee_dtype,
                                                  memory_space=memory_space))
+
+
+# ============== Foreign Pointer DType ===============
+
+def is_foreign_pointer_dtype(dtype: DType) -> bool:
+    return isinstance(_dtype_defs[dtype], _ForeignPointerDTypeDefinition)
+
+
+def foreign_pointer_pointee_dtype(dtype: DType) -> DType:
+    """Return the pointee dtype encoded in a foreign pointer dtype."""
+    definition = _dtype_defs[dtype]
+    if not isinstance(definition, _ForeignPointerDTypeDefinition):
+        raise TypeError(f"'{dtype}' is not a foreign pointer dtype")
+    return definition.pointee_dtype
+
+
+@stub(host=True, static_eval_ok=True)
+def foreign_pointer_dtype(pointee_dtype: DType) -> DType:
+    if not isinstance(pointee_dtype, DType):
+        raise TypeError("pointee_dtype must be a cuda.tile dtype")
+    if is_foreign_pointer_dtype(pointee_dtype):
+        raise TypeError("nested foreign pointer dtypes are not supported")
+
+    return _define_dtype(
+        f"foreign_pointer[{pointee_dtype}]",
+        _ForeignPointerDTypeDefinition(
+            bitwidth=64,
+            pointee_dtype=pointee_dtype,
+        ),
+    )

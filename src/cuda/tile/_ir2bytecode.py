@@ -13,7 +13,8 @@ from cuda.tile import _datatype as datatype
 from cuda.tile._bytecode.attribute import make_load_store_hints
 from cuda.tile._bytecode.version import BytecodeVersion
 from cuda.tile._datatype import get_signedness, is_pointer_dtype, PointerInfo, \
-    dtype_simple_bytecode_type
+    dtype_simple_bytecode_type, is_foreign_pointer_dtype, \
+    foreign_pointer_pointee_dtype
 from cuda.tile import DType
 import cuda.tile._bytecode as bc
 from cuda.tile._compiler_options import CompilerOptions
@@ -39,7 +40,12 @@ def dtype_typeid(tt: bc.TypeTable, dtype: datatype.DType) -> bc.TypeId:
         pointee_dtype = PointerInfo(dtype).pointee_dtype
         pointee = dtype_typeid(tt, pointee_dtype)
         return tt.pointer(pointee, bc.PtrAttr.Missing)
-    return tt.simple(dtype_simple_bytecode_type(dtype))
+    elif is_foreign_pointer_dtype(dtype):
+        pointee_dtype = foreign_pointer_pointee_dtype(dtype)
+        pointee = dtype_typeid(tt, pointee_dtype)
+        return tt.pointer(pointee, bc.PtrAttr.Missing)
+    else:
+        return tt.simple(dtype_simple_bytecode_type(dtype))
 
 
 def tensor_view_typeid(tt: bc.TypeTable, array_ty: ArrayTy,
