@@ -1010,7 +1010,6 @@ class ConstantAnnotation:
     If an object of this class is passed as a metadata argument to a ``typing.Annotated`` type hint
     on a parameter, then the parameter shall be a constant embedded.
     """
-
     def __repr__(self):
         return "ConstantAnnotation()"
 

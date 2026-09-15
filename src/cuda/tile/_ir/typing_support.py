@@ -12,7 +12,7 @@ from typing import Any, Sequence
 from cuda.tile import _datatype as datatype, DType
 from cuda.tile._exception import TileTypeError, TileValueError
 from .ir import TypingHooks
-from .type import DataclassInfo, PointerInfoTy
+from .type import DataclassInfo, PointerInfoTy, NotImplementedTy
 
 from .type import Type, DTypeConstructor, DTypeSpec, NONE, StringTy, \
     ELLIPSIS, SLICE, ModuleTy, FunctionTy, EnumTy, TypeTy, LooselyTypedScalar
@@ -149,6 +149,8 @@ def type_of_constant_python_value(val, typing_hooks: TypingHooks) -> Type:
 
     if val is Ellipsis:
         return ELLIPSIS
+    if val is NotImplemented:
+        return NotImplementedTy.instance()
     if isinstance(val, slice):
         return SLICE
     if isinstance(val, ModuleType):

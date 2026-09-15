@@ -325,7 +325,7 @@ async def _call_builtin(callee, impl, args, kwargs, builder: ir.Builder):
     # Map the result variable
     if result is None:
         result = loosely_typed_const(None)
-    assert isinstance(result, Var)
+    assert isinstance(result, Var), result
     return result
 
 

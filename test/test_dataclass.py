@@ -564,6 +564,159 @@ def test_setitem_dunder():
     assert x.tolist() == [0, 50, 2, 3]
 
 
+def test_binary_arithmetic_dunders():
+    num_ops = 14
+    [
+        ADD,       SUB,    MUL,    MATMUL, TRUEDIV,
+        FLOORDIV,  MOD,    DIVMOD, POW,    LSHIFT,
+        RSHIFT,    AND,    XOR,    OR
+    ] = range(num_ops)
+
+    class LhsDundersMixin:
+        def __add__(self, other): return ADD, 0, self.x, other.x
+        def __sub__(self, other): return SUB, 0, self.x, other.x
+        def __mul__(self, other): return MUL, 0, self.x, other.x
+        def __matmul__(self, other): return MATMUL, 0, self.x, other.x
+        def __truediv__(self, other): return TRUEDIV, 0, self.x, other.x
+        def __floordiv__(self, other): return FLOORDIV, 0, self.x, other.x
+        def __mod__(self, other): return MOD, 0, self.x, other.x
+        def __divmod__(self, other): return DIVMOD, 0, self.x, other.x
+        def __pow__(self, other): return POW, 0, self.x, other.x
+        def __lshift__(self, other): return LSHIFT, 0, self.x, other.x
+        def __rshift__(self, other): return RSHIFT, 0, self.x, other.x
+        def __and__(self, other): return AND, 0, self.x, other.x
+        def __xor__(self, other): return XOR, 0, self.x, other.x
+        def __or__(self, other): return OR, 0, self.x, other.x
+
+    class RhsDundersMixin:
+        def __radd__(self, other): return ADD, 1, other.x, self.x
+        def __rsub__(self, other): return SUB, 1, other.x, self.x
+        def __rmul__(self, other): return MUL, 1, other.x, self.x
+        def __rmatmul__(self, other): return MATMUL, 1, other.x, self.x
+        def __rtruediv__(self, other): return TRUEDIV, 1, other.x, self.x
+        def __rfloordiv__(self, other): return FLOORDIV, 1, other.x, self.x
+        def __rmod__(self, other): return MOD, 1, other.x, self.x
+        def __rdivmod__(self, other): return DIVMOD, 1, other.x, self.x
+        def __rpow__(self, other): return POW, 1, other.x, self.x
+        def __rlshift__(self, other): return LSHIFT, 1, other.x, self.x
+        def __rrshift__(self, other): return RSHIFT, 1, other.x, self.x
+        def __rand__(self, other): return AND, 1, other.x, self.x
+        def __rxor__(self, other): return XOR, 1, other.x, self.x
+        def __ror__(self, other): return OR, 1, other.x, self.x
+
+    @dataclass(frozen=True)
+    class WithLhsDunders(LhsDundersMixin):
+        x: int
+
+    @dataclass(frozen=True)
+    class WithRhsDunders(RhsDundersMixin):
+        x: int
+
+    @dataclass(frozen=True)
+    class WithBothDunders(LhsDundersMixin, RhsDundersMixin):
+        x: int
+
+    lhs_only_a = WithLhsDunders(1000)
+    lhs_only_b = WithLhsDunders(2000)
+    rhs_only_a = WithRhsDunders(3000)
+    rhs_only_b = WithRhsDunders(4000)
+    both_a = WithBothDunders(5000)
+    both_b = WithBothDunders(6000)
+
+    a_options = (lhs_only_a, rhs_only_a, both_a)
+    b_options = (lhs_only_b, rhs_only_b, both_b)
+
+    @ct.kernel
+    def kern(out):
+        def put(op_idx, tup):
+            for j, val in ct.static_iter(enumerate(tup)):
+                ct.scatter(out, (ai, bi, op_idx, j), val)
+
+        for ai, a in ct.static_iter(enumerate(a_options)):
+            for bi, b in ct.static_iter(enumerate(b_options)):
+                if not ct.static_eval(isinstance(a, WithRhsDunders)
+                                      and isinstance(b, WithLhsDunders)):
+                    put(ADD, a + b)
+                    put(SUB, a - b)
+                    put(MUL, a * b)
+                    put(MATMUL, a @ b)
+                    put(TRUEDIV, a / b)
+                    put(FLOORDIV, a // b)
+                    put(MOD, a % b)
+                    put(DIVMOD, divmod(a, b))
+                    put(POW, a ** b)
+                    put(LSHIFT, a << b)
+                    put(RSHIFT, a >> b)
+                    put(AND, a & b)
+                    put(XOR, a ^ b)
+                    put(OR, a | b)
+
+    out = torch.zeros((3, 3, num_ops, 4), dtype=torch.int32, device="cuda")
+    ct.launch(torch.cuda.current_stream(), (1,), kern, (out,))
+    res = out.tolist()
+    for ai, a in enumerate(a_options):
+        for bi, b in enumerate(b_options):
+            for op_idx in range(num_ops):
+                r = res[ai][bi][op_idx]
+                if isinstance(a, WithRhsDunders) and isinstance(b, WithLhsDunders):
+                    assert r == [0, 0, 0, 0]
+                else:
+                    assert r == [op_idx, isinstance(a, WithRhsDunders), a.x, b.x]
+
+    # Manual sanity check
+    assert res[0][0][MUL] == [MUL, 0, lhs_only_a.x, lhs_only_b.x]
+    assert res[1][1][MATMUL] == [MATMUL, 1, rhs_only_a.x, rhs_only_b.x]
+
+
+def test_binary_arithmetic_dunder_absent():
+    @dataclass(frozen=True)
+    class Foo:
+        x: int
+
+    @ct.kernel
+    def kern():
+        Foo(4) + 5
+
+    with pytest.raises(ct.TileTypeError, match=re.escape("Unsupported operand types for +:")):
+        ct.launch(torch.cuda.current_stream(), (1,), kern, ())
+
+
+def test_binary_arithmetic_dunder_absent_both_dataclasses():
+    @dataclass(frozen=True)
+    class Foo:
+        x: int
+
+    @ct.kernel
+    def kern():
+        Foo(4) + Foo(5)
+
+    with pytest.raises(ct.TileTypeError, match=re.escape("Unsupported operand types for +:")):
+        ct.launch(torch.cuda.current_stream(), (1,), kern, ())
+
+
+def test_binary_arithmetic_dunder_conditionally_implemented():
+    @dataclass(frozen=True)
+    class Foo:
+        x: int
+
+        def __add__(self, other):
+            if other.dtype == ct.int32:
+                return self.x + other
+            else:
+                return NotImplemented
+
+    @ct.kernel
+    def kern(rhs, out):
+        ct.scatter(out, (), Foo(4) + rhs)
+
+    x = torch.zeros((), dtype=torch.int32, device="cuda")
+    with pytest.raises(ct.TileTypeError, match=re.escape("Unsupported operand types for +:")):
+        ct.launch(torch.cuda.current_stream(), (1,), kern, (12.0, x))
+
+    ct.launch(torch.cuda.current_stream(), (1,), kern, (15, x))
+    assert x.item() == 19
+
+
 @pytest.mark.skipif(not cconv_v3_enabled(), reason="Requires cconv3 enabled")
 def test_dataclass_instance_as_kernel_arg():
     @dataclass(frozen=True)

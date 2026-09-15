@@ -6,7 +6,8 @@ import functools
 import operator
 from contextlib import _GeneratorContextManager
 from dataclasses import dataclass
-from types import MethodType, FunctionType, BuiltinFunctionType, MappingProxyType
+from types import MethodType, FunctionType, BuiltinFunctionType, MappingProxyType, \
+    NotImplementedType
 from typing import Any, Optional, Sequence
 
 from typing_extensions import override
@@ -32,7 +33,8 @@ from cuda.tile._ir.type import Type, DTypeSpec, TensorLikeTy, TupleTy, TupleValu
     ContextManagerTy, ContextManagerLifecycle, LiveCapturedScope, ClosureTy, ClosureValue, \
     RangeIterType, RangeValue, TypeTy, ModuleTy, NONE, SliceType, StringTy, FormattedStringTy, \
     StringFormat, FormattedStringValue, FormattedPiece, DictTy, DictValue, EnumTy, TokenTy, \
-    FunctionTy, GeneratorContextManagerTy, ContextManagerState, GeneratorContextManagerValue
+    FunctionTy, GeneratorContextManagerTy, ContextManagerState, GeneratorContextManagerValue, \
+    NotImplementedTy
 from cuda.tile._ir.typing_support import type_of_constant_python_value, \
     loose_type_of_constant_python_value, get_dataclass_info, \
     create_dataclass_instance, find_method, dataclass_has_default_repr
@@ -733,6 +735,78 @@ def dataclasses_replace_impl(obj: Var, changes: dict[str, Var]):
                                 f" has no such field '{name}'")
         new_items[idx] = val
     return build_dataclass_instance(tuple(new_items), dataclass_val.info)
+
+
+async def try_dataclass_binary_dunder(dunder: str,
+                                      dataclass_instance: Var[DataclassTy],
+                                      other: Var) -> Var | NotImplementedType:
+    dataclass_ty = dataclass_instance.get_type()
+    f = find_method(dataclass_ty.cls, dunder)
+    if f is NotImplemented:
+        return NotImplemented
+    from cuda.tile._passes.hir2ir import call_function
+    res = await call_function(f, dataclass_instance, other)
+    if isinstance(res.get_type(), NotImplementedTy):
+        return NotImplemented
+    return res
+
+
+def binary_arithmetic_dunder_impl(*, overload: tuple[Any, ...]):
+    def decorate(impl_func):
+        for f, *fixed_args in ((operator.add, "+", "__add__", "__radd__"),
+                               (operator.sub, "-", "__sub__", "__rsub__"),
+                               (operator.mul, "*", "__mul__", "__rmul__"),
+                               (operator.matmul, "@", "__matmul__", "__rmatmul__"),
+                               (operator.truediv, "/", "__truediv__", "__rtruediv__"),
+                               (operator.floordiv, "//", "__floordiv__", "__rfloordiv__"),
+                               (operator.mod, "%", "__mod__", "__rmod__"),
+                               (divmod, "divmod", "__divmod__", "__rdivmod__"),
+                               (operator.pow, "**", "__pow__", "__rpow__"),
+                               (operator.lshift, "<<", "__lshift__", "__rlshift__"),
+                               (operator.rshift, ">>", "__rshift__", "__rrshift__"),
+                               (operator.and_, "&", "__and__", "__rand__"),
+                               (operator.xor, "^", "__xor__", "__rxor__"),
+                               (operator.or_, "|", "__or__", "__ror__")):
+            impl_func = impl(f, fixed_args=fixed_args, overload=overload)(impl_func)
+        return impl_func
+    return decorate
+
+
+# Overloads without wildcards take priority
+@binary_arithmetic_dunder_impl(overload=(DataclassTy, DataclassTy))
+async def dataclass_binary_arith_symmetric_impl(symbol: str, lhs_dunder: str, rhs_dunder: str,
+                                                x: Var[DataclassTy], y: Var[DataclassTy]):
+    res = await try_dataclass_binary_dunder(lhs_dunder, x, y)
+    if res is not NotImplemented:
+        return res
+
+    res = await try_dataclass_binary_dunder(rhs_dunder, y, x)
+    if res is not NotImplemented:
+        return res
+
+    raise TypeCheckingError(f"Unsupported operand types for {symbol}:"
+                            f" {x.get_type()} and {y.get_type()}")
+
+
+@binary_arithmetic_dunder_impl(overload=(DataclassTy, WILDCARD))
+async def dataclass_binary_arith_lhs_impl(symbol: str, lhs_dunder: str, _rhs_dunder: str,
+                                          x: Var[DataclassTy], y: Var):
+    res = await try_dataclass_binary_dunder(lhs_dunder, x, y)
+    if res is not NotImplemented:
+        return res
+    raise TypeCheckingError(f"Unsupported operand types for {symbol}:"
+                            f" {x.get_type()} and {y.get_type()}")
+
+
+@binary_arithmetic_dunder_impl(overload=(WILDCARD, DataclassTy))
+async def dataclass_binary_arith_rhs_impl(symbol: str, _lhs_dunder: str, rhs_dunder: str,
+                                          x: Var[DataclassTy], y: Var):
+    res = await try_dataclass_binary_dunder(rhs_dunder, y, x)
+    if res is not NotImplemented:
+        return res
+    raise TypeCheckingError(f"Unsupported operand types for {symbol}:"
+                            f" {x.get_type()} and {y.get_type()}")
+
 
 # ===========================================================================================
 

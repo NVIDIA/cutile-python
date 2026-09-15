@@ -121,6 +121,23 @@ class NoneType(Type):
 NONE = NoneType()
 
 
+# ============== NotImplemented Type ===============
+
+class NotImplementedTy(Type):
+    def __new__(self):
+        raise TypeError("NotImplementedTy objects cannot be created")
+
+    @staticmethod
+    def instance():
+        return _NOT_IMPLEMENTED
+
+    def __str__(self):
+        return "NotImplemented"
+
+
+_NOT_IMPLEMENTED = object.__new__(NotImplementedTy)
+
+
 # ============== Slice Type ===============
 
 class SliceType(Type):
