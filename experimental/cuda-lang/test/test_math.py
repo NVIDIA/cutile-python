@@ -1202,6 +1202,26 @@ def test_integer_remainder_broadcast(vector_side):
     assert out.cpu().tolist() == list(expected)
 
 
+@pytest.mark.parametrize(
+    "device_op, host_op, args",
+    (
+        (min, min, (4, 5)),
+        (cl.minimum, min, (4, 5)),
+        (max, max, (4, 5)),
+        (cl.maximum, max, (4, 5)),
+    ),
+)
+def test_constant_propagation(device_op, host_op, args):
+    expect = host_op(*args)
+
+    @cl.kernel
+    def kernel():
+        got = device_op(*args)
+        cl.static_assert(got == expect)
+
+    cl.launch(torch.cuda.current_stream(), (1,), (1,), kernel, ())
+
+
 def test_integer_remainder_constants():
     @cl.kernel
     def kernel(out):
@@ -1348,7 +1368,9 @@ def test_type_error():
 
 MINMAX_OPS = (
     (device_math.maximum, builtins.max),
+    (builtins.max, builtins.max),
     (device_math.minimum, builtins.min),
+    (builtins.min, builtins.min),
 )
 
 MINMAX_DTYPES = (*FLOAT_TYPES, *SIGNED_INT_TYPES, *UNSIGNED_INT_TYPES)

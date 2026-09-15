@@ -2,6 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+from cuda.tile._ir.arithmetic_ops import binop_propagate_constant
 import operator
 
 from cuda.tile._ir.ir import add_operation_variadic
@@ -480,17 +481,19 @@ def math_float_binary_impl(fn: str, x: Var, y: Var):
     )
 
 
-@impl(cl_math.maximum, fixed_args=["max"])
-@impl(cl_math.minimum, fixed_args=["min"])
-def math_minmax_impl(fn: str, x: Var, y: Var, propagate_nan: Var) -> Var:
-    propagate_nan = require_constant_bool(propagate_nan)
-
+def minmax_impl(
+    fn: str, x: Var, y: Var, propagate_nan: bool
+) -> Var:
     require_scalar_or_vector_type(x)
     require_scalar_or_vector_type(y)
+
     ty = common_type(x, y)
     x = promote_and_broadcast_to(x, ty)
     y = promote_and_broadcast_to(y, ty)
     dtype = ty.tensor_dtype()
+
+    if x.is_constant() and y.is_constant():
+        return binop_propagate_constant(fn, x.get_constant(), y.get_constant(), None)
 
     if not (datatype.is_float(dtype) or datatype.is_integral(dtype)):
         raise TypeCheckingError(f"{fn}() expects arithmetic operands, got {ty}")
@@ -503,6 +506,20 @@ def math_minmax_impl(fn: str, x: Var, y: Var, propagate_nan: Var) -> Var:
         rhs=y,
         propagate_nan=propagate_nan,
     )
+
+
+@impl(cl_math.maximum, fixed_args=["max"])
+@impl(cl_math.minimum, fixed_args=["min"])
+def math_minmax_impl(fn: str, x: Var, y: Var, propagate_nan: Var) -> Var:
+    return minmax_impl(
+        fn, x, y, require_constant_bool(propagate_nan)
+    )
+
+
+@impl(max, fixed_args=["max"], overload=(TensorLikeTy, TensorLikeTy))
+@impl(min, fixed_args=["min"], overload=(TensorLikeTy, TensorLikeTy))
+def builtin_minmax_impl(fn: str, x: Var, y: Var) -> Var:
+    return minmax_impl(fn, x, y, False)
 
 
 @impl(cl_math.abs)
