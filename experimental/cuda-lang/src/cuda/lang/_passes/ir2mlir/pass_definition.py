@@ -624,7 +624,7 @@ def lower_comparison(
     context: MLIRLoweringContext, operation: ops.RawComparisonOperation
 ) -> Sequence[mlir.Value]:
     lhs_type = operation.lhs.get_type()
-    rhs_type = operation.lhs.get_type()
+    rhs_type = operation.rhs.get_type()
     assert lhs_type == rhs_type
 
     dtype = _expect_arith_type(lhs_type).tensor_dtype()
