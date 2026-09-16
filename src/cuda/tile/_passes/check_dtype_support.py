@@ -134,7 +134,12 @@ def _check_dtype(dtype: DType, sm_arch: str | None, sm_number: int | None,
 def check_dtype_support(root_block: Block, sm_arch: str | None,
                         version: BytecodeVersion) -> None:
     # Skip arch check by setting sm_number to None when sm_arch is not provided
-    sm_number = int(sm_arch.removeprefix("sm_")) if sm_arch is not None else None
+    sm_number = None
+    if sm_arch is not None:
+        arch_number = sm_arch.removeprefix("sm_")
+        if arch_number.endswith(("a", "f")):
+            arch_number = arch_number[:-1]
+        sm_number = int(arch_number)
     for op in root_block.traverse():
         if isinstance(op, TypedConst):
             _check_const_value(op)
