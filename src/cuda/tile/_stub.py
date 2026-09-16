@@ -4633,7 +4633,7 @@ def static_exception(exc, /):
     return exc
 
 
-@stub
+@stub(compiled_host=True)
 def ensure_constant(value, /):
     """
     Asserts that the argument is a compile-time constant and returns it.
