@@ -12,13 +12,13 @@ from functools import lru_cache, cache
 from typing import List, NamedTuple, Sequence, Optional, Any, Dict, Type, Callable, Mapping
 
 from cuda.tile import _datatype as datatype
-from cuda.tile._exception import TileSyntaxError, Loc, FunctionDesc
+from cuda.tile._exception import TileSyntaxError, Loc, FunctionDesc, make_static_exception
 from cuda.tile._execution import is_function_wrapper
 from cuda.tile._ir.hir import make_value, ResolvedName, UNKNOWN_NAME
 from cuda.tile._ir import hir, hir_stubs
 from cuda.tile._ir.type import ClosureDefaultPlaceholder, FormattedPiece, StringFormat
 from cuda.tile._passes.ast_util import ast_get_all_local_names
-from cuda.tile._stub import static_eval, static_assert, static_iter
+from cuda.tile._stub import static_eval, static_assert, static_iter, static_exception
 
 
 class HirMode(Enum):
@@ -78,11 +78,10 @@ def get_function_hir(pyfunc: Callable, mode: HirMode) -> hir.Function:
     desc = FunctionDesc(func_def.name, filename, first_line, func_def.col_offset + 1,
                         is_entry=mode == HirMode.ENTRY_POINT)
     local_names, _, _ = ast_get_all_local_names(func_def)
-    ctx = _Context(filename, first_line, desc, func_globals, local_names, mode,
+    ctx = _Context(filename, first_line, desc, func_def, func_globals, local_names, mode,
                    func_depth=0)
     signature = inspect.signature(pyfunc)
-    ret = _get_function_hir_inner(func_def, signature, ctx)
-
+    ret = _get_function_hir_inner(signature, ctx)
     _finalize_func(ret, 0, ())
     return ret
 
@@ -131,8 +130,8 @@ def _finalize_func(func: hir.Function, depth: int,
     return {rn for rn in accessed if rn.depth < depth}
 
 
-def _get_function_hir_inner(func_def: ast.FunctionDef | ast.Lambda, signature: inspect.Signature,
-                            ctx: "_Context") -> hir.Function:
+def _get_function_hir_inner(signature: inspect.Signature, ctx: "_Context") -> hir.Function:
+    func_def = ctx.function_ast
     assert isinstance(func_def, ast.FunctionDef | ast.Lambda)
     body = _ast2hir(func_def, ctx)
     all_ast_args = _get_all_parameters(func_def, ctx)
@@ -164,6 +163,7 @@ class LoopKind(Enum):
 
 class _Context:
     def __init__(self, filename: str, first_line: int, function_desc: FunctionDesc,
+                 function_ast: ast.FunctionDef | ast.Lambda,
                  frozen_globals: Mapping[str, Any], local_names: set[str], mode: HirMode,
                  func_depth: int = 0,
                  outer_rns: Dict[str, ResolvedName] | None = None,
@@ -171,6 +171,7 @@ class _Context:
         self.filename = filename
         self.first_line = first_line
         self.function_desc = function_desc
+        self.function_ast = function_ast
         self.frozen_globals = frozen_globals
         self.local_names = local_names
         self.mode = mode
@@ -307,8 +308,8 @@ def _register(mapping, klazz):
 _expr_handlers: Dict[Type[ast.AST], Callable] = {}
 
 
-_KEYWORD_LIKE_FUNCS = (static_eval, static_assert, static_iter)
-_KEYWORD_LIKE_FUNC_NAMES = ("static_eval", "static_assert", "static_iter")
+_KEYWORD_LIKE_FUNCS = (static_eval, static_assert, static_iter, static_exception)
+_KEYWORD_LIKE_FUNC_NAMES = ("static_eval", "static_assert", "static_iter", "static_exception")
 
 
 # tuple(...)
@@ -342,7 +343,10 @@ def _call_expr(call: ast.Call, ctx: _Context) -> hir.Value:
             return ctx.call(hir_stubs.do_static_assert, (condition, message_block))
         elif kwd_func == "static_iter":
             raise TileSyntaxError("static_iter() is only allowed as iterable in a `for` loop,"
-                                  " i.e. `for i in ct.static_iter(...)`")
+                                  " i.e. `for i in static_iter(...)`")
+        elif kwd_func == "static_exception":
+            raise TileSyntaxError("static_exception() is only allowed after `raise`,"
+                                  " e.g. `raise static_exception(ValueError('Error'))`")
         else:
             raise TileSyntaxError(f"{kwd_func} is not expected here")
     else:
@@ -362,7 +366,8 @@ def _call_expr(call: ast.Call, ctx: _Context) -> hir.Value:
         return ctx.call(callee, args, kwargs)
 
 
-def _call_static_eval(expr: ast.expr, kind: hir.StaticEvalKind, ctx: _Context) -> hir.Value:
+def _call_static_eval(expr: ast.expr, kind: hir.StaticEvalKind, ctx: _Context,
+                      orig_raise: ast.Raise | None = None) -> hir.Value:
     # Wrap the `expr` as `lambda: expr`
     inner_lambda_ast = _wrap_in_lambda(expr, ())
 
@@ -387,29 +392,63 @@ def _call_static_eval(expr: ast.expr, kind: hir.StaticEvalKind, ctx: _Context) -
     # Look at the inner lambda's freevars to determine which locals are being used
     used_locals = sorted(inner_lambda.__code__.co_freevars)
 
-    # Compile a new lambda function of the form
-    #    lambda p1, p2, ...: expr
-    # Where p1, p2, ... are the names of used local variables.
-    final_lambda_ast = _wrap_in_lambda(expr, used_locals)
-    final_lambda = _eval_ast_expr(final_lambda_ast, ctx)
+    if orig_raise is None:
+        assert kind != hir.StaticEvalKind.STATIC_EXCEPTION
+        # Compile a new lambda function of the form
+        #    lambda p1, p2, ...: expr
+        # Where p1, p2, ... are the names of used local variables.
+        final_lambda_ast = _wrap_in_lambda(expr, used_locals)
+        final_callable = _eval_ast_expr(final_lambda_ast, ctx)
+    else:
+        assert kind == hir.StaticEvalKind.STATIC_EXCEPTION
+        # There can't be a `raise` statement (or any statement) inside a lambda
+        assert isinstance(ctx.function_ast, ast.FunctionDef)
+        raising_func_ast = _wrap_in_raising_func(expr, used_locals, orig_raise, ctx.function_ast)
+        ast_to_eval = ast.Module(body=[raising_func_ast], type_ignores=[])
+        try:
+            code = compile(ast_to_eval, ctx.filename, "exec")
+        except (SyntaxError, ValueError) as e:
+            # TODO: get location info from SyntaxError
+            raise TileSyntaxError(str(e))
+        globals_dict = dict(ctx.frozen_globals)
+        globals_dict["__make_static_exception"] = make_static_exception
+        locals_dict = {}
+        eval(code, globals_dict, locals_dict)
+        final_callable = locals_dict[ctx.function_ast.name]
 
     loaded_locals = tuple(ctx.load(local_name) for local_name in used_locals)
     return ctx.call(hir_stubs.do_static_eval,
-                    (hir.StaticEvalExpression(final_lambda, kind), *loaded_locals))
+                    (hir.StaticEvalExpression(final_callable, kind), *loaded_locals))
 
 
-def _wrap_in_call(lamb: ast.Lambda) -> ast.Call:
-    return ast.Call(func=lamb, args=[], keywords=[], lineno=lamb.lineno, end_lineno=lamb.end_lineno,
-                    col_offset=lamb.col_offset, end_col_offset=lamb.end_col_offset)
+def _wrap_in_raising_func(expr: ast.expr,
+                          param_names: Sequence[str],
+                          orig_raise: ast.Raise,
+                          orig_func: ast.FunctionDef) -> ast.FunctionDef:
+    raise_loc = dict(
+        lineno=orig_raise.lineno, end_lineno=orig_raise.end_lineno,
+        col_offset=orig_raise.col_offset, end_col_offset=orig_raise.end_col_offset
+    )
+    static_exc_class = ast.Name(id="__make_static_exception", ctx=ast.Load(), **raise_loc)
+    create_static_exc = ast.Call(func=static_exc_class, args=[expr], keywords=[], **raise_loc)
+    raise_stmt = ast.Raise(exc=create_static_exc, **raise_loc)
+    return ast.FunctionDef(
+        name=orig_func.name, args=_make_ast_args(param_names), body=[raise_stmt], decorator_list=[],
+        lineno=orig_func.lineno, end_lineno=orig_func.end_lineno,
+        col_offset=orig_func.col_offset, end_col_offset=orig_func.end_col_offset
+    )
 
 
 def _wrap_in_lambda(expr: ast.expr, param_names: Sequence[str]) -> ast.Lambda:
-    locals_as_ast_args = [ast.arg(arg=name, lineno=0, col_offset=0) for name in param_names]
-    outer_lambda_args = ast.arguments(posonlyargs=locals_as_ast_args, args=[], vararg=None,
-                                      kwonlyargs=[], kw_defaults=[], kwarg=None, defaults=[])
-    return ast.Lambda(args=outer_lambda_args, body=expr,
+    return ast.Lambda(args=_make_ast_args(param_names), body=expr,
                       lineno=expr.lineno, end_lineno=expr.end_lineno,
                       col_offset=expr.col_offset, end_col_offset=expr.end_col_offset)
+
+
+def _make_ast_args(param_names: Sequence[str]) -> ast.arguments:
+    locals_as_ast_args = [ast.arg(arg=name, lineno=0, col_offset=0) for name in param_names]
+    return ast.arguments(posonlyargs=locals_as_ast_args, args=[], vararg=None,
+                         kwonlyargs=[], kw_defaults=[], kwarg=None, defaults=[])
 
 
 def _eval_ast_expr(expr: ast.expr, ctx: _Context):
@@ -750,6 +789,30 @@ def _for_stmt(stmt: ast.For, ctx: _Context):
     ctx.parent_loops.pop()
 
     ctx.call_void(op, (body_block, iterable))
+
+
+@_register(_stmt_handlers, ast.Raise)
+def _raise_stmt(stmt: ast.Raise, ctx: _Context):
+    if stmt.cause is not None:
+        raise ctx.syntax_error("'raise from' syntax is not supported", loc=stmt.cause)
+
+    exc = _get_static_exception_expr(stmt.exc, ctx)
+    if exc is None:
+        raise ctx.syntax_error("Raised exception must be wrapped in static_exception()")
+
+    _call_static_eval(exc, hir.StaticEvalKind.STATIC_EXCEPTION, ctx, orig_raise=stmt)
+
+
+def _get_static_exception_expr(expr: ast.expr, ctx: _Context) -> ast.expr | None:
+    if not isinstance(expr, ast.Call):
+        return None
+    if _parse_keyword_like_func(expr.func, ctx) != "static_exception":
+        return None
+
+    if len(expr.args) != 1 or len(expr.keywords) != 0:
+        raise ctx.syntax_error("static_exception() expects a single expression")
+
+    return expr.args[0]
 
 
 def _get_static_iter_expr(expr: ast.expr, ctx: _Context) -> ast.expr | None:
@@ -1122,13 +1185,13 @@ def _make_closure(node: ast.FunctionDef | ast.Lambda, ctx: _Context) -> hir.Valu
         if n not in outer_rns:
             outer_rns[n] = rn
 
-    new_ctx = _Context(ctx.filename, ctx.first_line, desc, ctx.frozen_globals,
+    new_ctx = _Context(ctx.filename, ctx.first_line, desc, node, ctx.frozen_globals,
                        local_names, mode=HirMode.HELPER_FUNCTION,
                        func_depth=ctx._func_depth + 1,
                        outer_rns=outer_rns,
                        own_locals=new_locals)
 
-    func_hir = _get_function_hir_inner(node, signature, new_ctx)
+    func_hir = _get_function_hir_inner(signature, new_ctx)
 
     ctx.nested_functions.append(func_hir)
     return ctx.call(hir_stubs.make_closure, (func_hir, *default_values))

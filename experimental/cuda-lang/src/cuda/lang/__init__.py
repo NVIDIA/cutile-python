@@ -172,6 +172,7 @@ from cuda.tile._stub import (
     Constant,
     ScalarInt64,
     static_eval,
+    static_exception,
     static_assert,
     static_iter,
     ensure_constant
@@ -490,6 +491,7 @@ __all__ = (
     "assert_",
     "static_assert",
     "static_eval",
+    "static_exception",
     "static_iter",
     "ensure_constant",
     "bitwise_and",

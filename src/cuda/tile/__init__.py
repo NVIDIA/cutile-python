@@ -54,6 +54,7 @@ from cuda.tile._exception import (
     TileTypeError,
     TileUnsupportedFeatureError,
     TileValueError,
+    StaticException
 )
 
 from cuda.tile._stub import (
@@ -154,6 +155,7 @@ from cuda.tile._stub import (
     sqrt,
     static_assert,
     static_eval,
+    static_exception,
     static_iter,
     store,
     store_advanced_indexing,
@@ -225,6 +227,7 @@ __all__ = [
     "TileTypeError",
     "TileUnsupportedFeatureError",
     "TileValueError",
+    "StaticException",
 
     "Array",
     "ArrayAnnotation",
@@ -323,6 +326,7 @@ __all__ = [
     "sqrt",
     "static_assert",
     "static_eval",
+    "static_exception",
     "static_iter",
     "store",
     "store_advanced_indexing",

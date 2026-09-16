@@ -188,6 +188,18 @@ class StaticEvalError(TileError):
 TileStaticEvalError = StaticEvalError
 
 
+class StaticException(StaticEvalError):
+    """Raised at compile time when a compile-time exception is raised, either via
+    `raise static_exception(...)` or by a `raise` statement inside a `static_eval()` expression."""
+
+
+def make_static_exception(orig_exception) -> StaticException:
+    if not isinstance(orig_exception, BaseException):
+        raise TypeError(f"'{type(orig_exception).__name__}' is not derived from 'BaseException'")
+    return StaticException(
+            f"Exception was raised at compile time ({exception_type_and_str(orig_exception)})")
+
+
 class StaticAssertionError(TileError):
     """Thrown at compile time when the condition of static_assert() evaluates to False."""
 
@@ -196,6 +208,12 @@ class StaticAssertionError(TileError):
         if len(message) > 0:
             full_message += ": " + message
         super().__init__(full_message, loc)
+
+
+def exception_type_and_str(e: BaseException) -> str:
+    name = type(e).__name__
+    e_str = str(e)
+    return name + ": " + e_str if len(e_str) > 0 else name
 
 
 TileStaticAssertionError = StaticAssertionError

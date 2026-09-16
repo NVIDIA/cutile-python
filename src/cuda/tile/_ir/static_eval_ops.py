@@ -1,11 +1,12 @@
 # SPDX-FileCopyrightText: Copyright (c) <2026> NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 #
 # SPDX-License-Identifier: Apache-2.0
+
 from cuda.tile import TileSyntaxError, TileError, TileStaticEvalError, \
     TileTypeError
 from cuda.tile._datatype import is_boolean
 from cuda.tile._dispatch_mode import StaticEvalMode
-from cuda.tile._exception import StaticAssertionError
+from cuda.tile._exception import StaticAssertionError, StaticException, exception_type_and_str
 from cuda.tile._ir import hir_stubs, hir
 from cuda.tile._ir.core_ops import loosely_typed_const, build_tuple, sym2var
 from cuda.tile._ir.ir import Var
@@ -42,6 +43,12 @@ def static_iter_impl(iterable: Var):
                           " e.g. cuda.tile.static_iter() or ct.static_iter().")
 
 
+@impl(ct.static_exception)
+def static_exception_impl(exc: Var):
+    raise TileSyntaxError("static_exception() must be used directly by name,"
+                          " e.g. cuda.tile.static_exception() or ct.static_exception().")
+
+
 @impl(hir_stubs.do_static_eval)
 def do_static_eval_impl(expr: hir.StaticEvalExpression,
                         local_var_values: tuple[Var, ...]) -> Var:
@@ -53,12 +60,8 @@ def do_static_eval_impl(expr: hir.StaticEvalExpression,
             raise
         except Exception as e:
             where = expr.kind._value_
-            msg = f"Exception was raised inside {where} ({type(e).__name__}"
-            e_str = str(e)
-            if len(e_str) > 0:
-                msg += ": " + e_str
-            msg += ")"
-            raise TileStaticEvalError(msg) from e
+            msg = f"Exception was raised inside {where} ({exception_type_and_str(e)})"
+            raise StaticException(msg) from e
 
     if expr.kind == hir.StaticEvalKind.STATIC_ASSERT_MESSAGE:
         if result is None:
@@ -67,6 +70,8 @@ def do_static_eval_impl(expr: hir.StaticEvalExpression,
     elif expr.kind == hir.StaticEvalKind.STATIC_ITER_ITERABLE:
         items = _drain_static_iter_iterable(result)
         return build_tuple(tuple(items))
+    elif expr.kind == hir.StaticEvalKind.STATIC_EXCEPTION:
+        assert False  # compiled_expr() should raise
     else:
         return sym2var(result)
 

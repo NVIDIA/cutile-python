@@ -233,6 +233,7 @@ Metaprogramming Support
    ensure_constant
    static_assert
    static_eval
+   static_exception
    static_iter
 
 .. _operations-classes:

@@ -227,6 +227,7 @@ class StaticEvalKind(enum.Enum):
     STATIC_ASSERT_CONDITION = "static_assert() condition"
     STATIC_ASSERT_MESSAGE = "static_assert() message"
     STATIC_ITER_ITERABLE = "static_iter() iterable"
+    STATIC_EXCEPTION = "static_exception() expression"
 
 
 @dataclass

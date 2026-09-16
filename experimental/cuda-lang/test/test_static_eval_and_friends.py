@@ -1,13 +1,15 @@
 # SPDX-FileCopyrightText: Copyright (c) <2026> NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 #
 # SPDX-License-Identifier: Apache-2.0
+import re
+
 import pytest
 import torch
 
 import cuda.lang
 import cuda.lang as cl
 from cuda.lang import static_eval
-from cuda.tile import TileStaticAssertionError
+from cuda.tile import TileStaticAssertionError, StaticException
 
 
 def test_cl_static_eval():
@@ -72,3 +74,13 @@ def test_static_eval_pointer_arithmetic():
     a = torch.zeros((4,), dtype=torch.int32, device="cuda")
     cl.launch(torch.cuda.current_stream(), (1,), (1,), kern, (a,))
     assert a.tolist() == [0, 0, 7, 5]
+
+
+def test_static_exception():
+    @cl.kernel
+    def kern():
+        raise cl.static_exception(ValueError("Hello"))
+
+    with pytest.raises(StaticException,
+                       match=re.escape("Exception was raised at compile time (ValueError: Hello)")):
+        cl.launch(torch.cuda.current_stream(), (1,), (1,), kern, ())

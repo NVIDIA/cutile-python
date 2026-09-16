@@ -4602,6 +4602,37 @@ def static_iter(iterable):
     """
 
 
+@stub(host=True, compiled_host=True)
+def static_exception(exc, /):
+    """
+    Marks an exception as compile-time.
+
+    Can only be used to wrap the exception of a `raise` statement::
+
+        raise ct.static_exception(...)
+
+    The surrounded expression is evaluated at compile time, using the same rules
+    as :py:func:`static_eval`: it can reference global and local variables,
+    and use the full Python syntax, but must not perform any run-time operations.
+
+    The expression must return an exception object. The returned exception is then wrapped
+    in :py:class:`StaticException` and raised at compile time.
+
+    .. testcode::
+        :template: kernel_wrapper.py
+
+        raise ct.static_exception(ValueError("test"))
+
+    .. testoutput::
+        :options: +IGNORE_EXCEPTION_DETAIL
+
+        Traceback (most recent call last):
+            ...
+        StaticException: Exception was raised at compile time (ValueError: test)
+    """
+    return exc
+
+
 @stub
 def ensure_constant(value, /):
     """

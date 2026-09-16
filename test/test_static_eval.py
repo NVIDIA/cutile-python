@@ -235,7 +235,7 @@ def test_exception_raised_inside_static_eval():
     def kernel(n: ct.Constant):
         ct.static_eval(1 // n)
 
-    with pytest.raises(TileStaticEvalError,
+    with pytest.raises(ct.StaticException,
                        match=re.escape("Exception was raised inside static_eval()"
                                        " (ZeroDivisionError:")):
         ct.launch(torch.cuda.current_stream(), (1,), kernel, (0,))
