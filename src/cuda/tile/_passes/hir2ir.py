@@ -294,7 +294,7 @@ async def _call_function(callee: Callable,
         try:
             callee_hir = get_function_hir(callee, mode=HirMode.HELPER_FUNCTION)
         except UnsupportedSyntaxError as e:
-            e.loc = retarget_loc(e.loc, Scope.get_current())
+            e.loc = e.loc.with_call_site(builder.loc)
             raise
         sig = get_signature(callee)
         arg_list = _bind_args(sig, callee.__name__, args, kwargs)

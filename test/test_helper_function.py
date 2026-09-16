@@ -3,13 +3,15 @@
 # SPDX-License-Identifier: Apache-2.0
 import functools
 import inspect
+import re
 
 import pytest
 import torch
 from math import ceil
 import cuda.tile as ct
 from util import assert_close
-from cuda.tile._exception import TileTypeError, TileSyntaxError, TileRecursionError
+from cuda.tile._exception import TileTypeError, TileSyntaxError, TileRecursionError, \
+    UnsupportedSyntaxError
 
 
 @pytest.fixture
@@ -424,3 +426,23 @@ def test_decorated_helper_function_forward():
     y = torch.zeros((), dtype=torch.int32, device="cuda:0")
     ct.launch(torch.cuda.current_stream(), (1,), kernel, (y,))
     assert y.item() == 50
+
+
+def test_syntax_error_in_helper_function():
+    def helper_with_unsupported_syntax():
+        # List comprehensions are unsupported
+        return [_ for _ in []]
+
+    @ct.kernel
+    def kernel_that_calls_helper():
+        helper_with_unsupported_syntax()
+
+    with pytest.raises(UnsupportedSyntaxError) as e:
+        ct.launch(torch.cuda.current_stream(), (1,), kernel_that_calls_helper, ())
+
+    msg_lines = str(e.value).splitlines()
+    assert "Unsupported syntax" in msg_lines[0]
+
+    # Check that both stack frames are in the message
+    assert re.match(".*test_helper_function.*in kernel_that_calls_helper", msg_lines[1])
+    assert re.match(".*test_helper_function.*in helper_with_unsupported_syntax", msg_lines[4])
