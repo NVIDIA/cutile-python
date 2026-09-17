@@ -247,3 +247,19 @@ def is_function_allowed_in(func, execution_space: "ExecutionSpace") -> bool:
     attribute = ("_cutile_compiled_host_function"
                  if execution_space == "host" else "_cutile_tile_function")
     return getattr(func, attribute, True)
+
+
+stub_aliases = {}
+
+
+def api_function_alias(api_function, /):
+    """Mark the decorated function as an alias for ``api_function``."""
+
+    if not is_stub(api_function):
+        raise ValueError(f"{api_function} is not an API function")
+
+    def decorate(alias, /):
+        stub_aliases[alias] = api_function
+        return alias
+
+    return decorate

@@ -16,7 +16,7 @@ from .._coroutine_util import resume_after, run_coroutine
 from .._dispatch_mode import StaticEvalMode
 from .._exception import Loc, FunctionDesc, TileInternalError, TileError, TileRecursionError, \
     TileValueError, UnsupportedCallError, TypeCheckingError, UnsupportedSyntaxError
-from .._execution import is_function_allowed_in, is_stub, is_static_def
+from .._execution import is_function_allowed_in, is_stub, is_static_def, stub_aliases
 from .._ir.hir import StaticEvalKind
 from .._ir import hir, ir, hir_stubs
 from .._ir.ir import Var, IRContext, Builder
@@ -275,6 +275,8 @@ async def _call_function(callee: Callable,
                          args: Sequence[Var],
                          kwargs: Mapping[str, Var],
                          builder: ir.Builder):
+    callee = stub_aliases.get(callee, callee)
+
     execution_space = builder.ir_ctx.execution_space
     if not is_function_allowed_in(callee, execution_space):
         raise UnsupportedCallError(

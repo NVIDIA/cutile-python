@@ -14,6 +14,8 @@ from ._execution import (
     launch,
 )
 
+from . import compat
+
 from ._compile import compile_simt
 
 from cuda.tile._datatype import (
@@ -528,4 +530,6 @@ __all__ = (
     "store",
     "atomic_load",
     "atomic_store",
+
+    "compat",
 )

@@ -13,7 +13,7 @@ from typing import List, NamedTuple, Sequence, Optional, Any, Dict, Type, Callab
 
 from cuda.tile import _datatype as datatype
 from cuda.tile._exception import TileSyntaxError, Loc, FunctionDesc, make_static_exception
-from cuda.tile._execution import is_function_wrapper
+from cuda.tile._execution import is_function_wrapper, stub_aliases
 from cuda.tile._ir.hir import make_value, ResolvedName, UNKNOWN_NAME
 from cuda.tile._ir import hir, hir_stubs
 from cuda.tile._ir.type import ClosureDefaultPlaceholder, FormattedPiece, StringFormat
@@ -464,10 +464,14 @@ def _eval_ast_expr(expr: ast.expr, ctx: _Context):
 
 def _parse_keyword_like_func(expr: ast.expr, ctx: _Context) -> str | None:
     if isinstance(expr, ast.Name):
-        if (expr.id not in ctx.local_names
-                and ctx.frozen_globals.get(expr.id) in _KEYWORD_LIKE_FUNCS):
-            idx = _KEYWORD_LIKE_FUNCS.index(ctx.frozen_globals.get(expr.id))
-            return _KEYWORD_LIKE_FUNC_NAMES[idx]
+        if expr.id in ctx.local_names:
+            return None
+        global_var = ctx.frozen_globals.get(expr.id)
+        global_var = stub_aliases.get(global_var, global_var)
+        if global_var not in _KEYWORD_LIKE_FUNCS:
+            return None
+        idx = _KEYWORD_LIKE_FUNCS.index(global_var)
+        return _KEYWORD_LIKE_FUNC_NAMES[idx]
     elif isinstance(expr, ast.Attribute):
         if expr.attr in _KEYWORD_LIKE_FUNC_NAMES and _is_cuda_tile_or_lang_module(expr.value, ctx):
             return expr.attr
