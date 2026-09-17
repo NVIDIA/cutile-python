@@ -472,9 +472,16 @@ class _IrKeeper:
         return dataflow_result
 
 
-def _get_bytecode(ir_keeper: _IrKeeper,
-                  compiler_options: CompilerOptions,
-                  anonymize_debug_info: bool) -> bytearray:
+def _get_bytecode(
+    ir_keeper: _IrKeeper,
+    compiler_options: CompilerOptions,
+    anonymize_debug_info: bool,
+) -> tuple[bytearray, tuple[str, ...], tuple[tuple[Path, str], ...]]:
+    from cuda.tile._preview_loader import get_preview_foreign_call_type
+    preview_foreign_call_type = get_preview_foreign_call_type()
+
+    preview_features: set[str] = set()
+    linker_inputs: dict[Path, str] = {}
     bytecode_buf = bytearray()
 
     with bc.write_bytecode(num_functions=ir_keeper.num_signatures,
@@ -487,7 +494,32 @@ def _get_bytecode(ir_keeper: _IrKeeper,
                 func_body, dataflow_result, symbol, compiler_options, ir_keeper.sm_arch, writer,
                 anonymize_debug_attr=anonymize_debug_info
             )
-    return bytecode_buf
+
+            # Collect preview features (--preview) and tilelibs (-l) for tileiras
+            # from foreign call operations
+            if preview_foreign_call_type is not None:
+                for op in func_body.traverse():
+                    if isinstance(op, preview_foreign_call_type):
+                        preview_features.add("simt")
+                        for tilelib_path, tilelib_version in op.tilelibs:
+                            previous_version = linker_inputs.setdefault(
+                                tilelib_path,
+                                tilelib_version,
+                            )
+                            if previous_version != tilelib_version:
+                                raise ValueError(
+                                    f"Conflicting versions for tilelib {tilelib_path}: "
+                                    f"{previous_version} and {tilelib_version}"
+                                )
+
+    if preview_features:
+        bc.patch_header_preview_flag(bytecode_buf, ir_keeper.bytecode_version)
+
+    return (
+        bytecode_buf,
+        tuple(sorted(preview_features)),
+        tuple(sorted(linker_inputs.items(), key=lambda item: str(item[0]))),
+    )
 
 
 def parse_bytecode_version(version_str: str) -> bc.BytecodeVersion:
@@ -544,7 +576,9 @@ def compile_tile(ann_func: AnnotatedFunction | FunctionType,
             ir_keeper.get_final_ir(i)
         return CompilationResult(signatures, final_ir=ir_keeper.final_ir)
 
-    bytecode_buf = _get_bytecode(ir_keeper, compiler_options, anonymize_debug_info=False)
+    bytecode_buf, preview_features, linker_inputs = _get_bytecode(
+        ir_keeper, compiler_options, anonymize_debug_info=False
+    )
 
     if context.config.log_tileir:
         _log_mlir(bytecode_buf)
@@ -590,7 +624,9 @@ def compile_tile(ann_func: AnnotatedFunction | FunctionType,
         effective_opt, device_debug = _tileiras_effective_opt_and_device_debug(
             compiler_options, sm_arch)
         key = cache_key(
-            compiler_ver, sm_arch, effective_opt, bytecode_buf, device_debug
+            compiler_ver, sm_arch, effective_opt, bytecode_buf, device_debug,
+            preview_features=preview_features,
+            linker_inputs=tuple((str(path), version) for path, version in linker_inputs),
         )
         cubin = cache_lookup(cache_dir, key)
         if cubin is not None:
@@ -611,11 +647,13 @@ def compile_tile(ann_func: AnnotatedFunction | FunctionType,
         try:
             cubin_file = compile_cubin(f.name, compiler_options, sm_arch,
                                        timeout_sec=context.config.compiler_timeout_sec,
-                                       remarks_output_file=remarks_file)
+                                       remarks_output_file=remarks_file,
+                                       preview_features=preview_features,
+                                       linker_inputs=tuple(path for path, _ in linker_inputs))
         except TileCompilerError as e:
             if context.config.enable_crash_dump:
-                anonymized_bytecode = _get_bytecode(ir_keeper, compiler_options,
-                                                    anonymize_debug_info=True)
+                anonymized_bytecode, _, _ = _get_bytecode(ir_keeper, compiler_options,
+                                                          anonymize_debug_info=True)
 
                 _compiler_crash_dump(ir_keeper.final_ir, func_desc.name,
                                      anonymized_bytecode, e.message,
@@ -948,7 +986,9 @@ def compile_cubin(
         compiler_options: CompilerOptions,
         sm_arch: str,
         timeout_sec: Optional[float],
-        remarks_output_file: str | os.PathLike | None = None) -> Path:
+        remarks_output_file: str | os.PathLike | None = None,
+        preview_features: Sequence[str] = (),
+        linker_inputs: Sequence[Path] = ()) -> Path:
     binary = _find_compiler_bin()
     fname_cubin = Path(fname_bytecode).with_suffix(".cubin")
     effective_opt, use_device_debug = _tileiras_effective_opt_and_device_debug(
@@ -962,6 +1002,10 @@ def compile_cubin(
         sm_arch,
         f"-O{effective_opt}",
     ]
+    for feature in preview_features:
+        flags.append(f"--preview={feature}")
+    for path in linker_inputs:
+        flags.extend(["-l", str(path)])
     if use_device_debug:
         flags.append("--device-debug")
     else:

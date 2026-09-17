@@ -1,0 +1,26 @@
+# SPDX-FileCopyrightText: Copyright (c) <2026> NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+#
+# SPDX-License-Identifier: Apache-2.0
+
+[build-system]
+build-backend = "setuptools.build_meta"
+requires = ["setuptools", "wheel"]
+
+[project]
+name = "cuda-tile-preview"
+dynamic = ["version"]
+description = "Preview APIs for cuda-tile"
+requires-python = ">=3.10, <3.15"
+dependencies = ["cuda-tile"]
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.dynamic]
+version = {file = "src/cuda/tile_preview/VERSION"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = [
+    "cuda.tile_preview",
+]

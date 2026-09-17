@@ -72,7 +72,7 @@ def _connect(cache_dir: str) -> sqlite3.Connection:
         return _open_db(db_path)
 
 
-_CACHE_VERSION = b''
+_CACHE_VERSION = b'\x01'
 
 
 @dataclass
@@ -118,7 +118,9 @@ class MetadataV1:
 
 
 def cache_key(compiler_version: str, sm_arch: str, opt_level: int,
-              bytecode: bytes, device_debug: bool = False) -> str:
+              bytecode: bytes, device_debug: bool = False,
+              preview_features: tuple[str, ...] = (),
+              linker_inputs: tuple[tuple[str, str], ...] = ()) -> str:
 
     def encode_uint(x: int):
         return int.to_bytes(x, 4, byteorder='big', signed=False)
@@ -135,6 +137,19 @@ def cache_key(compiler_version: str, sm_arch: str, opt_level: int,
     h.update(encode_uint(opt_level | (int(device_debug) << 8)))
     h.update(encode_uint(len(bytecode)))
     h.update(bytecode)
+    h.update(encode_uint(len(preview_features)))
+    for feature in preview_features:
+        encoded = feature.encode()
+        h.update(encode_uint(len(encoded)))
+        h.update(encoded)
+    h.update(encode_uint(len(linker_inputs)))
+    for path, version in linker_inputs:
+        encoded_path = path.encode()
+        encoded_version = version.encode()
+        h.update(encode_uint(len(encoded_path)))
+        h.update(encoded_path)
+        h.update(encode_uint(len(encoded_version)))
+        h.update(encoded_version)
     return h.hexdigest()
 
 

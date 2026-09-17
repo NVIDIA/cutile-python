@@ -6,7 +6,9 @@ from .attribute import (  # noqa: F401
     Bool, DivBy, Bounded, EntryHints, Float, Integer,
     LoadStoreHints, OptimizationHints, TaggedAttribute
 )
-from .writer import BytecodeWriter, FunctionBuilder, GlobalSection, write_bytecode  # noqa: F401
+from .writer import (  # noqa: F401
+    BytecodeWriter, FunctionBuilder, GlobalSection, write_bytecode, patch_header_preview_flag
+)
 from .type import SimpleType, TypeTable, TypeId, PaddingValue, PtrAttr  # noqa: F401
 from .debug_info import DebugAttrId, DebugAttrTable, MISSING_DEBUG_ATTR_ID  # noqa: F401
 from .code_builder import CodeBuilder, Value  # noqa: F401

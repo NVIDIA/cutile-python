@@ -148,6 +148,11 @@ def _write_header(buf: bytearray, version: BytecodeVersion):
     buf.extend(version.tag().to_bytes(2, "little"))
 
 
+def patch_header_preview_flag(buf: bytearray, version: BytecodeVersion) -> None:
+    tag = version.tag() | 1
+    buf[10:12] = tag.to_bytes(2, "little")
+
+
 class _Section(enum.IntEnum):
     EndOfBytecode = 0x00
     String = 0x01

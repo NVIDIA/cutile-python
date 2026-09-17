@@ -31,6 +31,18 @@ def test_cache_key_differs():
     assert cache_key("v1", "sm_80", 3, b"data") != base
     assert cache_key("v1", "sm_90", 2, b"data") != base
     assert cache_key("v1", "sm_90", 3, b"other") != base
+    assert cache_key("v1", "sm_90", 3, b"data",
+                     preview_features=("simt",)) != base
+    assert cache_key("v1", "sm_90", 3, b"data",
+                     linker_inputs=(("/tmp/library.tilelib", "a"),)) != base
+    assert cache_key("v1", "sm_90", 3, b"data",
+                     linker_inputs=(("/tmp/library.tilelib", "a"),)) != cache_key(
+                         "v1", "sm_90", 3, b"data",
+                         linker_inputs=(("/tmp/library.tilelib", "b"),))
+    assert cache_key("v1", "sm_90", 3, b"data",
+                     linker_inputs=(("/tmp/library-a.tilelib", "1"),)) != cache_key(
+                         "v1", "sm_90", 3, b"data",
+                         linker_inputs=(("/tmp/library-b.tilelib", "1"),))
 
 
 def test_cache_key_device_debug_differs():

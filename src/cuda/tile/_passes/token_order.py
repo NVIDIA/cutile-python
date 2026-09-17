@@ -126,6 +126,8 @@ def _get_input_var(op: Operation):
 def _get_block_memory_effects(block: Block,
                               dataflow_result: DataflowResult,
                               block_memory_effects: Dict[Block, MemoryEffects]):
+    from cuda.tile._preview_loader import get_preview_foreign_call_type
+    preview_foreign_call_type = get_preview_foreign_call_type()
 
     def get_memory_effects(cur_op):
         effect = cur_op.memory_effect
@@ -140,6 +142,10 @@ def _get_block_memory_effects(block: Block,
 
         if isinstance(cur_op, GridDependencyControlLaunchDependents):
             return MemoryEffects(OrderedDict([(ALIAS_UNIVERSE, MemoryEffect.STORE)]), False)
+
+        if (preview_foreign_call_type is not None
+                and isinstance(cur_op, preview_foreign_call_type)):
+            return MemoryEffects(OrderedDict([(ALIAS_UNIVERSE, MemoryEffect.STORE)]), True)
 
         has_acquire_order = False
         if isinstance(cur_op, (TileAtomicCAS, TileAtomicRMW, TileAtomicRedView,
@@ -166,6 +172,9 @@ def _to_token_order_in_block(block: Block,
                              *,
                              innermost_loop_info: Optional[InnermostLoopInfo] = None,
                              ifelse_info: Optional[IfElseInfo] = None,):
+    from cuda.tile._preview_loader import get_preview_foreign_call_type
+    preview_foreign_call_type = get_preview_foreign_call_type()
+
     operations = []
 
     # Convert the old ops to token ordered ops,
@@ -383,6 +392,25 @@ def _to_token_order_in_block(block: Block,
 
             if isinstance(op, GridDependencyControlWait):
                 token_map[ACQUIRE_TOKEN_KEY] = result_tok
+
+        elif (preview_foreign_call_type is not None
+              and isinstance(op, preview_foreign_call_type)):
+            alias_set = ALIAS_UNIVERSE
+            last_op_key = _last_op_key(alias_set)
+            last_store_key = _last_store_key(alias_set)
+
+            input_tok, maybe_input_tok_join_op = _get_input_token(last_op_key, op, token_map,
+                                                                  None, block.ctx)
+            if maybe_input_tok_join_op:
+                operations.append(maybe_input_tok_join_op)
+
+            ordered_op = dataclasses.replace(op, token=input_tok)
+            operations.append(ordered_op)
+            result_tok = ordered_op.result_vars[-1]
+            token_map[last_op_key] = result_tok
+            token_map[last_store_key] = result_tok
+            token_map[ACQUIRE_TOKEN_KEY] = result_tok
+
         else:
             operations.append(op)
 
