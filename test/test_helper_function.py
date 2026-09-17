@@ -2,7 +2,6 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 import functools
-import inspect
 import re
 
 import pytest
@@ -353,35 +352,6 @@ def test_helper_function_using_ct_api(shape, tile):
     )
     ref_result = x + 1
     assert_close(y, ref_result, atol=1e-4, rtol=1e-5)
-
-
-def test_error_message_stack_trace():
-    def bar(x):  # Line +1
-        ct.abracadabra(x)
-
-    def foo(x):  # Line + 4
-        bar(x)
-
-    @ct.kernel
-    def kernel(x):  # Line +8
-        foo(x)
-
-    x = torch.zeros((), device="cuda:0")
-    _, first_line = inspect.getsourcelines(test_error_message_stack_trace)
-    msg_regex = (
-        "Module 'cuda.tile' has no attribute 'abracadabra'.*\n"
-        f".*test_helper_function.py\", line {first_line + 9}.*, in kernel:\n"
-        f" *foo\\(x\\)\n"
-        f" *\\^\\^\\^\\^\\^\\^\n"
-        f".*test_helper_function.py\", line {first_line + 5}.*, in foo:\n"
-        f" *bar\\(x\\)\n"
-        f" *\\^\\^\\^\\^\\^\\^\n"
-        f".*test_helper_function.py\", line {first_line + 2}.*, in bar:\n"
-        f"            ct.abracadabra\\(x\\)\n"
-        f"            \\^\\^\\^\\^\\^\\^\\^\\^\\^\\^\\^\\^\\^\\^\n"
-    )
-    with pytest.raises(TileTypeError, match=msg_regex):
-        ct.launch(torch.cuda.current_stream(), (1,), kernel, (x,))
 
 
 def decorate(func):

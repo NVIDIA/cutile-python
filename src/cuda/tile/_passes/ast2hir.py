@@ -369,12 +369,12 @@ def _call_expr(call: ast.Call, ctx: _Context) -> hir.Value:
 def _call_static_eval(expr: ast.expr, kind: hir.StaticEvalKind, ctx: _Context,
                       orig_raise: ast.Raise | None = None) -> hir.Value:
     # Wrap the `expr` as `lambda: expr`
-    inner_lambda_ast = _wrap_in_lambda(expr, ())
+    inner_lambda_ast = _wrap_in_lambda(expr, (), expr)
 
     # Wrap with another lambda that takes all local names as arguments:
     #     `lambda local1, local2, ...: lambda: expr`
     local_names = sorted(ctx.local_names)
-    outer_lambda_ast = _wrap_in_lambda(inner_lambda_ast, local_names)
+    outer_lambda_ast = _wrap_in_lambda(inner_lambda_ast, local_names, expr)
 
     # Compile and eval the AST to get an instance of the outer lambda function
     outer_lambda = _eval_ast_expr(outer_lambda_ast, ctx)
@@ -392,57 +392,74 @@ def _call_static_eval(expr: ast.expr, kind: hir.StaticEvalKind, ctx: _Context,
     # Look at the inner lambda's freevars to determine which locals are being used
     used_locals = sorted(inner_lambda.__code__.co_freevars)
 
-    if orig_raise is None:
-        assert kind != hir.StaticEvalKind.STATIC_EXCEPTION
-        # Compile a new lambda function of the form
-        #    lambda p1, p2, ...: expr
+    if isinstance(ctx.function_ast, ast.FunctionDef):
+        # Compile a function of the form
+        #    def <same_name_as_current_function>(p1, p2, ...):
+        #        return <expr>
+        # OR
+        #    def <same_name_as_current_function>(p1, p2, ...):
+        #        raise __make_static_exception(<expr>)
         # Where p1, p2, ... are the names of used local variables.
-        final_lambda_ast = _wrap_in_lambda(expr, used_locals)
-        final_callable = _eval_ast_expr(final_lambda_ast, ctx)
+        body_stmt = (_make_raise_stmt(expr, orig_raise)
+                     if kind == hir.StaticEvalKind.STATIC_EXCEPTION else _make_return_stmt(expr))
+        final_callable = _make_function(used_locals, [body_stmt], ctx)
     else:
-        assert kind == hir.StaticEvalKind.STATIC_EXCEPTION
-        # There can't be a `raise` statement (or any statement) inside a lambda
-        assert isinstance(ctx.function_ast, ast.FunctionDef)
-        raising_func_ast = _wrap_in_raising_func(expr, used_locals, orig_raise, ctx.function_ast)
-        ast_to_eval = ast.Module(body=[raising_func_ast], type_ignores=[])
-        try:
-            code = compile(ast_to_eval, ctx.filename, "exec")
-        except (SyntaxError, ValueError) as e:
-            # TODO: get location info from SyntaxError
-            raise TileSyntaxError(str(e))
-        globals_dict = dict(ctx.frozen_globals)
-        globals_dict["__make_static_exception"] = make_static_exception
-        locals_dict = {}
-        eval(code, globals_dict, locals_dict)
-        final_callable = locals_dict[ctx.function_ast.name]
+        assert isinstance(ctx.function_ast, ast.Lambda)
+        assert kind != hir.StaticEvalKind.STATIC_EXCEPTION
+        # Compile or a lambda of the form
+        #    lambda p1, p2, ...: <expr>
+        # Where p1, p2, ... are the names of used local variables.
+        final_lambda_ast = _wrap_in_lambda(expr, used_locals, ctx.function_ast)
+        final_callable = _eval_ast_expr(final_lambda_ast, ctx)
 
     loaded_locals = tuple(ctx.load(local_name) for local_name in used_locals)
     return ctx.call(hir_stubs.do_static_eval,
                     (hir.StaticEvalExpression(final_callable, kind), *loaded_locals))
 
 
-def _wrap_in_raising_func(expr: ast.expr,
-                          param_names: Sequence[str],
-                          orig_raise: ast.Raise,
-                          orig_func: ast.FunctionDef) -> ast.FunctionDef:
+def _make_return_stmt(expr: ast.expr) -> ast.Return:
+    return ast.Return(
+        expr,
+        lineno=expr.lineno, end_lineno=expr.end_lineno,
+        col_offset=expr.col_offset, end_col_offset=expr.end_col_offset
+    )
+
+
+def _make_raise_stmt(expr: ast.expr, orig_raise: ast.Raise) -> ast.Raise:
     raise_loc = dict(
         lineno=orig_raise.lineno, end_lineno=orig_raise.end_lineno,
         col_offset=orig_raise.col_offset, end_col_offset=orig_raise.end_col_offset
     )
     static_exc_class = ast.Name(id="__make_static_exception", ctx=ast.Load(), **raise_loc)
     create_static_exc = ast.Call(func=static_exc_class, args=[expr], keywords=[], **raise_loc)
-    raise_stmt = ast.Raise(exc=create_static_exc, **raise_loc)
-    return ast.FunctionDef(
-        name=orig_func.name, args=_make_ast_args(param_names), body=[raise_stmt], decorator_list=[],
+    return ast.Raise(exc=create_static_exc, **raise_loc)
+
+
+def _make_function(param_names: Sequence[str], body: list[ast.stmt], ctx: _Context):
+    orig_func = ctx.function_ast
+    assert isinstance(orig_func, ast.FunctionDef)
+    func_ast = ast.FunctionDef(
+        name=orig_func.name, args=_make_ast_args(param_names), body=body, decorator_list=[],
         lineno=orig_func.lineno, end_lineno=orig_func.end_lineno,
         col_offset=orig_func.col_offset, end_col_offset=orig_func.end_col_offset
     )
+    ast_to_eval = ast.Module(body=[func_ast], type_ignores=[])
+    try:
+        code = compile(ast_to_eval, ctx.filename, "exec")
+    except (SyntaxError, ValueError) as e:
+        # TODO: get location info from SyntaxError
+        raise TileSyntaxError(str(e))
+    globals_dict = dict(ctx.frozen_globals)
+    globals_dict["__make_static_exception"] = make_static_exception
+    locals_dict = {}
+    eval(code, globals_dict, locals_dict)
+    return locals_dict[ctx.function_ast.name]
 
 
-def _wrap_in_lambda(expr: ast.expr, param_names: Sequence[str]) -> ast.Lambda:
+def _wrap_in_lambda(expr: ast.expr, param_names: Sequence[str], loc_src: ast.AST) -> ast.Lambda:
     return ast.Lambda(args=_make_ast_args(param_names), body=expr,
-                      lineno=expr.lineno, end_lineno=expr.end_lineno,
-                      col_offset=expr.col_offset, end_col_offset=expr.end_col_offset)
+                      lineno=loc_src.lineno, end_lineno=loc_src.end_lineno,
+                      col_offset=loc_src.col_offset, end_col_offset=loc_src.end_col_offset)
 
 
 def _make_ast_args(param_names: Sequence[str]) -> ast.arguments:

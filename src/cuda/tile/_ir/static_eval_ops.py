@@ -59,9 +59,11 @@ def do_static_eval_impl(expr: hir.StaticEvalExpression,
         except TileError:
             raise
         except Exception as e:
-            where = expr.kind._value_
-            msg = f"Exception was raised inside {where} ({exception_type_and_str(e)})"
-            raise StaticException(msg) from e
+            where = "inside " + expr.kind._value_
+            msg = f"Exception was raised {where} ({exception_type_and_str(e)})"
+            static_exc = StaticException(msg)
+            static_exc._where = where
+            raise static_exc from e
 
     if expr.kind == hir.StaticEvalKind.STATIC_ASSERT_MESSAGE:
         if result is None:

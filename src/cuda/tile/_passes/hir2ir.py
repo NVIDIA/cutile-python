@@ -15,7 +15,8 @@ from .. import TileTypeError
 from .._coroutine_util import resume_after, run_coroutine
 from .._dispatch_mode import StaticEvalMode
 from .._exception import Loc, FunctionDesc, TileInternalError, TileError, TileRecursionError, \
-    TileValueError, UnsupportedCallError, TypeCheckingError, UnsupportedSyntaxError
+    TileValueError, UnsupportedCallError, TypeCheckingError, UnsupportedSyntaxError, \
+    exception_type_and_str, StaticException
 from .._execution import is_function_allowed_in, is_stub, is_static_def, stub_aliases
 from .._ir.hir import StaticEvalKind
 from .._ir import hir, ir, hir_stubs
@@ -307,7 +308,16 @@ def _call_static_def_function(callee, args, kwargs):
     with StaticEvalMode(StaticEvalKind.STATIC_DEF).as_current():
         args_sym = tuple(var2sym(x) for x in args)
         kwargs_sym = {k: var2sym(v) for k, v in kwargs.items()}
-        res_sym = callee(*args_sym, **kwargs_sym)
+        try:
+            res_sym = callee(*args_sym, **kwargs_sym)
+        except TileError:
+            raise
+        except Exception as e:
+            msg = f"Exception was raised inside @static_def function ({exception_type_and_str(e)})"
+            static_exc = StaticException(msg)
+            static_exc._where = "inside @static_def"
+            raise static_exc from e
+
         return sym2var(res_sym)
 
 

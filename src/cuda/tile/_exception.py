@@ -4,6 +4,7 @@
 import dataclasses
 import linecache
 import os.path
+import traceback
 from dataclasses import dataclass
 from typing import Optional
 from unicodedata import east_asian_width
@@ -76,50 +77,99 @@ def _wcwidth(s: str) -> int:
     return sum(2 if east_asian_width(c) in ("W", "F") else 1 for c in s)
 
 
-def format_location(loc: Loc):
-    frames = []
+def format_location(loc: Loc, exc: Exception | None = None):
+    pieces = []
     while loc is not None:
-        frames.append(loc)
+        if loc.is_unknown():
+            pieces.append("Unknown location")
+        else:
+            func_name = "<lambda>" if loc.function.name is None else loc.function.name
+            pieces.append(_format_location_frame(
+                loc.filename, func_name, loc.line, loc.last_line, loc.col, loc.end_col))
         loc = loc.call_site
-    return "".join(_format_location_frame(x) for x in reversed(frames))
+    pieces.reverse()
+
+    if isinstance(exc, StaticEvalError) and exc.__cause__ is not None:
+        from cuda.tile._ir.static_eval_ops import do_static_eval_impl
+        from cuda.tile._passes.hir2ir import _call_static_def_function
+        static_eval_traceback = exc.__cause__.__traceback__
+        while static_eval_traceback is not None:
+            frame = static_eval_traceback.tb_frame
+            static_eval_traceback = static_eval_traceback.tb_next
+            if frame.f_code is do_static_eval_impl.__code__:
+                break
+            if frame.f_code is _call_static_def_function.__code__:
+                break
+
+        if static_eval_traceback is not None:
+            where = getattr(exc, "_where", None)
+            if where is None:
+                where_suffix = " [static]"
+                where_str = ""
+            else:
+                where_suffix = f" [{where}]"
+                where_str = f" {where}"
+            pieces.append(f"    [Entering compile-time evaluation{where_str}]\n")
+
+            for frame in traceback.extract_tb(static_eval_traceback):
+                pieces.extend(_format_location_frame(
+                        frame.filename, frame.name + where_suffix, frame.lineno,
+                        getattr(frame, "end_lineno", None),
+                        getattr(frame, "colno", None),
+                        getattr(frame, "end_colno", None)))
+
+    return "".join(pieces)
 
 
-def _format_location_frame(loc: Loc) -> str:
-    if loc.is_unknown():
-        return "Unknown location"
-
-    if loc.last_line is None or loc.last_line == loc.line:
-        lines_str = f"line {loc.line}"
+def _format_location_frame(filename: str | None,
+                           function_name: str | None,
+                           line: int | None,
+                           last_line: int | None,
+                           col: int | None,
+                           end_col: int | None) -> str:
+    if line is None:
+        lines_str = ""
+    elif last_line is None or last_line == line:
+        lines_str = f", line {line}"
     else:
-        lines_str = f"lines {loc.line}--{loc.last_line}"
+        lines_str = f", lines {line}--{last_line}"
 
-    line_text = linecache.getline(loc.filename, loc.line)
-    if line_text.endswith("\n"):
-        line_text = line_text[:-1]
+    line_text = "" if filename is None or line is None else linecache.getline(filename, line)
+    cols_str = ""
+    text_str = ""
 
-    line_bytes = line_text.encode()
+    if line_text:
+        line_text = line_text.rstrip()
+        line_bytes = line_text.encode()
 
-    if loc.end_col is None or loc.last_line is None or loc.last_line != loc.line:
-        end_col = len(line_bytes)
-    else:
-        end_col = loc.end_col
+        stripped_text = line_text.lstrip()
+        stripped_count = len(line_text) - len(stripped_text)
+        stripped_width = _wcwidth(line_text[:stripped_count])
 
-    visual_col = _wcwidth(line_bytes[:loc.col].decode())
-    if end_col == loc.col + 1:
-        end_visual_col = visual_col + 1
-        cols_str = f"col {visual_col + 1}"
-    else:
-        end_visual_col = _wcwidth(line_bytes[:end_col].decode())
-        cols_str = f"col {visual_col + 1}-{end_visual_col}"
+        text_str = f":\n        {stripped_text}"
 
-    spaces = " " * visual_col
-    carets = "^" * (end_visual_col - visual_col)
+        if col is not None:
+            if last_line is None or last_line < line:
+                end_col = None
+            elif last_line > line:
+                end_col = len(line_bytes)
 
-    func_str = "" if loc.function is None else f", in {loc.function.name}"
+            orig_visual_col = _wcwidth(line_bytes[:col].decode())
+            visual_col = max(orig_visual_col - stripped_width, 0)
+            if end_col is None or end_col == col + 1:
+                end_visual_col = visual_col + 1
+                cols_str = f", col {orig_visual_col + 1}"
+            else:
+                orig_end_visual_col = _wcwidth(line_bytes[:end_col].decode())
+                end_visual_col = max(orig_end_visual_col - stripped_width, visual_col + 1)
+                cols_str = f", col {orig_visual_col + 1}-{orig_end_visual_col}"
 
-    return (f'  "{loc.filename}", {lines_str}, {cols_str}{func_str}:\n'
-            f"    {line_text}\n"
-            f"    {spaces}{carets}\n")
+            spaces = " " * visual_col
+            carets = "^" * (end_visual_col - visual_col)
+            text_str += f"\n        {spaces}{carets}"
+
+    func_str = "" if function_name is None else f", in {function_name}"
+    return f'    "{filename}"{lines_str}{cols_str}{func_str}{text_str}\n'
 
 
 class TileError(Exception):
@@ -128,7 +178,7 @@ class TileError(Exception):
         self.message = message
 
     def __str__(self):
-        return f"{self.message}\n{format_location(self.loc)}"
+        return f"{self.message}\n{format_location(self.loc, self)}"
 
 
 class UnsupportedSyntaxError(TileError):
@@ -193,7 +243,7 @@ class StaticException(StaticEvalError):
     `raise static_exception(...)` or by a `raise` statement inside a `static_eval()` expression."""
 
 
-def make_static_exception(orig_exception) -> StaticException:
+def make_static_exception(orig_exception: BaseException) -> StaticException:
     if not isinstance(orig_exception, BaseException):
         raise TypeError(f"'{type(orig_exception).__name__}' is not derived from 'BaseException'")
     return StaticException(
