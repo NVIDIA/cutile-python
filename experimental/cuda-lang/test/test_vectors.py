@@ -980,17 +980,167 @@ def test_reinterpret_as_vector_width_mismatch_errors():
         )
 
 
-def test_reinterpret_as_vector_rejects_pointer():
-    # A vector's element dtype must be a scalar, not a pointer.
+def test_reinterpret_as_vector_pointer():
     @cl.kernel
     def kernel(inp, out):
-        v = inp.pointer().load(count=4)
-        v.reinterpret_as_vector(cl.pointer_dtype(cl.float32), 2)
+        vector = inp.pointer().load(count=4)
+        pointers = vector.reinterpret_as_vector(cl.pointer_dtype(cl.float32), 2)
+        out.pointer().store(pointers.reinterpret_as_vector(cl.int32, 4))
 
-    match = "reinterpret_as_vector only accepts a scalar element dtype"
-    with pytest.raises(TypeCheckingError, match=match):
-        cl.compile_simt(
-            kernel,
-            [KernelSignature([make_symbolic_tensor(1, cl.int32),
-                              make_symbolic_tensor(1, cl.int8)])],
-        )
+    inp = torch.arange(4, dtype=torch.int32, device="cuda")
+    out = torch.zeros_like(inp)
+    cl.launch(torch.cuda.current_stream(), (1,), (1,), kernel, (inp, out))
+    torch.testing.assert_close(out, inp)
+
+
+def test_vector_of_pointer():
+    @cl.kernel
+    def kernel(N: cl.Constant, out: cl.Array):
+        pointers = cl.shared_array(N, cl.pointer_dtype(cl.int8))
+        values = cl.shared_array(N, cl.int8)
+        for i in range(N):
+            pointers[i] = values.pointer(i)
+
+        vector = pointers.pointer().load(count=N)
+
+        for i in range(N):
+            vector[i][0] = i
+            out[i] = values[i]
+
+    N = 4
+    out = torch.zeros(N, dtype=torch.int8, device="cuda")
+    cl.launch(torch.cuda.current_stream(), (1,), (1,), kernel, (N, out))
+    assert out.cpu().tolist() == list(range(N))
+
+
+def test_vector_of_pointer_access_and_store():
+    @cl.kernel
+    def kernel(N: cl.Constant, out: cl.Array):
+        pointers = cl.shared_array(N, cl.pointer_dtype(cl.int8))
+        copied = cl.shared_array(N, cl.pointer_dtype(cl.int8))
+        values = cl.shared_array(N, cl.int8)
+        for i in range(N):
+            pointers[i] = values.pointer(i)
+
+        pointers.pointer()[0] = values.pointer()
+        pointers.pointer().load()[0] = 10
+        pointers.pointer()[1][0] = 11
+        vector = pointers.pointer().load(count=N).with_item(2, values.pointer(2))
+        vector[1:3][1][0] = 12
+        copied.pointer().store(vector)
+        copied.pointer().load(count=N)[3][0] = 13
+
+        for i in range(N):
+            out[i] = values[i]
+
+    N = 4
+    out = torch.zeros(N, dtype=torch.int8, device="cuda")
+    cl.launch(torch.cuda.current_stream(), (1,), (1,), kernel, (N, out))
+    assert out.cpu().tolist() == [10, 11, 12, 13]
+
+
+def test_vector_of_global_pointers():
+    @cl.kernel
+    def kernel(N: cl.Constant, out: cl.Array):
+        pointers = cl.shared_array(N, cl.pointer_dtype(cl.int8))
+        for i in range(N):
+            pointers[i] = out.pointer(i)
+
+        vector = pointers.pointer().load(count=N)
+        for i in range(N):
+            vector[i][0] = i
+
+    N = 4
+    out = torch.zeros(N, dtype=torch.int8, device="cuda")
+    cl.launch(torch.cuda.current_stream(), (1,), (1,), kernel, (N, out))
+    assert out.cpu().tolist() == list(range(N))
+
+
+def test_pointer_array_rejects_wrong_pointee():
+    def kernel():
+        pointers = cl.shared_array(1, cl.pointer_dtype(cl.int8))
+        pointers[0] = pointers.pointer()
+
+    compile_kernel(
+        kernel,
+        raises=pytest.raises(TypeCheckingError, match="cannot implicitly cast"),
+    )
+
+
+def test_pointer_array_rejects_wrong_memory_space():
+    def kernel(out):
+        pointers = cl.shared_array(1, cl.pointer_dtype(cl.int8, 'SHARED'))
+        pointers[0] = out.pointer()
+
+    compile_kernel(
+        kernel,
+        KernelSignature([make_symbolic_tensor(1, cl.int8)]),
+        raises=pytest.raises(TypeCheckingError, match="cannot implicitly cast"),
+    )
+
+
+def vector_as_i64(vector):
+    return vector.astype(cl.int64)
+
+
+def vector_reduce(vector):
+    return vector.reduce(cl.VectorReduction.add)
+
+
+@pytest.mark.parametrize(
+    "operation",
+    (
+        vector_as_i64,
+        operator.add,
+        vector_reduce,
+    ),
+)
+def test_vector_of_pointer_rejects_unsupported_operation(operation):
+    def kernel():
+        pointers = cl.shared_array(2, cl.pointer_dtype(cl.int8))
+        operation(pointers.pointer().load(count=2))
+
+    compile_kernel(kernel, raises=pytest.raises(TypeCheckingError))
+
+
+def test_vector_of_pointer_bitcast():
+    @cl.kernel
+    def kernel(N: cl.Constant, out: cl.Array):
+        pointers = cl.shared_array(N, cl.pointer_dtype(cl.int8))
+        for i in range(N):
+            pointers[i] = out.pointer(i)
+
+        vector = pointers.pointer().load(count=N)
+        integers = vector.bitcast(cl.uint64)
+        generic = integers.bitcast(cl.pointer_dtype(cl.int8))
+        global_ = generic.bitcast(cl.pointer_dtype(cl.int8, "GLOBAL"))
+        for i in range(N):
+            global_[i][0] = i
+
+    N = 4
+    out = torch.zeros(N, dtype=torch.int8, device="cuda")
+    cl.launch(torch.cuda.current_stream(), (1,), (1,), kernel, (N, out))
+    assert out.cpu().tolist() == list(range(N))
+
+
+def test_vector_of_pointer_reinterpret():
+    @cl.kernel
+    def kernel(out):
+        pointers = cl.shared_array(2, cl.pointer_dtype(cl.int8, "SHARED"))
+        values = cl.shared_array(2, cl.int8)
+        for i in range(2):
+            pointers[i] = values.pointer(i)
+
+        vector = pointers.pointer().load(count=2)
+        floats = vector.bitcast(cl.float32)
+        vector = floats.bitcast(cl.pointer_dtype(cl.int8, "SHARED"))
+        words = vector.reinterpret_as_vector(cl.uint16, 4)
+        roundtrip = words.reinterpret_as_vector(cl.pointer_dtype(cl.int8, "SHARED"), 2)
+        roundtrip[0][0] = 10
+        roundtrip[1][0] = 11
+        out[0] = values[0]
+        out[1] = values[1]
+
+    out = torch.zeros(2, dtype=torch.int8, device="cuda")
+    cl.launch(torch.cuda.current_stream(), (1,), (1,), kernel, (out,))
+    assert out.cpu().tolist() == [10, 11]

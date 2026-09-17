@@ -13,6 +13,7 @@ from ..type import (
     ScalarTy,
     PointerTy,
     VectorTy,
+    make_rank0_ty,
     type_bitwidth,
 )
 from cuda.lang._ir.type_checking_helpers import (
@@ -80,52 +81,37 @@ def reinterpret_to(x: Var, result_ty: VectorTy | ScalarTy | PointerTy):
             f"dtype has {dst_bitwidth} bits"
         )
 
-    # at the mlir level, we only have bitcast, inttoptr, and ptrtoint. If we
-    # have a pointer, cast it to an int first then to the real dst type.
-    # If we are casting *to* a pointer, first cast to int then the real dst
-    # type. If both src and dst are pointer types, use a regular bitcast.
-    # ir2mlir will use an address space cast.
     src_is_ptr = datatype.is_pointer_dtype(x_dtype)
     dst_is_ptr = datatype.is_pointer_dtype(dst_dtype)
-    src_is_int_scalar = isinstance(x_ty, ScalarTy) and datatype.is_integral(x_dtype)
-    dst_is_int_scalar = isinstance(result_ty, ScalarTy) and datatype.is_integral(dst_dtype)
 
-    def direct():
+    def integer_type_like(ty: ScalarTy | PointerTy | VectorTy):
+        dtype = getattr(datatype, f"int{ty.tensor_dtype().bitwidth}")
+        if isinstance(ty, VectorTy):
+            return VectorTy(dtype, ty.length)
+        return ScalarTy(dtype)
+
+    if src_is_ptr and dst_is_ptr and x_ty.tensor_shape() == result_ty.tensor_shape():
         return add_operation(BitCast, result_ty, x=x)
-
-    def through_int():
-        int_ty = ScalarTy(getattr(datatype, f'int{x_bitwidth}'))
-        first = reinterpret_to(x, int_ty)
-        return reinterpret_to(first, result_ty)
-
-    if src_is_ptr and dst_is_ptr:
-        return direct()
     if src_is_ptr:
-        return direct() if dst_is_int_scalar else through_int()
+        integer = add_operation(BitCast, integer_type_like(x_ty), x=x)
+        return reinterpret_to(integer, result_ty)
     if dst_is_ptr:
-        return direct() if src_is_int_scalar else through_int()
-    return direct()
-
-
-def _scalar_or_pointer_ty(dtype: datatype.DType):
-    return PointerTy(dtype) if datatype.is_pointer_dtype(dtype) else ScalarTy(dtype)
+        integer = reinterpret_to(x, integer_type_like(result_ty))
+        return add_operation(BitCast, result_ty, x=integer)
+    return add_operation(BitCast, result_ty, x=x)
 
 
 def bitcast(x: Var[ScalarTy | PointerTy | VectorTy], dtype: datatype.DType):
     x_ty = x.get_type()
     if isinstance(x_ty, VectorTy):
         elem_dtype = x_ty.element_dtype
-        if datatype.is_pointer_dtype(dtype):
-            raise TypeCheckingError(
-                "bitcast cannot reinterpret vector elements as a pointer dtype"
-            )
         if elem_dtype.bitwidth != dtype.bitwidth:
             raise TypeCheckingError(
                 "Vector element and target dtype must have the same bitwidth "
                 f"(element is {elem_dtype.bitwidth} bits, target is {dtype.bitwidth} bits)"
             )
         return reinterpret_to(x, VectorTy(dtype, x_ty.length))
-    return reinterpret_to(x, _scalar_or_pointer_ty(dtype))
+    return reinterpret_to(x, make_rank0_ty(dtype))
 
 
 def reinterpret_as_scalar(x: Var[VectorTy], dtype: datatype.DType):
@@ -143,10 +129,6 @@ def reinterpret_as_vector(x: Var[VectorTy], dtype: datatype.DType, length: int):
     """Reinterpret a whole vector's bits as ``Vector[dtype, length]``, whose
     total bitwidth must equal the source vector's total bitwidth. Bytes are
     re-split little-endian."""
-    if datatype.is_pointer_dtype(dtype):
-        raise TypeCheckingError(
-            "reinterpret_as_vector only accepts a scalar element dtype."
-        )
     return reinterpret_to(x, VectorTy(dtype, length))
 
 

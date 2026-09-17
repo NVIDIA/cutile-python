@@ -213,6 +213,10 @@ def is_vector_ty(ty: Type) -> bool:
     return isinstance(ty, VectorTy)
 
 
+def make_rank0_ty(dtype: DType) -> ScalarTy | PointerTy:
+    return PointerTy(dtype) if datatype.is_pointer_dtype(dtype) else ScalarTy(dtype)
+
+
 def make_vector_ty(dtype: DType, length: int) -> VectorTy:
     return VectorTy(dtype, length)
 
@@ -298,10 +302,8 @@ class LangTypingHooks(TypingHooks):
     @override
     def get_tensor_like_type(self, dtype: DType, shape: Sequence[int]) -> TensorLikeTy:
         match tuple(shape):
-            case () if datatype.is_pointer_dtype(dtype):
-                return PointerTy(dtype)
             case ():
-                return ScalarTy(dtype)
+                return make_rank0_ty(dtype)
             case (length,):
                 return VectorTy(dtype, length)
             case _:
@@ -358,6 +360,7 @@ __all__ = (
     "TokenTy",
     "TypeTy",
     "EnumTy",
+    "make_rank0_ty",
     "make_vector_ty",
     "is_vector_ty",
     "MemorySpace",

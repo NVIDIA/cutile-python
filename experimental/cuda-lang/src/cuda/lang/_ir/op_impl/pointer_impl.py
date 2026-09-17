@@ -17,6 +17,7 @@ from cuda.lang._ir.type import (
     ScalarTy,
     Type,
     VectorTy,
+    make_rank0_ty,
 )
 from cuda.lang._ir.atomics_support import (
     require_atomic_memory_order_and_scope,
@@ -221,7 +222,7 @@ def pointer_getitem(object: Var[PointerTy], key: Var[Type]):
     pointer = pointer_with_offset(object, key)
     return add_operation(
         LoadPointer,
-        ScalarTy(ptr_ty.pointee_dtype),
+        make_rank0_ty(ptr_ty.pointee_dtype),
         pointer=pointer,
         alignment=None,
     )
@@ -231,7 +232,12 @@ def pointer_getitem(object: Var[PointerTy], key: Var[Type]):
 def pointer_setitem(object: Var[PointerTy], key: Var[Type], value: Var[Type]):
     ptr_ty = require_concrete_pointer_type(object)
     pointer = pointer_with_offset(object, key)
-    value = astype(value, ptr_ty.pointee_dtype)
+    if is_pointer_dtype(ptr_ty.pointee_dtype):
+        require_pointer_type(value)
+        value = implicit_cast(value, ptr_ty.pointee_dtype, "cast stored value")
+    else:
+        require_scalar_type(value)
+        value = astype(value, ptr_ty.pointee_dtype)
     add_operation_variadic(
         StorePointer,
         (),
@@ -248,7 +254,7 @@ def array_getitem(object: Var, key: Var) -> Var:
     pointer = _array_element_pointer(object, indices)
     return add_operation(
         LoadPointer,
-        PointerTy(array_ty.dtype) if is_pointer_dtype(array_ty.dtype) else ScalarTy(array_ty.dtype),
+        make_rank0_ty(array_ty.dtype),
         pointer=pointer,
         alignment=None,
     )
@@ -257,8 +263,12 @@ def array_getitem(object: Var, key: Var) -> Var:
 @impl(operator.setitem, overload=(ArrayTy, WILDCARD, WILDCARD))
 def array_setitem(object: Var, key: Var, value: Var):
     array_ty = require_array_type(object)
-    require_scalar_type(value)
-    value = astype(value, array_ty.dtype)
+    if is_pointer_dtype(array_ty.dtype):
+        require_pointer_type(value)
+        value = implicit_cast(value, array_ty.dtype, "cast value to array dtype")
+    else:
+        require_scalar_type(value)
+        value = astype(value, array_ty.dtype)
     indices = require_array_indices(object, key)
     pointer = _array_element_pointer(object, indices)
     add_operation_variadic(
@@ -280,7 +290,7 @@ def pointer_load(
     count = require_optional_constant_int(count)
     alignment = require_optional_alignment(alignment)
     if count is None or count == 1:
-        result_ty = ScalarTy(pointee_dtype)
+        result_ty = make_rank0_ty(pointee_dtype)
     else:
         result_ty = VectorTy(pointee_dtype, count)
     return add_operation(

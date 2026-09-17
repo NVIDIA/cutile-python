@@ -2078,27 +2078,22 @@ def lower_bitcast(
     )
     if src_mlir_ty == dst_mlir_ty:
         return [x]
-    match src_ty, dst_ty:
-        case ir_type.PointerTy(), ir_type.PointerTy():
-            res = mlir.llvm.add_AddrSpaceCastOp(res_type=dst_mlir_ty, arg=x)
-            return [res]
-        case ir_type.ScalarTy() as st, ir_type.PointerTy():
-            if not datatype.is_integral(st.dtype):
-                raise InternalError(
-                    "bitcast to or from pointer must go through integer"
-                )
-            res = mlir.llvm.add_IntToPtrOp(res_type=dst_mlir_ty, arg=x)
-            return [res]
-        case ir_type.PointerTy(), ir_type.ScalarTy() as st:
-            if not datatype.is_integral(st.dtype):
-                raise InternalError(
-                    "bitcast to or from pointer must go through integer"
-                )
-            res = mlir.llvm.add_PtrToIntOp(res_type=dst_mlir_ty, arg=x)
-            return [res]
-        case _:
-            res = mlir.llvm.add_BitcastOp(res_type=dst_mlir_ty, arg=x)
-            return [res]
+
+    src_dtype = src_ty.tensor_dtype()
+    dst_dtype = dst_ty.tensor_dtype()
+    src_is_ptr = datatype.is_pointer_dtype(src_dtype)
+    dst_is_ptr = datatype.is_pointer_dtype(dst_dtype)
+    if src_is_ptr and dst_is_ptr:
+        return [mlir.llvm.add_AddrSpaceCastOp(res_type=dst_mlir_ty, arg=x)]
+    if src_is_ptr:
+        if not datatype.is_integral(dst_dtype):
+            raise InternalError("bitcast from pointer must go through integer")
+        return [mlir.llvm.add_PtrToIntOp(res_type=dst_mlir_ty, arg=x)]
+    if dst_is_ptr:
+        if not datatype.is_integral(src_dtype):
+            raise InternalError("bitcast to pointer must go through integer")
+        return [mlir.llvm.add_IntToPtrOp(res_type=dst_mlir_ty, arg=x)]
+    return [mlir.llvm.add_BitcastOp(res_type=dst_mlir_ty, arg=x)]
 
 
 def ir2mlir(

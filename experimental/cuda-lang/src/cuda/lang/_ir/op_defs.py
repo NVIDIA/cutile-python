@@ -132,13 +132,13 @@ class MathBinaryOperation(Operation, opcode="math_binary"):
 
 @dataclass(eq=False)
 class VectorConstruct(Operation, opcode="vector_construct"):
-    elements: tuple[Var[ScalarTy], ...] = operand()
+    elements: tuple[Var[ScalarTy | PointerTy], ...] = operand()
 
 
 @dataclass(eq=False)
 class VectorInsert(Operation, opcode="vector_insert"):
     vector: Var[VectorTy] = operand()
-    value: Var[ScalarTy] = operand()
+    value: Var[ScalarTy | PointerTy] = operand()
     index: Var[ScalarTy] = operand()
 
 

@@ -11,7 +11,7 @@ from typing import Callable, Any, Annotated, NamedTuple, Sequence
 
 from cuda.lang._execution import stub
 from cuda.lang._ir.op_defs import call_intrinsic
-from cuda.lang._ir.type import PointerTy, ScalarTy, VectorTy
+from cuda.lang._ir.type import PointerTy, ScalarTy, VectorTy, make_rank0_ty
 from cuda.lang._ir.type_checking_helpers import require_vector_type, require_scalar_or_vector_type
 from cuda.lang._exception import TypeCheckingError, InvalidValueError
 from cuda.lang._passes.ir2llvm import DIRECTLY_SUPPORTED_FLOATS
@@ -71,7 +71,7 @@ class MatchedSignature(NamedTuple):
 
 
 def match_intrinsic_signature(stub, args: tuple[Var, ...]) -> MatchedSignature:
-    from cuda.lang._ir.type import PointerTy, ScalarTy, VectorTy
+    from cuda.lang._ir.type import VectorTy
     stub_sig = inspect.signature(stub)
 
     prepared_operands = []
@@ -148,7 +148,7 @@ def match_intrinsic_signature(stub, args: tuple[Var, ...]) -> MatchedSignature:
         ann = _get_annotation(h)
         if isinstance(ann, _IntrinsicDTypeAnnotation):
             if ann.vector_length is None:
-                ty = PointerTy(ann.dtype) if is_pointer_dtype(ann.dtype) else ScalarTy(ann.dtype)
+                ty = make_rank0_ty(ann.dtype)
             else:
                 ty = VectorTy(ann.dtype, ann.vector_length)
         elif isinstance(ann, _IntrinsicGenericAnnotation):

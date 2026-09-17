@@ -3,6 +3,8 @@
 # SPDX-License-Identifier: Apache-2.0
 import operator
 from typing import Callable
+
+from cuda.tile._datatype import is_pointer_dtype
 from cuda.tile._ir.op_impl import (
     WILDCARD,
     ImplRegistry,
@@ -22,7 +24,7 @@ import cuda.lang._datatype as datatype
 from cuda.lang._enums import VectorReduction
 from ..type_checking_helpers import require_vector_type, require_scalar_type
 from ..op_defs import VectorConstruct, VectorGetItem, VectorInsert, VectorReduce
-from ..type import ScalarTy, VectorTy, SliceType
+from ..type import PointerTy, ScalarTy, VectorTy, SliceType
 from ..._stub.types import Vector
 from ..ir import Var, add_operation
 
@@ -36,7 +38,7 @@ def vector_impl_registry() -> ImplRegistry:
 
 
 def vector_construct(
-    res_type: VectorTy, elements: tuple[Var[ScalarTy], ...]
+    res_type: VectorTy, elements: tuple[Var[ScalarTy | PointerTy], ...]
 ) -> Var[VectorTy]:
     if len(elements) != res_type.length:
         raise InternalError(
@@ -45,7 +47,11 @@ def vector_construct(
     return add_operation(VectorConstruct, res_type, elements=elements)
 
 
-def vector_with_item(vector: Var[VectorTy], key: int | Var[ScalarTy], value: Var[ScalarTy]):
+def vector_with_item(
+    vector: Var[VectorTy],
+    key: int | Var[ScalarTy],
+    value: Var[ScalarTy | PointerTy],
+):
     ty = require_vector_type(vector)
     if isinstance(key, int):
         key = strictly_typed_const(key, ScalarTy(datatype.int32))
@@ -201,7 +207,9 @@ def getattr_vector_with_item(object: Var[VectorTy], name: Var):
 
 @impl(Vector.with_item)
 def vector_with_item_impl(
-    self: Var[VectorTy], index: Var[ScalarTy], value: Var[ScalarTy]
+    self: Var[VectorTy],
+    index: Var[ScalarTy],
+    value: Var[ScalarTy | PointerTy],
 ) -> Var[VectorTy]:
     return vector_with_item(self, index, value)
 
@@ -213,7 +221,10 @@ def getattr_vector_astype(object: Var[VectorTy], name: Var):
 
 @impl(Vector.astype)
 def vector_astype_impl(self: Var[VectorTy], dtype: Var) -> Var[VectorTy]:
-    return astype(self, require_dtype_spec(dtype))
+    dtype = require_dtype_spec(dtype)
+    if is_pointer_dtype(self.get_type().element_dtype) or is_pointer_dtype(dtype):
+        return implicit_cast(self, dtype, "Vector.astype")
+    return astype(self, dtype)
 
 
 @impl(getattr, overload=(VectorTy, "reduce"))
@@ -278,12 +289,19 @@ def vector_reduce_impl(
 
 
 @impl(operator.getitem, overload=(VectorTy, WILDCARD))
-def vector_getitem(object: Var[VectorTy], key: Var[ScalarTy]) -> Var[ScalarTy]:
+def vector_getitem(
+    object: Var[VectorTy], key: Var[ScalarTy]
+) -> Var[ScalarTy | PointerTy]:
     result_dtype = object.get_type().element_dtype
     index = implicit_cast(key, datatype.int32, "vector getitem index")
+    result_ty = (
+        PointerTy(result_dtype)
+        if is_pointer_dtype(result_dtype)
+        else ScalarTy(result_dtype)
+    )
     return add_operation(
         VectorGetItem,
-        ScalarTy(result_dtype),
+        result_ty,
         x=object,
         index=index,
     )
