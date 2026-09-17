@@ -353,9 +353,9 @@ def two_cta_tcgen05_kernel(a, b, c):
                 swizzle_mode=cl.SwizzleMode.SWIZZLE_128B,
             ).encode()
             instruction = cl.Tcgen05InstructionDescriptor(
-                d_type=cl.Tcgen05InstructionDescriptor.DType.F32,
-                a_type=cl.Tcgen05InstructionDescriptor.F16Type.F16,
-                b_type=cl.Tcgen05InstructionDescriptor.F16Type.F16,
+                d_type=cl.float32,
+                a_type=cl.float16,
+                b_type=cl.float16,
                 n=tile_n,
                 m=2 * cta_m,
             ).encode()
@@ -482,9 +482,9 @@ def tma_tcgen05_kernel(a, b, c):
         swizzle_mode=cl.SwizzleMode.SWIZZLE_128B,
     ).encode()
     instruction = cl.Tcgen05InstructionDescriptor(
-        d_type=cl.Tcgen05InstructionDescriptor.DType.F32,
-        a_type=cl.Tcgen05InstructionDescriptor.F16Type.F16,
-        b_type=cl.Tcgen05InstructionDescriptor.F16Type.F16,
+        d_type=cl.float32,
+        a_type=cl.float16,
+        b_type=cl.float16,
         n=tile_n,
         m=2 * cta_m,
     ).encode()
@@ -907,9 +907,9 @@ def matmul_multicta_kernel(
         load_index = 0
         acc_index = 0
         instruction = cl.Tcgen05InstructionDescriptor(
-            d_type=cl.Tcgen05InstructionDescriptor.DType.F32,
-            a_type=cl.Tcgen05InstructionDescriptor.F16Type.F16,
-            b_type=cl.Tcgen05InstructionDescriptor.F16Type.F16,
+            d_type=cl.float32,
+            a_type=cl.float16,
+            b_type=cl.float16,
             n=tile_n,
             m=tile_m,
         ).encode()

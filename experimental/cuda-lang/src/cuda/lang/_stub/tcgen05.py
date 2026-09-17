@@ -15,10 +15,25 @@ https://docs.nvidia.com/cuda/parallel-thread-execution/#tensorcore-5th-generatio
 """
 
 from dataclasses import dataclass
-from enum import IntEnum
+from enum import Enum, IntEnum
 from typing import Any, Literal
 
-from .._datatype import uint32
+from .._datatype import (
+    DType,
+    bfloat16,
+    float4_e2m1fn,
+    float6_e2m3fn,
+    float6_e3m2fn,
+    float8_e4m3fn,
+    float8_e5m2,
+    float16,
+    float32,
+    int8,
+    int32,
+    tfloat32,
+    uint8,
+    uint32,
+)
 from cuda.lang._execution import stub, function
 from .bits import set_bit32, set_bits32
 from .nvvm import P3, P6
@@ -37,7 +52,6 @@ from .._enums import (
     Tcgen05CopySourceFormat,
 )
 import cuda.lang as cl
-from cuda.lang._datatype import DType
 
 
 @function()
@@ -274,38 +288,6 @@ def tcgen05_store(
     """
 
 
-class _Tcgen05Tf32Type(IntEnum):
-    TF32 = 2
-
-
-class _Tcgen05F16Type(IntEnum):
-    F16 = 0
-    BF16 = 1
-
-
-class _Tcgen05F8F6F4Type(IntEnum):
-    E4M3 = 0
-    E5M2 = 1
-    E2M3 = 3
-    E3M2 = 4
-    E2M1 = 5
-
-
-class _Tcgen05I8Type(IntEnum):
-    U8 = 0
-    S8 = 1
-
-
-class _Tcgen05Mxf4Type(IntEnum):
-    E2M1 = 1
-
-
-class _DType(IntEnum):
-    F16 = 0
-    F32 = 1
-    S32 = 2
-
-
 class _MaxShift(IntEnum):
     NoShift = 0
     MaxShift8 = 1
@@ -327,25 +309,66 @@ class _Mxf4KDimension(IntEnum):
     DenseK96 = 1
 
 
+class _Tcgen05DTypeFormat(Enum):
+    Output = 0
+    Input = 1
+    Mxf8f6f4Input = 2
+    Mxf4Input = 3
+
+
+_TCGEN05_DTYPE_FORMATS = {
+    _Tcgen05DTypeFormat.Output: {float16: 0, float32: 1, int32: 2},
+    _Tcgen05DTypeFormat.Input: {
+        float16: 0,
+        float8_e4m3fn: 0,
+        uint8: 0,
+        bfloat16: 1,
+        float8_e5m2: 1,
+        int8: 1,
+        tfloat32: 2,
+        float6_e2m3fn: 3,
+        float6_e3m2fn: 4,
+        float4_e2m1fn: 5,
+    },
+    _Tcgen05DTypeFormat.Mxf8f6f4Input: {
+        float8_e4m3fn: 0,
+        float8_e5m2: 1,
+        float6_e2m3fn: 3,
+        float6_e3m2fn: 4,
+        float4_e2m1fn: 5,
+    },
+    _Tcgen05DTypeFormat.Mxf4Input: {float4_e2m1fn: 1},
+}
+
+
+@stub(host=True)
+def _tcgen05_encode_dtype(
+    dtype: DType | int, format_kind: _Tcgen05DTypeFormat
+) -> int:
+    """
+    Returns integer encoding of MMA input or output type. If ``dtype`` is an
+    integer, just return it. If ``dtype`` is a DType, encode it as an integer.
+    """
+    if isinstance(dtype, int):
+        return dtype
+    mapping = _TCGEN05_DTYPE_FORMATS[format_kind]
+    if dtype in mapping:
+        return mapping[dtype]
+    raise TypeError(f"Unsupported dtype for {format_kind}: {dtype}")
+
+
 @dataclass(frozen=True)
 class Tcgen05InstructionDescriptor:
-    """
-    Instruction descriptor format for .kind::tf32, .kind::f16, .kind::f8f6f4 and .kind::i8
-    """
+    """Instruction descriptor for TF32, F16, F8/F6/F4, and I8 MMA."""
 
-    Tf32Type = _Tcgen05Tf32Type
-    F16Type = _Tcgen05F16Type
-    F8F6F4Type = _Tcgen05F8F6F4Type
-    I8Type = _Tcgen05I8Type
-    DType = _DType
     MaxShift = _MaxShift
 
     sparsity_selector: int = 0
     sparse: bool = False
     saturate: bool = False
-    d_type: DType = DType.F16
-    a_type: Tf32Type | F16Type | F8F6F4Type | I8Type = F16Type.F16
-    b_type: Tf32Type | F16Type | F8F6F4Type | I8Type = F16Type.F16
+    d_type: DType | int = float16
+    a_type: DType | int = float16
+    b_type: DType | int = float16
     negate_a: bool = False
     negate_b: bool = False
     transpose_a: bool = False
@@ -359,9 +382,14 @@ class Tcgen05InstructionDescriptor:
         desc = set_bits32(desc, self.sparsity_selector, 0, 2)
         desc = set_bit32(desc, 2, self.sparse)
         desc = set_bit32(desc, 3, self.saturate)
-        desc = set_bits32(desc, self.d_type, 4, 2)
-        desc = set_bits32(desc, self.a_type, 7, 3)
-        desc = set_bits32(desc, self.b_type, 10, 3)
+        d_type = _tcgen05_encode_dtype(
+            self.d_type, _Tcgen05DTypeFormat.Output
+        )
+        a_type = _tcgen05_encode_dtype(self.a_type, _Tcgen05DTypeFormat.Input)
+        b_type = _tcgen05_encode_dtype(self.b_type, _Tcgen05DTypeFormat.Input)
+        desc = set_bits32(desc, d_type, 4, 2)
+        desc = set_bits32(desc, a_type, 7, 3)
+        desc = set_bits32(desc, b_type, 10, 3)
         desc = set_bit32(desc, 13, self.negate_a)
         desc = set_bit32(desc, 14, self.negate_b)
         desc = set_bit32(desc, 15, self.transpose_a)
@@ -374,15 +402,14 @@ class Tcgen05InstructionDescriptor:
 
 @dataclass(frozen=True)
 class Tcgen05Mxf8f6f4InstructionDescriptor:
-    """Instruction descriptor format for .kind::mxf8f6f4"""
+    """Instruction descriptor for block-scaled F8/F6/F4 MMA."""
 
-    Type = _Tcgen05F8F6F4Type
     ScaleFormat = _Mxf8f6f4ScaleFormat
 
     sparse: bool = False
     b_scale_id: Literal[0, 1, 2, 3] = 0
-    a_type: Type = Type.E4M3
-    b_type: Type = Type.E4M3
+    a_type: DType | int = float8_e4m3fn
+    b_type: DType | int = float8_e4m3fn
     negate_a: bool = False
     negate_b: bool = False
     transpose_a: bool = False
@@ -396,8 +423,14 @@ class Tcgen05Mxf8f6f4InstructionDescriptor:
         desc = uint32(0x0000_0000)
         desc = set_bit32(desc, 2, self.sparse)
         desc = set_bits32(desc, self.b_scale_id, 4, 2)
-        desc = set_bits32(desc, self.a_type, 7, 3)
-        desc = set_bits32(desc, self.b_type, 10, 3)
+        a_type = _tcgen05_encode_dtype(
+            self.a_type, _Tcgen05DTypeFormat.Mxf8f6f4Input
+        )
+        b_type = _tcgen05_encode_dtype(
+            self.b_type, _Tcgen05DTypeFormat.Mxf8f6f4Input
+        )
+        desc = set_bits32(desc, a_type, 7, 3)
+        desc = set_bits32(desc, b_type, 10, 3)
         desc = set_bit32(desc, 13, self.negate_a)
         desc = set_bit32(desc, 14, self.negate_b)
         desc = set_bit32(desc, 15, self.transpose_a)
@@ -411,16 +444,15 @@ class Tcgen05Mxf8f6f4InstructionDescriptor:
 
 @dataclass(frozen=True)
 class Tcgen05Mxf4InstructionDescriptor:
-    """Instruction descriptor format for .kind::mxf4 and .kind::mxf4nvf4"""
+    """Instruction descriptor for block-scaled F4 and NVF4 MMA."""
 
-    Type = _Tcgen05Mxf4Type
     ScaleFormat = _Mxf4ScaleFormat
     KDimension = _Mxf4KDimension
 
     sparse: bool = False
     b_scale_id: Literal[0, 2] = 0
-    a_type: Type = Type.E2M1
-    b_type: Type = Type.E2M1
+    a_type: DType | int = float4_e2m1fn
+    b_type: DType | int = float4_e2m1fn
     negate_a: bool = False
     negate_b: bool = False
     transpose_a: bool = False
@@ -435,8 +467,14 @@ class Tcgen05Mxf4InstructionDescriptor:
         desc = uint32(0x0000_0000)
         desc = set_bit32(desc, 2, self.sparse)
         desc = set_bits32(desc, self.b_scale_id, 4, 2)
-        desc = set_bits32(desc, self.a_type, 7, 3)
-        desc = set_bits32(desc, self.b_type, 10, 2)
+        a_type = _tcgen05_encode_dtype(
+            self.a_type, _Tcgen05DTypeFormat.Mxf4Input
+        )
+        b_type = _tcgen05_encode_dtype(
+            self.b_type, _Tcgen05DTypeFormat.Mxf4Input
+        )
+        desc = set_bits32(desc, a_type, 7, 3)
+        desc = set_bits32(desc, b_type, 10, 2)
         desc = set_bit32(desc, 13, self.negate_a)
         desc = set_bit32(desc, 14, self.negate_b)
         desc = set_bit32(desc, 15, self.transpose_a)

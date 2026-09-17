@@ -381,9 +381,9 @@ def _pv_descriptor(pointer, fmha_config):
 
 def _qk_instruction_descriptor(fmha_config):
     return cl.Tcgen05InstructionDescriptor(
-        d_type=cl.Tcgen05InstructionDescriptor.DType.F32,
-        a_type=cl.Tcgen05InstructionDescriptor.F16Type.F16,
-        b_type=cl.Tcgen05InstructionDescriptor.F16Type.F16,
+        d_type=cl.float32,
+        a_type=cl.float16,
+        b_type=cl.float16,
         n=fmha_config.qk_mma_tiler[1],
         m=fmha_config.qk_mma_tiler[0],
     ).encode()
@@ -391,9 +391,9 @@ def _qk_instruction_descriptor(fmha_config):
 
 def _pv_instruction_descriptor(fmha_config):
     return cl.Tcgen05InstructionDescriptor(
-        d_type=cl.Tcgen05InstructionDescriptor.DType.F32,
-        a_type=cl.Tcgen05InstructionDescriptor.F16Type.F16,
-        b_type=cl.Tcgen05InstructionDescriptor.F16Type.F16,
+        d_type=cl.float32,
+        a_type=cl.float16,
+        b_type=cl.float16,
         transpose_b=True,
         n=fmha_config.epi_tile[1],
         m=fmha_config.epi_tile[0],

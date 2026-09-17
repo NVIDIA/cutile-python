@@ -6,7 +6,26 @@ import torch.cuda
 import pytest
 
 import cuda.lang as cl
+import cuda.lang._datatype as datatype
 from test.util import compile_kernel
+
+
+@pytest.mark.parametrize("dtype", datatype.arithmetic_float_dtypes)
+def test_arithmetic_float_dtype(dtype):
+    assert datatype.is_numeric(dtype)
+    assert datatype.is_float(dtype)
+    assert datatype.is_unrestricted_float(dtype)
+    assert not datatype.is_restricted_float(dtype)
+    assert datatype.is_arithmetic(dtype)
+
+
+@pytest.mark.parametrize("dtype", datatype.non_arithmetic_float_dtypes)
+def test_non_arithmetic_float_dtype(dtype):
+    assert datatype.is_numeric(dtype)
+    assert datatype.is_float(dtype)
+    assert datatype.is_restricted_float(dtype)
+    assert not datatype.is_unrestricted_float(dtype)
+    assert not datatype.is_arithmetic(dtype)
 
 
 def test_dtype_of():

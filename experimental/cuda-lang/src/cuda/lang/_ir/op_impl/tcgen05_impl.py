@@ -2,8 +2,9 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+from cuda.tile._ir.core_ops import loosely_typed_const
 from cuda.lang._enums import SwizzleMode
-from cuda.tile._ir.type import ArrayTy
+from cuda.tile._ir.type import ArrayTy, DTypeSpec
 from typing import Any, NamedTuple
 
 from cuda.tile._ir.cast_ops import implicit_cast
@@ -84,6 +85,26 @@ TCGEN05_REGISTERS_PER_REPETITION = {
 }
 
 TCGEN05_REGISTER_BITS = 32
+
+
+@impl(tcgen05_stub._tcgen05_encode_dtype)
+def _tcgen05_encode_dtype_impl(dtype: Var, format_kind: Var) -> Var:
+    format_kind_value = require_constant_enum(
+        format_kind, tcgen05_stub._Tcgen05DTypeFormat
+    )
+
+    dtype_type = dtype.get_loose_type()
+    if not isinstance(dtype_type, DTypeSpec):
+        require_integral_scalar_type(dtype, bitwidth=32)
+        return astype(dtype, datatype.uint32)
+
+    mapping = tcgen05_stub._TCGEN05_DTYPE_FORMATS[format_kind_value]
+    if dtype_type.dtype not in mapping:
+        raise TypeCheckingError(
+            f"Unsupported dtype for {format_kind_value}: {dtype_type.dtype}"
+        )
+    encoded = tcgen05_stub._tcgen05_encode_dtype(dtype_type.dtype, format_kind_value)
+    return loosely_typed_const(encoded)
 
 
 def _tcgen05_register_type(register_count: int) -> ScalarTy | VectorTy:

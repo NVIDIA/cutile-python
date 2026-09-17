@@ -1417,9 +1417,9 @@ def qk_instruction_descriptor_f16():
     """Encode the source 128x128 FP16 QK instruction descriptor."""
 
     return cl.Tcgen05InstructionDescriptor(
-        d_type=cl.Tcgen05InstructionDescriptor.DType.F32,
-        a_type=cl.Tcgen05InstructionDescriptor.F16Type.F16,
-        b_type=cl.Tcgen05InstructionDescriptor.F16Type.F16,
+        d_type=cl.float32,
+        a_type=cl.float16,
+        b_type=cl.float16,
         n=128,
         m=128,
     ).encode()
@@ -1430,9 +1430,9 @@ def qk_instruction_descriptor_bf16():
     """Encode the source 128x128 BF16 QK instruction descriptor."""
 
     return cl.Tcgen05InstructionDescriptor(
-        d_type=cl.Tcgen05InstructionDescriptor.DType.F32,
-        a_type=cl.Tcgen05InstructionDescriptor.F16Type.BF16,
-        b_type=cl.Tcgen05InstructionDescriptor.F16Type.BF16,
+        d_type=cl.float32,
+        a_type=cl.bfloat16,
+        b_type=cl.bfloat16,
         n=128,
         m=128,
     ).encode()
@@ -1450,9 +1450,9 @@ def pv_instruction_descriptor_f16(head_dim):
     """Encode the source 128xD FP16 PV descriptor with B major."""
 
     return cl.Tcgen05InstructionDescriptor(
-        d_type=cl.Tcgen05InstructionDescriptor.DType.F32,
-        a_type=cl.Tcgen05InstructionDescriptor.F16Type.F16,
-        b_type=cl.Tcgen05InstructionDescriptor.F16Type.F16,
+        d_type=cl.float32,
+        a_type=cl.float16,
+        b_type=cl.float16,
         transpose_b=True,
         n=head_dim,
         m=128,
@@ -1464,9 +1464,9 @@ def pv_instruction_descriptor_bf16(head_dim):
     """Encode the source 128xD BF16 PV descriptor with B major."""
 
     return cl.Tcgen05InstructionDescriptor(
-        d_type=cl.Tcgen05InstructionDescriptor.DType.F32,
-        a_type=cl.Tcgen05InstructionDescriptor.F16Type.BF16,
-        b_type=cl.Tcgen05InstructionDescriptor.F16Type.BF16,
+        d_type=cl.float32,
+        a_type=cl.bfloat16,
+        b_type=cl.bfloat16,
         transpose_b=True,
         n=head_dim,
         m=128,

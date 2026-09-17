@@ -457,8 +457,8 @@ class TmemCResource(ts.MemoryResource):
         stage_info.context.tasks_inputs.tmem
         return (
             cl.Tcgen05Mxf4InstructionDescriptor(
-                a_type=cl.Tcgen05Mxf4InstructionDescriptor.Type.E2M1,
-                b_type=cl.Tcgen05Mxf4InstructionDescriptor.Type.E2M1,
+                a_type=cl.float4_e2m1fn,
+                b_type=cl.float4_e2m1fn,
                 scale_format=cl.Tcgen05Mxf4InstructionDescriptor.ScaleFormat.UE4M3,
                 n=BLOCK_N,
                 m=BLOCK_M,

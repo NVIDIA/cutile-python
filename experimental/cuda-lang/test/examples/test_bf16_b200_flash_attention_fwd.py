@@ -332,16 +332,16 @@ def flash_attention_fwd_kernel(
 
     elif warp == 12 and rank == 0 and cl.elect_sync():
         qk_instruction = cl.Tcgen05InstructionDescriptor(
-            d_type=cl.Tcgen05InstructionDescriptor.DType.F32,
-            a_type=cl.Tcgen05InstructionDescriptor.F16Type.BF16,
-            b_type=cl.Tcgen05InstructionDescriptor.F16Type.BF16,
+            d_type=cl.float32,
+            a_type=cl.bfloat16,
+            b_type=cl.bfloat16,
             n=BLOCK_N,
             m=BLOCK_M * CLUSTER_SIZE,
         ).encode()
         pv_instruction = cl.Tcgen05InstructionDescriptor(
-            d_type=cl.Tcgen05InstructionDescriptor.DType.F32,
-            a_type=cl.Tcgen05InstructionDescriptor.F16Type.BF16,
-            b_type=cl.Tcgen05InstructionDescriptor.F16Type.BF16,
+            d_type=cl.float32,
+            a_type=cl.bfloat16,
+            b_type=cl.bfloat16,
             transpose_b=True,
             n=HEAD_DIM_V,
             m=BLOCK_M * CLUSTER_SIZE,

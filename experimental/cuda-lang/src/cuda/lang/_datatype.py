@@ -7,6 +7,7 @@ from typing import TypeAlias
 from cuda.tile._memory_model import MemorySpace
 from cuda.tile._datatype import (
     DType,
+    NumericDTypeCategory,
     bfloat16,
     bool_,
     float8_e8m0fnu,
@@ -47,6 +48,38 @@ from cuda.tile._datatype import (
     numeric_dtype_category,
 )
 
+
+# Lang-specific types.
+float6_e2m3fn = _define_dtype(
+    "float6_e2m3fn",
+    _DTypeDefinition(bitwidth=6, numeric_category=NumericDTypeCategory.RestrictedFloat),
+)
+float6_e2m3fn.__doc__ = """A 6-bit floating-point numeric dtype with 1 sign bit,
+2 exponent bits, and 3 mantissa bits."""
+
+float6_e3m2fn = _define_dtype(
+    "float6_e3m2fn",
+    _DTypeDefinition(bitwidth=6, numeric_category=NumericDTypeCategory.RestrictedFloat),
+)
+float6_e3m2fn.__doc__ = """A 6-bit floating-point numeric dtype with 1 sign bit,
+3 exponent bits, and 2 mantissa bits."""
+
+arithmetic_float_dtypes = (
+    float16,
+    bfloat16,
+    float32,
+    float64,
+)
+
+non_arithmetic_float_dtypes = (
+    tfloat32,
+    float8_e4m3fn,
+    float8_e5m2,
+    float8_e8m0fnu,
+    float4_e2m1fn,
+    float6_e2m3fn,
+    float6_e3m2fn,
+)
 
 mbarrier = _define_dtype('mbarrier', _DTypeDefinition(bitwidth=64))
 cluster_launch_control_token = _define_dtype(
@@ -109,6 +142,8 @@ __all__ = [
     "integer_dtype",
     "unsigned_integral_dtypes",
     "signed_integral_dtypes",
+    "arithmetic_float_dtypes",
+    "non_arithmetic_float_dtypes",
     "bool_",
     "uint8",
     "uint16",
@@ -121,6 +156,8 @@ __all__ = [
     "float16",
     "float32",
     "float64",
+    "float6_e2m3fn",
+    "float6_e3m2fn",
     "bfloat16",
     "tfloat32",
     "float8_e4m3fn",

@@ -6,6 +6,12 @@ import pytest
 import torch
 
 import cuda.lang as cl
+from cuda.lang._exception import TypeCheckingError
+from cuda.lang._stub.tcgen05 import (
+    _tcgen05_encode_dtype as encode_dtype,
+    _Tcgen05DTypeFormat as DTypeFormat,
+)
+from test.util import compile_kernel
 
 
 def encode_tcgen05_instruction_descriptor():
@@ -13,9 +19,9 @@ def encode_tcgen05_instruction_descriptor():
         sparsity_selector=3,
         sparse=True,
         saturate=True,
-        d_type=cl.Tcgen05InstructionDescriptor.DType.S32,
-        a_type=cl.Tcgen05InstructionDescriptor.I8Type.S8,
-        b_type=cl.Tcgen05InstructionDescriptor.I8Type.U8,
+        d_type=cl.int32,
+        a_type=cl.int8,
+        b_type=cl.uint8,
         negate_a=True,
         negate_b=False,
         transpose_a=True,
@@ -30,8 +36,8 @@ def encode_tcgen05_mxf8f6f4_instruction_descriptor():
     return cl.Tcgen05Mxf8f6f4InstructionDescriptor(
         sparse=True,
         b_scale_id=3,
-        a_type=cl.Tcgen05Mxf8f6f4InstructionDescriptor.Type.E2M1,
-        b_type=cl.Tcgen05Mxf8f6f4InstructionDescriptor.Type.E3M2,
+        a_type=cl.float6_e2m3fn,
+        b_type=cl.float6_e3m2fn,
         negate_a=True,
         negate_b=False,
         transpose_a=False,
@@ -47,8 +53,8 @@ def encode_tcgen05_mxf4_instruction_descriptor():
     return cl.Tcgen05Mxf4InstructionDescriptor(
         sparse=True,
         b_scale_id=2,
-        a_type=cl.Tcgen05Mxf4InstructionDescriptor.Type.E2M1,
-        b_type=cl.Tcgen05Mxf4InstructionDescriptor.Type.E2M1,
+        a_type=cl.float4_e2m1fn,
+        b_type=cl.float4_e2m1fn,
         negate_a=False,
         negate_b=True,
         transpose_a=True,
@@ -95,7 +101,7 @@ def encode_tcgen05_shared_memory_descriptor():
             encode_tcgen05_mxf8f6f4_instruction_descriptor,
             (1 << 2)
             | (3 << 4)
-            | (5 << 7)
+            | (3 << 7)
             | (4 << 10)
             | (1 << 13)
             | (1 << 16)
@@ -138,6 +144,45 @@ def test_tcgen05_instruction_descriptor_encode_on_gpu(encode_descriptor, expecte
     out = torch.zeros(1, dtype=torch.int64, device="cuda:0")
     cl.launch(torch.cuda.current_stream(), (1,), (1,), kernel, (out,))
     assert out.cpu().item() == expected
+
+
+def test_tcgen05_dtype_formats_on_host():
+    assert encode_dtype(cl.float32, DTypeFormat.Output) == 1
+    assert encode_dtype(cl.float6_e2m3fn, DTypeFormat.Input) == 3
+    assert encode_dtype(cl.float6_e3m2fn, DTypeFormat.Mxf8f6f4Input) == 4
+    assert encode_dtype(cl.float4_e2m1fn, DTypeFormat.Mxf4Input) == 1
+
+
+def test_tcgen05_fp6_input_types():
+    @cl.kernel
+    def kernel(out):
+        desc = cl.Tcgen05InstructionDescriptor(
+            a_type=cl.float6_e2m3fn, b_type=cl.float6_e3m2fn
+        )
+        out[0] = (desc.encode() >> 7) & 0x3F
+
+    out = torch.zeros(1, dtype=torch.int32, device="cuda:0")
+    cl.launch(torch.cuda.current_stream(), (1,), (1,), kernel, (out,))
+    assert out.item() == 3 | (4 << 3)
+
+
+def test_tcgen05_runtime_input_format():
+    @cl.kernel
+    def kernel(value, out):
+        out[0] = cl.Tcgen05InstructionDescriptor(a_type=value).encode()
+
+    value = encode_dtype(cl.bfloat16, DTypeFormat.Input)
+    out = torch.zeros(1, dtype=torch.uint32, device="cuda:0")
+    cl.launch(torch.cuda.current_stream(), (1,), (1,), kernel, (value, out))
+    assert out.item() == 1 << 7
+
+
+def test_tcgen05_rejects_unsupported_dtype():
+    def kernel():
+        cl.Tcgen05Mxf8f6f4InstructionDescriptor(a_type=cl.float16).encode()
+
+    raises = pytest.raises(TypeCheckingError, match="Mxf8f6f4Input")
+    compile_kernel(kernel, raises=raises)
 
 
 @pytest.mark.parametrize(

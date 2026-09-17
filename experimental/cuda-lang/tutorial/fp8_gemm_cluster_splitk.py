@@ -397,9 +397,9 @@ def _kernel(
         tmem_base = tmem_storage[0]
 
         instruction = cl.Tcgen05InstructionDescriptor(
-            d_type=cl.Tcgen05InstructionDescriptor.DType.F32,
-            a_type=cl.Tcgen05InstructionDescriptor.F8F6F4Type.E4M3,
-            b_type=cl.Tcgen05InstructionDescriptor.F8F6F4Type.E4M3,
+            d_type=cl.float32,
+            a_type=cl.float8_e4m3fn,
+            b_type=cl.float8_e4m3fn,
             n=tile_n,
             m=tile_m,
         ).encode()

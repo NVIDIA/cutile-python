@@ -263,11 +263,11 @@ class TmemCResource(ts.MemoryResource):
         """Read the TMEM base and initialize the MMA instruction descriptor."""
         tasks_inputs = stage_info.context.tasks_inputs
         tmem_raw_addr = tasks_inputs.tmem_ptr_i32[0]
-        # Tcgen05 F16Type uses F16=0 and BF16=1. Normalize the aggregate field
-        # to uint32 so descriptor bit insertion has one type on both paths.
+        # The tcgen05 input formats use F16=0 and BF16=1. Normalize the
+        # aggregate field to uint32 for runtime format selection.
         input_type = cl.uint32(tasks_inputs.is_bf16)
         idesc = cl.Tcgen05InstructionDescriptor(
-            d_type=cl.Tcgen05InstructionDescriptor.DType.F32,
+            d_type=cl.float32,
             a_type=input_type,
             b_type=input_type,
             n=mma_inst_shape_mnk[1],

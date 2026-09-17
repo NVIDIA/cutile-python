@@ -195,16 +195,16 @@ def make_tcgen05_mma_kernel(
                 if is_mxfp8:
                     instruction_descriptor = cl.Tcgen05Mxf8f6f4InstructionDescriptor(
                         sparse=is_sparse,
-                        a_type=cl.Tcgen05Mxf8f6f4InstructionDescriptor.Type.E4M3,
-                        b_type=cl.Tcgen05Mxf8f6f4InstructionDescriptor.Type.E4M3,
+                        a_type=cl.float8_e4m3fn,
+                        b_type=cl.float8_e4m3fn,
                         n=N,
                         m=M,
                     ).encode()
                 else:
                     instruction_descriptor = cl.Tcgen05Mxf4InstructionDescriptor(
                         sparse=is_sparse,
-                        a_type=cl.Tcgen05Mxf4InstructionDescriptor.Type.E2M1,
-                        b_type=cl.Tcgen05Mxf4InstructionDescriptor.Type.E2M1,
+                        a_type=cl.float4_e2m1fn,
+                        b_type=cl.float4_e2m1fn,
                         n=N,
                         scale_format=(
                             cl.Tcgen05Mxf4InstructionDescriptor.ScaleFormat.UE4M3
@@ -227,13 +227,13 @@ def make_tcgen05_mma_kernel(
                 )
             else:
                 a_type = (
-                    cl.Tcgen05InstructionDescriptor.F8F6F4Type.E4M3
+                    cl.float8_e4m3fn
                     if is_fp8
-                    else cl.Tcgen05InstructionDescriptor.F16Type.BF16
+                    else cl.bfloat16
                 )
                 instruction_descriptor = cl.Tcgen05InstructionDescriptor(
                     sparse=is_sparse,
-                    d_type=cl.Tcgen05InstructionDescriptor.DType.F32,
+                    d_type=cl.float32,
                     a_type=a_type,
                     b_type=a_type,
                     n=N,

@@ -611,8 +611,8 @@ def mxfp8_b200_gemm_kernel(
                     ).encode()
                     for kk in cl.static_iter(range(TILE_K // MMA_K)):
                         instruction = cl.Tcgen05Mxf8f6f4InstructionDescriptor(
-                            a_type=(cl.Tcgen05Mxf8f6f4InstructionDescriptor.Type.E4M3),
-                            b_type=(cl.Tcgen05Mxf8f6f4InstructionDescriptor.Type.E4M3),
+                            a_type=cl.float8_e4m3fn,
+                            b_type=cl.float8_e4m3fn,
                             n=tile_n,
                             m=TILE_M,
                             a_scale_id=kk,

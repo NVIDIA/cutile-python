@@ -124,9 +124,9 @@ def _kernel(a, b, c, bias, has_bias: cl.Constant[bool]):
 
     if warp == 0:
         instruction = cl.Tcgen05InstructionDescriptor(
-            d_type=cl.Tcgen05InstructionDescriptor.DType.F32,
-            a_type=cl.Tcgen05InstructionDescriptor.F16Type.F16,
-            b_type=cl.Tcgen05InstructionDescriptor.F16Type.F16,
+            d_type=cl.float32,
+            a_type=cl.float16,
+            b_type=cl.float16,
             n=TILE_N,
             m=TILE_M,
         ).encode()

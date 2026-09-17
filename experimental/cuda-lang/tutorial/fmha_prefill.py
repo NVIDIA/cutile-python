@@ -1273,18 +1273,18 @@ def _fmha_prefill_kernel(
             barrier_id=TMEM_ALLOC_BARRIER,
         )
         tmem_base = tmem_storage[0]
-        instruction_ab_type = cl.Tcgen05InstructionDescriptor.F16Type.F16
+        instruction_ab_type = cl.float16
         if input_kind == ELEMENT_BF16:
-            instruction_ab_type = cl.Tcgen05InstructionDescriptor.F16Type.BF16
+            instruction_ab_type = cl.bfloat16
         qk_instruction = cl.Tcgen05InstructionDescriptor(
-            d_type=cl.Tcgen05InstructionDescriptor.DType.F32,
+            d_type=cl.float32,
             a_type=instruction_ab_type,
             b_type=instruction_ab_type,
             n=MMA_N,
             m=MMA_M,
         ).encode()
         pv_instruction = cl.Tcgen05InstructionDescriptor(
-            d_type=cl.Tcgen05InstructionDescriptor.DType.F32,
+            d_type=cl.float32,
             a_type=instruction_ab_type,
             b_type=instruction_ab_type,
             transpose_b=True,

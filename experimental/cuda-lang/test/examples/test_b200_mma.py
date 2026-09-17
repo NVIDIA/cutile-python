@@ -203,9 +203,9 @@ def make_mma_kernel(
             tmem_ptr = tmem_storage[0]
 
             i_desc = cl.Tcgen05InstructionDescriptor(
-                d_type=cl.Tcgen05InstructionDescriptor.DType.F32,
-                a_type=cl.Tcgen05InstructionDescriptor.F16Type.BF16,
-                b_type=cl.Tcgen05InstructionDescriptor.F16Type.BF16,
+                d_type=cl.float32,
+                a_type=cl.bfloat16,
+                b_type=cl.bfloat16,
                 n=block_n,
                 m=BLOCK_M * cta_group,
             ).encode()
