@@ -22,14 +22,15 @@ def _dummy():
     pass
 
 
-@pytest.mark.parametrize("value", [None, 4, 8])
+@pytest.mark.parametrize("value", [None, 1, 2, 4, 8, 16, 32])
 def test_num_worker_warps_accepts_valid(value):
     ct.kernel(_dummy, num_worker_warps=value)
 
 
-@pytest.mark.parametrize("value", [3, 7, 10])
+@pytest.mark.parametrize("value", [0, 3, 7, 10, 64])
 def test_num_worker_warps_rejects_invalid(value):
-    with pytest.raises(ValueError, match="num_worker_warps should be either 4 or 8"):
+    with pytest.raises(ValueError,
+                       match=r"num_worker_warps should be a power of 2 in \[1, 32\]"):
         ct.kernel(_dummy, num_worker_warps=value)
 
 

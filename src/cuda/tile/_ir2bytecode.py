@@ -532,12 +532,23 @@ def generate_bytecode_for_block(ctx: BytecodeContext, block: Block):
 
 def _resolve_num_worker_warps(num_worker_warps: Optional[int],
                               version: BytecodeVersion) -> Optional[int]:
-    if num_worker_warps is not None and version < BytecodeVersion.V_13_3:
+    if num_worker_warps is None:
+        return None
+
+    if version < BytecodeVersion.V_13_3:
         warnings.warn(
             f"num_worker_warps is ignored: requires tileiras {BytecodeVersion.V_13_3.as_string()},"
             f" but current version is {version.as_string()}."
         )
         return None
+
+    # CTK 13.3 - 13.4: only 4 and 8 are supported.
+    # CTK 13.5+: Supports powers of 2 in [1, 32].
+    if version < BytecodeVersion.V_13_5 and num_worker_warps not in (4, 8):
+        raise TileUnsupportedFeatureError(
+            f"num_worker_warps={num_worker_warps} requires tileiras "
+            f"{BytecodeVersion.V_13_5.as_string()} or later. "
+            f"Current version is {version.as_string()}.")
 
     return num_worker_warps
 

@@ -92,7 +92,8 @@ class kernel(TileDispatcher):
             It's worth tuning when a warp-specialized kernel has high register pressure
             that other approaches cannot resolve.
             Normalization-style kernels with large tiles are the canonical cases.
-            Must be either 4 or 8.
+            Must be a power of 2 between 1 and 32, inclusive. Values other than
+            4 and 8 require CTK 13.5 or later.
             Default: None (auto).
             Since CTK 13.3. Ignored with a warning otherwise.
 

@@ -80,6 +80,6 @@ def _validate_opt_level(opt_level: None | int):
 
 def _validate_num_worker_warps(num_worker_warps: None | int):
     if num_worker_warps is not None:
-        if num_worker_warps not in (4, 8):
-            raise ValueError(f'num_worker_warps should be either 4 or 8,'
+        if num_worker_warps not in (1, 2, 4, 8, 16, 32):
+            raise ValueError(f'num_worker_warps should be a power of 2 in [1, 32],'
                              f' got {num_worker_warps}')

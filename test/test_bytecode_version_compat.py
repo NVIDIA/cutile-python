@@ -7,8 +7,10 @@ import pytest
 import torch
 
 import cuda.tile as ct
+from cuda.tile._bytecode.version import BytecodeVersion
 from cuda.tile._compile import get_sm_arch
 from cuda.tile._exception import TileUnsupportedFeatureError
+from cuda.tile._ir2bytecode import _resolve_num_worker_warps
 from cuda.tile._numeric_semantics import RoundingMode
 from cuda.tile.compilation import CallingConvention, KernelSignature
 
@@ -87,3 +89,20 @@ def test_num_worker_warps_warns_below_13_3():
     match = r"num_worker_warps is ignored: requires tileiras 13\.3, but current version is 13\.1"
     with pytest.warns(UserWarning, match=match):
         compile_with_version(kernel, (tensor(), tensor()), "13.1")
+
+
+@pytest.mark.parametrize("value", [1, 2, 16, 32])
+def test_relaxed_num_worker_warps_requires_13_5(value):
+    match = rf"num_worker_warps={value} requires tileiras 13\.5 or later"
+    with pytest.raises(TileUnsupportedFeatureError, match=match):
+        _resolve_num_worker_warps(value, BytecodeVersion.V_13_4)
+
+
+@pytest.mark.parametrize("value", [1, 2, 4, 8, 16, 32])
+def test_num_worker_warps_supported_values_on_13_5(value):
+    assert _resolve_num_worker_warps(value, BytecodeVersion.V_13_5) == value
+
+
+@pytest.mark.parametrize("value", [4, 8])
+def test_num_worker_warps_supported_before_13_5(value):
+    assert _resolve_num_worker_warps(value, BytecodeVersion.V_13_4) == value
