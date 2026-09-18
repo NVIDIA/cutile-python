@@ -1002,16 +1002,27 @@ class Unary(Operation, opcode="unaryop"):
 
     @override
     def rewrite_before_llvm_gen(self):
-        from cuda.lang._ir.op_defs import call_intrinsic
-        from cuda.lang._stub import llvm
-        from cuda.lang._passes.ir2llvm import DIRECTLY_SUPPORTED_FLOATS
         x = self.operand
-        input_dtype = x.get_type().tensor_dtype()
+        input_ty = x.get_type()
+        input_dtype = input_ty.tensor_dtype()
         match self.fn:
-            case "floor" if input_dtype in DIRECTLY_SUPPORTED_FLOATS:
-                return call_intrinsic(llvm.floor, x)
+            case "neg" if is_integral(input_dtype):
+                zero = strictly_typed_const(0, input_ty)
+                return binary_arithmetic_tensorlike_raw("sub", zero, x)
             case _:
                 return NotImplemented
+
+    @override
+    def generate_llvm(self, ctx):
+        from cuda.lang._passes.ir2llvm import DIRECTLY_SUPPORTED_FLOATS
+        from cuda.lang._llvm_bitcode import Unop
+        input_dtype = self.operand.get_type().tensor_dtype()
+        x = ctx.value(self.operand)
+        match self.fn:
+            case "neg" if input_dtype in DIRECTLY_SUPPORTED_FLOATS:
+                return ctx.builder.unop(Unop.FNEG, x)
+            case _:
+                raise NotImplementedError(f"Missing implementation for unary op: {self.fn}")
 
 
 def _unary_promote_to_int(x):

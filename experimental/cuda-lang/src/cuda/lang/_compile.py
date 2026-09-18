@@ -377,7 +377,16 @@ def compile_simt(
         ptx_compiler: PtxCompiler = PtxCompiler.get()
         cubin = ptx_compiler.compile(ptx, cc.gpu_name)
 
-        compiled = MLIR2CubinResult(cubin=cubin, stderr=b"", ptx=ptx.decode(), nvvm=bitcode,
+        if need_nvvm:
+            # FIXME: actually find the llvm-dis instead of assuming it is in the PATH
+            dis_res = subprocess.run(["llvm-dis"], input=bitcode, capture_output=True, check=True)
+            nvvm_ir_text = dis_res.stdout.decode()
+        else:
+            nvvm_ir_text = None
+
+        mlir_text = None
+
+        compiled = MLIR2CubinResult(cubin=cubin, stderr=b"", ptx=ptx.decode(), nvvm=nvvm_ir_text,
                                     timings_ns=None)
     else:
         with timer.phase("ir2mlir"):

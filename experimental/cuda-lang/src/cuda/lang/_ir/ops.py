@@ -481,6 +481,15 @@ class AllocLocalMemory(Operation, opcode="alloc_local_memory", memory_effect=Mem
         return ctx.builder.alloca(ctx.dtype(dtype, storage=True), count_val, self.alignment)
 
 
+def alloc_local_memory(dtype: datatype.DType, count: int,
+                       alignment: int | None = None) -> Var[PointerTy]:
+    ty = PointerTy(pointer_dtype(dtype, MemorySpace.GENERIC))
+    return add_operation(AllocLocalMemory,
+                         ty,
+                         count=count,
+                         alignment=alignment)
+
+
 @dataclass(eq=False)
 class DeallocLocalMemory(Operation,
                          opcode="dealloc_local_memory",
@@ -538,12 +547,8 @@ def enter_context_local_array_impl(manager: Var):
     shape_vars = tuple(strictly_typed_const(extent, size_ty) for extent in mgr_ty.shape)
     stride_vars = tuple(strictly_typed_const(extent, size_ty) for extent in strides)
 
-    base_ptr = add_operation(
-        AllocLocalMemory,
-        array_base_pointer_type(array_type),
-        count=math.prod(mgr_ty.shape),
-        alignment=mgr_ty.alignment,
-    )
+    base_ptr = alloc_local_memory(array_type.dtype, math.prod(mgr_ty.shape),
+                                  alignment=mgr_ty.alignment)
 
     def exit_callback():
         add_operation_variadic(DeallocLocalMemory, (), ptr=base_ptr)

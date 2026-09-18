@@ -35,6 +35,11 @@ class Binop(enum.Enum):
     XOR = 12
 
 
+# Matches `enum UnaryOpcodes` in LLVMBitCodes.h
+class Unop(enum.Enum):
+    FNEG = 0
+
+
 class CmpPredicate(enum.Enum):
     FCMP_FALSE = 0
     FCMP_OEQ = 1
@@ -87,3 +92,29 @@ class FloatKind(enum.Enum):
     bf16 = codes.TYPE_CODE_BFLOAT
     f32 = codes.TYPE_CODE_FLOAT
     f64 = codes.TYPE_CODE_DOUBLE
+
+
+class FPClass(enum.IntEnum):
+    SNan = 0x0001
+    QNan = 0x0002
+    NegInf = 0x0004
+    NegNormal = 0x0008
+    NegSubnormal = 0x0010
+    NegZero = 0x0020
+    PosZero = 0x0040
+    PosSubnormal = 0x0080
+    PosNormal = 0x0100
+    PosInf = 0x0200
+
+    Nan = SNan | QNan
+    Inf = PosInf | NegInf
+    Normal = PosNormal | NegNormal
+    Subnormal = PosSubnormal | NegSubnormal
+    Zero = PosZero | NegZero
+    PosFinite = PosNormal | PosSubnormal | PosZero
+    NegFinite = NegNormal | NegSubnormal | NegZero
+    Finite = PosFinite | NegFinite
+    Positive = PosFinite | PosInf
+    Negative = NegFinite | NegInf
+
+    AllFlags = Nan | Inf | Finite

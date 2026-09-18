@@ -35,7 +35,7 @@ from cuda.lang._ir.type_checking_helpers import (
     require_array_indices,
     require_pointer_type,
     require_signed_int_scalar_or_tuple,
-    require_scalar_type,
+    require_scalar_type, ensure_pointer,
 )
 from cuda.tile._datatype import (
     PointerInfo,
@@ -280,15 +280,8 @@ def array_setitem(object: Var, key: Var, value: Var):
     )
 
 
-@impl(pointer_api.load)
-def pointer_load(
-    pointer: Var,
-    count: Var,
-    alignment: Var,
-) -> Var:
-    pointee_dtype = require_pointer_type(pointer).pointee_dtype
-    count = require_optional_constant_int(count)
-    alignment = require_optional_alignment(alignment)
+def load_pointer(pointer: Var[PointerTy], count: int | None = None, alignment: int | None = None):
+    pointee_dtype = pointer.get_type().pointee_dtype
     if count is None or count == 1:
         result_ty = make_rank0_ty(pointee_dtype)
     else:
@@ -299,6 +292,18 @@ def pointer_load(
         pointer=pointer,
         alignment=alignment,
     )
+
+
+@impl(pointer_api.load)
+def pointer_load(
+    pointer: Var,
+    count: Var,
+    alignment: Var,
+) -> Var:
+    pointer = ensure_pointer(pointer)
+    count = require_optional_constant_int(count)
+    alignment = require_optional_alignment(alignment)
+    return load_pointer(pointer, count, alignment)
 
 
 @impl(pointer_api.store)

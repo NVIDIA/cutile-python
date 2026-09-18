@@ -12,7 +12,7 @@ from . import _codes as codes
 
 from cuda.tile._cext import BitstreamWriter
 
-from ._enums import Binop, CmpPredicate, CallingConvention, Linkage, Cast, FloatKind
+from ._enums import Binop, CmpPredicate, CallingConvention, Linkage, Cast, FloatKind, Unop
 
 
 class _BitcodeWriter(BitstreamWriter):
@@ -483,6 +483,9 @@ class BitcodeBuilder:
         assert isinstance(op, Binop)
         return self._instruction(lhs.type, codes.FUNC_CODE_INST_BINOP, "Vvi", lhs, rhs, op._value_)
 
+    def unop(self, op: Unop, x: Value) -> Value:
+        return self._instruction(x.type, codes.FUNC_CODE_INST_UNOP, "Vi", x, op._value_)
+
     def cmp(self, predicate: CmpPredicate, lhs: Value, rhs: Value) -> Value:
         assert isinstance(predicate, CmpPredicate)
         if isinstance(lhs.type, VectorType):
@@ -627,7 +630,7 @@ class BitcodeBuilder:
         f.instruction_data.append(code)
         f.instruction_data.extend(instruction)
         f.instruction_formats.append(format)
-        result = None if result_ty is None else Value(result_ty)
+        result = None if result_ty is None or isinstance(result_ty, VoidType) else Value(result_ty)
         f.instruction_results.append(result)
         f.terminated = terminator
         if terminator:

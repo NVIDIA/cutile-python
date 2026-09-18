@@ -8,7 +8,9 @@ from ._enums import (
     Cast,
     CmpPredicate,
     FloatKind,
+    FPClass,
     Linkage,
+    Unop,
 )
 
 from ._builder import (
@@ -43,6 +45,7 @@ __all__ = [
     "AnonStructType",
     "BitcodeBuilder",
     "FloatType",
+    "FPClass",
     "Function",
     "FunctionType",
     "IntegerType",
@@ -51,5 +54,6 @@ __all__ = [
     "PointerType",
     "Type",
     "TypeTable",
+    "Unop",
     "Value",
 ]

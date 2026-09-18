@@ -166,14 +166,18 @@ def vector_len_impl(x: Var[VectorTy]):
 
 
 def vector_elementwise_apply(
-    callable: Callable[[Var[ScalarTy], ...], Var[ScalarTy]], *vectors
+    callable: Callable[[Var[ScalarTy], ...], Var[ScalarTy] | tuple[Var[ScalarTy], ...]],
+    *vectors
 ):
-    vector_types = [require_vector_type(v) for v in vectors]
+    vector_shapes = [v.get_type().tensor_shape() for v in vectors]
     if len(vectors) == 0:
         raise InternalError("Expected at least one vector")
-    length = vector_types[0].length
-    if not all(v.length == length for v in vector_types[1:]):
-        raise InternalError("Expected all vectors to have same length")
+
+    shape = vector_shapes[0]
+    assert all(s == shape for s in vector_shapes), "Expected all vectors to have same length"
+
+    if shape == ():
+        return callable(*vectors)
 
     def apply_one(i: int):
         index = strictly_typed_const(i, ScalarTy(datatype.int32))
@@ -181,16 +185,30 @@ def vector_elementwise_apply(
         element = callable(*operands)
         return element
 
-    elements = tuple(apply_one(i) for i in range(length))
-    element_type = elements[0].get_type()
-    if not isinstance(element_type, ScalarTy):
-        raise InternalError(
-            "Expected elementwise application of function to vector to "
-            f"return a scalar but got {element_type}"
-        )
-    if not all(element.get_type() == element_type for element in elements[1:]):
-        raise InternalError("Expected all elementwise results to have the same type")
-    return vector_construct(VectorTy(element_type.dtype, length), elements)
+    [length] = shape
+    assert length > 0
+    result_elements = tuple(apply_one(i) for i in range(length))
+    multiple_result_vecs = isinstance(result_elements[0], tuple)
+    if multiple_result_vecs:
+        # Transpose ( (vec0_elt0, vec1_elt0, ...), (vec0_elt1, vec1_elt1, ...), ...)
+        #        -> ( (vec0_elt0, vec0_elt1, ...), (vec1_elt0, vec1_elt1, ...), ...)
+        result_elements = tuple(zip(*result_elements, strict=True))
+    else:
+        result_elements = (result_elements,)
+
+    vecs = []
+    for vec_elements in result_elements:
+        element_type = vec_elements[0].get_type()
+        if not isinstance(element_type, ScalarTy):
+            raise InternalError(
+                "Expected elementwise application of function to vector to "
+                f"return a scalar but got {element_type}"
+            )
+        if not all(element.get_type() == element_type for element in vec_elements[1:]):
+            raise InternalError("Expected all elementwise results to have the same type")
+        vecs.append(vector_construct(VectorTy(element_type.dtype, length), vec_elements))
+
+    return tuple(vecs) if multiple_result_vecs else vecs[0]
 
 
 @impl(operator.setitem, overload=(VectorTy, WILDCARD, WILDCARD))

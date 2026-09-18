@@ -18,7 +18,7 @@ from cuda.lang._passes.ir2llvm import DIRECTLY_SUPPORTED_FLOATS
 from cuda.tile import DType
 from cuda.tile._datatype import is_pointer_dtype, PointerInfo, is_integral
 from cuda.tile._ir.op_impl import require_scalar_type, make_type_checking_error
-from cuda.tile._ir.ir import Var, add_operation_variadic
+from cuda.tile._ir.ir import Var
 from cuda.tile._ir.ops import build_tuple
 from cuda.tile._ir.cast_ops import implicit_cast
 from cuda.tile import _datatype as datatype
@@ -41,20 +41,8 @@ _llvm_intrinsic_impl = RawIntrinsicImpl("llvm.")
 
 
 def _libdevice_func_impl(stub, *args: Var):
-    from cuda.lang._ir.ops import ForeignFunction
-    name = stub.__name__
-    if not name.startswith("__nv_"):
-        name = "__nv_" + name
-
-    prepared_operands, result_types, make_retval, metadata_args = match_intrinsic_signature(
-        stub, args)
-    assert len(metadata_args) == 0
-    return make_retval(add_operation_variadic(
-        ForeignFunction,
-        tuple(result_types),
-        function_name=name,
-        operands_=tuple(prepared_operands),
-    ))
+    from cuda.lang._ir.op_defs import call_libdevice_function
+    return call_libdevice_function(stub, *args)
 
 
 @dataclass
@@ -85,6 +73,16 @@ def match_intrinsic_signature(stub, args: tuple[Var, ...]) -> MatchedSignature:
             else:
                 require_vector_type(arg, ann.vector_length)
             arg = _implicit_cast_with_fallback(arg, ann.dtype, f"Invalid argument #{param_idx}")
+        elif isinstance(ann, _IntrinsicSameShapeAnnotation):
+            assert ann.index < len(type_arguments) and type_arguments[ann.index] is not None
+            actual_ty = require_scalar_or_vector_type(arg)
+            arg = _implicit_cast_with_fallback(arg, ann.dtype, f"Invalid argument #{param_idx}")
+
+            ref_ty = type_arguments[ann.index]
+            if ref_ty.tensor_shape() != actual_ty.tensor_shape():
+                raise make_type_checking_error(
+                        f"Argument shape mismatch:"
+                        f" {ref_ty.tensor_shape()} vs {actual_ty.tensor_shape()}")
         elif isinstance(ann, _IntrinsicGenericAnnotation):
             if ann.index < len(type_arguments) and type_arguments[ann.index] is not None:
                 if type_arguments[ann.index].ty != arg.get_type():
@@ -151,6 +149,16 @@ def match_intrinsic_signature(stub, args: tuple[Var, ...]) -> MatchedSignature:
                 ty = make_rank0_ty(ann.dtype)
             else:
                 ty = VectorTy(ann.dtype, ann.vector_length)
+        elif isinstance(ann, _IntrinsicSameShapeAnnotation):
+            ty = type_arguments[ann.index]
+            if ty is None:
+                raise TypeCheckingError("Failed to infer return type of intrinsic")
+
+            if isinstance(ty, ScalarTy):
+                ty = ScalarTy(ann.dtype)
+            else:
+                assert isinstance(ty, VectorTy)
+                ty = VectorTy(ann.dtype, ty.length)
         elif isinstance(ann, _IntrinsicGenericAnnotation):
             ty = type_arguments[ann.index]
             if ty is None:
@@ -178,7 +186,7 @@ def mangle_intrinsic_name(intrinsic_name: str, operand_types: Sequence[Type | No
     parts = [intrinsic_name]
     for ty, param in zip(operand_types, stub_sig.parameters.values(), strict=True):
         ann = _get_annotation(param.annotation)
-        if isinstance(ann, _IntrinsicDTypeAnnotation):
+        if isinstance(ann, _IntrinsicDTypeAnnotation | _IntrinsicSameShapeAnnotation):
             assert ty is not None
         elif isinstance(ann, _IntrinsicMetadataAnnotation):
             assert ty is None
@@ -314,11 +322,20 @@ class _IntrinsicMetadataAnnotation:
     pass
 
 
-def _get_annotation(type_hint) -> (_IntrinsicDTypeAnnotation | _IntrinsicGenericAnnotation
-                                   | _IntrinsicMetadataAnnotation):
+@dataclass
+class _IntrinsicSameShapeAnnotation:
+    dtype: DType
+    index: int
+
+
+_IntrinsicAnnotation = (_IntrinsicDTypeAnnotation | _IntrinsicGenericAnnotation
+                        | _IntrinsicMetadataAnnotation | _IntrinsicSameShapeAnnotation)
+
+
+def _get_annotation(type_hint) -> _IntrinsicAnnotation:
     assert typing.get_origin(type_hint) is Annotated, f"{type_hint} {typing.get_origin(type_hint)}"
     _, ann = typing.get_args(type_hint)
-    assert isinstance(ann, _IntrinsicDTypeAnnotation | _IntrinsicGenericAnnotation)
+    assert isinstance(ann, _IntrinsicAnnotation)
     return ann
 
 

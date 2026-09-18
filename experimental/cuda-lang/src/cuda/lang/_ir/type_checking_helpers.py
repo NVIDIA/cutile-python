@@ -135,11 +135,15 @@ def require_cluster_launch_control_token_type(var: Var) -> ScalarTy:
     return ty
 
 
-def require_pointer_type(var: Var) -> PointerTy:
+def ensure_pointer(var: Var) -> Var[PointerTy]:
     ty = var.get_type()
     if not isinstance(ty, PointerTy):
         raise make_type_checking_error(f"Expected a pointer, got {ty}", var)
-    return ty
+    return var
+
+
+def require_pointer_type(var: Var) -> PointerTy:
+    return ensure_pointer(var).get_type()
 
 
 def require_concrete_pointer_type(var: Var) -> PointerTy:

@@ -203,16 +203,11 @@ def test_math_unary_approx_fastmath(
     count = 2 if vector else 1
     inp = make_symbolic_tensor([count], datatype.float32)
     out = make_symbolic_tensor([count], datatype.float32)
-    fastmath = "afn" if approx else "none"
     approx_suffix = "_fast" if approx else ""
     libdevice_name = libdevice_name_template.format(approx=approx_suffix)
-    filecheck = (
-        "CHECK: " + op_name + "{{.+}}" + f"fastmath = #arith<fastmath <{fastmath}>>"
-    )
     compile_kernel(
         kernel,
         signature=KernelSignature([inp, out]),
-        filecheck_mlir=filecheck,
         assert_in_nvvm=f"call float @{libdevice_name}(",
     )
 
@@ -227,15 +222,10 @@ def test_math_sincos_approx_fastmath(approx):
     inp = make_symbolic_tensor([1], datatype.float32)
     sin_out = make_symbolic_tensor([1], datatype.float32)
     cos_out = make_symbolic_tensor([1], datatype.float32)
-    fastmath = "afn" if approx else "none"
     approx_suffix = "_fast" if approx else ""
-    filecheck = (
-        "CHECK: math.sincos{{.+}}" + f"fastmath = #arith<fastmath <{fastmath}>>"
-    )
     compile_kernel(
         kernel,
         signature=KernelSignature([inp, sin_out, cos_out]),
-        filecheck_mlir=filecheck,
         assert_in_nvvm=f"call void @__nv{approx_suffix}_sincosf(",
     )
 
@@ -421,19 +411,14 @@ def test_pow_math_dialect(
     lhs = make_symbolic_tensor([1], lhs_dt)
     rhs = make_symbolic_tensor([1], rhs_dt)
     out = make_symbolic_tensor([1], lhs_dt)
-    fastmath = "afn" if approx else "none"
     approx_suffix = "_fast" if approx else ""
     libdevice_name = libdevice_name_template.format(approx=approx_suffix)
     return_type = (
         "double" if libdevice_name in ("__nv_pow", "__nv_powi") else "float"
     )
-    filecheck = (
-        "CHECK: " + op_name + "{{.+}}" + f"fastmath = #arith<fastmath <{fastmath}>>"
-    )
     compile_kernel(
         kernel,
         signature=KernelSignature([lhs, rhs, out]),
-        filecheck_mlir=filecheck,
         assert_in_nvvm=f"call {return_type} @{libdevice_name}(",
     )
 
@@ -1332,8 +1317,8 @@ def test_math_abs_unsigned_int():
     def kernel():
         device_math.abs(cl.uint32(5.0))
 
-    result = compile_simt(kernel, [KernelSignature([])], keep_mlir=True)
-    assert "math.abs" not in result.mlir
+    result = compile_simt(kernel, [KernelSignature([])], keep_nvvm=True)
+    assert "abs" not in result.nvvm
 
 
 def test_vector():
@@ -1504,10 +1489,6 @@ def test_add_f32x2_target_lowering(vector_length):
 
     compile_kernel(
         kernel,
-        filecheck_mlir="""
-            CHECK: arith.addf
-            CHECK-NOT: nvvm.add.packed.f32x2
-        """,
         filecheck_ptx=f"CHECK-COUNT-{vector_length // 2}: add.f32x2",
         gpu_name="sm_100a",
         arch="compute_100a",
@@ -1515,10 +1496,6 @@ def test_add_f32x2_target_lowering(vector_length):
 
     compile_kernel(
         kernel,
-        filecheck_mlir="""
-            CHECK: arith.addf
-            CHECK-NOT: nvvm.add.packed.f32x2
-        """,
         filecheck_ptx=f"CHECK-COUNT-{vector_length}: add.f32",
         gpu_name="sm_100a",
         arch="compute_90",

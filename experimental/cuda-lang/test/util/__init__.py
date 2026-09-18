@@ -78,7 +78,6 @@ def compile_kernel(
         keep_ptx=True,
         **compile_simt_kwargs,
     )
-    assert compiled.mlir
     assert compiled.nvvm
     assert compiled.ptx
 

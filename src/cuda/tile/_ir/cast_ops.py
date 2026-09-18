@@ -3,6 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 from dataclasses import dataclass
+from typing_extensions import override
 
 from cuda.tile import TileTypeError, TileValueError
 from cuda.tile._datatype import DType, is_pointer_dtype, PointerInfo, opaque_pointer_dtype, \
@@ -18,6 +19,10 @@ from cuda.tile._memory_model import MemorySpace
 @dataclass(eq=False)
 class ReinterpretPointer(Operation, opcode="reinterpret_pointer"):
     pointer: Var[TensorLikeTy] = operand()
+
+    @override
+    def generate_llvm(self, ctx):
+        return ctx.value(self.pointer)
 
 
 def reinterpret_pointer(pointer: Var[TensorLikeTy], target_ptr_dtype: DType) -> Var:

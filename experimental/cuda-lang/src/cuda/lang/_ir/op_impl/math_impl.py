@@ -180,10 +180,7 @@ def math_truediv_impl(x: Var, y: Var, approx: Var):
             operands_=(lhs, rhs),
         )
 
-    if isinstance(ty, ScalarTy):
-        value = fast_fdividef(x, y)
-    else:
-        value = vector_elementwise_apply(fast_fdividef, x, y)
+    value = vector_elementwise_apply(fast_fdividef, x, y)
     return astype(value, dtype)
 
 
@@ -283,10 +280,7 @@ def math_mod_impl(x: Var, y: Var):
     call_x = astype(x, call_dtype)
     call_y = astype(y, call_dtype)
     scalar_fn = get_libdevice_fmod_function(call_dtype)
-    if isinstance(ty, ScalarTy):
-        value = scalar_fn(call_x, call_y)
-    else:
-        value = vector_elementwise_apply(scalar_fn, call_x, call_y)
+    value = vector_elementwise_apply(scalar_fn, call_x, call_y)
     value = astype(value, dtype)
     return float_modulo_with_corrected_sign(value, y)
 
@@ -335,8 +329,6 @@ def math_exp2_impl(x: Var, flush_to_zero: Var):
             flush_to_zero=True,
         )
 
-    if isinstance(x_ty, ScalarTy):
-        return exp2_ftz(x)
     return vector_elementwise_apply(exp2_ftz, x)
 
 

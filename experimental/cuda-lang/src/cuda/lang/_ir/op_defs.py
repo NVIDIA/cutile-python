@@ -8,6 +8,7 @@ import itertools
 from dataclasses import dataclass
 from typing import Optional, Any, TYPE_CHECKING
 
+
 from cuda.lang._enums import (
     CTAGroup,
     MemoryOrder,
@@ -23,12 +24,15 @@ from typing_extensions import override
 from cuda.tile._memory_model import MemoryScope
 from cuda.tile._ir.ir import MemoryEffect, add_operation_variadic
 from cuda.tile._ir.type import TensorLikeTy
+from cuda.tile._ir.core_ops import loosely_typed_const
+from cuda.tile._ir.arithmetic_ops import astype
 from cuda.lang import _datatype as datatype
 from cuda.lang._enums import VectorReduction
 from .ir import Operation, Var, attribute, operand
 from .type import Type, VectorTy, ScalarTy, PointerTy
 from .. import _llvm_bitcode as llvm
 from .._passes.ir2llvm import LLVMLoweringContext, type_to_llvm
+from ...tile._datatype import is_integral, is_float
 
 if TYPE_CHECKING:
     from cuda.lang._execution import kernel
@@ -65,8 +69,7 @@ class RawLLVMIntrinsic(
         elif len(self.result_vars) == 1:
             ret_ty_llvm = ctx.typeof(self.result_var)
         else:
-            ret_ty_llvm = tt.struct_anonymous(
-                    [ctx.typeof(r, storage=False) for r in self.result_vars])
+            ret_ty_llvm = tt.struct_anonymous([ctx.typeof(r) for r in self.result_vars])
         func_ty = tt.function(ret_ty_llvm, operand_types_llvm)
 
         # Generate a declaration if necessary
@@ -120,6 +123,85 @@ class MathUnaryOperation(Operation, opcode="math_unary"):
     approx: bool = attribute(default=False)
     flush_to_zero: bool = attribute(default=False)
 
+    @override
+    def rewrite_before_llvm_gen(self):
+        from cuda.lang._passes.ir2llvm import DIRECTLY_SUPPORTED_FLOATS
+        from cuda.lang._stub import llvm
+        from cuda.lang._llvm_bitcode import FPClass
+
+        if self.flush_to_zero:
+            return NotImplemented
+
+        x = self.x
+        input_dtype = x.get_type().tensor_dtype()
+        match self.fn:
+            case "floor" if input_dtype in DIRECTLY_SUPPORTED_FLOATS:
+                return call_intrinsic(llvm.floor, x)
+            case "ceil" if input_dtype in DIRECTLY_SUPPORTED_FLOATS:
+                return call_intrinsic(llvm.ceil, x)
+            case "isnan":
+                return call_intrinsic(llvm.is_fpclass, x, loosely_typed_const(FPClass.Nan))
+            case "isinf":
+                return call_intrinsic(llvm.is_fpclass, x, loosely_typed_const(FPClass.Inf))
+            case "isfinite":
+                return call_intrinsic(llvm.is_fpclass, x, loosely_typed_const(FPClass.Finite))
+            case "abs" if is_integral(input_dtype):
+                return call_intrinsic(llvm.abs, x, loosely_typed_const(False))
+            case "abs" if is_float(input_dtype):
+                return _apply_libdevice_func(x, "fabs", fast=False)
+            case "sqrt" | "rsqrt" | "exp2" | "tanh" | "cosh" | "sinh":
+                return _apply_libdevice_func(x, self.fn, fast=False)
+            case "exp" | "log" | "log2" | "sin" | "cos" | "tan":
+                return _apply_libdevice_func(x, self.fn, fast=self.approx)
+            case "sincos":
+                return _apply_libdevice_func(x, self.fn, fast=self.approx, return_via_args=2)
+
+        return NotImplemented
+
+
+def _apply_libdevice_func(x, base_name: str, fast: bool, *, return_via_args: int = 0):
+    from cuda.lang._stub import _libdevice
+    from cuda.lang._ir.op_impl.vector_impl import vector_elementwise_apply
+    from cuda.lang._ir.op_impl.pointer_impl import load_pointer
+    from cuda.lang._ir.ops import alloc_local_memory
+
+    dtype = x.get_type().tensor_dtype()
+    f32_fallback = False
+    if dtype == datatype.float64:
+        full_name = base_name
+    else:
+        full_name = f"fast_{base_name}f" if fast else f"{base_name}f"
+        if dtype != datatype.float32:
+            x = astype(x, datatype.float32)
+        f32_fallback = True
+
+    func = getattr(_libdevice, "__nv_" + full_name)
+
+    def call(t):
+        bufs = [alloc_local_memory(dtype, 1) for _ in range(return_via_args)]
+        libdevice_ret = call_libdevice_function(func, t, *bufs)
+        ret = []
+        if isinstance(libdevice_ret, Var):
+            ret.append(libdevice_ret)
+        elif isinstance(libdevice_ret, tuple):
+            ret.extend(libdevice_ret)
+        else:
+            assert libdevice_ret is None
+        ret.extend([load_pointer(t) for t in bufs])
+        return ret[0] if len(ret) == 1 else tuple(ret)
+
+    x = vector_elementwise_apply(call, x)
+    if f32_fallback:
+        x = tuple_itemwise_apply(lambda t: astype(t, dtype), x)
+    return x
+
+
+def tuple_itemwise_apply(fn, x):
+    if isinstance(x, tuple):
+        return tuple(tuple_itemwise_apply(fn, item) for item in x)
+    else:
+        return fn(x)
+
 
 @dataclass(eq=False)
 class MathBinaryOperation(Operation, opcode="math_binary"):
@@ -133,6 +215,14 @@ class MathBinaryOperation(Operation, opcode="math_binary"):
 @dataclass(eq=False)
 class VectorConstruct(Operation, opcode="vector_construct"):
     elements: tuple[Var[ScalarTy | PointerTy], ...] = operand()
+
+    @override
+    def generate_llvm(self, ctx):
+        vec = ctx.builder.constants.poison(ctx.typeof(self.result_var))
+        for i, x in enumerate(self.elements):
+            i_val = ctx.builder.constants.integer_constant(i, ctx.builder.type_table.I32)
+            vec = ctx.builder.insert_element(vec, ctx.value(x), i_val)
+        return vec
 
 
 @dataclass(eq=False)
@@ -280,6 +370,37 @@ class ForeignFunction(
     function_name: str = attribute()
     operands_: tuple[Var, ...] = operand()
 
+    @override
+    def generate_llvm(self, ctx):
+        tt = ctx.builder.type_table
+        if len(self.result_vars) == 0:
+            ret_ty_llvm = tt.VOID
+        else:
+            assert len(self.result_vars) == 1
+            ret_ty_llvm = ctx.typeof(self.result_var)
+        func_ty = tt.function(ret_ty_llvm, [ctx.typeof(x) for x in self.operands_])
+        callee = ctx.declare_function(self.function_name, func_ty)
+        llvm_res = ctx.builder.call(func_ty, callee, [ctx.value(x) for x in self.operands_])
+        return () if len(self.result_vars) == 0 else llvm_res
+
+
+def call_libdevice_function(stub, *args: Var):
+    from cuda.lang._stub._nvvm_support import match_intrinsic_signature
+
+    name = stub.__name__
+    if not name.startswith("__nv_"):
+        name = "__nv_" + name
+
+    prepared_operands, result_types, make_retval, metadata_args = match_intrinsic_signature(
+        stub, args)
+    assert len(metadata_args) == 0
+    return make_retval(add_operation_variadic(
+        ForeignFunction,
+        tuple(result_types),
+        function_name=name,
+        operands_=tuple(prepared_operands),
+    ))
+
 
 @dataclass(eq=False)
 class VectorGetItem(
@@ -287,6 +408,10 @@ class VectorGetItem(
 ):
     x: Var[VectorTy] = operand()
     index: Var[ScalarTy] = operand()
+
+    @override
+    def generate_llvm(self, ctx):
+        return ctx.builder.extract_element(ctx.value(self.x), ctx.value(self.index))
 
 
 @dataclass(eq=False)
