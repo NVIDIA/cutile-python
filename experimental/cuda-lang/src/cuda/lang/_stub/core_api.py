@@ -13,7 +13,7 @@ from cuda.tile._stub import (
     static_assert,
     static_eval,
 )
-from cuda.lang._enums import AtomicOp, MemoryOrder
+from cuda.lang._enums import AtomicOp, MemoryOrder, ShuffleKind
 from cuda.tile._memory_model import MemoryScope, MemorySpace
 from cuda.lang._datatype import DType, uint32, uint64
 from .types import Pointer, Scalar, Vector
@@ -568,33 +568,36 @@ def atomic_rmw(
 
 
 @stub
-def shfl_sync(value: int, src_lane: int, width: int = 32, mask: int = FULL_MASK) -> int:
-    """
-    Return ``value`` from lane ``src_lane`` within the logical warp subdivision.
-    """
+def shuffle_sync(
+    kind: ShuffleKind,
+    value: T,
+    offset: int,
+    width: int = 32,
+    mask: int = FULL_MASK,
+) -> tuple[T, bool]:
+    """Exchange register data between threads of a warp.
 
+    Args:
+        kind: Compile-time constant `ShuffleKind` indicating the shuffle operation.
+        value: This lane's input. Must be an ``int32``, ``uint32``, or ``float32``
+            scalar. The returned value has the same type.
+        offset: specifies a source lane or source lane offset
+            (depending on kind).
+        width: Sub-warp width: 1, 2, 4, 8, 16, or 32.
+        mask: Integer participation mask. Defaults to all 32 lanes.
 
-@stub
-def shfl_up_sync(value: int, delta: int, width: int = 32, mask: int = FULL_MASK) -> int:
-    """
-    Return ``value`` from the lane ``delta`` positions lower in the logical warp
-    subdivision.
-    """
+    Returns:
+        ``(shuffled_value, in_range)``. ``shuffled_value`` is the result of
+        the shuffle operation and ``in_range`` is a predicate indicating if
+        the computed source lane index is valid.
 
+    .. testcode::
+        :template: kernel_wrapper.py
 
-@stub
-def shfl_down_sync(value: int, delta: int, width: int = 32, mask: int = FULL_MASK) -> int:
-    """
-    Return ``value`` from the lane ``delta`` positions higher in the logical
-    warp subdivision.
-    """
-
-
-@stub
-def shfl_xor_sync(value: int, lane_mask: int, width: int = 32, mask: int = FULL_MASK) -> int:
-    """
-    Return ``value`` from the lane addressed by XORing the caller lane with
-    ``lane_mask`` within the logical warp subdivision.
+        lane = cl.lane_index()
+        value, in_range = cl.shuffle_sync(cl.ShuffleKind.INDEX, lane, 0)
+        cl.assert_(value == 0)
+        cl.assert_(in_range)
     """
 
 

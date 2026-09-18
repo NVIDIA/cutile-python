@@ -788,7 +788,7 @@ def _fmha_prefill_kernel(
     tid = cl.thread_index(0)
     # Broadcasting lane 0's warp index lets the backend treat every role
     # predicate as warp-uniform.
-    warp = cl.shfl_sync(tid // WARP_SIZE, 0)
+    warp = cl.shuffle_sync(cl.ShuffleKind.INDEX, tid // WARP_SIZE, 0)[0]
     lane = tid % WARP_SIZE
     if variable_length:
         q_tmap = cl.tensor_map_tiled(

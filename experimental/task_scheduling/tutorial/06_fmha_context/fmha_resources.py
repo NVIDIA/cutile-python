@@ -123,13 +123,17 @@ class FmhaConfig:
 
 
 def nvvm_threadquad_reduction_max(value):
-    value = cl.maximum(value, cl.shfl_xor_sync(value, 2))
-    return cl.maximum(value, cl.shfl_xor_sync(value, 1))
+    other, _ = cl.shuffle_sync(cl.ShuffleKind.XOR, value, 2)
+    value = cl.maximum(value, other)
+    other, _ = cl.shuffle_sync(cl.ShuffleKind.XOR, value, 1)
+    return cl.maximum(value, other)
 
 
 def nvvm_threadquad_reduction_sum(value):
-    value += cl.shfl_xor_sync(value, 2)
-    return value + cl.shfl_xor_sync(value, 1)
+    other, _ = cl.shuffle_sync(cl.ShuffleKind.XOR, value, 2)
+    value += other
+    other, _ = cl.shuffle_sync(cl.ShuffleKind.XOR, value, 1)
+    return value + other
 
 
 def ptx_mma_m16n8k16_f32(a, b, c, is_bf16):

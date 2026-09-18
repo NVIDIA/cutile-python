@@ -202,18 +202,18 @@ class StaticPersistentTileScheduler:
             cluster_m, cluster_n = cluster_minor, cluster_major
         shape_m, shape_n, _ = self.params.cluster_shape_mnk
         cta_m, cta_n, _ = self.cta_id_in_cluster
+        is_valid, _ = cl.shuffle_sync(
+            cl.ShuffleKind.INDEX,
+            cl.int32(work_idx < self.params.problem_cluster_count),
+            0,
+        )
         return WorkTileInfo(
             (
                 cluster_m * shape_m + cta_m,
                 cluster_n * shape_n + cta_n,
                 batch,
             ),
-            cl.bool_(
-                cl.shfl_sync(
-                    cl.int32(work_idx < self.params.problem_cluster_count),
-                    0,
-                )
-            ),
+            cl.bool_(is_valid),
         )
 
     def initial_work_tile_info(self) -> WorkTileInfo:

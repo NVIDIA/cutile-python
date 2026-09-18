@@ -7,7 +7,7 @@ from dataclasses import dataclass
 
 from typing_extensions import override
 
-from cuda.lang._enums import AtomicOp, MemoryOrder
+from cuda.lang._enums import AtomicOp, MemoryOrder, ShuffleKind
 from cuda.tile._memory_model import MemoryScope
 from cuda.tile._ir.op_impl import (
     require_tuple_type,
@@ -720,18 +720,16 @@ def vote_ballot_sync_impl(predicate: Var, mask: Var) -> Var:
     return vote_sync_impl("ballot", predicate, mask)
 
 
-def shfl_sync_impl(mode: str, mask: Var, value: Var, operand: Var, width: Var) -> Var:
-    """
-    Implements the instructions as the psuedocode in the NVVM IR spec.
-    https://docs.nvidia.com/cuda/archive/12.3.1/nvvm-ir-spec/index.html#data-movement
-
-    See also Clang's lowering in __clang_cuda_intrinsics.h.
-    """
+@impl(core_api.shuffle_sync)
+def shuffle_sync_impl(kind: Var, value: Var, offset: Var, width: Var, mask: Var) -> Var:
+    # Use Clang's width encoding from __clang_cuda_intrinsics.h.
+    kind = require_constant_enum(kind, ShuffleKind)
     valid_value_dtypes = (datatype.int32, datatype.uint32, datatype.float32)
     value_ty = require_scalar_type(
         value,
         lambda dtype: dtype in valid_value_dtypes,
-        f"Expected shuffle value dtype to be one of {valid_value_dtypes}",
+        "Expected shuffle value dtype to be one of "
+        + ", ".join(str(i) for i in valid_value_dtypes),
     )
     require_scalar_type(
         mask,
@@ -740,11 +738,11 @@ def shfl_sync_impl(mode: str, mask: Var, value: Var, operand: Var, width: Var) -
     )
     mask = astype(mask, datatype.int32)
     require_scalar_type(
-        operand,
+        offset,
         datatype.is_integral,
-        "Expected shuffle lane mask dtype to be an integer",
+        "Expected shuffle offset dtype to be an integer",
     )
-    operand = astype(operand, datatype.int32)
+    offset = astype(offset, datatype.int32)
     width = require_constant_int(width)
     if width not in (1, 2, 4, 8, 16, 32):
         raise TypeCheckingError(
@@ -752,40 +750,21 @@ def shfl_sync_impl(mode: str, mask: Var, value: Var, operand: Var, width: Var) -
         )
 
     WARP_SIZE = 32
-    clamp = 0 if mode == 'up' else 0x1F
+    clamp = 0 if kind == ShuffleKind.UP else 0x1F
     mask_and_clamp = strictly_typed_const(
         ((WARP_SIZE - width) << 8) | clamp,
         ScalarTy(int32),
     )
 
     suffix = "i32" if datatype.is_integral(value_ty.dtype) else "f32"
-    intrinsic = f"llvm.nvvm.shfl.sync.{mode}.{suffix}"
-    return add_operation(
+    intrinsic = f"llvm.nvvm.shfl.sync.{kind.value}.{suffix}p"
+    results = add_operation_variadic(
         RawLLVMIntrinsic,
-        value_ty,
+        (value_ty, ScalarTy(bool_)),
         intrinsic=intrinsic,
-        operands_=(mask, value, operand, mask_and_clamp),
+        operands_=(mask, value, offset, mask_and_clamp),
     )
-
-
-@impl(core_api.shfl_sync)
-def shfl_sync_idx_impl(value: Var, src_lane: Var, width: Var, mask: Var) -> Var:
-    return shfl_sync_impl("idx", mask, value, src_lane, width)
-
-
-@impl(core_api.shfl_up_sync)
-def shfl_sync_up_impl(value: Var, delta: Var, width: Var, mask: Var) -> Var:
-    return shfl_sync_impl("up", mask, value, delta, width)
-
-
-@impl(core_api.shfl_down_sync)
-def shfl_sync_down_impl(value: Var, delta: Var, width: Var, mask: Var) -> Var:
-    return shfl_sync_impl("down", mask, value, delta, width)
-
-
-@impl(core_api.shfl_xor_sync)
-def shfl_sync_xor_impl(value: Var, lane_mask: Var, width: Var, mask: Var) -> Var:
-    return shfl_sync_impl("bfly", mask, value, lane_mask, width)
+    return build_tuple(results)
 
 
 @impl(getattr, overload=(DTypeSpec, "bitwidth"))

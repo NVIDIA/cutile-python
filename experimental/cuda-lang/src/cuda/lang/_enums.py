@@ -189,6 +189,19 @@ class BarrierReductionKind(Enum):
     OR = auto()
 
 
+class ShuffleKind(Enum):
+    """Source-lane selection for :func:`cuda.lang.shuffle_sync`."""
+
+    INDEX = "idx"
+    """Read from an indexed lane within each sub-warp."""
+    UP = "up"
+    """Read from a lane at a lower index."""
+    DOWN = "down"
+    """Read from a lane at a higher index."""
+    XOR = "bfly"
+    """Select the source lane by XORing the lane index with the offset."""
+
+
 class VectorReduction(Enum):
     """Operations that reduce a vector to one scalar."""
 

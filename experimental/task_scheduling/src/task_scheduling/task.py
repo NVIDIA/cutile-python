@@ -794,7 +794,8 @@ def _run_device_nodes(
 def _task_warp_index():
     """Return a warp-uniform physical index for one-dimensional task blocks."""
     warp_index = cl.thread_index(0) // cl.lane_count()
-    return cl.shfl_sync(warp_index, 0)
+    warp_index, _ = cl.shuffle_sync(cl.ShuffleKind.INDEX, warp_index, 0)
+    return warp_index
 
 
 @dataclass(frozen=True)
@@ -1251,8 +1252,8 @@ class DeviceTaskManager:
         )
         cluster_smem_base = None
         if self.barrier_uses_cluster and smem_base is not None:
-            cluster_smem_address = cl.shfl_sync(
-                cl.bitcast(smem_base.pointer(), cl.uint32), 0
+            cluster_smem_address, _ = cl.shuffle_sync(
+                cl.ShuffleKind.INDEX, cl.bitcast(smem_base.pointer(), cl.uint32), 0
             )
             cluster_smem_pointer = cl.bitcast(
                 cluster_smem_address,

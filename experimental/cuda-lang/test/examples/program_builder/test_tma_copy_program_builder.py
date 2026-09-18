@@ -116,7 +116,7 @@ class TaskProgram(ProgramFragment):
     tasks: tuple[Task, ...]
 
     def __call__(self, context):
-        warp_idx = cl.shfl_sync(cl.warp_index(), 0)
+        warp_idx, _ = cl.shuffle_sync(cl.ShuffleKind.INDEX, cl.warp_index(), 0)
         for task in cl.static_iter(self.tasks):
             selected = (
                 warp_idx >= task.warp_idx and warp_idx < task.warp_idx + task.num_warps

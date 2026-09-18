@@ -23,7 +23,7 @@ C = 50257
 
 def warp_reduce(val: cl.float32, op) -> cl.float32:
     for offset in cl.static_iter([16, 8, 4, 2, 1]):
-        shuffled = cl.shfl_down_sync(val, offset)
+        shuffled, _ = cl.shuffle_sync(cl.ShuffleKind.DOWN, val, offset)
         val = op(val, shuffled)
     return val
 

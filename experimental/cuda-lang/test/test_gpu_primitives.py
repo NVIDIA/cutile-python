@@ -12,6 +12,7 @@ from cuda.lang.compilation import KernelSignature
 
 from .util import (
     compile_kernel,
+    make_symbolic_scalar,
     make_symbolic_tensor,
     require_blackwell_or_newer,
     require_hopper_or_newer,
@@ -297,7 +298,7 @@ def test_lane_count_full_mask_and_ptx_comment():
     def kernel(out):
         tidx = cl.thread_index(0)
         cl.ptx_comment(ptx_comment)
-        value = cl.shfl_sync(tidx, 7)
+        value, _ = cl.shuffle_sync(cl.ShuffleKind.INDEX, tidx, 7)
         if tidx == 0:
             out[0] = cl.lane_count()
             out[1] = value
@@ -527,20 +528,18 @@ class TestShuffle:
     single-warp sanity checks.
     """
 
-    def test_shfl_up_scan_width_8(self):
+    def test_shuffle_up_scan_width_8(self):
         @cl.kernel
         def kernel(inp, out):
             tid = cl.thread_index(0)
-            lane = tid % 32
-            sublane = lane % 8
             value = cl.int32(inp[tid])
             width = cl.int32(8)
             mask = cl.int32(0xFFFFFFFF)
 
             delta = cl.int32(1)
             for _ in range(4):
-                other = cl.shfl_up_sync(value, delta, width, mask=mask)
-                if sublane >= delta:
+                other, in_range = cl.shuffle_sync(cl.ShuffleKind.UP, value, delta, width, mask)
+                if in_range:
                     value += other
                 delta *= 2
 
@@ -555,51 +554,141 @@ class TestShuffle:
         )
         assert (out.cpu() == expected).all()
 
-    def test_shfl_sync_idx(self):
+    @pytest.mark.parametrize("kind", list(cl.ShuffleKind))
+    @pytest.mark.parametrize("width", (1, 2, 4, 8, 16, 32))
+    @pytest.mark.parametrize("dtype, torch_dtype", (
+        (cl.int32, torch.int32),
+        (cl.uint32, torch.uint32),
+        (cl.float32, torch.float32),
+    ))
+    def test_shuffle_value_and_predicate(self, kind, width, dtype, torch_dtype):
+        @cl.kernel
+        def kernel(inp, out, predicates, offset):
+            lane = cl.lane_index()
+            value, in_range = cl.shuffle_sync(kind, inp[lane], offset, width)
+            cl.static_assert(cl.dtype_of(value) == dtype)
+            cl.static_assert(cl.dtype_of(in_range) == cl.bool_)
+            out[lane] = value
+            predicates[lane] = in_range
+
+        values = torch.arange(32, dtype=torch.int64)
+        if dtype == cl.uint32:
+            values += 0x80000000
+        elif dtype == cl.float32:
+            values = values.to(torch.float32) * 0.25 - 4
+        else:
+            values -= 16
+        inp = values.to(device="cuda", dtype=torch_dtype)
+        out = torch.empty_like(inp)
+        predicates = torch.empty(32, dtype=torch.bool, device="cuda")
+        for offset in (0, 1, 4, 16, 31, 33, -1):
+            cl.launch(torch.cuda.current_stream(), (1,), (32,), kernel,
+                      (inp, out, predicates, offset))
+            sources = []
+            expected_predicates = []
+            for lane in range(32):
+                start = lane // width * width
+                operand = offset & 31
+                if kind == cl.ShuffleKind.INDEX:
+                    source = start + operand % width
+                    in_range = True
+                elif kind == cl.ShuffleKind.UP:
+                    source = lane - operand
+                    in_range = source >= start
+                elif kind == cl.ShuffleKind.DOWN:
+                    source = lane + operand
+                    in_range = source < start + width
+                else:
+                    source = lane ^ operand
+                    in_range = source < start + width
+                sources.append(source if in_range else lane)
+                expected_predicates.append(in_range)
+            # Compare in a type that also supports indexing unsigned values.
+            torch.testing.assert_close(out.cpu().to(values.dtype), values[sources])
+            torch.testing.assert_close(predicates.cpu(), torch.tensor(expected_predicates))
+
+    @pytest.mark.parametrize("kind", list(cl.ShuffleKind))
+    def test_shuffle_partial_mask(self, kind):
+        @cl.kernel
+        def kernel(out, predicates, mask):
+            lane = cl.lane_index()
+            if lane < 16:
+                value, in_range = cl.shuffle_sync(kind, lane, 1, width=16, mask=mask)
+                out[lane] = value
+                predicates[lane] = in_range
+
+        out = torch.empty(16, dtype=torch.int32, device="cuda")
+        predicates = torch.empty(16, dtype=torch.bool, device="cuda")
+        cl.launch(torch.cuda.current_stream(), (1,), (32,), kernel,
+                  (out, predicates, 0xFFFF))
+        expected = torch.arange(16, dtype=torch.int32)
+        expected_predicates = torch.ones(16, dtype=torch.bool)
+        if kind == cl.ShuffleKind.INDEX:
+            expected.fill_(1)
+        elif kind == cl.ShuffleKind.UP:
+            expected[1:] -= 1
+            expected_predicates[0] = False
+        elif kind == cl.ShuffleKind.DOWN:
+            expected[:-1] += 1
+            expected_predicates[-1] = False
+        else:
+            expected ^= 1
+        torch.testing.assert_close(out.cpu(), expected)
+        torch.testing.assert_close(predicates.cpu(), expected_predicates)
+
+    @pytest.mark.parametrize("kind", list(cl.ShuffleKind))
+    @pytest.mark.parametrize("dtype", (cl.int32, cl.uint32, cl.float32))
+    def test_shuffle_intrinsic(self, kind, dtype):
+        @cl.kernel
+        def kernel(inp, out, predicates, offset):
+            lane = cl.lane_index()
+            value, in_range = cl.shuffle_sync(kind, inp[lane], offset)
+            out[lane] = value
+            predicates[lane] = in_range
+
+        suffix = "f32p" if dtype == cl.float32 else "i32p"
+        result_type = "float" if dtype == cl.float32 else "i32"
+        compile_kernel(
+            kernel,
+            signature=KernelSignature([
+                make_symbolic_tensor(32, dtype),
+                make_symbolic_tensor(32, dtype),
+                make_symbolic_tensor(32, cl.bool_),
+                make_symbolic_scalar(cl.int32),
+            ]),
+            assert_in_nvvm=(f"llvm.nvvm.shfl.sync.{kind.value}.{suffix}",
+                            f"{{ {result_type}, i1 }}"),
+            assert_in_ptx=f"shfl.sync.{kind.value}.b32",
+        )
+
+    @pytest.mark.parametrize("result_index", (0, 1))
+    def test_shuffle_single_result(self, result_index):
         @cl.kernel
         def kernel(out):
-            lane = cl.thread_index(0)
-            out[lane] = cl.shfl_sync(lane, 4)
+            lane = cl.lane_index()
+            result = cl.shuffle_sync(cl.ShuffleKind.UP, lane, 1)
+            out[lane] = result[result_index]
 
-        out = torch.zeros(32, dtype=torch.int32, device="cuda:0")
+        out = torch.empty(32, dtype=torch.int32, device="cuda")
         cl.launch(torch.cuda.current_stream(), (1,), (32,), kernel, (out,))
-        expected = torch.full((32,), 4, dtype=torch.int32)
-        assert (out.cpu() == expected).all()
+        if result_index == 0:
+            expected = torch.arange(32, dtype=torch.int32) - 1
+            expected[0] = 0
+        else:
+            expected = torch.ones(32, dtype=torch.int32)
+            expected[0] = 0
+        torch.testing.assert_close(out.cpu(), expected)
 
-    def test_shfl_down_sync(self):
-        @cl.kernel
-        def kernel(out):
-            lane = cl.thread_index(0)
-            out[lane] = cl.shfl_down_sync(lane, 4)
-
-        out = torch.zeros(32, dtype=torch.int32, device="cuda:0")
-        cl.launch(torch.cuda.current_stream(), (1,), (32,), kernel, (out,))
-        expected = torch.arange(32, dtype=torch.int32)
-        expected[:-4] += 4
-        assert (out.cpu() == expected).all()
-
-    def test_shfl_xor_sync(self):
-        @cl.kernel
-        def kernel(out):
-            lane = cl.thread_index(0)
-            out[lane] = cl.shfl_xor_sync(lane, 16, mask=cl.int32(0xFFFFFFFF))
-
-        out = torch.zeros(32, dtype=torch.int32, device="cuda:0")
-        cl.launch(torch.cuda.current_stream(), (1,), (32,), kernel, (out,))
-        expected = torch.tensor([lane ^ 16 for lane in range(32)], dtype=torch.int32)
-        assert (out.cpu() == expected).all()
-
-    @pytest.mark.parametrize(
-        "op", (cl.shfl_down_sync, cl.shfl_xor_sync, cl.shfl_sync, cl.shfl_up_sync)
-    )
-    def test_shfl_primitive_mask_persists(self, op):
+    @pytest.mark.parametrize("kind", list(cl.ShuffleKind))
+    def test_shuffle_mask_persists(self, kind):
         @cl.kernel
         def kernel(tensor):
-            i1 = op(1, 1, 1, mask=1234)
-            i2 = op(1, 1, 1, mask=4321)
-            i2 = op(1, 1, 1)  # omitted, ensure it's FULL_MASK
+            i1, _ = cl.shuffle_sync(kind, 1, 1, 1, mask=1234)
+            cl.shuffle_sync(kind, 1, 1, 1, mask=4321)
+            i2, _ = cl.shuffle_sync(kind, 1, 1, 1)
             tensor[0] = i1 + i2
 
+        # Compile only: these masks are not valid for execution by a full warp.
         compile_kernel(
             kernel,
             signature=KernelSignature([make_symbolic_tensor(1, cl.int32)]),
@@ -609,6 +698,63 @@ class TestShuffle:
             CHECK: -1
             """,
         )
+
+    @pytest.mark.parametrize("kind", ("up", 1, cl.AtomicOp.ADD))
+    def test_shuffle_invalid_kind(self, kind):
+        @cl.kernel
+        def kernel():
+            cl.shuffle_sync(kind, 1, 1)
+
+        compile_kernel(kernel, raises=pytest.raises(TypeCheckingError, match="ShuffleKind"))
+
+    def test_shuffle_runtime_kind(self):
+        @cl.kernel
+        def kernel(kind):
+            cl.shuffle_sync(kind, 1, 1)
+
+        compile_kernel(
+            kernel,
+            signature=KernelSignature([make_symbolic_scalar(cl.int32)]),
+            raises=pytest.raises(TypeCheckingError),
+        )
+
+    @pytest.mark.parametrize("width", (0, 3, 33, 64))
+    def test_shuffle_invalid_width(self, width):
+        @cl.kernel
+        def kernel():
+            cl.shuffle_sync(cl.ShuffleKind.UP, 1, 1, width)
+
+        compile_kernel(kernel, raises=pytest.raises(TypeCheckingError, match="power of two"))
+
+    def test_shuffle_runtime_width(self):
+        @cl.kernel
+        def kernel(width):
+            cl.shuffle_sync(cl.ShuffleKind.UP, 1, 1, width)
+
+        compile_kernel(
+            kernel,
+            signature=KernelSignature([make_symbolic_scalar(cl.int32)]),
+            raises=pytest.raises(TypeCheckingError),
+        )
+
+    @pytest.mark.parametrize("dtype", (cl.int16, cl.int64, cl.float16, cl.float64, cl.bool_))
+    def test_shuffle_invalid_value_dtype(self, dtype):
+        @cl.kernel
+        def kernel():
+            cl.shuffle_sync(cl.ShuffleKind.UP, dtype(1), 1)
+
+        compile_kernel(kernel, raises=pytest.raises(TypeCheckingError, match="value dtype"))
+
+    @pytest.mark.parametrize("argument", ("offset", "mask"))
+    def test_shuffle_invalid_control_dtype(self, argument):
+        @cl.kernel
+        def kernel():
+            if argument == "offset":
+                cl.shuffle_sync(cl.ShuffleKind.UP, 1, 1.0)
+            else:
+                cl.shuffle_sync(cl.ShuffleKind.UP, 1, 1, mask=1.0)
+
+        compile_kernel(kernel, raises=pytest.raises(TypeCheckingError, match=f"{argument} dtype"))
 
 
 class TestBarrierSync:

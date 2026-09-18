@@ -197,10 +197,14 @@ Warp shuffle
    :toctree: generated
    :nosignatures:
 
-    shfl_sync
-    shfl_up_sync
-    shfl_down_sync
-    shfl_xor_sync
+    shuffle_sync
+
+.. autosummary::
+   :toctree: generated
+   :nosignatures:
+   :template: autosummary/class_no_init.rst
+
+    ShuffleKind
 
 
 Warp vote

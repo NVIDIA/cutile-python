@@ -1011,7 +1011,7 @@ def make_fmha_kernel(device_task_manager, num_kv_tiles, q_offset, cfg, heads):
         cum_seqlen_k=None,
         page_idx_kv=None,
     ):
-        warp_idx = cl.shfl_sync(cl.thread_index(0) // 32, 0)
+        warp_idx, _ = cl.shuffle_sync(cl.ShuffleKind.INDEX, cl.thread_index(0) // 32, 0)
         if warp_idx == fmha_config.load_warp_id and cl.elect_sync():
             cl.prefetch_tensor_map(tma_q_desc)
             cl.prefetch_tensor_map(tma_k_desc)

@@ -86,7 +86,7 @@ def _kernel(
     tid = cl.thread_index(0)
     # Broadcast the logical warp index from lane 0 so ptxas can keep the
     # warp-role control flow and TCGEN operands in uniform registers.
-    warp = cl.shfl_sync(tid // WARP_SIZE, 0)
+    warp, _ = cl.shuffle_sync(cl.ShuffleKind.INDEX, tid // WARP_SIZE, 0)
     block_m = cl.block_index(0)
     block_n = cl.block_index(1)
     batch = cl.block_index(2)

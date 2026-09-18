@@ -32,13 +32,15 @@ MMA_K = 16
 
 def warp_reduce_max(value):
     for offset in cl.static_iter((16, 8, 4, 2, 1)):
-        value = cl.maximum(value, cl.shfl_down_sync(value, offset))
+        other, _ = cl.shuffle_sync(cl.ShuffleKind.DOWN, value, offset)
+        value = cl.maximum(value, other)
     return value
 
 
 def warp_reduce_sum(value):
     for offset in cl.static_iter((16, 8, 4, 2, 1)):
-        value += cl.shfl_down_sync(value, offset)
+        other, _ = cl.shuffle_sync(cl.ShuffleKind.DOWN, value, offset)
+        value += other
     return value
 
 
