@@ -279,6 +279,15 @@ def dtype_constructor(new_dtype: DType, x: Var) -> Var[TensorLikeTy]:
     return astype(x, new_dtype)
 
 
+@impl(bool)
+def bool_constructor_impl(x: Var) -> Var:
+    if x.is_constant():
+        return loosely_typed_const(bool(x.get_constant()))
+
+    x = ensure_scalar(x, datatype.is_numeric)
+    return astype(x, bool_)
+
+
 def promote_and_broadcast_to(x: Var, ty: TensorLikeTy) -> Var[TensorLikeTy]:
     return broadcast_to(astype(x, ty.tensor_dtype()), ty.tensor_shape())
 

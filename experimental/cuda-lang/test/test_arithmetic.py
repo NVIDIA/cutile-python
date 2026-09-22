@@ -6,7 +6,7 @@ import pytest
 import torch
 import operator
 import cuda.lang as cl
-from cuda.lang._datatype import is_integral, is_signed, to_torch_dtype
+from cuda.lang._datatype import is_float, is_integral, is_signed, to_torch_dtype
 from cuda.tile._datatype import numeric_dtype_category
 
 
@@ -36,12 +36,18 @@ def _is_integral_dtype(dtype):
     return is_integral(cl_dtype)
 
 
+def _is_float_dtype(dtype):
+    _, cl_dtype = dtype
+    return is_float(cl_dtype)
+
+
 def _is_signed_integral_dtype(dtype):
     _, cl_dtype = dtype
     return is_integral(cl_dtype) and is_signed(cl_dtype)
 
 
 _INTEGRAL_DTYPES = list(filter(_is_integral_dtype, _ALL_ARITHMETIC_DTYPES))
+_FLOAT_DTYPES = list(filter(_is_float_dtype, _ALL_ARITHMETIC_DTYPES))
 _SIGNED_INTEGRAL_DTYPES = list(
     filter(_is_signed_integral_dtype, _ALL_ARITHMETIC_DTYPES)
 )
@@ -66,6 +72,40 @@ def test_type_conversions(from_dtype, to_dtype):
     b = torch.tensor([2], dtype=from_torch_dtype, device="cuda:0")
     cl.launch(torch.cuda.current_stream(), (1,), (1,), kernel, (a, b))
     assert a[0] == numeric_dtype_category(to_cl_dtype).pytype(b[0])
+
+
+@pytest.mark.parametrize("dtype", _INTEGRAL_DTYPES)
+def test_bool_from_integer(dtype):
+    torch_dtype, _ = dtype
+
+    @cl.kernel
+    def kernel(inp, out):
+        out[0] = bool(inp[0])
+        out[1] = bool(inp[1])
+
+    inp = torch.tensor([0, 2], dtype=torch_dtype, device="cuda:0")
+    out = torch.empty(2, dtype=torch.bool, device="cuda:0")
+    cl.launch(torch.cuda.current_stream(), (1,), (1,), kernel, (inp, out))
+    assert out.cpu().tolist() == [False, True]
+
+
+@pytest.mark.parametrize("dtype", _FLOAT_DTYPES)
+def test_bool_from_float(dtype):
+    torch_dtype, _ = dtype
+
+    @cl.kernel
+    def kernel(inp, out):
+        out[0] = bool(inp[0])
+        out[1] = bool(inp[1])
+        out[2] = bool(inp[2])
+        out[3] = bool(inp[3])
+        out[4] = bool(inp[4])
+
+    inp = torch.tensor([0.0, -0.0, 0.5, -2.5, float("nan")],
+                       dtype=torch_dtype, device="cuda:0")
+    out = torch.empty(5, dtype=torch.bool, device="cuda:0")
+    cl.launch(torch.cuda.current_stream(), (1,), (1,), kernel, (inp, out))
+    assert out.cpu().tolist() == [False, False, True, True, True]
 
 
 @pytest.mark.parametrize(
