@@ -47,6 +47,12 @@ class Scalar(Generic[T]):
     def __xor__(self, other):
         return cl_math.bitwise_xor(self, other)
 
+    def __lshift__(self, other):
+        return cl_math.bitwise_lshift(self, other)
+
+    def __rshift__(self, other):
+        return cl_math.bitwise_rshift(self, other)
+
     def __radd__(self, other):
         return cl_math.add(other, self)
 
@@ -76,6 +82,12 @@ class Scalar(Generic[T]):
 
     def __rxor__(self, other):
         return cl_math.bitwise_xor(other, self)
+
+    def __rlshift__(self, other):
+        return cl_math.bitwise_lshift(other, self)
+
+    def __rrshift__(self, other):
+        return cl_math.bitwise_rshift(other, self)
 
     def __ge__(self, other):
         return cl_math.greater_equal(self, other)

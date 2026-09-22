@@ -62,6 +62,19 @@ def test_static_iter():
     assert a.tolist() == [10, 20]
 
 
+def test_static_eval_shift_operators():
+    @cl.kernel
+    def kern(x, y):
+        value = x[0]
+        y[0] = cl.static_eval(value << 3)
+        y[1] = cl.static_eval(value >> 2)
+
+    x = torch.tensor([-16], dtype=torch.int32, device="cuda:0")
+    y = torch.zeros((2,), dtype=torch.int32, device="cuda:0")
+    cl.launch(torch.cuda.current_stream(), (1,), (1,), kern, (x, y,))
+    assert y.tolist() == [-128, -4]
+
+
 def test_static_eval_pointer_arithmetic():
     @cl.kernel
     def kern(a):

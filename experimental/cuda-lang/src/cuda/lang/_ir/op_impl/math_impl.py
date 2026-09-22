@@ -39,6 +39,7 @@ from cuda.tile._ir.arithmetic_ops import (
     binary_arithmetic_tensorlike,
     binary_arithmetic_tensorlike_raw,
     binary_bitwise_tensorlike,
+    bitwise_shift_tensorlike,
     compare_tensorlike,
     mod_tensorlike,
     promote_and_broadcast_to,
@@ -193,6 +194,14 @@ def math_binary_bitwise_impl(fn: str, x: Var, y: Var):
     require_scalar_or_vector_type(x)
     require_scalar_or_vector_type(y)
     return binary_bitwise_tensorlike(fn, x, y)
+
+
+@impl(cl_math.bitwise_lshift, fixed_args=["lshift"])
+@impl(cl_math.bitwise_rshift, fixed_args=["rshift"])
+def math_bitwise_shift_impl(fn: str, x: Var, y: Var):
+    require_scalar_or_vector_type(x)
+    require_scalar_or_vector_type(y)
+    return bitwise_shift_tensorlike(fn, x, y)
 
 
 @impl(cl_math.bitwise_not)

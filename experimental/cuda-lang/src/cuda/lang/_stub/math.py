@@ -329,6 +329,16 @@ def bitwise_xor(x, y, /):
 
 
 @stub(static_eval_ok=True, compiled_host=True)
+def bitwise_lshift(x, y, /):
+    """Compute ``x << y``."""
+
+
+@stub(static_eval_ok=True, compiled_host=True)
+def bitwise_rshift(x, y, /):
+    """Compute ``x >> y``."""
+
+
+@stub(static_eval_ok=True, compiled_host=True)
 def bitwise_not(x, /):
     """Compute ``~x``."""
 
