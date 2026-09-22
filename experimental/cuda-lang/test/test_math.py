@@ -1693,3 +1693,44 @@ def test_fma_f32x2_odd_vector_fallback():
         gpu_name="sm_100a",
         arch="compute_100a",
     )
+
+
+@pytest.mark.parametrize("mode", ["scalar_condition", "scalar_values", "vectors"])
+def test_math_where_broadcast(mode):
+    @cl.kernel
+    def kernel(inp, out):
+        values = inp.pointer().load(count=4)
+        if mode == "scalar_condition":
+            result = cl.where(inp[0] > 0, values, -values)
+        elif mode == "scalar_values":
+            result = cl.where(values > 0, cl.float32(3), cl.float32(-2))
+        else:
+            result = cl.where(values > 0, values, -values)
+        out.pointer().store(result)
+
+    inp = torch.tensor([-2., -1., 0., 3.], device="cuda")
+    out = torch.empty_like(inp)
+    cl.launch(torch.cuda.current_stream(), (1,), (1,), kernel, (inp, out))
+    if mode == "scalar_condition":
+        expected = -inp
+    elif mode == "scalar_values":
+        expected = torch.where(inp > 0, 3., -2.)
+    else:
+        expected = torch.where(inp > 0, inp, -inp)
+    torch.testing.assert_close(out, expected, rtol=0, atol=0)
+
+
+@pytest.mark.parametrize("invalid", ["condition_dtype", "vector_length"])
+def test_math_where_invalid(invalid):
+    @cl.kernel
+    def kernel(inp, out):
+        values = inp.pointer().load(count=4)
+        if invalid == "condition_dtype":
+            result = cl.where(values, values, -values)
+        else:
+            result = cl.where(values > 0, values[:2], values)
+        out.pointer().store(result)
+
+    inp = torch.ones(4, device="cuda")
+    with pytest.raises(TypeCheckingError):
+        cl.launch(torch.cuda.current_stream(), (1,), (1,), kernel, (inp, inp))

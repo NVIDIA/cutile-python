@@ -539,3 +539,15 @@ def abs_impl(x: Var) -> Var:
         fn="abs",
         x=x,
     )
+
+
+@impl(cl_math.where)
+def math_where_impl(condition: Var, x: Var, y: Var):
+    require_scalar_or_vector_type(condition, lambda dtype: dtype == datatype.bool_)
+    require_scalar_or_vector_type(x, datatype.is_numeric)
+    require_scalar_or_vector_type(y, datatype.is_numeric)
+    lengths = {value.get_type().length for value in (condition, x, y)
+               if isinstance(value.get_type(), VectorTy)}
+    if len(lengths) > 1:
+        raise TypeCheckingError("where vector inputs must have equal lengths")
+    return where(condition, x, y)

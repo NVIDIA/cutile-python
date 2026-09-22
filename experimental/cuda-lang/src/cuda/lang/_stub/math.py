@@ -373,6 +373,17 @@ def not_equal(x, y, /):
     """Compute ``x != y``."""
 
 
+@stub
+def where(condition, x, y, /):
+    """Select elements from ``x`` or ``y`` with a scalar or vector condition.
+
+    Scalar inputs broadcast to the vector shape, if any. All vector inputs
+    must have the same length. The result uses the promoted type of ``x``
+    and ``y``.
+    """
+    ...
+
+
 __all__ = (
     "add",
     "sub",
@@ -387,6 +398,7 @@ __all__ = (
     "ceil",
     "exp",
     "exp2",
+    "where",
     "sin",
     "cos",
     "sincos",

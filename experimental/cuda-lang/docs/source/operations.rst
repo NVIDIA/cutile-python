@@ -142,6 +142,7 @@ Math
     pow
     minimum
     maximum
+    where
     negative
     abs
     ceil

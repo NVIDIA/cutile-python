@@ -402,13 +402,7 @@ def _pv_instruction_descriptor(fmha_config):
 
 def _pack_output_values(values, scale, element_count):
     converted = (values[:element_count] * scale).astype(cl.float16)
-    return cl.Vector(
-        *tuple(
-            converted[2 * word:2 * word + 2].reinterpret_as_scalar(cl.uint32)
-            for word in cl.static_iter(range(element_count // 2))
-        ),
-        dtype=cl.uint32,
-    )
+    return converted.reinterpret_as_vector(cl.uint32, element_count // 2)
 
 
 def _store_output_values(
@@ -448,15 +442,8 @@ def _mask_packed_score_chunk(scores, key_base, seqlen_k):
         cl.maximum(seqlen_k - key_base, cl.int32(0)),
         cl.int32(32),
     )
-    return cl.Vector(
-        *tuple(
-            scores[item]
-            if cl.uint32(item) < cl.uint32(valid_in_chunk)
-            else cl.float32(-float("inf"))
-            for item in cl.static_iter(range(32))
-        ),
-        dtype=cl.float32,
-    )
+    indices = cl.Vector(*cl.static_eval(tuple(range(32))), dtype=cl.uint32)
+    return cl.where(indices < cl.uint32(valid_in_chunk), scores, cl.float32(-float("inf")))
 
 
 def _mask_score_chunk(scores, key_base, lower_bound, upper_bound):
@@ -469,18 +456,9 @@ def _mask_score_chunk(scores, key_base, lower_bound, upper_bound):
         cl.maximum(upper_bound - key_base + 1, cl.int32(0)),
         cl.int32(32),
     )
-    return cl.Vector(
-        *tuple(
-            scores[item]
-            if (
-                (cl.uint32(item) >= cl.uint32(left_invalid))
-                & (cl.uint32(item) < cl.uint32(right_valid))
-            )
-            else cl.float32(-float("inf"))
-            for item in cl.static_iter(range(32))
-        ),
-        dtype=cl.float32,
-    )
+    indices = cl.Vector(*cl.static_eval(tuple(range(32))), dtype=cl.uint32)
+    valid = (indices >= cl.uint32(left_invalid)) & (indices < cl.uint32(right_valid))
+    return cl.where(valid, scores, cl.float32(-float("inf")))
 
 
 def _mask_score_chunk_left(scores, key_base, lower_bound):
@@ -489,15 +467,8 @@ def _mask_score_chunk_left(scores, key_base, lower_bound):
         cl.maximum(lower_bound - key_base, cl.int32(0)),
         cl.int32(32),
     )
-    return cl.Vector(
-        *tuple(
-            scores[item]
-            if cl.uint32(item) >= cl.uint32(left_invalid)
-            else cl.float32(-float("inf"))
-            for item in cl.static_iter(range(32))
-        ),
-        dtype=cl.float32,
-    )
+    indices = cl.Vector(*cl.static_eval(tuple(range(32))), dtype=cl.uint32)
+    return cl.where(indices >= cl.uint32(left_invalid), scores, cl.float32(-float("inf")))
 
 
 def bottom_right_window_tile_start(
@@ -517,6 +488,10 @@ def bottom_right_window_tile_start(
 def bottom_right_window_max_tiles(q_tile_m, kv_tile_n, window_size_left):
     """Return the offset-independent maximum K/V span for one Q tile."""
     return (window_size_left + q_tile_m + 2 * kv_tile_n - 2) // kv_tile_n
+
+
+def _exp2_score_chunk(scores, scale, minus_row_max_scale):
+    return cl.exp2(cl.fma(scores, scale, minus_row_max_scale), flush_to_zero=True)
 
 
 def _reduce_row_max(chunks, row_max, fmha_config):
@@ -1245,43 +1220,27 @@ class TmemSPResource(ts.MemoryResource):
             scale_softmax_log2,
             cl.float32(0.0),
         )
-        probability_inputs = tuple(
-            cl.fma(
-                chunk,
-                scale_softmax_log2,
-                minus_row_max_scale,
-            )
+        probabilities = tuple(
+            _exp2_score_chunk(chunk, scale_softmax_log2, minus_row_max_scale)
             for chunk in cl.static_iter(score_chunks)
         )
-        probabilities = tuple(
-            cl.Vector(
-                *tuple(
-                    cl.exp2(
-                        chunk[item],
-                        flush_to_zero=True,
-                    )
-                    for item in cl.static_iter(range(fmha_config.tmem_x_load_s))
-                ),
-                dtype=cl.float32,
+        packed_chunks = tuple(
+            chunk.astype(cl.float16).reinterpret_as_vector(
+                cl.int32, fmha_config.tmem_x_load_s // 2
             )
-            for chunk in cl.static_iter(probability_inputs)
+            for chunk in cl.static_iter(probabilities)
         )
-
         packed_first = cl.Vector(
             *tuple(
-                probabilities[chunk_idx][2 * pair:2 * pair + 2]
-                .astype(cl.float16)
-                .reinterpret_as_scalar(cl.int32)
-                for chunk_idx in cl.static_iter(range(2))
+                packed_chunks[chunk_idx][pair]
+                for chunk_idx in cl.static_iter(range(0, 2))
                 for pair in cl.static_iter(range(fmha_config.tmem_x_load_s // 2))
             ),
             dtype=cl.int32,
         )
         packed_second = cl.Vector(
             *tuple(
-                probabilities[chunk_idx][2 * pair:2 * pair + 2]
-                .astype(cl.float16)
-                .reinterpret_as_scalar(cl.int32)
+                packed_chunks[chunk_idx][pair]
                 for chunk_idx in cl.static_iter(range(2, 4))
                 for pair in cl.static_iter(range(fmha_config.tmem_x_load_s // 2))
             ),
@@ -1375,43 +1334,36 @@ class TmemSPResource(ts.MemoryResource):
         local_sum_pair_1 = cl.Vector(0.0, 0.0, dtype=cl.float32)
         s_data = ()
         for chunk_idx in cl.static_iter(range(num_chunks)):
-            p_vals = ()
+            p_values = _exp2_score_chunk(score_chunks[chunk_idx], scale, minus_row_max_scale)
             for elem_idx in cl.static_iter(range(0, tmem_x, 2)):
-                fma_pair = cl.fma(
-                    score_chunks[chunk_idx][elem_idx:elem_idx + 2],
-                    scale,
-                    minus_row_max_scale,
-                )
-                p0 = cl.exp2(fma_pair[0], flush_to_zero=True)
-                p1 = cl.exp2(fma_pair[1], flush_to_zero=True)
+                pair = p_values[elem_idx:elem_idx + 2]
                 pair_idx = chunk_idx * (tmem_x // 2) + elem_idx // 2
                 if pair_idx % 2 == 0:
                     local_sum_pair_0 = cl.add(
                         local_sum_pair_0,
-                        cl.Vector(p0, p1, dtype=cl.float32),
+                        pair,
                         rounding_mode=cl.RoundingMode.RN,
                         flush_to_zero=False,
                     )
                 else:
                     local_sum_pair_1 = cl.add(
                         local_sum_pair_1,
-                        cl.Vector(p0, p1, dtype=cl.float32),
+                        pair,
                         rounding_mode=cl.RoundingMode.RN,
                         flush_to_zero=False,
                     )
-                p_vals += (p0, p1)
-            s_data += (cl.Vector(*p_vals, dtype=cl.float32),)
+            s_data += (p_values,)
         for pair_idx in cl.static_iter(range(num_chunks // p_packing_ratio)):
-            store_fragment = cl.Vector(
+            first = pair_idx * p_packing_ratio
+            values = cl.Vector(
                 *tuple(
-                    s_data[pair_idx * p_packing_ratio + slice_idx][elem_idx:elem_idx + 2]
-                    .astype(cl.float16)
-                    .reinterpret_as_scalar(cl.int32)
-                    for slice_idx in cl.static_iter(range(p_packing_ratio))
-                    for elem_idx in cl.static_iter(range(0, tmem_x, 2))
+                    s_data[first + chunk_idx][item]
+                    for chunk_idx in cl.static_iter(range(p_packing_ratio))
+                    for item in cl.static_iter(range(tmem_x))
                 ),
-                dtype=cl.int32,
+                dtype=cl.float32,
             )
+            store_fragment = values.astype(cl.float16).reinterpret_as_vector(cl.int32, tmem_x)
             cl.tcgen05_store(
                 cl.Tcgen05LoadStoreShape.SHAPE_32X32B,
                 _tmem_pointer(tmem_p_addr, column_offset=pair_idx * tmem_x),
