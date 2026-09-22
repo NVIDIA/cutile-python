@@ -126,6 +126,16 @@ def _tcgen05_result_type(dtype: datatype.DType, element_count: int):
     return VectorTy(dtype, element_count)
 
 
+def _validate_tcgen05_number_of_columns(number_of_columns: Var) -> None:
+    if number_of_columns.is_constant():
+        value = number_of_columns.get_constant()
+        if value not in (32, 64, 128, 256, 512):
+            raise InvalidValueError(
+                "number_of_columns must be a power of two in [32, 512], "
+                f"got {value}"
+            )
+
+
 @impl(tcgen05_stub.tcgen05_allocate)
 def tcgen05_allocate_impl(
     address: Var,
@@ -135,6 +145,7 @@ def tcgen05_allocate_impl(
     require_pointer_in_memory_space(
         address, (MemorySpace.SHARED_CLUSTER, MemorySpace.SHARED)
     )
+    _validate_tcgen05_number_of_columns(number_of_columns)
     number_of_columns = implicit_cast(
         number_of_columns, datatype.int32, "cast number of columns to int32"
     )
@@ -155,6 +166,7 @@ def tcgen05_deallocate_impl(
     cta_group: Var,
 ) -> None:
     require_pointer_in_memory_space(address, (MemorySpace.TENSOR,))
+    _validate_tcgen05_number_of_columns(number_of_columns)
     number_of_columns = implicit_cast(
         number_of_columns, datatype.int32, "cast number of columns to int32"
     )

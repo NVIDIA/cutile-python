@@ -137,7 +137,8 @@ def tcgen05_allocate(
         address: Location where the address of the allocated memory should be
             written.
         number_of_columns: Number of columns to be allocated. Must be a power
-            of two.
+            of two in [32, 512]. Statically known values are checked at
+            compile time; dynamic values must satisfy this at runtime.
         cta_group (CTAGroup): cta group 1 or 2.
     """
     ...
@@ -155,8 +156,10 @@ def tcgen05_deallocate(
     Args:
         address: Address in tensor memory to be deallocated. Must be from a
             previous call to :func:`tcgen05_allocate`
-        number_of_columns: Number of columns to be allocated. Must be a power
-            of two.
+        number_of_columns: Number of columns to be deallocated. Must match the
+            allocation and be a power of two in [32, 512]. Statically known
+            values are checked at compile time; dynamic values must satisfy
+            this at runtime.
         cta_group (CTAGroup): cta group 1 or 2.
     """
     ...

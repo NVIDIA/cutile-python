@@ -11,7 +11,7 @@ from cuda.lang._exception import (
     InvalidValueError,
     CompilerExecutionError,
 )
-from test.util import make_symbolic_tensor, compile_kernel
+from test.util import make_symbolic_scalar, make_symbolic_tensor, compile_kernel
 
 
 SM100_TARGET = {"gpu_name": "sm_100a", "arch": "compute_100a"}
@@ -64,11 +64,12 @@ def test_commit(mc_mask, cta_group, expect):
         ],
     ],
 )
-def test_alloc(cta_group, expect):
+@pytest.mark.parametrize("number_of_columns", (32, 64, 128, 256, 512))
+def test_alloc(cta_group, expect, number_of_columns):
     @cl.kernel
     def kernel():
         p3 = cl.shared_array(1, cl.uint32).pointer()
-        cl.tcgen05_allocate(p3, 5, cta_group=cta_group)
+        cl.tcgen05_allocate(p3, number_of_columns, cta_group=cta_group)
 
     compile_kernel(kernel, assert_in_ptx=expect, **SM100_TARGET)
 
@@ -77,7 +78,7 @@ def test_dealloc_requires_tensor_pointer():
     @cl.kernel
     def kernel():
         p3 = cl.shared_array(1, cl.uint32).pointer()
-        cl.tcgen05_deallocate(p3, 5)
+        cl.tcgen05_deallocate(p3, 32)
 
     with pytest.raises(
         TypeCheckingError,
@@ -100,16 +101,59 @@ def test_dealloc_requires_tensor_pointer():
         ],
     ],
 )
-def test_dealloc(cta_group, expect):
+@pytest.mark.parametrize("number_of_columns", (32, 64, 128, 256, 512))
+def test_dealloc(cta_group, expect, number_of_columns):
     @cl.kernel
     def kernel():
         tmem_dtype = cl.pointer_dtype(cl.int8, cl.MemorySpace.TENSOR)
         smem = cl.shared_array(1, tmem_dtype, alignment=4)
-        cl.tcgen05_allocate(smem.pointer(), 128, cta_group=cta_group)
+        cl.tcgen05_allocate(smem.pointer(), number_of_columns, cta_group=cta_group)
         tmem_ptr = smem[0]
-        cl.tcgen05_deallocate(tmem_ptr, 128, cta_group=cta_group)
+        cl.tcgen05_deallocate(tmem_ptr, number_of_columns, cta_group=cta_group)
 
     compile_kernel(kernel, assert_in_ptx=expect, **SM100_TARGET)
+
+
+@pytest.mark.parametrize("number_of_columns", (-32, 0, 5, 16, 33, 96, 513, 1024))
+@pytest.mark.parametrize("deallocate", (False, True))
+@pytest.mark.parametrize("cta_group", (cl.CTAGroup.CTA_1, cl.CTAGroup.CTA_2))
+def test_alloc_dealloc_reject_invalid_columns(number_of_columns, deallocate, cta_group):
+    @cl.kernel
+    def kernel():
+        tmem_dtype = cl.pointer_dtype(cl.int8, cl.MemorySpace.TENSOR)
+        smem = cl.shared_array(1, tmem_dtype, alignment=4)
+        if cl.ensure_constant(deallocate):
+            cl.tcgen05_allocate(smem.pointer(), 32, cta_group=cta_group)
+            cl.tcgen05_deallocate(smem[0], number_of_columns, cta_group=cta_group)
+        else:
+            cl.tcgen05_allocate(smem.pointer(), number_of_columns, cta_group=cta_group)
+
+    compile_kernel(
+        kernel,
+        raises=pytest.raises(
+            InvalidValueError,
+            match=(rf"number_of_columns must be a power of two in \[32, 512\], "
+                   rf"got {number_of_columns}"),
+        ),
+        **SM100_TARGET,
+    )
+
+
+@pytest.mark.parametrize("cta_group", (cl.CTAGroup.CTA_1, cl.CTAGroup.CTA_2))
+def test_alloc_dealloc_dynamic_columns(cta_group):
+    @cl.kernel
+    def kernel(number_of_columns):
+        tmem_dtype = cl.pointer_dtype(cl.int8, cl.MemorySpace.TENSOR)
+        smem = cl.shared_array(1, tmem_dtype, alignment=4)
+        cl.tcgen05_allocate(smem.pointer(), number_of_columns, cta_group=cta_group)
+        cl.tcgen05_deallocate(smem[0], number_of_columns, cta_group=cta_group)
+
+    compile_kernel(
+        kernel,
+        signature=KernelSignature([make_symbolic_scalar(cl.int32)]),
+        assert_in_ptx=("tcgen05.alloc.", "tcgen05.dealloc."),
+        **SM100_TARGET,
+    )
 
 
 def test_tmem_offset():
