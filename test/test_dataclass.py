@@ -1084,3 +1084,52 @@ def test_no_default_order():
 
     with pytest.raises(TypeCheckingError, match=re.escape("Unsupported operand types for <:")):
         ct.launch(torch.cuda.current_stream(), (1,), kern, ())
+
+
+def test_custom_len():
+    @dataclass(frozen=True)
+    class WithCustomLen:
+        x: int
+
+        def __len__(self):
+            return self.x + 100
+
+    @ct.kernel
+    def kern(x):
+        val = WithCustomLen(ct.bid(0))
+        ct.scatter(x, (), len(val))
+
+    x = torch.zeros((), dtype=torch.int32, device="cuda")
+    ct.launch(torch.cuda.current_stream(), (1,), kern, (x,))
+    assert x.item() == 100
+
+
+def test_no_custom_len():
+    @dataclass(frozen=True)
+    class NoCustomLen:
+        x: int
+
+    @ct.kernel
+    def kern():
+        val = NoCustomLen(ct.bid(0))
+        len(val)
+
+    with pytest.raises(TypeCheckingError, match="NoCustomLen' object has no len()"):
+        ct.launch(torch.cuda.current_stream(), (1,), kern, ())
+
+
+def test_custom_len_non_integer():
+    @dataclass(frozen=True)
+    class BadCustomLen:
+        x: int
+
+        def __len__(self):
+            return 1, 2, 3
+
+    @ct.kernel
+    def kern():
+        val = BadCustomLen(ct.bid(0))
+        len(val)
+
+    with pytest.raises(TypeCheckingError, match=re.escape("__len__() must return an integer")):
+        ct.launch(torch.cuda.current_stream(), (1,), kern, ())

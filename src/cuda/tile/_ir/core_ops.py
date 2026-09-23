@@ -884,6 +884,24 @@ def _compare_pairs(op, *items):
     return op(a, b)
 
 
+@impl(len, overload=(DataclassTy,))
+async def len_dataclass_impl(x: Var[DataclassTy]) -> Var:
+    dataclass_ty = x.get_type()
+    f = find_method(dataclass_ty.cls, "__len__")
+    if f is NotImplemented:
+        raise TileTypeError(f"'{dataclass_ty.cls.__qualname__}' object has no len()")
+
+    from cuda.tile._passes.hir2ir import call_function
+    res = await call_function(f, x)
+    res_ty = res.get_type()
+
+    if (not isinstance(res_ty, TensorLikeTy) or res_ty.tensor_shape() != ()
+            or not is_integral(res_ty.tensor_dtype())):
+        raise TypeCheckingError(f"__len__() must return an integer, got {res_ty}")
+
+    return res
+
+
 # ===========================================================================================
 
 
