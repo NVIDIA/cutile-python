@@ -223,16 +223,21 @@ def _dataclass_has_default_init(cls) -> bool:
     if not cls.__dataclass_params__.init:
         return False
 
-    # HACK: There seems to be no clean way to detect whether a dataclass has a user-defined
-    #       __init__() method. This is the best I could come up with.
-    #       Explanation: for a frozen dataclass (which we check above), the generated __init__()
-    #       method needs to call `object.__setattr__()` to set the initial values of frozen fields.
-    #       Since the builtin `object` name may be shadowed, the dataclass implementation stores
-    #       the `object` class in a captured variable named "__dataclass_builtins_object__".
-    if "__dataclass_builtins_object__" not in cls.__init__.__code__.co_freevars:
+    clc_init_code = cls.__init__.__code__
+
+    if "__dataclass_builtins_object__" in clc_init_code.co_freevars:
+        return True
+
+    # If the dataclass is not empty, return False
+    if dataclasses.fields(cls):
         return False
 
-    return True
+    co_qualname = getattr(clc_init_code, "co_qualname", None)
+    if co_qualname is not None:
+        return co_qualname == "__create_fn__.<locals>.__init__"
+
+    # HACK: This is a fallback for python 3.10 as co_qualname was introduced in python 3.11+
+    return clc_init_code.co_filename == "<string>"
 
 
 def dataclass_has_default_repr(cls) -> bool:

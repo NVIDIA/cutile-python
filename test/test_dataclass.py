@@ -153,6 +153,50 @@ def test_loop_carried_dataclass_reconstructed_with_field_info():
     assert x.tolist() == [4, 13, 100]
 
 
+def test_empty_dataclass():
+    @dataclass(frozen=True)
+    class EmptyFoo:
+        val = 5
+
+    @ct.kernel
+    def kern(x):
+        ef = EmptyFoo()
+        ct.scatter(x, 0, ef.val)
+
+    x = torch.zeros((3,), dtype=torch.int32, device="cuda")
+    ct.launch(torch.cuda.current_stream(), (1,), kern, (x,))
+    assert x.tolist() == [5, 0, 0]
+
+
+def test_empty_dataclass_no_fields():
+    @dataclass(frozen=True)
+    class EmptyFoo:
+        ...
+
+    @ct.kernel
+    def kern():
+        EmptyFoo()
+    ct.launch(torch.cuda.current_stream(), (1,), kern, ())
+
+
+def test_reject_empty_custom_init_in_dataclass():
+    @dataclass(frozen=True)
+    class EmptyFoo:
+        def __init__(self):
+            pass
+
+    @ct.kernel
+    def kern():
+        EmptyFoo()
+
+    expected_message = re.escape(
+        "Dataclass instance creation is only supported for dataclasses with a default generated"
+        " __init__() method"
+    )
+    with pytest.raises(TileTypeError, match=expected_message):
+        ct.launch(torch.cuda.current_stream(), (1,), kern, ())
+
+
 def test_user_defined_methods_and_constants():
     @dataclass(frozen=True)
     class WithMethod:
