@@ -170,6 +170,15 @@ def kernel_fstring_concatenated(x, TILE: ct.Constant[int]):
 
 
 @ct.kernel(opt_level=_OPT_LEVEL)
+def kernel_fstring_joined(x, TILE: ct.Constant[int]):
+    bid = ct.bid(0)
+    tx = ct.load(x, index=(bid,), shape=(TILE,))
+    lhs = f"Foo({tx})"
+    rhs = f"BAR({bid + 3})"
+    print(", ".join((lhs, rhs)))
+
+
+@ct.kernel(opt_level=_OPT_LEVEL)
 def kernel_print_aliases(x, TILE: ct.Constant[int]):
     bid = ct.bid(0)
     tx = ct.load(x, index=(bid,), shape=(TILE,))
@@ -568,6 +577,11 @@ def test_fstring_nested(shape, tile):
 def test_fstring_concatenated():
     [actual_outs] = _run_kernel(kernel_fstring_concatenated, (8,), "int32", 8)
     assert actual_outs == "Foo([0, 1, 2, 3, 4, 5, 6, 7])BAR(3)"
+
+
+def test_fstring_joined():
+    [actual_outs] = _run_kernel(kernel_fstring_joined, (8,), "int32", 8)
+    assert actual_outs == "Foo([0, 1, 2, 3, 4, 5, 6, 7]), BAR(3)"
 
 
 @pytest.mark.parametrize("shape", [(8,)])

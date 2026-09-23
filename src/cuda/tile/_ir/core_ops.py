@@ -27,7 +27,7 @@ from cuda.tile._ir.ir import Operation, attribute, Var, Builder, make_aggregate,
     MemoryEffect, add_operation_variadic
 from cuda.tile._ir.op_impl import ImplRegistry, require_dataclass_type, require_constant_str, \
     OverloadNotFoundError, WILDCARD, require_signed_integer_scalar_type, require_constant_slice, \
-    require_constant_int, PrintfValidator, ensure_string_or_formatted_string
+    require_constant_int, PrintfValidator, ensure_string_or_formatted_string, require_tuple_type
 from cuda.tile._ir.scope import Scope
 from cuda.tile._ir.type import Type, DTypeSpec, TensorLikeTy, TupleTy, TupleValue, Symbol, \
     DataclassInfo, DataclassTy, DataclassValue, BoundMethodValue, BoundMethodTy, InvalidType, \
@@ -1285,6 +1285,33 @@ def string_concat(*chunks: Var[StringTy | FormattedStringTy]) -> Var[FormattedSt
 @impl(operator.add, overload=(FormattedStringTy, StringTy))
 def string_concat_impl(x: Var[StringTy | FormattedStringTy], y: Var[StringTy | FormattedStringTy]):
     return string_concat(x, y)
+
+
+@impl(getattr, overload=(StringTy, "join"))
+@impl(getattr, overload=(FormattedStringTy, "join"))
+def getattr_str_method(object: Var, name: Var):
+    name = require_constant_str(name)
+    unbound_func = getattr(str, name)
+    return bind_method(object, unbound_func)
+
+
+@impl(str.join)
+def str_join_impl(self: Var, iterable: Var):
+    self_ty = self.get_type()
+    if not isinstance(self_ty, StringTy | FormattedStringTy):
+        raise TypeCheckingError(f"Expected a string as `self`, got {self_ty}")
+
+    tuple_ty = require_tuple_type(iterable)
+    for i, item_ty in enumerate(tuple_ty.value_types):
+        if not isinstance(item_ty, StringTy | FormattedStringTy):
+            raise TypeCheckingError(f"sequence item {i}: expected a string, got {item_ty}")
+
+    builder = FormattedStringBuilder()
+    for i, x in enumerate(iterable.get_aggregate().items):
+        if i > 0:
+            builder.append_string_var(self)
+        builder.append_string_var(x)
+    return builder.build()
 
 
 @impl(hir_stubs.build_formatted_string)

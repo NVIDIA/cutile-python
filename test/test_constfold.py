@@ -130,6 +130,15 @@ def test_string_concat():
     compile(kernel, ())
 
 
+def test_string_join():
+    def kernel():
+        pieces = ("foo", "bar", "baz")
+        res = ", ".join(pieces)
+        ct.static_assert(res == "foo, bar, baz")
+
+    compile(kernel, ())
+
+
 def test_int_constant_converted_to_str():
     def kernel():
         a = 123

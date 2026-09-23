@@ -92,6 +92,7 @@ BUILTIN_FUNC_SIGNATURES = {
     dataclasses.replace: dataclasses.replace,
     dict.get: dict.get,
     _GeneratorContextManager: lambda func, args, kwargs: None,
+    str.join: lambda self, iterable, /: None
 }
 
 
