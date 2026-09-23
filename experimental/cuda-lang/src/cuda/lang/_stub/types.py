@@ -18,76 +18,80 @@ T = TypeVar("T")
 
 class Scalar(Generic[T]):
     def __add__(self, other):
-        return cl_math.add(self, other)
+        if isinstance(other, Pointer):
+            return pointer_add(other, self)
+        return _binop(cl_math.add, other, self, other)
 
     def __sub__(self, other):
-        return cl_math.sub(self, other)
+        if isinstance(other, Pointer):
+            return pointer_sub(other, self)
+        return _binop(cl_math.sub, other, self, other)
 
     def __mul__(self, other):
-        return cl_math.mul(self, other)
+        return _binop(cl_math.mul, other, self, other)
 
     def __truediv__(self, other):
-        return cl_math.truediv(self, other)
+        return _binop(cl_math.truediv, other, self, other)
 
     def __floordiv__(self, other):
-        return cl_math.floordiv(self, other)
+        return _binop(cl_math.floordiv, other, self, other)
 
     def __mod__(self, other):
-        return cl_math.mod(self, other)
+        return _binop(cl_math.mod, other, self, other)
 
     def __pow__(self, other):
-        return cl_math.pow(self, other)
+        return _binop(cl_math.pow, other, self, other)
 
     def __and__(self, other):
-        return cl_math.bitwise_and(self, other)
+        return _binop(cl_math.bitwise_and, other, self, other)
 
     def __or__(self, other):
-        return cl_math.bitwise_or(self, other)
+        return _binop(cl_math.bitwise_or, other, self, other)
 
     def __xor__(self, other):
-        return cl_math.bitwise_xor(self, other)
+        return _binop(cl_math.bitwise_xor, other, self, other)
 
     def __lshift__(self, other):
-        return cl_math.bitwise_lshift(self, other)
+        return _binop(cl_math.bitwise_lshift, other, self, other)
 
     def __rshift__(self, other):
-        return cl_math.bitwise_rshift(self, other)
+        return _binop(cl_math.bitwise_rshift, other, self, other)
 
     def __radd__(self, other):
-        return cl_math.add(other, self)
+        return _binop(cl_math.add, other, other, self)
 
     def __rsub__(self, other):
-        return cl_math.sub(other, self)
+        return _binop(cl_math.sub, other, other, self)
 
     def __rmul__(self, other):
-        return cl_math.mul(other, self)
+        return _binop(cl_math.mul, other, other, self)
 
     def __rtruediv__(self, other):
-        return cl_math.truediv(other, self)
+        return _binop(cl_math.truediv, other, other, self)
 
     def __rfloordiv__(self, other):
-        return cl_math.floordiv(other, self)
+        return _binop(cl_math.floordiv, other, other, self)
 
     def __rmod__(self, other):
-        return cl_math.mod(other, self)
+        return _binop(cl_math.mod, other, other, self)
 
     def __rpow__(self, other):
         return pow(other, self)
 
     def __rand__(self, other):
-        return cl_math.bitwise_and(other, self)
+        return _binop(cl_math.bitwise_and, other, other, self)
 
     def __ror__(self, other):
-        return cl_math.bitwise_or(other, self)
+        return _binop(cl_math.bitwise_or, other, other, self)
 
     def __rxor__(self, other):
-        return cl_math.bitwise_xor(other, self)
+        return _binop(cl_math.bitwise_xor, other, other, self)
 
     def __rlshift__(self, other):
-        return cl_math.bitwise_lshift(other, self)
+        return _binop(cl_math.bitwise_lshift, other, other, self)
 
     def __rrshift__(self, other):
-        return cl_math.bitwise_rshift(other, self)
+        return _binop(cl_math.bitwise_rshift, other, other, self)
 
     def __ge__(self, other):
         return cl_math.greater_equal(self, other)
@@ -114,10 +118,10 @@ class Scalar(Generic[T]):
         return cl_math.bitwise_not(self)
 
     def __divmod__(self, other):
-        return cl_math.divmod(self, other)
+        return _binop(cl_math.divmod, other, self, other)
 
     def __rdivmod__(self, other):
-        return cl_math.divmod(other, self)
+        return _binop(cl_math.divmod, other, other, self)
 
 
 class Vector(Generic[T]):
@@ -229,6 +233,108 @@ class Vector(Generic[T]):
     @stub
     def __len__(self): ...
 
+    def __add__(self, other):
+        return _binop(cl_math.add, other, self, other)
+
+    def __sub__(self, other):
+        return _binop(cl_math.sub, other, self, other)
+
+    def __mul__(self, other):
+        return _binop(cl_math.mul, other, self, other)
+
+    def __truediv__(self, other):
+        return _binop(cl_math.truediv, other, self, other)
+
+    def __floordiv__(self, other):
+        return _binop(cl_math.floordiv, other, self, other)
+
+    def __mod__(self, other):
+        return _binop(cl_math.mod, other, self, other)
+
+    def __pow__(self, other):
+        return _binop(cl_math.pow, other, self, other)
+
+    def __and__(self, other):
+        return _binop(cl_math.bitwise_and, other, self, other)
+
+    def __or__(self, other):
+        return _binop(cl_math.bitwise_or, other, self, other)
+
+    def __xor__(self, other):
+        return _binop(cl_math.bitwise_xor, other, self, other)
+
+    def __lshift__(self, other):
+        return _binop(cl_math.bitwise_lshift, other, self, other)
+
+    def __rshift__(self, other):
+        return _binop(cl_math.bitwise_rshift, other, self, other)
+
+    def __radd__(self, other):
+        return _binop(cl_math.add, other, other, self)
+
+    def __rsub__(self, other):
+        return _binop(cl_math.sub, other, other, self)
+
+    def __rmul__(self, other):
+        return _binop(cl_math.mul, other, other, self)
+
+    def __rtruediv__(self, other):
+        return _binop(cl_math.truediv, other, other, self)
+
+    def __rfloordiv__(self, other):
+        return _binop(cl_math.floordiv, other, other, self)
+
+    def __rmod__(self, other):
+        return _binop(cl_math.mod, other, other, self)
+
+    def __rpow__(self, other):
+        return pow(other, self)
+
+    def __rand__(self, other):
+        return _binop(cl_math.bitwise_and, other, other, self)
+
+    def __ror__(self, other):
+        return _binop(cl_math.bitwise_or, other, other, self)
+
+    def __rxor__(self, other):
+        return _binop(cl_math.bitwise_xor, other, other, self)
+
+    def __rlshift__(self, other):
+        return _binop(cl_math.bitwise_lshift, other, other, self)
+
+    def __rrshift__(self, other):
+        return _binop(cl_math.bitwise_rshift, other, other, self)
+
+    def __ge__(self, other):
+        return cl_math.greater_equal(self, other)
+
+    def __gt__(self, other):
+        return cl_math.greater(self, other)
+
+    def __le__(self, other):
+        return cl_math.less_equal(self, other)
+
+    def __lt__(self, other):
+        return cl_math.less(self, other)
+
+    def __eq__(self, other):
+        return cl_math.equal(self, other)
+
+    def __ne__(self, other):
+        return cl_math.not_equal(self, other)
+
+    def __neg__(self):
+        return cl_math.negative(self)
+
+    def __invert__(self):
+        return cl_math.bitwise_not(self)
+
+    def __divmod__(self, other):
+        return _binop(cl_math.divmod, other, self, other)
+
+    def __rdivmod__(self, other):
+        return _binop(cl_math.divmod, other, other, self)
+
 
 class Pointer(Generic[T]):
     """Address in a CUDA memory space.
@@ -239,21 +345,35 @@ class Pointer(Generic[T]):
     Pointer offsets are given in element counts, not in bytes.
     """
 
-    @stub(static_eval_ok=True)
     def __add__(self, other):
         """Return a pointer that is ``other`` elements after this pointer.
 
         Args:
             other: Integral scalar that gives the element offset.
         """
+        if not isinstance(other, _SCALAR_OR_VECTOR_LIKE_TYPES):
+            return NotImplemented
+        return pointer_add(self, other)
 
-    @stub(static_eval_ok=True)
+    def __radd__(self, other):
+        """Return a pointer that is ``other`` elements after this pointer.
+
+        Args:
+            other: Integral scalar that gives the element offset.
+        """
+        if not isinstance(other, _SCALAR_OR_VECTOR_LIKE_TYPES):
+            return NotImplemented
+        return pointer_add(self, other)
+
     def __sub__(self, other):
         """Return a pointer that is ``other`` elements before this pointer.
 
         Args:
             other: Integral scalar that gives the element offset.
         """
+        if not isinstance(other, _SCALAR_OR_VECTOR_LIKE_TYPES):
+            return NotImplemented
+        return pointer_sub(self, other)
 
     @stub
     def __getitem__(self, index):
@@ -402,3 +522,22 @@ class Pointer(Generic[T]):
     @stub
     def memory_space(self) -> MemorySpace:
         """CUDA memory space of this pointer."""
+
+
+@stub(static_eval_ok=True)
+def pointer_add(ptr, other):
+    ...
+
+
+@stub(static_eval_ok=True)
+def pointer_sub(ptr, other):
+    ...
+
+
+def _binop(func, other, lhs, rhs):
+    if not isinstance(other, _SCALAR_OR_VECTOR_LIKE_TYPES):
+        return NotImplemented
+    return func(lhs, rhs)
+
+
+_SCALAR_OR_VECTOR_LIKE_TYPES = (Scalar, Vector, int, float, bool)

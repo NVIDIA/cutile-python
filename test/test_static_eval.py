@@ -313,3 +313,21 @@ def test_static_eval_error_when_calling_bound_method():
     with pytest.raises(ct.TileStaticEvalError,
                        match=re.escape("slice() cannot be called inside static_eval()")):
         ct.launch(torch.cuda.current_stream(), (1,), kernel, (x,))
+
+
+def test_static_eval_dispatch_binop_via_rhs():
+    class Custom:
+        def __init__(self, val):
+            self.val = val
+
+        def __radd__(self, other):
+            return other + self.val
+
+    @ct.kernel
+    def kern(x):
+        bid = ct.bid(0)
+        ct.scatter(x, bid, ct.static_eval(bid + Custom(5)))
+
+    x = torch.zeros(4, dtype=torch.int32, device="cuda")
+    ct.launch(torch.cuda.current_stream(), (4,), kern, (x,))
+    assert x.tolist() == [5, 6, 7, 8]

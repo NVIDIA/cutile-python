@@ -83,10 +83,15 @@ def test_static_eval_pointer_arithmetic():
         p2[0] = 5
         p3 = cl.static_eval(p2 - 1)
         p3[0] = 7
+        tid = cl.thread_index(0) + 1
+        p4 = cl.static_eval(tid + p)
+        p4[0] = 9
+        p5 = cl.static_eval(0 + p)
+        p5[0] = 11
 
     a = torch.zeros((4,), dtype=torch.int32, device="cuda")
     cl.launch(torch.cuda.current_stream(), (1,), (1,), kern, (a,))
-    assert a.tolist() == [0, 0, 7, 5]
+    assert a.tolist() == [11, 9, 7, 5]
 
 
 def test_static_exception():
@@ -97,3 +102,26 @@ def test_static_exception():
     with pytest.raises(StaticException,
                        match=re.escape("Exception was raised at compile time (ValueError: Hello)")):
         cl.launch(torch.cuda.current_stream(), (1,), (1,), kern, ())
+
+
+def test_static_eval_dispatch_binop_via_rhs():
+    class Custom:
+        def __init__(self, val):
+            self.val = val
+
+        def __radd__(self, other):
+            return other + self.val
+
+    @cl.kernel
+    def kern(x):
+        tid = cl.thread_index(0)
+        x[tid] = cl.static_eval(tid + Custom(5))
+
+        vec = cl.Vector(tid + 1, tid + 2)
+        new_vec = cl.static_eval(vec + Custom(50))
+        x[4 + tid] = new_vec[0]
+        x[8 + tid] = new_vec[1]
+
+    x = torch.zeros(12, dtype=torch.int32, device="cuda")
+    cl.launch(torch.cuda.current_stream(), (1,), (4,), kern, (x,))
+    assert x.tolist() == [5, 6, 7, 8, 51, 52, 53, 54, 52, 53, 54, 55]

@@ -162,8 +162,8 @@ from .._stub import (
     foreign_function,
     core_api,
     tensor_map,
+    types as type_stubs
 )
-from .._stub.types import Pointer
 from cuda.tile._ir import hir_stubs
 
 from .op_impl.tcgen05_impl import tcgen05_impl_registry
@@ -368,10 +368,10 @@ def add_impl(x: Var, y: Var) -> Var:
     return binary_arithmetic_tensorlike("add", x, y)
 
 
-@impl(Pointer.__add__)
-def pointer_add_impl(self: Var, other: Var):
-    require_pointer_type(self)
-    return pointer_add(self, other)
+@impl(type_stubs.pointer_add)
+def pointer_add_impl(ptr: Var, other: Var):
+    require_pointer_type(ptr)
+    return pointer_add(ptr, other)
 
 
 def pointer_sub(pointer: Var[PointerTy], other: Var):
@@ -394,10 +394,10 @@ async def sub_impl(x: Var, y: Var) -> Var:
     return binary_arithmetic_tensorlike("sub", x, y)
 
 
-@impl(Pointer.__sub__)
-def pointer_sub_impl(self: Var, other: Var):
-    require_pointer_type(self)
-    return pointer_sub(self, other)
+@impl(type_stubs.pointer_sub)
+def pointer_sub_impl(ptr: Var, other: Var):
+    require_pointer_type(ptr)
+    return pointer_sub(ptr, other)
 
 
 @impl(getattr, overload=(VectorTy, "element_count"))

@@ -686,64 +686,64 @@ class Tile:
         return expand_dims(self, index)
 
     def __add__(self, other) -> "Tile":
-        return add(self, other)
+        return _binop(add, other, self, other)
 
     def __sub__(self, other) -> "Tile":
-        return sub(self, other)
+        return _binop(sub, other, self, other)
 
     def __mul__(self, other) -> "Tile":
-        return mul(self, other)
+        return _binop(mul, other, self, other)
 
     def __truediv__(self, other) -> "Tile":
-        return truediv(self, other)
+        return _binop(truediv, other, self, other)
 
     def __floordiv__(self, other) -> "Tile":
-        return floordiv(self, other)
+        return _binop(floordiv, other, self, other)
 
     def __mod__(self, other) -> "Tile":
-        return mod(self, other)
+        return _binop(mod, other, self, other)
 
     def __pow__(self, other) -> "Tile":
-        return pow(self, other)
+        return _binop(pow, other, self, other)
 
     def __and__(self, other) -> "Tile":
-        return bitwise_and(self, other)
+        return _binop(bitwise_and, other, self, other)
 
     def __or__(self, other) -> "Tile":
-        return bitwise_or(self, other)
+        return _binop(bitwise_or, other, self, other)
 
     def __xor__(self, other) -> "Tile":
-        return bitwise_xor(self, other)
+        return _binop(bitwise_xor, other, self, other)
 
     def __radd__(self, other) -> "Tile":
-        return add(other, self)
+        return _binop(add, other, other, self)
 
     def __rsub__(self, other) -> "Tile":
-        return sub(other, self)
+        return _binop(sub, other, other, self)
 
     def __rmul__(self, other) -> "Tile":
-        return mul(other, self)
+        return _binop(mul, other, other, self)
 
     def __rtruediv__(self, other) -> "Tile":
-        return truediv(other, self)
+        return _binop(truediv, other, other, self)
 
     def __rfloordiv__(self, other) -> "Tile":
-        return floordiv(other, self)
+        return _binop(floordiv, other, other, self)
 
     def __rmod__(self, other) -> "Tile":
-        return mod(other, self)
+        return _binop(mod, other, other, self)
 
     def __rpow__(self, other) -> "Tile":
-        return pow(other, self)
+        return _binop(pow, other, other, self)
 
     def __rand__(self, other) -> "Tile":
-        return bitwise_and(other, self)
+        return _binop(bitwise_and, other, other, self)
 
     def __ror__(self, other) -> "Tile":
-        return bitwise_or(other, self)
+        return _binop(bitwise_or, other, other, self)
 
     def __rxor__(self, other) -> "Tile":
-        return bitwise_xor(other, self)
+        return _binop(bitwise_xor, other, other, self)
 
     def __ge__(self, other) -> "Tile":
         return greater_equal(self, other)
@@ -770,28 +770,37 @@ class Tile:
         return bitwise_not(self)
 
     def __matmul__(self, other) -> "Tile":
-        return matmul(self, other)
+        return _binop(matmul, other, self, other)
 
     def __rmatmul__(self, other) -> "Tile":
-        return matmul(other, self)
+        return _binop(matmul, other, other, self)
 
     def __divmod__(self, other):
-        return divmod(self, other)
+        return _binop(divmod, other, self, other)
 
     def __rdivmod__(self, other):
-        return divmod(other, self)
+        return _binop(divmod, other, other, self)
 
     def __lshift__(self, other):
-        return bitwise_lshift(self, other)
+        return _binop(bitwise_lshift, other, self, other)
 
     def __rlshift__(self, other):
-        return bitwise_lshift(other, self)
+        return _binop(bitwise_lshift, other, other, self)
 
     def __rshift__(self, other):
-        return bitwise_rshift(self, other)
+        return _binop(bitwise_rshift, other, self, other)
 
     def __rrshift__(self, other):
-        return bitwise_rshift(other, self)
+        return _binop(bitwise_rshift, other, other, self)
+
+
+def _binop(func, other, lhs, rhs):
+    if not isinstance(other, _TILE_LIKE_TYPES):
+        return NotImplemented
+    return func(lhs, rhs)
+
+
+_TILE_LIKE_TYPES = (Tile, int, float, bool)
 
 
 TileOrScalar = Union[Tile, Scalar]
@@ -2157,7 +2166,7 @@ def astile(value, /, *, dtype: DType) -> Tile:
 
     Args:
         value (scalar | (nested) tuple of scalar): A scalar (yielding a 0-d tile),
-            or a (possibly nested) tuple of scalars whose nesting determines the 
+            or a (possibly nested) tuple of scalars whose nesting determines the
             tile's shape. Every tuple's length must be a power of two, and sibling tuples
             at each level must have uniform length.
         dtype (DType): The |Data type| of the tile.
