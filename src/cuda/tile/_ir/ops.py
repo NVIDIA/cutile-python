@@ -84,7 +84,7 @@ tile_impl_registry.update(control_flow_impl_registry())
 
 @comparison_operator_impl(tile_impl_registry, TensorLikeTy, TensorLikeTy)
 def tile_comparison_operator_impl(
-    fn: str, x: Var[TensorLikeTy], y: Var[TensorLikeTy]
+    fn: str, symbol: str, x: Var[TensorLikeTy], y: Var[TensorLikeTy]
 ) -> Var[TensorLikeTy]:
     return compare_tensorlike(
         fn,

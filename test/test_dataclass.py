@@ -967,3 +967,120 @@ def test_unsupported_type_in_dataclass_field():
     with pytest.raises(TypeError, match="Invalid field 'bar' of kernel argument #0:"
                                         " Objects of type 'list_iterator' are not supported"):
         ct.launch(torch.cuda.current_stream(), (1,), kern, (d,))
+
+
+def test_default_comparison():
+    @dataclass(frozen=True, order=True)
+    class Foo:
+        a: int
+        b: int
+
+    test_values = (3, 5, 7)
+
+    @ct.kernel
+    def kern(x):
+        for i, a in ct.static_iter(enumerate(test_values)):
+            for j, b in ct.static_iter(enumerate(test_values)):
+                for k, c in ct.static_iter(enumerate(test_values)):
+                    for m, d in ct.static_iter(enumerate(test_values)):
+                        foo_1 = Foo(a, b)
+                        foo_2 = Foo(c, d)
+                        ct.scatter(x, (i, j, k, m, 0), foo_1 == foo_2)
+                        ct.scatter(x, (i, j, k, m, 1), foo_1 != foo_2)
+                        ct.scatter(x, (i, j, k, m, 2), foo_1 < foo_2)
+                        ct.scatter(x, (i, j, k, m, 3), foo_1 <= foo_2)
+                        ct.scatter(x, (i, j, k, m, 4), foo_1 > foo_2)
+                        ct.scatter(x, (i, j, k, m, 5), foo_1 >= foo_2)
+
+    n = len(test_values)
+    x = torch.full((n, n, n, n, 6), 99, dtype=torch.int32, device="cuda")
+    ct.launch(torch.cuda.current_stream(), (1,), kern, (x,))
+    res = x.tolist()
+
+    for i, a in enumerate(test_values):
+        for j, b in enumerate(test_values):
+            for k, c in enumerate(test_values):
+                for m, d in enumerate(test_values):
+                    foo_1 = Foo(a, b)
+                    foo_2 = Foo(c, d)
+                    actual = res[i][j][k][m]
+                    expected = [
+                        foo_1 == foo_2,
+                        foo_1 != foo_2,
+                        foo_1 < foo_2,
+                        foo_1 <= foo_2,
+                        foo_1 > foo_2,
+                        foo_1 >= foo_2
+                    ]
+                    assert actual == expected, f"{foo_1} {foo_2} {actual} {expected}"
+
+
+def test_custom_comparison():
+    @dataclass(frozen=True)
+    class WithCustomCmp:
+        x: int
+
+        def __eq__(self, other): return 0, self.x, other.x
+        def __ne__(self, other): return 1, self.x, other.x
+        def __lt__(self, other): return 2, self.x, other.x
+        def __le__(self, other): return 3, self.x, other.x
+        def __gt__(self, other): return 4, self.x, other.x
+        def __ge__(self, other): return 5, self.x, other.x
+
+    a_options = (10, 20, 30)
+    b_options = (40, 50, 60)
+
+    @ct.kernel
+    def kern(out):
+        def put(op_idx, tup):
+            for j, val in ct.static_iter(enumerate(tup)):
+                ct.scatter(out, (ai, bi, op_idx, j), val)
+
+        for ai, ax in ct.static_iter(enumerate(a_options)):
+            for bi, bx in ct.static_iter(enumerate(b_options)):
+                a = WithCustomCmp(ax)
+                b = WithCustomCmp(bx)
+                put(0, a == b)
+                put(1, a != b)
+                put(2, a < b)
+                put(3, a <= b)
+                put(4, a > b)
+                put(5, a >= b)
+
+    out = torch.zeros((3, 3, 6, 3), dtype=torch.int32, device="cuda")
+    ct.launch(torch.cuda.current_stream(), (1,), kern, (out,))
+    res = out.tolist()
+    for ai, ax in enumerate(a_options):
+        for bi, bx in enumerate(b_options):
+            for op_idx in range(6):
+                r = res[ai][bi][op_idx]
+                assert r == [op_idx, ax, bx]
+
+
+def test_custom_ne_comparison_if_only_eq_is_defined():
+    @dataclass(frozen=True)
+    class WithCustomEq:
+        x: int
+
+        def __eq__(self, other):
+            return True
+
+    @ct.kernel
+    def kern():
+        res = WithCustomEq(4) != 6
+        ct.static_assert(not res)
+
+    ct.launch(torch.cuda.current_stream(), (1,), kern, ())
+
+
+def test_no_default_order():
+    @dataclass(frozen=True)
+    class WithCustomEq:
+        x: int
+
+    @ct.kernel
+    def kern():
+        WithCustomEq(4) < WithCustomEq(6)
+
+    with pytest.raises(TypeCheckingError, match=re.escape("Unsupported operand types for <:")):
+        ct.launch(torch.cuda.current_stream(), (1,), kern, ())

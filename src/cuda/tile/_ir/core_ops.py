@@ -13,7 +13,7 @@ from typing import Any, Optional, Sequence
 from typing_extensions import override
 
 import cuda.tile._bytecode as bc
-from cuda.tile import TileTypeError
+from cuda.tile import TileTypeError, ensure_constant
 import cuda.tile._datatype as datatype
 from cuda.tile._bytecode import float_to_bits
 from cuda.tile._bytecode.float import float_from_bits
@@ -38,7 +38,7 @@ from cuda.tile._ir.type import Type, DTypeSpec, TensorLikeTy, TupleTy, TupleValu
     NotImplementedTy
 from cuda.tile._ir.typing_support import type_of_constant_python_value, \
     loose_type_of_constant_python_value, get_dataclass_info, \
-    create_dataclass_instance, find_method, dataclass_has_default_repr
+    create_dataclass_instance, find_method, dataclass_has_default_repr, dataclass_has_default_cmp
 from cuda.tile._ir2bytecode import BytecodeContext
 from cuda.tile._mutex import tile_mutex
 from cuda.tile._passes.ast2hir import HirMode
@@ -97,8 +97,9 @@ async def is_not_contained_in_impl(x: Var, y: Var):
 
 def comparison_operator_impl(registry: ImplRegistry, lhs_ty: type[Type], rhs_ty: type[Type]):
     def decorate(func):
-        for name in ("eq", "ne", "lt", "le", "gt", "ge"):
-            registry.impl(getattr(operator, name), fixed_args=[name],
+        for name, symbol in (("eq", "=="), ("ne", "!="),
+                             ("lt", "<"), ("le", "<="), ("gt", ">"), ("ge", ">=")):
+            registry.impl(getattr(operator, name), fixed_args=[name, symbol],
                           overload=(lhs_ty, rhs_ty))(func)
         return func
 
@@ -561,9 +562,10 @@ async def setitem_dataclass_impl(object: Var[DataclassTy], key: Var, value: Var)
 
 
 @comparison_operator_impl(_registry, TupleTy, TupleTy)
-async def comparison_operator_tuple_impl(fn: str, x: Var[TupleTy], y: Var[TupleTy]) -> Var:
+async def comparison_operator_tuple_impl(fn: str, symbol: str,
+                                         x: Var[TupleTy], y: Var[TupleTy]) -> Var:
     if fn not in ("eq", "ne"):
-        raise TileTypeError(f"Operator '{fn}' is not supported for tuples")
+        raise TileTypeError(f"Operator '{symbol}' is not supported for tuples")
 
     x_ty = x.get_type()
     y_ty = y.get_type()
@@ -761,11 +763,15 @@ async def dataclasses_replace_impl(obj: Var, changes: dict[str, Var]):
 
 async def try_dataclass_binary_dunder(dunder: str,
                                       dataclass_instance: Var[DataclassTy],
-                                      other: Var) -> Var | NotImplementedType:
+                                      other: Var,
+                                      exclude_object: bool = False) -> Var | NotImplementedType:
     dataclass_ty = dataclass_instance.get_type()
     f = find_method(dataclass_ty.cls, dunder)
     if f is NotImplemented:
         return NotImplemented
+    if exclude_object and f is getattr(object, dunder):
+        return NotImplemented
+
     from cuda.tile._passes.hir2ir import call_function
     res = await call_function(f, dataclass_instance, other)
     if isinstance(res.get_type(), NotImplementedTy):
@@ -828,6 +834,54 @@ async def dataclass_binary_arith_rhs_impl(symbol: str, _lhs_dunder: str, rhs_dun
         return res
     raise TypeCheckingError(f"Unsupported operand types for {symbol}:"
                             f" {x.get_type()} and {y.get_type()}")
+
+
+@comparison_operator_impl(_registry, DataclassTy, WILDCARD)
+async def dataclass_comparison_impl(fn: str, symbol: str, x: Var[DataclassTy], y: Var):
+    from cuda.tile._passes.hir2ir import call_function
+    cls = x.get_type().cls
+    y_ty = y.get_type()
+    dunder = f"__{fn}__"
+    if dataclass_has_default_cmp(cls, dunder):
+        if not isinstance(y_ty, DataclassTy) or y_ty.cls is not cls:
+            return loosely_typed_const(False)
+        x_values = x.get_aggregate().as_tuple()
+        y_values = y.get_aggregate().as_tuple()
+        all_values = [v for t in zip(x_values, y_values) for v in t]
+        op = getattr(operator, fn)
+        return await call_function(_compare_pairs, loosely_typed_const(op), *all_values)
+    else:
+        default_ne_via_eq = fn == "ne" and cls.__ne__ is object.__ne__
+        if default_ne_via_eq:
+            dunder = "__eq__"
+
+        res = await try_dataclass_binary_dunder(dunder, x, y, exclude_object=True)
+        if res is NotImplemented:
+            # We can't fall back to identity comparison -- we don't have object addresses
+            raise TypeCheckingError(f"Unsupported operand types for {symbol}:"
+                                    f" {x.get_type()} and {y.get_type()}")
+
+        if default_ne_via_eq:
+            res = await call_function(operator.not_, res)
+
+        return res
+
+
+def _compare_pairs(op, *items):
+    if ensure_constant(len(items) == 0):
+        return op(0, 0)
+
+    a, b = items[:2]
+    if a == b:
+        return _compare_pairs(op, *items[2:])
+
+    if ensure_constant(op == operator.eq):
+        return False
+
+    if ensure_constant(op == operator.ne):
+        return True
+
+    return op(a, b)
 
 
 # ===========================================================================================
@@ -1090,19 +1144,25 @@ def unpack_impl(iterable: Var, expected_len: Var) -> Var:
 
 
 @comparison_operator_impl(_registry, DTypeSpec, DTypeSpec)
-def comparison_dtype_spec_impl(fn: str, x: Var, y: Var):
+def comparison_dtype_spec_impl(fn: str, symbol: str, x: Var, y: Var):
     from cuda.tile._ir.arithmetic_ops import binop_propagate_constant
     return binop_propagate_constant(fn, x.get_type().dtype, y.get_type().dtype, None)
 
 
 @comparison_operator_impl(_registry, StringTy, StringTy)
-def comparison_string_impl(fn: str, x: Var, y: Var):
+def comparison_string_impl(fn: str, symbol: str, x: Var, y: Var):
     from cuda.tile._ir.arithmetic_ops import binop_propagate_constant
     return binop_propagate_constant(fn, x.get_type().value, y.get_type().value, None)
 
 
 @comparison_operator_impl(_registry, EnumTy, EnumTy)
-def comparison_enum_impl(fn: str, x: Var, y: Var):
+def comparison_enum_impl(fn: str, symbol: str, x: Var, y: Var):
+    from cuda.tile._ir.arithmetic_ops import binop_propagate_constant
+    return binop_propagate_constant(fn, x.get_constant(), y.get_constant(), None)
+
+
+@comparison_operator_impl(_registry, FunctionTy, FunctionTy)
+def comparison_function_impl(fn: str, symbol: str, x: Var, y: Var):
     from cuda.tile._ir.arithmetic_ops import binop_propagate_constant
     return binop_propagate_constant(fn, x.get_constant(), y.get_constant(), None)
 

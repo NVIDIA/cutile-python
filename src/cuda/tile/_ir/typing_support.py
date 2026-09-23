@@ -223,21 +223,39 @@ def _dataclass_has_default_init(cls) -> bool:
     if not cls.__dataclass_params__.init:
         return False
 
-    clc_init_code = cls.__init__.__code__
+    code = cls.__init__.__code__
 
-    if "__dataclass_builtins_object__" in clc_init_code.co_freevars:
+    if "__dataclass_builtins_object__" in code.co_freevars:
         return True
 
     # If the dataclass is not empty, return False
     if dataclasses.fields(cls):
         return False
 
-    co_qualname = getattr(clc_init_code, "co_qualname", None)
+    return _is_code_seemingly_generated_by_dataclasses_library(code)
+
+
+def dataclass_has_default_cmp(cls, method: str):
+    if method == "__ne__":
+        return cls.__ne__ is object.__ne__ and dataclass_has_default_cmp(cls, "__eq__")
+
+    if method == "__eq__":
+        flag = cls.__dataclass_params__.eq
+    else:
+        assert method in ("__lt__", "__gt__", "__le__", "__ge__")
+        flag = cls.__dataclass_params__.order
+    if not flag:
+        return False
+    return _is_code_seemingly_generated_by_dataclasses_library(getattr(cls, method).__code__)
+
+
+def _is_code_seemingly_generated_by_dataclasses_library(code):
+    co_qualname = getattr(code, "co_qualname", None)
     if co_qualname is not None:
-        return co_qualname == "__create_fn__.<locals>.__init__"
+        return co_qualname == "__create_fn__.<locals>." + code.co_name
 
     # HACK: This is a fallback for python 3.10 as co_qualname was introduced in python 3.11+
-    return clc_init_code.co_filename == "<string>"
+    return code.co_filename == "<string>"
 
 
 def dataclass_has_default_repr(cls) -> bool:

@@ -379,7 +379,8 @@ def compare_tensorlike(fn: str, x: Var[TensorLikeTy], y: Var[TensorLikeTy]) -> V
 
 
 @comparison_operator_impl(_registry, TensorLikeTy, TensorLikeTy)
-def comparison_tensorlike_impl(fn: str, x: Var[TensorLikeTy], y: Var[TensorLikeTy]) -> Var:
+def comparison_tensorlike_impl(fn: str, symbol: str,
+                               x: Var[TensorLikeTy], y: Var[TensorLikeTy]) -> Var:
     return compare_tensorlike(fn, x, y)
 
 
