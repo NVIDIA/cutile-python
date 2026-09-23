@@ -2,6 +2,8 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+from contextlib import contextmanager
+from dataclasses import dataclass
 import pytest
 import torch
 
@@ -344,3 +346,63 @@ def test_atomic_operation_type():
         signature=KernelSignature((make_symbolic_tensor(1, cl.int32),)),
         raises=pytest.raises(TypeCheckingError, match="Expected AtomicOp"),
     )
+
+
+def test_block_mutex_example():
+    @dataclass(frozen=True)
+    class Mutex:
+        storage: cl.Pointer[int]
+        # could be cluster if storage is in DSM
+        scope: cl.MemoryScope = cl.MemoryScope.BLOCK
+
+        def lock(self):
+            def cas():
+                return cl.atomic_rmw(
+                    "CAS",
+                    self.storage,
+                    0,
+                    1,
+                    memory_order="ACQUIRE",
+                    memory_scope=self.scope,
+                )
+
+            while cas() != 0:
+                pass
+
+        def unlock(self):
+            cl.atomic_store(
+                self.storage, 0, memory_order="RELEASE", memory_scope=self.scope
+            )
+
+    @contextmanager
+    def lock_guard(mutex: Mutex):
+        """mimic std::lock_guard"""
+        mutex.lock()
+        yield
+        mutex.unlock()
+
+    @cl.kernel
+    def kernel(num_iterations: cl.Constant, recording: cl.Array[int]):
+        id = cl.thread_index(0)
+        mutex_storage = cl.shared_array(1, cl.int32)
+        record_idx = cl.shared_array(0, cl.int32)
+        record_idx[0] = 0
+        mutex = Mutex(mutex_storage.pointer())
+        cl.barrier_sync_block_aligned()
+        for i in range(num_iterations):
+            with lock_guard(mutex):
+                recording[record_idx[0]] = id  # record who got to run when
+                record_idx[0] += 1  # unguarded because we have the lock
+                cl.nanosleep(100)
+            cl.nanosleep(50)  # let other kernel acquire
+
+    stream = torch.cuda.current_stream()
+    num_iterations = 3
+    recording = torch.zeros(num_iterations * 2, dtype=torch.int32).cuda(0)
+    cl.launch(stream, (1,), (2,), kernel, (num_iterations, recording))
+    stream.synchronize()
+    recording = recording.cpu().tolist()
+    # depends on who got there first
+    order = [0, 1] if recording[0] == 0 else [1, 0]
+    expect = order * num_iterations
+    assert recording == expect
