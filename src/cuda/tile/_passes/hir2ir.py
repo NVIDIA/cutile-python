@@ -15,7 +15,7 @@ from .. import TileTypeError
 from .._coroutine_util import resume_after, run_coroutine
 from .._dispatch_mode import StaticEvalMode
 from .._exception import Loc, FunctionDesc, TileInternalError, TileError, TileRecursionError, \
-    TileValueError, UnsupportedCallError, TypeCheckingError, UnsupportedSyntaxError, \
+    TileValueError, UnsupportedCallError, UnsupportedSyntaxError, \
     exception_type_and_str, StaticException
 from .._execution import is_function_allowed_in, is_stub, is_static_def, stub_aliases
 from .._ir.hir import StaticEvalKind
@@ -24,7 +24,7 @@ from .._ir.ir import Var, IRContext, Builder
 from .._ir.op_impl import ImplRegistry
 from .._ir.control_flow_ops import end_branch, return_, continue_, break_
 from .._ir.core_ops import (
-    loosely_typed_const, build_dataclass_instance, build_tuple, sym2var, store_var, build_dict
+    loosely_typed_const, build_tuple, sym2var, store_var, build_dict, dataclass_new
 )
 from .._ir.arithmetic_ops import dtype_constructor
 from .._ir.scope import Scope, LocalScope, IntMap
@@ -400,22 +400,7 @@ async def call(callee_var: Var, args, kwargs) -> Var | None:
 async def _call_constructor(ty, args, kwargs, builder):
     if dataclasses.is_dataclass(ty):
         dataclass_info = get_dataclass_info(ty)
-        if dataclass_info.init_signature is None:
-            if is_static_def(ty.__init__):
-                return _call_static_def_function(ty, args, kwargs)
-
-            raise TypeCheckingError("Dataclass instance creation is only supported for dataclasses"
-                                    " with a default generated __init__() method.")
-
-        param_names = tuple(dataclass_info.init_signature.parameters)
-        # Add an extra `None` to args for the `self` parameter
-        arg_list = _bind_args(dataclass_info.init_signature, ty.__name__, (None, *args), kwargs)
-        assert len(dataclass_info.field_names) + 1 == len(arg_list)
-        items = tuple(arg_list[param_names.index(name)] for name in dataclass_info.field_names)
-        ret = build_dataclass_instance(items, dataclass_info)
-        if dataclass_info.post_init is not NotImplemented:
-            await call_function(dataclass_info.post_init, ret)
-        return ret
+        return await dataclass_new(dataclass_info, args, kwargs)
     elif issubclass(ty, Enum):
         if len(args) != 1 or kwargs:
             raise TileTypeError("Enum constructor takes exactly one positional argument")

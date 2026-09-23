@@ -20,6 +20,7 @@ from cuda.tile._bytecode.float import float_from_bits
 from cuda.tile._cext import foreign_dtype_object_to_native
 from cuda.tile._datatype import numeric_dtype_category, is_integral
 from cuda.tile._exception import Loc, TileSyntaxError, TileValueError, TypeCheckingError
+from cuda.tile._execution import is_static_def
 from cuda.tile._ir import hir_stubs, hir
 from cuda.tile._ir.hir import ResolvedName
 from cuda.tile._ir.ir import Operation, attribute, Var, Builder, make_aggregate, operand, \
@@ -716,24 +717,46 @@ def build_dataclass_instance(items: tuple[Var, ...], info: DataclassInfo,
     return res
 
 
+async def dataclass_new(info: DataclassInfo, args, kwargs) -> Var:
+    if info.init_signature is None:
+        if is_static_def(info.cls.__init__):
+            from cuda.tile._passes.hir2ir import _call_static_def_function
+            return _call_static_def_function(info.cls, args, kwargs)
+
+        raise TypeCheckingError("Dataclass instance creation is only supported for dataclasses"
+                                " with a default generated __init__() method.")
+
+    # Implementation of the default generated __init__()
+    from cuda.tile._passes.hir2ir import _bind_args
+    param_names = tuple(info.init_signature.parameters)
+    # Add an extra `None` to args for the `self` parameter
+    arg_list = _bind_args(info.init_signature, info.cls.__name__, (None, *args), kwargs)
+    assert len(info.field_names) + 1 == len(arg_list)
+    items = tuple(arg_list[param_names.index(name)] for name in info.field_names)
+    ret = build_dataclass_instance(items, info)
+    if info.post_init is not NotImplemented:
+        from cuda.tile._passes.hir2ir import call_function
+        await call_function(info.post_init, ret)
+    return ret
+
+
 @impl(dataclasses.replace)
-def dataclasses_replace_impl(obj: Var, changes: dict[str, Var]):
+async def dataclasses_replace_impl(obj: Var, changes: dict[str, Var]):
     dataclass_ty = require_dataclass_type(obj)
-    if get_dataclass_info(dataclass_ty.cls).init_signature is None:
+    info = get_dataclass_info(dataclass_ty.cls)
+    if info.init_signature is None:
         raise TypeCheckingError("dataclasses.replace() is only allowed for dataclasses with"
                                 " a default generated __init__() method")
     dataclass_val = obj.get_aggregate()
     assert isinstance(dataclass_val, DataclassValue)
     name2idx = dataclass_val.info.field_name_to_idx
-    new_items = list(dataclass_val.items)
+    kwargs = {name: dataclass_val.items[idx] for name, idx in name2idx.items()}
     for name, val in changes.items():
-        try:
-            idx = name2idx[name]
-        except KeyError:
+        if name not in name2idx:
             raise TileTypeError(f"Dataclass '{dataclass_ty.cls.__name__}'"
                                 f" has no such field '{name}'")
-        new_items[idx] = val
-    return build_dataclass_instance(tuple(new_items), dataclass_val.info)
+        kwargs[name] = val
+    return await dataclass_new(info, (), kwargs)
 
 
 async def try_dataclass_binary_dunder(dunder: str,

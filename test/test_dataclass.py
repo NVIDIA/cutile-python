@@ -138,6 +138,28 @@ def test_dataclasses_replace():
     assert x.tolist() == [2, 7, 13, 2, 30, 40, 123]
 
 
+def test_dataclasses_replace_calls_post_init():
+    @dataclass(frozen=True)
+    class PostInit:
+        arr: ct.Array
+        index: int
+        value: int
+
+        def __post_init__(self):
+            ct.scatter(self.arr, self.index, self.value)
+
+    @ct.kernel
+    def kern(x):
+        obj = PostInit(x, 0, 10)
+        obj2 = dataclasses.replace(obj, index=1, value=30)
+        ct.static_assert(obj2.index == 1)
+        ct.static_assert(obj2.value == 30)
+
+    x = torch.zeros((2,), dtype=torch.int32, device="cuda:0")
+    ct.launch(torch.cuda.current_stream(), (1,), kern, (x,))
+    assert x.tolist() == [10, 30]
+
+
 def test_loop_carried_dataclass_reconstructed_with_field_info():
     @ct.kernel
     def kern(x, n):
