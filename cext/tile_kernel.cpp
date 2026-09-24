@@ -3155,21 +3155,24 @@ static Result<TileKernel> compile(const DriverApi* driver,
         return raise(PyExc_TypeError, "Expected compile() to return a tuple, got ",
                      Py_TYPE(compile_result.get())->tp_name);
 
-    if (PyTuple_GET_SIZE(compile_result.get()) != 3)
-        return raise(PyExc_TypeError, "Expected compile() to return a 3-tuple, got length ",
+    if (PyTuple_GET_SIZE(compile_result.get()) != 4)
+        return raise(PyExc_TypeError, "Expected compile() to return a 4-tuple, got length ",
                       PyTuple_GET_SIZE(compile_result.get()));
 
     PyObject* py_cubin_bytes = PyTuple_GET_ITEM(compile_result.get(), 0);
     PyObject* py_cufunc_name = PyTuple_GET_ITEM(compile_result.get(), 1);
     PyObject* py_dyn_smem_size_prog = PyTuple_GET_ITEM(compile_result.get(), 2);
+    PyObject* py_lifecycle_providers = PyTuple_GET_ITEM(compile_result.get(), 3);
 
     if (!PyBytes_Check(py_cubin_bytes)
-            || !PyUnicode_Check(py_cufunc_name)) {
+            || !PyUnicode_Check(py_cufunc_name)
+            || !PyTuple_Check(py_lifecycle_providers)) {
         return raise(PyExc_TypeError,
-                     "Expected compile() to return (bytes, str, HostProgram|None),"
-                     " got ", Py_TYPE(py_cubin_bytes)->tp_name,
+                     "Expected compile() to return (bytes, str, HostProgram|None, "
+                     "tuple[module, ...]), got ", Py_TYPE(py_cubin_bytes)->tp_name,
                      ", ", Py_TYPE(py_cufunc_name)->tp_name,
-                     ", ", Py_TYPE(py_dyn_smem_size_prog)->tp_name);
+                     ", ", Py_TYPE(py_dyn_smem_size_prog)->tp_name,
+                     ", ", Py_TYPE(py_lifecycle_providers)->tp_name);
     }
 
     char* cubin_data;
@@ -3197,6 +3200,10 @@ static Result<TileKernel> compile(const DriverApi* driver,
         image->cubin = newref(py_cubin_bytes);
         image->symbol = newref(py_cufunc_name);
     }
+
+    // Call the initialization function of each library lifecycle provider.
+    if (!cukernel->lib.initialize_lifecycle_providers(py_lifecycle_providers))
+        return ErrorRaised;
 
     return TileKernel{std::move(*cukernel),
                       std::move(*dyn_smem_size_prog)};
@@ -5586,6 +5593,11 @@ static PyObject* cuda_tile_export_ipc_benchmark_payload(PyObject*, PyObject* con
     if (!prep.is_ok()) return nullptr;
 
     LaunchHelper& helper = *prep->helper;
+
+    // IPC payload is not supported for kernels with lifecycle providers.
+    if (prep->tile_kernel->cukernel.lib.has_lifecycle_providers())
+        Py_RETURN_NONE;
+
     CHECK(prep->kernel_image.has_value());
     KernelImage& kernel_image = *prep->kernel_image;
 

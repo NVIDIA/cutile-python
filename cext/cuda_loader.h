@@ -113,12 +113,15 @@ public:
     CudaLibrary(const CudaLibrary&) = delete;
     void operator=(const CudaLibrary&) = delete;
     ~CudaLibrary();
+    Status initialize_lifecycle_providers(PyObject* providers);
+    bool has_lifecycle_providers() const;
 
     const CUlibrary& get() const;
 
 private:
     const DriverApi* driver_;
     CUlibrary lib_;
+    Vec<PyPtr> lifecycle_modules_;
 };
 
 

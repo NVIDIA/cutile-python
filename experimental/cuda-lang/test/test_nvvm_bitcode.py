@@ -135,4 +135,4 @@ class _HackKernel(TileDispatcher):
         super().__init__(annotations)
 
     def _compile(self, signature, ctx, compute_capability):
-        return self._cubin, self._func_name, None
+        return self._cubin, self._func_name, None, ()

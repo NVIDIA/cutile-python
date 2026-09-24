@@ -63,6 +63,7 @@ include = [
     "cuda.tile._ir",
     "cuda.tile._passes",
     "cuda.tile._bytecode",
+    "cuda.tile._library_lifecycle",
     "cuda.tile.tune",
     "cuda.tile.jax",
 ]

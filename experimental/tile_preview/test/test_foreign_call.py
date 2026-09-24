@@ -18,6 +18,7 @@ from cuda.tile._ir.ops import (
     TileStore,
 )
 from cuda.tile._ir.type import TileTy
+from cuda.tile._library_lifecycle import nvshmem
 from cuda.tile.compilation import ArrayConstraint, KernelSignature
 from cuda.tile._bytecode.basic import encode_varint
 from cuda.tile_preview import PreviewForeignCall
@@ -377,3 +378,38 @@ def test_tilelibs_reject_conflicting_versions_for_same_path(tmp_path):
 
     with pytest.raises(ValueError, match="Conflicting versions for tilelib"):
         _compile(kernel)
+
+
+@pytest.mark.parametrize(
+    "symbol_name, expected",
+    (
+        ("nvshmem_put", (nvshmem,)),
+        ("nvshmemx_put", (nvshmem,)),
+        ("prefix_nvshmem_put", ()),
+        ("NVSHMEM_put", ()),
+    ),
+)
+def test_nvshmem_foreign_call_detection(tmp_path, symbol_name, expected):
+    path = tmp_path / "provider.tilelib"
+    path.write_bytes(b"tilelib")
+    provider = tp.Tilelib(path=path, version="1")
+
+    def kernel(x):
+        tp.foreign_call(
+            tilelibs=(provider,),
+            symbol_name=symbol_name,
+            constant_params=(),
+            inputs=(),
+            output_types=(),
+        )
+
+        # two calls to test dedup logic
+        tp.foreign_call(
+            tilelibs=(provider,),
+            symbol_name=symbol_name,
+            constant_params=(),
+            inputs=(),
+            output_types=(),
+        )
+
+    assert _compile(kernel).library_lifecycle_providers == expected

@@ -19,7 +19,7 @@ import sys
 import tempfile
 import threading
 import time
-from types import FunctionType
+from types import FunctionType, ModuleType
 from typing import Optional, Sequence
 import zipfile
 
@@ -85,6 +85,15 @@ class CompilationResult:
     cubin: bytes | None = None
     bytecode: bytearray | None = None
     final_ir: Sequence[ir.Block] | None = None
+    library_lifecycle_providers: Sequence[ModuleType] = ()
+
+
+@dataclass(frozen=True)
+class _BytecodeResult:
+    bytecode: bytearray
+    preview_features: tuple[str, ...]
+    linker_inputs: tuple[tuple[Path, str], ...]
+    library_lifecycle_providers: tuple[ModuleType, ...]
 
 
 # Create a global lock
@@ -464,12 +473,13 @@ def _get_bytecode(
     ir_keeper: _IrKeeper,
     compiler_options: CompilerOptions,
     anonymize_debug_info: bool,
-) -> tuple[bytearray, tuple[str, ...], tuple[tuple[Path, str], ...]]:
+) -> _BytecodeResult:
     from cuda.tile._preview_loader import get_preview_foreign_call_type
     preview_foreign_call_type = get_preview_foreign_call_type()
 
     preview_features: set[str] = set()
     linker_inputs: dict[Path, str] = {}
+    library_lifecycle_providers: set[ModuleType] = set()
     bytecode_buf = bytearray()
 
     with bc.write_bytecode(num_functions=ir_keeper.num_signatures,
@@ -488,7 +498,12 @@ def _get_bytecode(
             if preview_foreign_call_type is not None:
                 for op in func_body.traverse():
                     if isinstance(op, preview_foreign_call_type):
+                        from cuda.tile._library_lifecycle import nvshmem as nvshmem_lifecycle
+
                         preview_features.add("simt")
+                        if op.symbol_name.startswith(
+                                nvshmem_lifecycle.FOREIGN_CALL_SYMBOL_PREFIXES):
+                            library_lifecycle_providers.add(nvshmem_lifecycle)
                         for tilelib_path, tilelib_version in op.tilelibs:
                             previous_version = linker_inputs.setdefault(
                                 tilelib_path,
@@ -503,10 +518,14 @@ def _get_bytecode(
     if preview_features:
         bc.patch_header_preview_flag(bytecode_buf, ir_keeper.bytecode_version)
 
-    return (
-        bytecode_buf,
-        tuple(sorted(preview_features)),
-        tuple(sorted(linker_inputs.items(), key=lambda item: str(item[0]))),
+    return _BytecodeResult(
+        bytecode=bytecode_buf,
+        preview_features=tuple(sorted(preview_features)),
+        linker_inputs=tuple(sorted(linker_inputs.items(), key=lambda item: str(item[0]))),
+        library_lifecycle_providers=tuple(sorted(
+            library_lifecycle_providers,
+            key=lambda provider: provider.__name__,
+        )),
     )
 
 
@@ -564,9 +583,10 @@ def compile_tile(ann_func: AnnotatedFunction | FunctionType,
             ir_keeper.get_final_ir(i)
         return CompilationResult(signatures, final_ir=ir_keeper.final_ir)
 
-    bytecode_buf, preview_features, linker_inputs = _get_bytecode(
+    bytecode_result = _get_bytecode(
         ir_keeper, compiler_options, anonymize_debug_info=False
     )
+    bytecode_buf = bytecode_result.bytecode
 
     if CUDA_TILE_DUMP_BYTECODE is not None:
         if not os.path.isdir(CUDA_TILE_DUMP_BYTECODE):
@@ -580,7 +600,7 @@ def compile_tile(ann_func: AnnotatedFunction | FunctionType,
     if context.config.log_tileir or CUDA_TILE_DUMP_TILEIR is not None:
         try:
             mlir_text = _bytecode_to_mlir_text(
-                bytecode_buf, preview_features=preview_features,
+                bytecode_buf, preview_features=bytecode_result.preview_features,
                 temp_dir=context.config.temp_dir,
                 timeout_sec=context.config.compiler_timeout_sec)
 
@@ -599,7 +619,9 @@ def compile_tile(ann_func: AnnotatedFunction | FunctionType,
 
     ret = CompilationResult(signatures,
                             bytecode=bytecode_buf if return_bytecode else None,
-                            final_ir=ir_keeper.final_ir)
+                            final_ir=ir_keeper.final_ir,
+                            library_lifecycle_providers=(
+                                bytecode_result.library_lifecycle_providers))
     if not return_cubin:
         return ret
 
@@ -616,8 +638,9 @@ def compile_tile(ann_func: AnnotatedFunction | FunctionType,
             compiler_options, sm_arch)
         key = cache_key(
             compiler_ver, sm_arch, effective_opt, bytecode_buf, device_debug,
-            preview_features=preview_features,
-            linker_inputs=tuple((str(path), version) for path, version in linker_inputs),
+            preview_features=bytecode_result.preview_features,
+            linker_inputs=tuple(
+                (str(path), version) for path, version in bytecode_result.linker_inputs),
         )
         cubin = cache_lookup(cache_dir, key)
         if cubin is not None:
@@ -639,15 +662,17 @@ def compile_tile(ann_func: AnnotatedFunction | FunctionType,
             cubin_file = compile_cubin(f.name, compiler_options, sm_arch,
                                        timeout_sec=context.config.compiler_timeout_sec,
                                        remarks_output_file=remarks_file,
-                                       preview_features=preview_features,
-                                       linker_inputs=tuple(path for path, _ in linker_inputs))
+                                       preview_features=bytecode_result.preview_features,
+                                       linker_inputs=tuple(
+                                           path for path, _ in bytecode_result.linker_inputs))
         except TileCompilerError as e:
             if context.config.enable_crash_dump:
-                anonymized_bytecode, _, _ = _get_bytecode(ir_keeper, compiler_options,
-                                                          anonymize_debug_info=True)
+                anonymized_result = _get_bytecode(
+                    ir_keeper, compiler_options, anonymize_debug_info=True
+                )
 
                 _compiler_crash_dump(ir_keeper.final_ir, func_desc.name,
-                                     anonymized_bytecode, e.message,
+                                     anonymized_result.bytecode, e.message,
                                      e.compiler_flags, e.compiler_version)
 
             raise e

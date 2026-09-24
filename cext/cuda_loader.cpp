@@ -109,22 +109,69 @@ Result<const DriverApi*> get_driver_api(GlobalLock& lock) {
     return &instance;
 }
 
+static Status call_library_lifecycle(PyObject* module_obj, const char* function_name,
+                                     CUlibrary library) {
+    PyPtr function = getattr(module_obj, function_name);
+    if (!function) return ErrorRaised;
+    PyPtr handle = steal(PyLong_FromVoidPtr(reinterpret_cast<void*>(library)));
+    if (!handle) return ErrorRaised;
+    PyPtr result = steal(PyObject_CallOneArg(function.get(), handle.get()));
+    if (!result) return ErrorRaised;
+    return OK;
+}
 
 CudaLibrary::CudaLibrary(const DriverApi* driver, CUlibrary lib)
     : driver_(driver), lib_(lib) {}
 
 
 CudaLibrary::CudaLibrary(CudaLibrary&& other)
-    : driver_(other.driver_), lib_(other.lib_) {
+    : driver_(other.driver_), lib_(other.lib_),
+      lifecycle_modules_(std::move(other.lifecycle_modules_)) {
     other.lib_ = nullptr;
 }
 
 
 CudaLibrary::~CudaLibrary() {
     if (lib_) {
+        if (!lifecycle_modules_.empty()) {
+            ErrorGuard guard;
+            for (size_t i = lifecycle_modules_.size(); i != 0; i--) {
+                PyObject* module_obj = lifecycle_modules_[i - 1].get();
+                if (!call_library_lifecycle(module_obj, "library_finalize", lib_))
+                    PyErr_WriteUnraisable(module_obj);
+            }
+        }
         CUresult res = driver_->cuLibraryUnload(lib_);
         CHECK(res == CUDA_SUCCESS);
     }
+}
+
+
+Status CudaLibrary::initialize_lifecycle_providers(PyObject* providers) {
+    CHECK(lib_);
+    CHECK(lifecycle_modules_.empty());
+    CHECK(PyTuple_Check(providers));
+
+    Py_ssize_t num_providers = PyTuple_GET_SIZE(providers);
+    for (Py_ssize_t i = 0; i < num_providers; ++i) {
+        if (!PyModule_Check(PyTuple_GET_ITEM(providers, i)))
+            return raise(PyExc_TypeError,
+                         "library lifecycle providers must be modules");
+    }
+
+    lifecycle_modules_.reserve(num_providers);
+    for (Py_ssize_t i = 0; i < num_providers; ++i) {
+        PyObject* module_obj = PyTuple_GET_ITEM(providers, i);
+        if (!call_library_lifecycle(module_obj, "library_init", lib_))
+            return ErrorRaised;
+        lifecycle_modules_.push_back(newref(module_obj));
+    }
+    return OK;
+}
+
+
+bool CudaLibrary::has_lifecycle_providers() const {
+    return !lifecycle_modules_.empty();
 }
 
 
