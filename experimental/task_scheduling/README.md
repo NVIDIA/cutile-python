@@ -30,7 +30,82 @@ The manager also computes a warp-group-rounded initial register budget and threa
 
 Automatic value routing hides storage positions from callback authors. Each callback receives its routed inputs after the `StageInfo` argument and returns the values declared by its captured work method. The frozen `DeviceStep` performs the corresponding value-stack operations, while `DeviceTask.make_context(tasks_inputs)` creates the immutable execution context. The tuple representation remains an internal compiler detail; no placeholder or named routing slot is exposed to resource authors.
 
-`outputs=N` creates `N` independent lexical `ScheduleValue` instances. A work call returns one value directly or a tuple that can be unpacked normally, and its device callback returns the same number of runtime values. A value produced inside a conditional or domain loop cannot escape that scope accidentally. A domain loop(don't support while senmantic and contional early break) that needs state across iterations uses `domain_loop(start, end, step, body, *initial_values)`, with one callback parameter per initial value. The schedule builder invokes `body(*iter_values)` once while capturing the loop body, so every resource call remains a schedule step. The callback must return one work-call output per input; those outputs become both the next-iteration values and the post-loop results. The device adapter preserves zero-trip pass-through and materializes the backedge without exposing routing positions to callbacks. Work methods read the current device offset from `stage_info.loop_offset`; it is not a callback parameter or a routed value. Loop bodies may use `first_iter()`, `last_iter()`, and `every(period, start=...)` to capture iteration-guarded regions.
+`outputs=N` creates `N` independent lexical `ScheduleValue` instances. A work call returns one value directly or a tuple that can be unpacked normally, and its device callback returns the same number of runtime values. A value produced inside a conditional or domain loop cannot escape that scope accidentally. A domain loop that needs state across iterations uses `domain_loop(start, end, step, body, *initial_values)`, with one callback parameter per initial value. The schedule builder invokes `body(*iter_values)` once while capturing the loop body, so every resource call remains a schedule step. The callback must return one work-call output per input; those outputs become both the next-iteration values and the post-loop results. The device adapter preserves zero-trip pass-through and materializes the backedge without exposing routing positions to callbacks. Work methods read the current device offset from `stage_info.loop_offset`; it is not a callback parameter or a routed value. Loop bodies may use `first_iter()`, `last_iter()`, and `every(period, start=...)` to capture iteration-guarded regions.
+
+`when_true()` and `when_false()` regions may nest, including inside iteration
+guards. An inner region executes only when every enclosing guard is active.
+Predicates and other work outputs produced inside a branch may be used by its
+nested regions, but cannot escape to a parent or sibling scope. Reusing the same
+routed predicate preserves true/false correlation in host analysis.
+
+The runnable `tutorial/01_copy_basics/04_copy_tma_nested_conditional.py` example
+extends the conditional TMA copy with all four two-level true/false combinations
+and a third-level condition. It checks the copied tensor and exact per-row branch
+markers, including the absence of writes from inactive branches:
+
+```bash
+python experimental/task_scheduling/tutorial/01_copy_basics/04_copy_tma_nested_conditional.py --rows-cols 9,512
+```
+
+`break_loop()` exits the enclosing domain loop immediately, including from a
+nested conditional. It skips the rest of that iteration and resumes after the
+loop. The context-manager handle provides the same operation:
+
+```python
+with ts.domain_loop(num_tiles) as loop:
+    done = resource.is_done()
+    with ts.when_true(done):
+        loop.break_loop()
+    resource.process()
+```
+
+Use `ts.break_loop()` in a functional loop body. A bare break skips the normal
+backedge: returned loop-carried results retain their values from the last
+completed iteration (or the initial values if the first iteration breaks).
+Pass explicit results to return values computed during the interrupted iteration:
+
+```python
+initial = resource.init_state()
+
+def body(state):
+    updated = resource.advance_state(state)
+    done = resource.is_done(updated)
+    with ts.when_true(done):
+        ts.break_loop(updated)
+    return updated
+
+result = ts.domain_loop(0, num_tiles, 1, body, initial)
+resource.consume_state(result)
+```
+
+For multiple carried inputs, use `ts.break_loop(next_count, next_total)` in the
+same order as the functional loop's inputs. Supply all carried results or none.
+Each explicit argument must be a visible routed `ScheduleValue` with the same
+pipeline-stage provenance and a compatible CUDA type as its carried input;
+ordinary constants must first be returned by a work method. Values created
+inside a nested branch may be returned directly by a break in that branch.
+The exit values are captured before branch-local routes are discarded. Wrong
+arity, foreign-schedule values, and values escaping a sibling/child scope are
+rejected during capture; CUDA types are checked during device compilation.
+An untaken break uses the normal body return values, and a zero-trip loop still
+returns its initial values.
+
+Side effects and pipeline-state updates performed before the break are retained.
+A break exits only the domain loop, so an enclosing `work_tile_loop()` continues.
+`last_iter()` still means the last iteration of the declared range; it is not an
+exit hook. Breaks outside a domain loop and expired loop handles are rejected.
+Unbounded while loops remain unsupported.
+
+The nested-copy tutorial also accepts `--stop-row 5`. Both producer and consumer
+break before acquiring/waiting for row 5, and the example verifies that the
+uncopied output and trace remain zero. A pipeline schedule must ensure that its
+producer and consumer exit consistently and finish any acquired work before
+exiting; `break_loop()` does not implicitly release or drain an interrupted step.
+
+Host expansion honors breaks for its selected opaque-condition assignment and
+representative loop bounds, including zero-trip loops. Opaque assignments remain
+fixed during each explored execution; these checks do not prove safety for all
+possible iteration-varying runtime predicate sequences.
 
 `StageInfo` contains the current `stage_idx`, `phase`, selected full `barrier`, zero-based iteration count, loop offset/bounds, work label, and owning `ExecutionContext`; loop offset/bounds are `None` for peeled work outside a domain loop. This lets pipeline payload work use `stage_info.barrier` without knowing how barrier arrays are stored by the device manager.
 

@@ -18,11 +18,13 @@ from .enums import (
     guard_fires,
 )
 from .schedule_builder import (
+    BreakLoop,
     ConditionalBlock,
     DomainLoop,
     Step,
     WorkTileLoop,
     _iter_nodes,
+    validate_break_placement,
 )
 from .resources import WorkQueue
 from .task import Task
@@ -63,11 +65,14 @@ def expand_task(
     dynamic_domain_fallback: int = 1,
     representative_domain: bool = False,
 ) -> list[FlatScheduleOp]:
+    validate_break_placement(task.schedule.body)
     result = []
     domain_entry = itertools.count()
 
     def emit(nodes, iteration=None, count=None, phase="O", skipped=False):
         for node in nodes:
+            if isinstance(node, BreakLoop):
+                return True
             if isinstance(node, Step):
                 # Static work-queue stages only update task-local scheduler
                 # state; unlike a CLC queue, they do not synchronize tasks.
@@ -96,10 +101,11 @@ def expand_task(
                 stride = _bound(node.step, task, 1)
                 if stride <= 0:
                     raise ValueError("exhaustive checker requires positive domain step")
-                values = tuple(range(start, end, stride)) or (start,)
+                values = tuple(range(start, end, stride))
                 next(domain_entry)
                 for index, _ in enumerate(values):
-                    emit(node.body, index, len(values), "", skipped)
+                    if emit(node.body, index, len(values), "", skipped):
+                        break
             elif isinstance(node, WorkTileLoop):
                 for _ in range(num_tiles):
                     emit(node.body, iteration, count, phase, skipped_tile)
@@ -126,7 +132,9 @@ def expand_task(
                         if guard is LAST_ITER
                         else phase
                     )
-                    emit(node.body, iteration, count, guard_phase, skipped)
+                    if emit(node.body, iteration, count, guard_phase, skipped):
+                        return True
+        return False
 
     emit(task.schedule.body)
     return result

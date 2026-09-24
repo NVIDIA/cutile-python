@@ -25,6 +25,7 @@ from .resources import (
     _get_static_work_fn,
 )
 from .schedule_builder import (
+    BreakLoop,
     ConditionalBlock,
     DomainLoop,
     DynamicDomainBound,
@@ -33,6 +34,8 @@ from .schedule_builder import (
     Step,
     WorkTileLoop,
     _iter_nodes,
+    contains_break,
+    validate_break_placement,
     validate_queue_advance_placement,
 )
 
@@ -76,6 +79,8 @@ class ExecutionContext:
     pipeline_tile_iteration: object = 0
     multistage_iterations: object = 0
     tile_scheduler: object | None = None
+    break_requested: object = False
+    loop_carried_values: tuple[object, ...] = ()
 
     def route(self, index: int) -> object:
         return self.route_values[index]
@@ -622,6 +627,63 @@ class DevicePipelineStep:
 
 
 @dataclass(frozen=True)
+class DeviceBreakLoop:
+    exit_route_positions: tuple[int, ...] = ()
+
+    def __call__(self, context: ExecutionContext) -> ExecutionContext:
+        if self.exit_route_positions:
+            carried = tuple(
+                context.route(position)
+                for position in cl.static_iter(self.exit_route_positions)
+            )
+            context = replace(context, loop_carried_values=carried)
+        return replace(context, break_requested=True)
+
+
+@dataclass(frozen=True)
+class DeviceBreakableSequence:
+    """Run a prefix and enter its continuation only if no break was taken.
+
+    Every exit restores the incoming route depth, so a skipped continuation
+    never needs placeholder values for work outputs that were not computed.
+    Normal completion materializes the backedge; a break may set explicit
+    carried results before its branch-local routes are discarded.
+    """
+
+    prefix: tuple[object, ...]
+    continuation: object | None = None
+    yield_route_positions: tuple[int, ...] | None = None
+
+    def __call__(self, context: ExecutionContext) -> ExecutionContext:
+        route_depth = len(context.route_values)
+        context = _run_device_nodes(self.prefix, context)
+        if self.continuation is not None:
+            if not context.break_requested:
+                context = self.continuation(context)
+        elif self.yield_route_positions is not None:
+            carried = tuple(
+                context.route(position)
+                for position in cl.static_iter(self.yield_route_positions)
+            )
+            context = replace(context, loop_carried_values=carried)
+        return context.truncate_routes(route_depth)
+
+
+def _breakable_sequence(nodes, lowered, yield_route_positions=None):
+    """Partition at potential breaks; leave ordinary prefixes unconditional."""
+    boundaries = [
+        index + 1 for index, node in enumerate(nodes) if contains_break((node,))
+    ]
+    start = boundaries[-1] if boundaries else 0
+    sequence = DeviceBreakableSequence(
+        lowered[start:], yield_route_positions=yield_route_positions
+    )
+    for end, start in zip(reversed(boundaries), reversed([0] + boundaries[:-1])):
+        sequence = DeviceBreakableSequence(lowered[start:end], sequence)
+    return sequence
+
+
+@dataclass(frozen=True)
 class DeviceConditional:
     body: tuple[object, ...]
     guard: DeviceGuard
@@ -656,6 +718,7 @@ class DeviceDomainLoop:
     initial_route_positions: tuple[int, ...] = ()
     yield_route_positions: tuple[int, ...] = ()
     result_indices: tuple[int, ...] = ()
+    has_break: bool = False
 
     def _resolve_task_bound(self, resolver, context):
         resolver_task = self.resolver_task
@@ -694,6 +757,10 @@ class DeviceDomainLoop:
             context.route(position)
             for position in cl.static_iter(self.initial_route_positions)
         )
+        outer_break_requested = context.break_requested
+        outer_carried_values = context.loop_carried_values
+        if self.has_break:
+            context = replace(context, break_requested=False, loop_carried_values=carried)
         for loop_offset in range(start, end, self.step):
             iteration_index = (loop_offset - start) // self.step
             iteration_context = replace(
@@ -708,11 +775,17 @@ class DeviceDomainLoop:
                 route_values=context.route_values + carried,
             )
             body_context = _run_device_nodes(self.body, iteration_context)
-            carried = tuple(
-                body_context.route(position)
-                for position in cl.static_iter(self.yield_route_positions)
-            )
+            if self.has_break:
+                carried = body_context.loop_carried_values
+            else:
+                carried = tuple(
+                    body_context.route(position)
+                    for position in cl.static_iter(self.yield_route_positions)
+                )
             context = replace(body_context, route_values=context.route_values)
+            if self.has_break:
+                if context.break_requested:
+                    break
         context = replace(
             context,
             loop_offset=outer_loop_offset,
@@ -722,6 +795,8 @@ class DeviceDomainLoop:
             loop_end=outer_loop_end,
             loop_step=outer_loop_step,
             in_domain_loop=outer_in_domain_loop,
+            break_requested=outer_break_requested,
+            loop_carried_values=outer_carried_values,
         )
         results = tuple(
             carried[index] for index in cl.static_iter(self.result_indices)
@@ -1488,6 +1563,7 @@ class Task:
         self.debug_print = debug_print
         self.run_only_on_cta_id = run_only_on_cta_id
         validate_queue_advance_placement(schedule.body)
+        validate_break_placement(schedule.body)
         allowed = {id(resource) for resource in self.resources}
         for node in _iter_nodes(schedule.body):
             if isinstance(node, Step) and id(node.memory_resource) not in allowed:
@@ -1694,6 +1770,8 @@ class Task:
             raise TypeError(type(guard).__name__)
 
         def anonymous_uses(node):
+            if isinstance(node, BreakLoop):
+                return set(node.exit_values)
             if isinstance(node, Step):
                 return set(node.input_values.values())
             uses = set()
@@ -1726,6 +1804,7 @@ class Task:
             in_domain_loop=False,
             frame_depth=None,
             terminal_uses=frozenset(),
+            preserve_routes=False,
         ):
             if frame_depth is None:
                 frame_depth = len(anonymous_routes)
@@ -1745,7 +1824,11 @@ class Task:
                     in_domain_loop=in_domain_loop,
                 )
                 future_uses = suffix_uses[index + 1]
-                if isinstance(device_node, (DeviceStep, DeviceWorkQueueAdvance)):
+                if preserve_routes:
+                    # A breakable continuation may be skipped. Keep its inputs
+                    # until the enclosing sequence restores its incoming frame.
+                    pass
+                elif isinstance(device_node, (DeviceStep, DeviceWorkQueueAdvance)):
                     appended_routes = anonymous_routes[old_depth:]
                     old_routes = anonymous_routes[:old_depth]
                     release_before = dead_trailing_count(
@@ -1787,6 +1870,10 @@ class Task:
             return tuple(lowered)
 
         def lower(node, anonymous_routes, *, in_domain_loop=False):
+            if isinstance(node, BreakLoop):
+                return DeviceBreakLoop(tuple(
+                    anonymous_index(value, anonymous_routes) for value in node.exit_values
+                ))
             if isinstance(node, Step):
                 stage_actions = {
                     ScheduleStage.ProducerTryAcquire: DevicePipelineStep.TRY_ACQUIRE,
@@ -1940,13 +2027,18 @@ class Task:
             if isinstance(node, ConditionalBlock):
                 body_routes = list(anonymous_routes)
                 body_frame_depth = len(body_routes)
+                has_break = contains_break(node.body)
+                body = lower_nodes(
+                    node.body,
+                    body_routes,
+                    in_domain_loop=in_domain_loop,
+                    frame_depth=body_frame_depth,
+                    preserve_routes=has_break,
+                )
+                if has_break:
+                    body = (_breakable_sequence(node.body, body),)
                 return DeviceConditional(
-                    lower_nodes(
-                        node.body,
-                        body_routes,
-                        in_domain_loop=in_domain_loop,
-                        frame_depth=body_frame_depth,
-                    ),
+                    body,
                     lower_guard(node.condition, anonymous_routes),
                 )
             if isinstance(node, DomainLoop):
@@ -1980,17 +2072,21 @@ class Task:
                 body_routes = list(anonymous_routes)
                 body_routes.extend(node.iter_values.values())
                 body_frame_depth = len(body_routes)
+                has_break = contains_break(node.body)
                 body = lower_nodes(
                     node.body,
                     body_routes,
                     in_domain_loop=True,
                     frame_depth=body_frame_depth,
                     terminal_uses=frozenset(node.yield_values.values()),
+                    preserve_routes=has_break,
                 )
                 yield_positions = tuple(
                     anonymous_index(variable, body_routes)
                     for variable in node.yield_values.values()
                 )
+                if has_break:
+                    body = (_breakable_sequence(node.body, body, yield_positions),)
                 result_values = tuple(node.result_values.values())
                 anonymous_routes.extend(result_values)
                 resolver_task = (
@@ -2031,6 +2127,7 @@ class Task:
                     initial_route_positions=initial_positions,
                     yield_route_positions=yield_positions,
                     result_indices=tuple(range(len(result_values))),
+                    has_break=has_break,
                 )
             if isinstance(node, WorkTileLoop):
                 config = node.work_queue.tile_scheduler_config
@@ -2130,10 +2227,15 @@ class Task:
 
     def _run_nodes(self, nodes, context: ExecutionContext) -> ExecutionContext:
         for node in cl.static_iter(nodes):
-            context = self._run_node(node, context)
+            if not context.break_requested:
+                context = self._run_node(node, context)
         return context
 
     def _run_node(self, node: Node, context: ExecutionContext) -> ExecutionContext:
+        if isinstance(node, BreakLoop):
+            if node.exit_values:
+                raise NotImplementedError("routed break values require frozen device lowering")
+            return replace(context, break_requested=True)
         if isinstance(node, Step):
             return self._run_step(node, context)
         if isinstance(node, DomainLoop):
@@ -2180,6 +2282,8 @@ class Task:
                     in_domain_loop=True,
                 )
                 context = self._run_nodes(node.body, context)
+                if context.break_requested:
+                    break
             return replace(
                 context,
                 loop_offset=outer_loop_state[0],
@@ -2189,6 +2293,7 @@ class Task:
                 loop_end=outer_loop_state[4],
                 loop_step=outer_loop_state[5],
                 in_domain_loop=outer_loop_state[6],
+                break_requested=False,
             )
         if isinstance(node, ConditionalBlock):
             active = self._guard_active(node.condition, context)

@@ -69,6 +69,13 @@ class StepIR:
 
 
 @dataclass(frozen=True)
+class BreakLoopIR:
+    """Exit the enclosing DomainLoopIR without taking its backedge."""
+
+    exit_values: tuple[int, ...] = ()
+
+
+@dataclass(frozen=True)
 class ConditionalIR:
     body: tuple["NodeIR", ...]
     guard: GuardIR
@@ -95,7 +102,7 @@ class WorkTileLoopIR:
     skip_if: object | None = None
 
 
-NodeIR = StepIR | ConditionalIR | DomainLoopIR | WorkTileLoopIR
+NodeIR = StepIR | BreakLoopIR | ConditionalIR | DomainLoopIR | WorkTileLoopIR
 
 
 @dataclass(frozen=True)
@@ -136,7 +143,7 @@ class ProgramIR:
 def _iter_ir_nodes(nodes: tuple[NodeIR, ...]):
     for node in nodes:
         yield node
-        if not isinstance(node, StepIR):
+        if not isinstance(node, (StepIR, BreakLoopIR)):
             yield from _iter_ir_nodes(node.body)
 
 
@@ -155,7 +162,7 @@ def freeze_program_ir(
     """Normalize capture objects into an identity-free, frozen program view."""
 
     from .enums import Every, FIRST_ITER, LAST_ITER, OpaqueCondition, SKIPPABLE
-    from .schedule_builder import ConditionalBlock, DomainLoop, Step, WorkTileLoop
+    from .schedule_builder import BreakLoop, ConditionalBlock, DomainLoop, Step, WorkTileLoop
 
     resource_ids = {resource: index for index, resource in enumerate(resources)}
     resource_irs = tuple(
@@ -193,6 +200,8 @@ def freeze_program_ir(
         raise TypeError(f"unsupported captured guard {type(guard).__name__}")
 
     def freeze_node(node) -> NodeIR:
+        if isinstance(node, BreakLoop):
+            return BreakLoopIR(tuple(value.value_id for value in node.exit_values))
         if isinstance(node, Step):
             return StepIR(
                 resource_id=resource_ids[node.memory_resource],
@@ -263,6 +272,8 @@ def freeze_program_ir(
             if isinstance(node, DomainLoopIR):
                 consumed.update(node.initial_values)
                 consumed.update(node.yield_values)
+            elif isinstance(node, BreakLoopIR):
+                consumed.update(node.exit_values)
         task_irs.append(
             TaskIR(
                 task_id=task_id,

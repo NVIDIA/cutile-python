@@ -22,6 +22,7 @@ from .enums import (
 )
 from .exhaustive_checker import check_all_interleavings, expand_task
 from .ir import (
+    BreakLoopIR,
     ConditionalIR,
     DependencyEdgeIR,
     DomainLoopIR,
@@ -58,6 +59,8 @@ from .resources import (
     producer_work,
 )
 from .schedule_builder import (
+    BreakLoop,
+    break_loop,
     ConditionalBlock,
     DomainLoop,
     DynamicDomainBound,
@@ -96,6 +99,9 @@ from .tile_scheduler import (
 
 
 __all__ = [
+    "BreakLoop",
+    "BreakLoopIR",
+    "break_loop",
     "BarrierAllocation",
     "BarrierAllocator",
     "check_all_interleavings",

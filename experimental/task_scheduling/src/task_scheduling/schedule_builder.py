@@ -47,6 +47,13 @@ class Step:
 
 
 @dataclass(kw_only=True, eq=False, frozen=True)
+class BreakLoop:
+    """Exit the enclosing domain loop, skipping the remaining iteration body."""
+
+    exit_values: tuple[ScheduleValue, ...] = ()
+
+
+@dataclass(kw_only=True, eq=False, frozen=True)
 class ConditionalBlock:
     body: tuple["Node", ...] | list["Node"]
     condition: BlockGuard
@@ -125,7 +132,7 @@ class WorkTileLoop:
     skip_if: Callable[..., object] | None = None
 
 
-Node = Step | ConditionalBlock | DomainLoop | WorkTileLoop
+Node = Step | BreakLoop | ConditionalBlock | DomainLoop | WorkTileLoop
 
 
 @dataclass(kw_only=True, frozen=True)
@@ -151,7 +158,7 @@ def _visit_node(node: Node, visitor: Callable[[object], None]) -> None:
 
 
 def _child_nodes(node: Node) -> tuple[Node, ...] | list[Node]:
-    if isinstance(node, Step):
+    if isinstance(node, (Step, BreakLoop)):
         return ()
     return node.body
 
@@ -186,7 +193,26 @@ def validate_queue_advance_placement(
         elif isinstance(node, WorkTileLoop):
             validate_queue_advance_placement(node.body, parent_is_work_tile_loop=True)
         else:
-            validate_queue_advance_placement(node.body)
+            validate_queue_advance_placement(_child_nodes(node))
+
+
+def validate_break_placement(nodes, *, in_domain_loop=False) -> None:
+    for node in nodes:
+        if isinstance(node, BreakLoop) and not in_domain_loop:
+            raise ScheduleError("break_loop() must be called inside domain_loop()")
+        validate_break_placement(
+            _child_nodes(node),
+            in_domain_loop=in_domain_loop or isinstance(node, DomainLoop),
+        )
+
+
+def contains_break(nodes) -> bool:
+    """Whether this scope can exit its enclosing domain loop."""
+    return any(
+        isinstance(node, BreakLoop)
+        or (isinstance(node, ConditionalBlock) and contains_break(node.body))
+        for node in nodes
+    )
 
 
 def _format_guard(guard: BlockGuard) -> str:
@@ -212,6 +238,11 @@ def _format_schedule(schedule: Schedule, *, show_routes: bool = True) -> str:
 
     def emit(node: Node, indent: int) -> None:
         pad = " " * indent
+        if isinstance(node, BreakLoop):
+            values = ", ".join(f"%{value.value_id}" for value in node.exit_values)
+            suffix = f"values=[{values}]" if values and show_routes else ""
+            lines.append(f"{pad}BreakLoop({suffix})")
+            return
         if isinstance(node, Step):
             label = f", label={node.label!r}" if node.label else ""
             lines.append(
@@ -354,13 +385,6 @@ class ScheduleBuilder:
     def _inside(self, kind: type) -> bool:
         return any(isinstance(item, kind) for item in self.stack)
 
-    def _in_condition(self) -> bool:
-        return any(
-            isinstance(item, ConditionalBlock)
-            and isinstance(item.condition, (IterationPredicate, OpaqueCondition))
-            for item in self.stack
-        )
-
     def open_scope(self, node: ConditionalBlock | DomainLoop | WorkTileLoop) -> None:
         if self.after_work_tile_loop:
             raise ScheduleError("no blocks may follow work_tile_loop()")
@@ -383,8 +407,6 @@ class ScheduleBuilder:
                 DomainLoop
             ):
                 raise ScheduleError("iteration predicates require domain_loop()")
-            if self._in_condition():
-                raise ScheduleError("conditional scheduling blocks cannot be nested")
         self.stack[-1].body.append(node)
         self.stack.append(node)
 
@@ -417,8 +439,11 @@ class ScheduleBuilder:
         if len(self.stack) != 1:
             raise ScheduleError("schedule ended with an unclosed block")
         validate_queue_advance_placement(self.schedule.body)
+        validate_break_placement(self.schedule.body)
 
         def freeze(node: Node) -> Node:
+            if isinstance(node, BreakLoop):
+                return node
             if isinstance(node, Step):
                 return replace(
                     node,
@@ -589,10 +614,12 @@ def _conditional(cond: object, key: Hashable | None, negated: bool):
 
 
 def when_true(cond: object, *, key: Hashable | None = None):
+    """Capture a guarded region, evaluated only when all enclosing guards fire."""
     return _conditional(cond, key, False)
 
 
 def when_false(cond: object, *, key: Hashable | None = None):
+    """Capture a negated guarded region; nested values retain lexical scope."""
     return _conditional(cond, key, True)
 
 
@@ -606,6 +633,30 @@ def first_iter():
     """Capture a block that runs only on the first domain-loop iteration."""
     _require_active_domain_loop("first_iter")
     return when_true(FIRST_ITER)
+
+
+def break_loop(*values: ScheduleValue) -> None:
+    """Exit the enclosing domain loop when execution reaches this operation.
+
+    Remaining work and the functional loop's backedge are skipped. Explicit
+    values become the loop's results, in carried-input order. With no arguments,
+    results retain their values at entry to the interrupted iteration.
+    """
+    _require_active_domain_loop("break_loop")
+    builder = _require_active_builder("break_loop()")
+    loop = next(node for node in reversed(builder.stack) if isinstance(node, DomainLoop))
+    if values and len(values) != len(loop.initial_values):
+        raise ScheduleError(
+            "break_loop() must supply one value for every carried input; "
+            f"expected {len(loop.initial_values)}, got {len(values)}"
+        )
+    for (name, initial), value in zip(loop.initial_values.items(), values):
+        if not isinstance(value, ScheduleValue):
+            raise ScheduleError(f"break value {name!r} must be a routed schedule value")
+        builder.validate_value_use(value, name)
+        if value.stage_resource is not initial.stage_resource:
+            raise ScheduleError(f"break value {name!r} changes pipeline stage provenance")
+    builder.stack[-1].body.append(BreakLoop(exit_values=values))
 
 
 def last_iter():
@@ -679,6 +730,12 @@ class DomainLoopProxy:
     def first_iter(self):
         self._check()
         return first_iter()
+
+    def break_loop(self, *values: ScheduleValue) -> None:
+        self._check()
+        if _active_builder.get() is not self.builder:
+            raise ScheduleError("domain-loop handle belongs to another schedule")
+        break_loop(*values)
 
     def last_iter(self):
         self._check()
