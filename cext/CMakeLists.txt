@@ -126,7 +126,7 @@ endfunction()
 
 
 add_test_executable(test_stream_buffer
-    test/test_stream_buffer.cpp cuda_loader.cpp cuda_helper.cpp memory.cpp)
+    test/test_stream_buffer.cpp cuda_loader.cpp cuda_helper.cpp memory.cpp py.cpp)
 
 add_test_executable(test_hash_map test/test_hash_map.cpp memory.cpp)
 

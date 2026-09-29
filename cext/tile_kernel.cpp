@@ -56,19 +56,19 @@ static constexpr const char* kFakePointerDTypeAttr = "_cuda_lang_fake_pointer_dt
 static constexpr const char* kNativeSourceDTypeAttr = "_native_source_dtype";
 
 
-static PyObject* get_datatype_module() {
+static PyObject* get_datatype_module(GlobalLock&) {
     static PyObject* m;
     if (!m) m = PyImport_ImportModule("cuda.tile._datatype");
     return m;
 }
 
 
-static PyTypeObject* get_dtype_class() {
+static PyTypeObject* get_dtype_class(GlobalLock& lock) {
     static PyTypeObject* c;
     static bool cached;
     if (!cached) {
         cached = true;
-        PyObject* datatype_mod = get_datatype_module();
+        PyObject* datatype_mod = get_datatype_module(lock);
         if (!datatype_mod) return nullptr;
         PyPtr dtype_class = getattr(datatype_mod, "DType");
         if (!dtype_class) return nullptr;
@@ -79,7 +79,7 @@ static PyTypeObject* get_dtype_class() {
 }
 
 
-static PyObject* get_signature_module() {
+static PyObject* get_signature_module(GlobalLock&) {
     static PyObject* m;
     if (!m) m = PyImport_ImportModule("cuda.tile.compilation._signature");
     return m;
@@ -122,38 +122,32 @@ namespace { struct ImportedTypeChecker {
     }
 }; }
 
-// Must be holding GIL or g_launch_mutex to call this
-static bool is_torch_tensor_subtype(PyTypeObject* ty) {
+static bool is_torch_tensor_subtype(PyTypeObject* ty, GlobalLock&) {
     static ImportedTypeChecker checker;
     return checker.is_subtype_of(ty, g_torch_pyunicode, nullptr, "Tensor");
 }
 
-// Must be holding GIL or g_launch_mutex to call this
-static bool is_torch_cuda_stream_subtype(PyTypeObject* ty) {
+static bool is_torch_cuda_stream_subtype(PyTypeObject* ty, GlobalLock&) {
     static ImportedTypeChecker checker;
     return checker.is_subtype_of(ty, g_torch_pyunicode, "cuda", "Stream");
 }
 
-// Must be holding GIL or g_launch_mutex to call this
-static bool is_cupy_cuda_stream_subtype(PyTypeObject* ty) {
+static bool is_cupy_cuda_stream_subtype(PyTypeObject* ty, GlobalLock&) {
     static ImportedTypeChecker checker;
     return checker.is_subtype_of(ty, g_cupy_pyunicode, "cuda", "Stream");
 }
 
-// Must be holding GIL or g_launch_mutex to call this
-static bool is_numba_cuda_driver_stream_subtype(PyTypeObject* ty) {
+static bool is_numba_cuda_driver_stream_subtype(PyTypeObject* ty, GlobalLock&) {
     static ImportedTypeChecker checker;
     return checker.is_subtype_of(ty, g_numba_cuda_pyunicode, "driver", "Stream");
 }
 
-// Must be holding GIL or g_launch_mutex to call this
-static bool is_cuda_bindings_driver_custream_subtype(PyTypeObject* ty) {
+static bool is_cuda_bindings_driver_custream_subtype(PyTypeObject* ty, GlobalLock&) {
     static ImportedTypeChecker checker;
     return checker.is_subtype_of(ty, g_cuda_bindings_driver_pyunicode, nullptr, "CUstream");
 }
 
-// Must be holding GIL or g_launch_mutex to call this
-static PyObject* try_get_torch_to_dlpack_func() {
+static PyObject* try_get_torch_to_dlpack_func(GlobalLock&) {
     static PyObject* func;
     static bool cached;
     if (!cached) {
@@ -273,17 +267,20 @@ static PyObject* get_cached_cconv(CallConvVersion version, PyObject** cache) {
 
 static PyObject* CallingConvention_cutile_python_v1(PyObject*, PyObject*) {
     static PyObject* c;
+    GlobalLock lock;
     return get_cached_cconv(CallConvVersion::CutilePython_V1, &c);
 }
 
 static PyObject* CallingConvention_cutile_python_v2(PyObject*, PyObject*) {
     static PyObject* c;
+    GlobalLock lock;
     return get_cached_cconv(CallConvVersion::CutilePython_V2, &c);
 }
 
 #ifdef ENABLE_CCONV_V3
 static PyObject* CallingConvention_cutile_python_v3(PyObject*, PyObject*) {
     static PyObject* c;
+    GlobalLock lock;
     return get_cached_cconv(CallConvVersion::CutilePython_V3, &c);
 }
 #endif
@@ -513,27 +510,27 @@ static ArenaOffset push_single_word_cuarg(LaunchHelper& helper, Word word) {
     return offset;
 }
 
-static LaunchHelper* g_helper_freelist;  // protected by the GIL or g_launch_mutex
+static ProtectedByGlobalLock<LaunchHelper*> g_helper_freelist;
 
 namespace { struct LaunchHelperDeleter {
     void operator() (LaunchHelper* helper) const {
+        GlobalLock lock;
+        LaunchHelper*& freelist = g_helper_freelist.get(lock);
         helper->pyarg_refs.clear();
-        helper->next_free = g_helper_freelist;
-        g_helper_freelist = helper;
+        helper->next_free = freelist;
+        freelist = helper;
     }
 }; }
 
-#ifdef Py_GIL_DISABLED
-static PyMutex g_launch_mutex = {0};
-#endif
 
 using LaunchHelperPtr = std::unique_ptr<LaunchHelper, LaunchHelperDeleter>;
 
 
-static LaunchHelperPtr launch_helper_get() {
-    if (g_helper_freelist) {
-        LaunchHelper* ret = g_helper_freelist;
-        g_helper_freelist = ret->next_free;
+static LaunchHelperPtr launch_helper_get(GlobalLock& lock) {
+    LaunchHelper*& freelist = g_helper_freelist.get(lock);
+    if (freelist) {
+        LaunchHelper* ret = freelist;
+        freelist = ret->next_free;
         ret->pyarg_types_breadth_first.clear();
         ret->pyarg_objs_breadth_first.clear();
         ret->leaf_pyarg_objs.clear();
@@ -776,8 +773,8 @@ static Result<const char*> dtype_name(DLDataType dtype) {
     }
 }
 
-static PyPtr dtype_to_python(DLDataType dtype) {
-    PyObject* dtype_module = get_datatype_module();
+static PyPtr dtype_to_python(DLDataType dtype, GlobalLock& lock) {
+    PyObject* dtype_module = get_datatype_module(lock);
     if (!dtype_module) return {};
 
     Result<const char*> name = dtype_name(dtype);
@@ -843,7 +840,8 @@ struct { char name[16]; DLDataType type; int lib_mask; } foreign_dtype_table[] =
 static void register_foreign_dtypes_common(PyObject* foreign_module,
                                            PyObject* numpy_dtype_class,
                                            ForeignDtypeKind bit,
-                                           HashMap<PyPtr, ForeignDTypeInfo>* registry) {
+                                           HashMap<PyPtr, ForeignDTypeInfo>* registry,
+                                           GlobalLock& lock) {
     for (const auto& entry : foreign_dtype_table) {
         if (!(entry.lib_mask & bit)) continue;
 
@@ -851,7 +849,7 @@ static void register_foreign_dtypes_common(PyObject* foreign_module,
         if (!foreign_pyobj) continue;
 
         ErrorGuard guard;
-        PyPtr native_pyobj = dtype_to_python(entry.type);
+        PyPtr native_pyobj = dtype_to_python(entry.type, lock);
         if (!native_pyobj) continue;
 
         registry->insert(foreign_pyobj, ForeignDTypeInfo{entry.type, native_pyobj});
@@ -867,34 +865,35 @@ static void register_foreign_dtypes_common(PyObject* foreign_module,
 }
 
 
-static void register_torch_dtypes(HashMap<PyPtr, ForeignDTypeInfo>* registry) {
+static void register_torch_dtypes(HashMap<PyPtr, ForeignDTypeInfo>* registry,
+                                  GlobalLock& lock) {
     PyPtr torch = try_import("torch");
     if (torch)
-        register_foreign_dtypes_common(torch.get(), nullptr, kTorch, registry);
+        register_foreign_dtypes_common(torch.get(), nullptr, kTorch, registry, lock);
 }
 
 
-static void register_numpy_and_ml_dtypes(HashMap<PyPtr, ForeignDTypeInfo>* registry) {
+static void register_numpy_and_ml_dtypes(HashMap<PyPtr, ForeignDTypeInfo>* registry,
+                                         GlobalLock& lock) {
     PyPtr numpy = try_import("numpy");
     if (!numpy) return;
     PyPtr numpy_dtype_class = try_getattr(numpy, "dtype");
 
-    register_foreign_dtypes_common(numpy.get(), numpy_dtype_class.get(), kNumpy, registry);
+    register_foreign_dtypes_common(numpy.get(), numpy_dtype_class.get(), kNumpy, registry, lock);
 
     PyPtr ml_dtypes = try_import("ml_dtypes");
     if (ml_dtypes)
         register_foreign_dtypes_common(ml_dtypes.get(), numpy_dtype_class.get(), kMlDTypes,
-                                       registry);
+                                       registry, lock);
 }
 
 
-// Must hold g_launch_mutex or GIL to call this
-static HashMap<PyPtr, ForeignDTypeInfo>* get_foreign_dtype_registry() {
+static HashMap<PyPtr, ForeignDTypeInfo>* get_foreign_dtype_registry(GlobalLock& lock) {
     static HashMap<PyPtr, ForeignDTypeInfo>* registry;
     if (!registry) {
         auto reg = std::make_unique<HashMap<PyPtr, ForeignDTypeInfo>>();
-        register_torch_dtypes(reg.get());
-        register_numpy_and_ml_dtypes(reg.get());
+        register_torch_dtypes(reg.get(), lock);
+        register_numpy_and_ml_dtypes(reg.get(), lock);
         registry = reg.release();
     }
     return registry;
@@ -910,26 +909,22 @@ static PyObject* foreign_dtype_object_register(PyObject* self, PyObject* args) {
     Result<std::optional<DLDataType>> dtype_res = dtype_from_python(native_dtype);
     if (!dtype_res.is_ok()) return nullptr;
 
-#ifdef Py_GIL_DISABLED
-    PyCriticalSectionGuard guard(&g_launch_mutex);
-#endif
-
-    get_foreign_dtype_registry()->insert(newref(foreign_dtype),
+    GlobalLock lock;
+    get_foreign_dtype_registry(lock)->insert(newref(foreign_dtype),
                                          ForeignDTypeInfo{*dtype_res, newref(native_dtype)});
     return Py_NewRef(Py_None);
 }
 
 
 static PyObject* foreign_dtype_object_to_native(PyObject* self, PyObject* object) {
-#ifdef Py_GIL_DISABLED
-    PyCriticalSectionGuard guard(&g_launch_mutex);
-#endif
-    HashMap<PyPtr, ForeignDTypeInfo>::Item* item = get_foreign_dtype_registry()->find(object);
+    GlobalLock lock;
+    HashMap<PyPtr, ForeignDTypeInfo>::Item* item = get_foreign_dtype_registry(lock)->find(object);
     return Py_NewRef(item ? item->value.native_dtype.get() : Py_None);
 }
 
 
-static std::optional<ConstantKind> classify_constant(PyObject* obj, bool kernel_arg) {
+static std::optional<ConstantKind> classify_constant(PyObject* obj, bool kernel_arg,
+                                                     GlobalLock& lock) {
     if (PyBool_Check(obj))
         return ConstantKind::Bool;
 
@@ -952,10 +947,10 @@ static std::optional<ConstantKind> classify_constant(PyObject* obj, bool kernel_
     if (PyObject_TypeCheck(obj, reinterpret_cast<PyTypeObject*>(g_enum_Enum_type)))
         return ConstantKind::Enum;
 
-    if (Py_IS_TYPE(obj, get_dtype_class()))
+    if (Py_IS_TYPE(obj, get_dtype_class(lock)))
         return ConstantKind::NativeDType;
 
-    if (get_foreign_dtype_registry()->find(obj))
+    if (get_foreign_dtype_registry(lock)->find(obj))
         return ConstantKind::ForeignDType;
 
 #ifndef ENABLE_CCONV_V3
@@ -971,7 +966,8 @@ static PyObject* py_classify_constant(PyObject* self, PyObject* args) {
     if (!PyArg_ParseTuple(args, "Op", &obj, &kernel_arg))
         return nullptr;
 
-    std::optional<ConstantKind> res = classify_constant(obj, kernel_arg);
+    GlobalLock lock;
+    std::optional<ConstantKind> res = classify_constant(obj, kernel_arg, lock);
     if (!res.has_value())
         return Py_NewRef(Py_None);
 
@@ -981,11 +977,11 @@ static PyObject* py_classify_constant(PyObject* self, PyObject* args) {
 
 
 enum class StreamKind;
-static std::optional<StreamKind> try_classify_stream_type(PyTypeObject* ty);
-static Result<CUstream> parse_stream(PyObject* py_stream);
+static std::optional<StreamKind> try_classify_stream_type(PyTypeObject* ty, GlobalLock& lock);
+static Result<CUstream> parse_stream(PyObject* py_stream, GlobalLock& lock);
 
 
-static std::optional<PythonArgKind> classify_nonconstant_arg(PyObject* arg) {
+static std::optional<PythonArgKind> classify_nonconstant_arg(PyObject* arg, GlobalLock& lock) {
     if (PyBool_Check(arg))
         return PythonArgKind::PyBool;
 
@@ -998,16 +994,16 @@ static std::optional<PythonArgKind> classify_nonconstant_arg(PyObject* arg) {
     if (PyList_Check(arg))
         return PythonArgKind::PyList;
 
-    if (is_torch_tensor_subtype(Py_TYPE(arg))) {
+    if (is_torch_tensor_subtype(Py_TYPE(arg), lock)) {
         // Calling torch._C._to_dlpack(arg) is much faster than calling arg.__dlpack__()
         // because it goes straight into C++ code, with no Python in between.
         // So we always prefer that.
-        if (try_get_torch_to_dlpack_func())
+        if (try_get_torch_to_dlpack_func(lock))
             return PythonArgKind::TorchTensorDlpack;
     }
 
 #ifdef ENABLE_CCONV_V3
-    if (try_classify_stream_type(Py_TYPE(arg)).has_value())
+    if (try_classify_stream_type(Py_TYPE(arg), lock).has_value())
         return PythonArgKind::Stream;
 #endif
 
@@ -1650,14 +1646,15 @@ static PyPtr parse_array_constraint(ConstantCursor& cursor,
                                     unsigned index_bitwidth,
                                     const Vec<int64_t>& static_shape_dims,
                                     const Vec<int64_t>& static_stride_dims,
-                                    CallConvVersion* minimum_cconv) {
+                                    CallConvVersion* minimum_cconv,
+                                    GlobalLock& lock) {
     ParsedArrayTypeConstants parsed = parse_array_type_constants(cursor);
     ArrayType arrty = parsed.arrty;
     ArraySpecializationBits special_bits = parsed.special_bits;
     // Only int32 or int64 are supported now.
     CHECK(index_bitwidth == 32 || index_bitwidth == 64);
 
-    PyObject* signature_module = get_signature_module();
+    PyObject* signature_module = get_signature_module(lock);
     if (!signature_module) return {};
 
     PyPtr constraint_class = getattr(signature_module, "ArrayConstraint");
@@ -1666,11 +1663,11 @@ static PyPtr parse_array_constraint(ConstantCursor& cursor,
     PyPtr args = steal(PyTuple_New(0));
     if (!args) return {};
 
-    PyPtr dtype = dtype_to_python(arrty.dtype);
+    PyPtr dtype = dtype_to_python(arrty.dtype, lock);
     if (!dtype) return {};
 
     PyPtr index_dtype = dtype_to_python(
-            DLDataType{kDLInt, static_cast<uint8_t>(index_bitwidth), 1});
+            DLDataType{kDLInt, static_cast<uint8_t>(index_bitwidth), 1}, lock);
     if (!index_dtype) return {};
 
     PyPtr constant_strides = steal(PyList_New(arrty.ndim));
@@ -1940,15 +1937,16 @@ static Result<ArrayRepr> arrayrepr_dlpack_common(PyObject* dlpack_capsule, unsig
 }
 
 
-static Result<DLDataType> dtype_from_torch_dtype(PyObject* torch_dtype) {
-    HashMap<PyPtr, ForeignDTypeInfo>::Item* item = get_foreign_dtype_registry()->find(torch_dtype);
+static Result<DLDataType> dtype_from_torch_dtype(PyObject* torch_dtype, GlobalLock& lock) {
+    HashMap<PyPtr, ForeignDTypeInfo>::Item* item
+            = get_foreign_dtype_registry(lock)->find(torch_dtype);
     if (!item || !item->value.dlpack_dtype)
         return raise(PyExc_TypeError, "dtype is not supported");
     return *item->value.dlpack_dtype;
 }
 
 static Result<ArrayRepr> arrayrepr_torch_tensor_pymethod(PyObject* tensor, unsigned index_bitwidth,
-                                                         Arena& arena) {
+                                                         Arena& arena, GlobalLock& lock) {
     PyPtr data_ptr = steal(PyObject_CallMethod(tensor, "data_ptr", nullptr));
     if (!data_ptr) return ErrorRaised;
 
@@ -2013,7 +2011,7 @@ static Result<ArrayRepr> arrayrepr_torch_tensor_pymethod(PyObject* tensor, unsig
     }
 
 
-    Result<DLDataType> dtype_res = dtype_from_torch_dtype(dtype_ptr.get());
+    Result<DLDataType> dtype_res = dtype_from_torch_dtype(dtype_ptr.get(), lock);
     if (!dtype_res.is_ok())
         return ErrorRaised;
 
@@ -2027,16 +2025,16 @@ static Result<ArrayRepr> arrayrepr_torch_tensor_pymethod(PyObject* tensor, unsig
 }
 
 static Result<ArrayRepr> arrayrepr_torch_tensor_dlpack(PyObject* pyobj, unsigned index_bitwidth,
-                                                       Arena& arena) {
+                                                       Arena& arena, GlobalLock& lock) {
     // Safe to assume try_get_torch_to_dlpack_func() is not null because we wouldn't have produced
     // a PythonArgKind::TorchTensorDlpack value otherwise.
     PyPtr dlpack_capsule = steal(PyObject_CallFunctionObjArgs(
-                try_get_torch_to_dlpack_func(), pyobj, nullptr));
+                try_get_torch_to_dlpack_func(lock), pyobj, nullptr));
 
     if (!dlpack_capsule) {
         SavedException exc = save_raised_exception();
         LOG_PYTHON_ERROR("debug", exc, "Fail to convert to dlpack, use fallback path");
-        return arrayrepr_torch_tensor_pymethod(pyobj, index_bitwidth, arena);
+        return arrayrepr_torch_tensor_pymethod(pyobj, index_bitwidth, arena, lock);
     }
 
     return arrayrepr_dlpack_common(dlpack_capsule.get(), index_bitwidth, arena);
@@ -2082,6 +2080,7 @@ struct ListAnnotation {
 
 
 typedef Result<ArrayRepr> (*ArrayReprFunc)(PyObject*, unsigned, Arena&);
+typedef Result<ArrayRepr> (*LockedArrayReprFunc)(PyObject*, unsigned, Arena&, GlobalLock& lock);
 
 
 static Status extract_array_repr(const DriverApi* driver,
@@ -2109,6 +2108,16 @@ static Status extract_array(const DriverApi* driver, PyObject* pyobj,
                             const ArrayAnnotation& array_ann,
                             LaunchHelper& helper) {
     Result<ArrayRepr> ar = F(pyobj, array_ann.index_bitwidth, helper.arena);
+    if (!ar.is_ok()) return ErrorRaised;
+    return extract_array_repr(driver, *ar, array_ann, helper);
+}
+
+template <LockedArrayReprFunc F>
+static Status extract_array(const DriverApi* driver, PyObject* pyobj,
+                            const ArrayAnnotation& array_ann,
+                            LaunchHelper& helper,
+                            GlobalLock& lock) {
+    Result<ArrayRepr> ar = F(pyobj, array_ann.index_bitwidth, helper.arena, lock);
     if (!ar.is_ok()) return ErrorRaised;
     return extract_array_repr(driver, *ar, array_ann, helper);
 }
@@ -2153,19 +2162,19 @@ static inline Status extract_py_bool(PyObject* pyobj, LaunchHelper& helper) {
     return OK;
 }
 
-static PyPtr make_scalar_constraint(DLDataType dtype) {
-    PyObject* signature_module = get_signature_module();
+static PyPtr make_scalar_constraint(DLDataType dtype, GlobalLock& lock) {
+    PyObject* signature_module = get_signature_module(lock);
     if (!signature_module) return {};
 
-    PyPtr py_dtype = dtype_to_python(dtype);
+    PyPtr py_dtype = dtype_to_python(dtype, lock);
     if (!py_dtype) return {};
 
     return steal(PyObject_CallMethod(
                 signature_module, "ScalarConstraint", "(O)", py_dtype.get()));
 }
 
-static PyPtr make_constant_constraint(PyObject* value) {
-    PyObject* signature_module = get_signature_module();
+static PyPtr make_constant_constraint(PyObject* value, GlobalLock& lock) {
+    PyObject* signature_module = get_signature_module(lock);
     if (!signature_module) return {};
 
     return steal(PyObject_CallMethod(signature_module, "ConstantConstraint", "(O)", value));
@@ -2176,10 +2185,10 @@ static PyPtr parse_bool_constant_value(ConstantCursor& cursor) {
     return newref(val ? Py_True : Py_False);
 }
 
-static PyPtr parse_bool_constant_constraint(ConstantCursor& cursor) {
+static PyPtr parse_bool_constant_constraint(ConstantCursor& cursor, GlobalLock& lock) {
     PyPtr value = parse_bool_constant_value(cursor);
     if (!value) return {};
-    return make_constant_constraint(value.get());
+    return make_constant_constraint(value.get(), lock);
 }
 
 static inline Status extract_int_constant(PyObject* pyobj, Vec<int64_t>* constants) {
@@ -2212,10 +2221,10 @@ static PyPtr parse_int_constant_value(ConstantCursor& cursor) {
     return value;
 }
 
-static PyPtr parse_int_constant_constraint(ConstantCursor& cursor) {
+static PyPtr parse_int_constant_constraint(ConstantCursor& cursor, GlobalLock& lock) {
     PyPtr value = parse_int_constant_value(cursor);
     if (!value) return {};
-    return make_constant_constraint(value.get());
+    return make_constant_constraint(value.get(), lock);
 }
 
 static inline ErrorRaised_t raise_signed_kernel_integer_overflow(unsigned bitwidth) {
@@ -2278,10 +2287,10 @@ static PyPtr parse_float_constant_value(ConstantCursor& cursor) {
     return steal(PyFloat_FromDouble(u.f64));
 }
 
-static PyPtr parse_float_constant_constraint(ConstantCursor& cursor) {
+static PyPtr parse_float_constant_constraint(ConstantCursor& cursor, GlobalLock& lock) {
     PyPtr value = parse_float_constant_value(cursor);
     if (!value) return {};
-    return make_constant_constraint(value.get());
+    return make_constant_constraint(value.get(), lock);
 }
 
 static void extract_identity_constant(PyObject* object, Vec<int64_t>* constants,
@@ -2316,13 +2325,16 @@ static Status extract_string_constant(PyObject* pyobj, Vec<int64_t>* constants,
 }
 
 static PyPtr parse_identity_constant_constraint(ConstantCursor& cursor,
-                                                const Vec<PyObject*>& identity_constants) {
-    return make_constant_constraint(parse_identity_constant_value(cursor, identity_constants));
+                                                const Vec<PyObject*>& identity_constants,
+                                                GlobalLock& lock) {
+    return make_constant_constraint(
+            parse_identity_constant_value(cursor, identity_constants), lock);
 }
 
 static Status extract_foreign_dtype_constant(PyObject* object, Vec<int64_t>* constants,
-                                             Vec<PyObject*>* identity_constants) {
-    HashMap<PyPtr, ForeignDTypeInfo>::Item* item = get_foreign_dtype_registry()->find(object);
+                                             Vec<PyObject*>* identity_constants,
+                                             GlobalLock& lock) {
+    HashMap<PyPtr, ForeignDTypeInfo>::Item* item = get_foreign_dtype_registry(lock)->find(object);
     if (!item)
         return raise(PyExc_ValueError, "Received an unregistered foreign dtype object");
     extract_identity_constant(item->value.native_dtype.get(), constants, identity_constants);
@@ -2330,10 +2342,11 @@ static Status extract_foreign_dtype_constant(PyObject* object, Vec<int64_t>* con
 }
 
 static Result<ArrayRepr> get_array_repr(PythonArgKind kind, PyObject* pyobj,
-                                        unsigned index_bitwidth, Arena& arena) {
+                                        unsigned index_bitwidth, Arena& arena,
+                                        GlobalLock& lock) {
     switch (kind) {
         case PythonArgKind::TorchTensorDlpack:
-            return arrayrepr_torch_tensor_dlpack(pyobj, index_bitwidth, arena);
+            return arrayrepr_torch_tensor_dlpack(pyobj, index_bitwidth, arena, lock);
         case PythonArgKind::DlpackArray:
             return arrayrepr_dlpack(pyobj, index_bitwidth, arena);
         case PythonArgKind::CudaArray:
@@ -2345,8 +2358,8 @@ static Result<ArrayRepr> get_array_repr(PythonArgKind kind, PyObject* pyobj,
     }
 }
 
-static Result<PythonArgKind> classify_list_item(PyObject* item, size_t index) {
-    std::optional<PythonArgKind> res = classify_nonconstant_arg(item);
+static Result<PythonArgKind> classify_list_item(PyObject* item, size_t index, GlobalLock& lock) {
+    std::optional<PythonArgKind> res = classify_nonconstant_arg(item, lock);
     if (!res.has_value()) {
         return raise(PyExc_TypeError, "Invalid list item #", index, ": unsupported object type '",
                       Py_TYPE(item)->tp_name, "'");
@@ -2356,7 +2369,8 @@ static Result<PythonArgKind> classify_list_item(PyObject* item, size_t index) {
 
 static Status extract_py_list(const DriverApi* driver, PyObject* pyobj,
                               const ListAnnotation& list_ann,
-                              LaunchHelper& helper) {
+                              LaunchHelper& helper,
+                              GlobalLock& lock) {
     size_t len = PyList_GET_SIZE(pyobj);
     if (len > INT32_MAX)
         return raise(PyExc_TypeError, "List is too long");
@@ -2368,7 +2382,7 @@ static Status extract_py_list(const DriverApi* driver, PyObject* pyobj,
     // Handle the first item separately in order to determine the item type
 
     PyObject* first_item = PyList_GET_ITEM(pyobj, 0);
-    Result<PythonArgKind> first_item_res = classify_list_item(first_item, 0);
+    Result<PythonArgKind> first_item_res = classify_list_item(first_item, 0, lock);
     if (!first_item_res.is_ok()) return ErrorRaised;
 
     if (param_category_from_pyarg_kind(*first_item_res) != ParameterKind::Array) {
@@ -2381,7 +2395,8 @@ static Status extract_py_list(const DriverApi* driver, PyObject* pyobj,
 
     Result<ArrayRepr> first_repr_res = get_array_repr(first_arg_kind, first_item,
                                                       list_ann.element.index_bitwidth,
-                                                      helper.arena);
+                                                      helper.arena,
+                                                      lock);
     if (!first_repr_res.is_ok()) return ErrorRaised;
 
     helper.array_ptr_arena_offsets.push_back(first_repr_res->repr);
@@ -2413,13 +2428,13 @@ static Status extract_py_list(const DriverApi* driver, PyObject* pyobj,
 
         // Avoid calling classify_list_item() if the object type is the same
         if (first_item_type != item->ob_type) {
-             Result<PythonArgKind> res = classify_list_item(item, i);
+             Result<PythonArgKind> res = classify_list_item(item, i, lock);
              if (!res.is_ok()) return ErrorRaised;
              kind = *res;
         }
 
         Result<ArrayRepr> repr_res = get_array_repr(kind, item, list_ann.element.index_bitwidth,
-                                                    helper.arena);
+                                                    helper.arena, lock);
         if (!repr_res.is_ok()) return ErrorRaised;
         helper.array_ptr_arena_offsets.push_back(repr_res->repr);
         helper.arena[item_offsets + i].arena_offset = repr_res->repr;
@@ -2447,12 +2462,13 @@ static PyPtr parse_list_constraint(ConstantCursor& cursor,
                                    unsigned index_bitwidth,
                                    const Vec<int64_t>& static_shape_dims,
                                    const Vec<int64_t>& static_stride_dims,
-                                   CallConvVersion* minimum_cconv) {
+                                   CallConvVersion* minimum_cconv,
+                                   GlobalLock& lock) {
     PyPtr element = parse_array_constraint(
-            cursor, index_bitwidth, static_shape_dims, static_stride_dims, minimum_cconv);
+            cursor, index_bitwidth, static_shape_dims, static_stride_dims, minimum_cconv, lock);
     if (!element) return {};
 
-    PyObject* signature_module = get_signature_module();
+    PyObject* signature_module = get_signature_module(lock);
     if (!signature_module) return {};
 
     PyPtr constraint_class = getattr(signature_module, "ListConstraint");
@@ -2645,8 +2661,8 @@ static Status extract_fake_pointer(PyObject* pyobj, LaunchHelper& helper) {
 }
 
 
-static Status extract_stream(PyObject* pyobj, LaunchHelper& helper) {
-    Result<CUstream> stream = parse_stream(pyobj);
+static Status extract_stream(PyObject* pyobj, LaunchHelper& helper, GlobalLock& lock) {
+    Result<CUstream> stream = parse_stream(pyobj, lock);
     if (!stream.is_ok()) return ErrorRaised;
     push_single_word_cuarg(
             helper, {.device_ptr = reinterpret_cast<void*>(*stream)});
@@ -2657,7 +2673,8 @@ static RefPtr<ParameterAnnotationNode> parse_parameter_annotation_node(PyObject*
 
 static Status extract_arg(const DriverApi* driver, PyObject* obj, PythonArgKind kind,
                           LeafAnnotationNode* annotation,
-                          LaunchHelper& helper) {
+                          LaunchHelper& helper,
+                          GlobalLock& lock) {
     switch (kind) {
     case PythonArgKind::ConstantBool:
         return extract_bool_constant(obj, &helper.constants);
@@ -2675,9 +2692,11 @@ static Status extract_arg(const DriverApi* driver, PyObject* obj, PythonArgKind 
         extract_identity_constant(obj, &helper.constants, &helper.identity_constants);
         return OK;
     case PythonArgKind::ForeignDTypeConstant:
-        return extract_foreign_dtype_constant(obj, &helper.constants, &helper.identity_constants);
+        return extract_foreign_dtype_constant(obj, &helper.constants, &helper.identity_constants,
+                                              lock);
     case PythonArgKind::TorchTensorDlpack:
-        return extract_array<arrayrepr_torch_tensor_dlpack>(driver, obj, annotation->array, helper);
+        return extract_array<arrayrepr_torch_tensor_dlpack>(
+                driver, obj, annotation->array, helper, lock);
     case PythonArgKind::DlpackArray:
         return extract_array<arrayrepr_dlpack>(driver, obj, annotation->array, helper);
     case PythonArgKind::CudaArray:
@@ -2687,7 +2706,7 @@ static Status extract_arg(const DriverApi* driver, PyObject* obj, PythonArgKind 
     case PythonArgKind::FakePointer:
         return extract_fake_pointer(obj, helper);
     case PythonArgKind::Stream:
-        return extract_stream(obj, helper);
+        return extract_stream(obj, helper, lock);
     case PythonArgKind::PyBool:
         return extract_py_bool(obj, helper);
     case PythonArgKind::PyLong:
@@ -2696,7 +2715,7 @@ static Status extract_arg(const DriverApi* driver, PyObject* obj, PythonArgKind 
         extract_py_float(obj, helper);
         return OK;
     case PythonArgKind::PyList:
-        return extract_py_list(driver, obj, annotation->list, helper);
+        return extract_py_list(driver, obj, annotation->list, helper, lock);
     }
     CHECK_UNREACHABLE;
 }
@@ -2715,25 +2734,27 @@ static Status extract_cuda_args(const DriverApi* driver,
                                 const Vec<PyObject*>& pyarg_objs,
                                 const Vec<PythonArgKind>& arg_kinds,
                                 const Vec<RefPtr<LeafAnnotationNode>>& flat_param_annotations,
-                                LaunchHelper& helper) {
+                                LaunchHelper& helper,
+                                GlobalLock& lock) {
     CHECK(pyarg_objs.size() == arg_kinds.size());
     CHECK(flat_param_annotations.size() == arg_kinds.size());
     reset_extracted_arguments(helper);
     for (size_t i = 0; i < arg_kinds.size(); ++i) {
         PythonArgKind kind = arg_kinds[i];
-        if (!extract_arg(driver, pyarg_objs[i], kind, flat_param_annotations[i].get(), helper))
+        if (!extract_arg(driver, pyarg_objs[i], kind, flat_param_annotations[i].get(), helper,
+                         lock))
             return ErrorRaised;
     }
     return OK;
 }
 
 static PyPtr parse_pointer_constraint(
-        ConstantCursor& cursor, CallConvVersion* minimum_cconv) {
+        ConstantCursor& cursor, CallConvVersion* minimum_cconv, GlobalLock& lock) {
 #ifdef ENABLE_CCONV_V3
     require_min_cconv(minimum_cconv, CallConvVersion::CutilePython_V3);
-    PyPtr dtype = dtype_to_python(dtype_from_uint(cursor.next()));
+    PyPtr dtype = dtype_to_python(dtype_from_uint(cursor.next()), lock);
     if (!dtype) return {};
-    PyObject* signature_module = get_signature_module();
+    PyObject* signature_module = get_signature_module(lock);
     if (!signature_module) return {};
     return steal(PyObject_CallMethod(
             signature_module, "PointerConstraint", "(O)", dtype.get()));
@@ -2747,10 +2768,10 @@ static PyPtr parse_pointer_constraint(
 }
 
 
-static PyPtr parse_stream_constraint(CallConvVersion* minimum_cconv) {
+static PyPtr parse_stream_constraint(CallConvVersion* minimum_cconv, GlobalLock& lock) {
 #ifdef ENABLE_CCONV_V3
     require_min_cconv(minimum_cconv, CallConvVersion::CutilePython_V3);
-    PyObject* signature_module = get_signature_module();
+    PyObject* signature_module = get_signature_module(lock);
     if (!signature_module) return {};
     PyPtr constraint_class = getattr(signature_module, "StreamConstraint");
     if (!constraint_class) return {};
@@ -2769,41 +2790,44 @@ static PyPtr parse_element_constraint(
         ParameterKind::Category category,
         const LeafAnnotationNode& annotation,
         const Vec<PyObject*>& identity_constants,
-        CallConvVersion* minimum_cconv) {
+        CallConvVersion* minimum_cconv,
+        GlobalLock& lock) {
     switch (category) {
     case ParameterKind::ConstantBool:
-        return parse_bool_constant_constraint(cursor);
+        return parse_bool_constant_constraint(cursor, lock);
     case ParameterKind::ConstantInt:
-        return parse_int_constant_constraint(cursor);
+        return parse_int_constant_constraint(cursor, lock);
     case ParameterKind::ConstantFloat:
-        return parse_float_constant_constraint(cursor);
+        return parse_float_constant_constraint(cursor, lock);
     case ParameterKind::ConstantNone:
-        return make_constant_constraint(Py_None);
+        return make_constant_constraint(Py_None, lock);
     case ParameterKind::IdentityConstant:
-        return parse_identity_constant_constraint(cursor, identity_constants);
+        return parse_identity_constant_constraint(cursor, identity_constants, lock);
     case ParameterKind::Array:
         return parse_array_constraint(cursor,
                                       annotation.array.index_bitwidth,
                                       annotation.array.static_shape_dims,
                                       annotation.array.static_stride_dims,
-                                      minimum_cconv);
+                                      minimum_cconv,
+                                      lock);
     case ParameterKind::Pointer:
-        return parse_pointer_constraint(cursor, minimum_cconv);
+        return parse_pointer_constraint(cursor, minimum_cconv, lock);
     case ParameterKind::Stream:
-        return parse_stream_constraint(minimum_cconv);
+        return parse_stream_constraint(minimum_cconv, lock);
     case ParameterKind::Boolean:
-        return make_scalar_constraint(DLDataType{kDLBool, 8, 1});
+        return make_scalar_constraint(DLDataType{kDLBool, 8, 1}, lock);
     case ParameterKind::Integer:
         return make_scalar_constraint(
-                DLDataType{kDLInt, static_cast<uint8_t>(annotation.scalar.bitwidth), 1});
+                DLDataType{kDLInt, static_cast<uint8_t>(annotation.scalar.bitwidth), 1}, lock);
     case ParameterKind::Float:
-        return make_scalar_constraint(DLDataType{kDLFloat, 32, 1});
+        return make_scalar_constraint(DLDataType{kDLFloat, 32, 1}, lock);
     case ParameterKind::List:
         return parse_list_constraint(cursor,
                                      annotation.list.element.index_bitwidth,
                                      annotation.list.element.static_shape_dims,
                                      annotation.list.element.static_stride_dims,
-                                     minimum_cconv);
+                                     minimum_cconv,
+                                     lock);
     case ParameterKind::AggregateBegin:
     case ParameterKind::AggregateEnd:
         CHECK_UNREACHABLE;  // Should be handled before parse_element_constraint
@@ -2811,8 +2835,8 @@ static PyPtr parse_element_constraint(
     CHECK_UNREACHABLE;
 }
 
-static PyPtr create_tuple_constraint(PyObject* items_list) {
-    PyObject* signature_module = get_signature_module();
+static PyPtr create_tuple_constraint(PyObject* items_list, GlobalLock& lock) {
+    PyObject* signature_module = get_signature_module(lock);
     if (!signature_module) return {};
     PyPtr constraint_class = getattr(signature_module, "TupleConstraint");
     if (!constraint_class) return {};
@@ -2820,8 +2844,9 @@ static PyPtr create_tuple_constraint(PyObject* items_list) {
 }
 
 #ifdef ENABLE_CCONV_V3
-static PyPtr create_dataclass_constraint(PyObject* dataclass, PyObject* items_list) {
-    PyObject* signature_module = get_signature_module();
+static PyPtr create_dataclass_constraint(PyObject* dataclass, PyObject* items_list,
+                                         GlobalLock& lock) {
+    PyObject* signature_module = get_signature_module(lock);
     if (!signature_module) return {};
     PyPtr constraint_class = getattr(signature_module, "DataclassConstraint");
     if (!constraint_class) return {};
@@ -2835,7 +2860,8 @@ static PyPtr parse_param_constraint(
         Cursor<ParameterKind>* param_cursor,
         Cursor<RefPtr<LeafAnnotationNode>>* annotation_cursor,
         const Vec<PyObject*>& identity_constants,
-        CallConvVersion* minimum_cconv) {
+        CallConvVersion* minimum_cconv,
+        GlobalLock& lock) {
     ParameterKind pk = param_cursor->next();
     if (pk.category == ParameterKind::AggregateBegin) {
         PyPtr items_list = steal(PyList_New(0));
@@ -2843,7 +2869,7 @@ static PyPtr parse_param_constraint(
         while (param_cursor->peek().category != ParameterKind::AggregateEnd) {
             PyPtr item = parse_param_constraint(
                     cursor, param_cursor, annotation_cursor, identity_constants,
-                    minimum_cconv);
+                    minimum_cconv, lock);
             if (!item) return {};
             if (PyList_Append(items_list.get(), item.get()) < 0) return {};
         }
@@ -2853,19 +2879,19 @@ static PyPtr parse_param_constraint(
         switch (pk.agg_type.kind) {
         case AggregateArgType::Tuple:
             require_min_cconv(minimum_cconv, CallConvVersion::CutilePython_V2);
-            return create_tuple_constraint(items_list.get());
+            return create_tuple_constraint(items_list.get(), lock);
 #ifdef ENABLE_CCONV_V3
         case AggregateArgType::Dataclass:
             require_min_cconv(minimum_cconv, CallConvVersion::CutilePython_V3);
             return create_dataclass_constraint(pk.agg_type.dataclass_info->dataclass.get(),
-                                               items_list.get());
+                                               items_list.get(), lock);
 #endif
         }
         CHECK(false);
     }
     LeafAnnotationNode* annotation = annotation_cursor->next().get();
     return parse_element_constraint(
-            cursor, pk.category, *annotation, identity_constants, minimum_cconv);
+            cursor, pk.category, *annotation, identity_constants, minimum_cconv, lock);
 }
 
 static PyPtr parse_parameter_constraints(
@@ -2873,7 +2899,8 @@ static PyPtr parse_parameter_constraints(
         const Vec<PyObject*>& identity_constants,
         const Vec<ParameterKind>& param_kinds,
         const Vec<RefPtr<LeafAnnotationNode>>& flat_param_annotations,
-        CallConvVersion* minimum_cconv) {
+        CallConvVersion* minimum_cconv,
+        GlobalLock& lock) {
     PyPtr param_constraints = steal(PyList_New(0));
     if (!param_constraints) return {};
 
@@ -2882,7 +2909,7 @@ static PyPtr parse_parameter_constraints(
     while (param_cursor.peek().category != ParameterKind::AggregateEnd) {
         PyPtr constraint = parse_param_constraint(
                 cursor, &param_cursor, &annotation_cursor, identity_constants,
-                minimum_cconv);
+                minimum_cconv, lock);
         if (!constraint) return {};
         if (PyList_Append(param_constraints.get(), constraint.get())) return {};
     }
@@ -2895,17 +2922,18 @@ static PyPtr parse_parameter_constraints(
 static PyPtr make_signature(ConstantCursor constants,
                             const Vec<PyObject*>& identity_constants,
                             const Vec<ParameterKind>& param_kinds,
-                            const Vec<RefPtr<LeafAnnotationNode>>& flat_param_annotations) {
+                            const Vec<RefPtr<LeafAnnotationNode>>& flat_param_annotations,
+                            GlobalLock& lock) {
     CallConvVersion minimum_cconv = CallConvVersion::CutilePython_V1;
     PyPtr parameters = parse_parameter_constraints(
             constants, identity_constants, param_kinds, flat_param_annotations,
-            &minimum_cconv);
+            &minimum_cconv, lock);
     if (!parameters) return {};
 
     PyPtr calling_convention = get_cconv(minimum_cconv);
     if (!calling_convention) return {};
 
-    PyObject* signature_module = get_signature_module();
+    PyObject* signature_module = get_signature_module(lock);
     if (!signature_module) return {};
 
     PyPtr signature_class = getattr(signature_module, "KernelSignature");
@@ -3307,19 +3335,19 @@ enum class StreamKind {
     RawInt,
 };
 
-static std::optional<StreamKind> try_classify_stream_type(PyTypeObject* ty) {
-    if (is_torch_cuda_stream_subtype(ty)) {
+static std::optional<StreamKind> try_classify_stream_type(PyTypeObject* ty, GlobalLock& lock) {
+    if (is_torch_cuda_stream_subtype(ty, lock)) {
         return StreamKind::Torch;
-    } else if (is_cupy_cuda_stream_subtype(ty)) {
+    } else if (is_cupy_cuda_stream_subtype(ty, lock)) {
         return StreamKind::Cupy;
-    } else if (is_numba_cuda_driver_stream_subtype(ty)) {
+    } else if (is_numba_cuda_driver_stream_subtype(ty, lock)) {
         return StreamKind::NumbaCuda;
     }
     return {};
 }
 
-static StreamKind do_classify_stream_type(PyTypeObject* ty) {
-    std::optional<StreamKind> kind = try_classify_stream_type(ty);
+static StreamKind do_classify_stream_type(PyTypeObject* ty, GlobalLock& lock) {
+    std::optional<StreamKind> kind = try_classify_stream_type(ty, lock);
     if (kind.has_value()) {
         return *kind;
     } else if (PyType_IsSubtype(ty, &PyLong_Type)) {
@@ -3334,8 +3362,7 @@ static StreamKind do_classify_stream_type(PyTypeObject* ty) {
     }
 }
 
-// Must be holding GIL or g_launch_mutex to call this
-static StreamKind classify_stream(PyObject* py_stream) {
+static StreamKind classify_stream(PyObject* py_stream, GlobalLock& lock) {
     // Cache the last stream type we were called with.
     // The hypothesis is that the user is probably using one host framework to make all the
     // launches, so we will nearly always get a cache hit here. And comparing a single pointer
@@ -3348,7 +3375,7 @@ static StreamKind classify_stream(PyObject* py_stream) {
     PyTypeObject* ty = Py_TYPE(py_stream);
     if (ty == last_ty) return last_kind;
 
-    StreamKind res = do_classify_stream_type(ty);
+    StreamKind res = do_classify_stream_type(ty, lock);
     if (res != StreamKind::Error) {
         Py_XDECREF(last_ty);
         last_ty = reinterpret_cast<PyTypeObject*>(Py_NewRef(ty));
@@ -3358,7 +3385,7 @@ static StreamKind classify_stream(PyObject* py_stream) {
 }
 
 
-static Result<CUstream> parse_stream(PyObject* py_stream) {
+static Result<CUstream> parse_stream(PyObject* py_stream, GlobalLock& lock) {
     auto from_raw = [] (PyObject* raw) -> Result<CUstream> {
         if (!raw) return ErrorRaised;
         CUstream stream = static_cast<CUstream>(PyLong_AsVoidPtr(raw));
@@ -3371,7 +3398,7 @@ static Result<CUstream> parse_stream(PyObject* py_stream) {
         return stream;
     };
 
-    StreamKind kind = classify_stream(py_stream);
+    StreamKind kind = classify_stream(py_stream, lock);
     switch (kind) {
     case StreamKind::Error:
         return ErrorRaised;
@@ -3386,7 +3413,7 @@ static Result<CUstream> parse_stream(PyObject* py_stream) {
 
             // numba-cuda >= 0.30: handle is cuda.bindings.driver.CUstream
             // numba-cuda < 0.30: handle is ctypes c_void_p
-            if (is_cuda_bindings_driver_custream_subtype(Py_TYPE(py_stream_handle.get()))) {
+            if (is_cuda_bindings_driver_custream_subtype(Py_TYPE(py_stream_handle.get()), lock)) {
                 PyPtr pylong = steal(PyNumber_Long(py_stream_handle.get()));
                 return from_raw(pylong.get());
             } else {
@@ -3410,12 +3437,12 @@ static Result<CUstream> parse_stream(PyObject* py_stream) {
 
 using StreamBufferPoolMap = HashMap<unsigned long long, StreamBufferPool*>;
 
-// Protected by GIL or g_launch_mutex.
 // We have no reliable way to detect when a context is destroyed, so we never clean these up.
-static StreamBufferPoolMap* g_stream_buffer_pool_by_ctx_id;
+static ProtectedByGlobalLock<StreamBufferPoolMap*> g_stream_buffer_pool_by_ctx_id;
 
 
-static Result<StreamBufferPool*> get_stream_buffer_pool(const DriverApi* driver, CUcontext ctx) {
+static Result<StreamBufferPool*> get_stream_buffer_pool(const DriverApi* driver, CUcontext ctx,
+                                                        GlobalLock& lock) {
     if (!ctx) {
         CUresult res = driver->cuCtxGetCurrent(&ctx);
         if (res != CUDA_SUCCESS) {
@@ -3430,12 +3457,13 @@ static Result<StreamBufferPool*> get_stream_buffer_pool(const DriverApi* driver,
         return raise(PyExc_RuntimeError,
                      "Failed to get CUDA context ID: ", get_cuda_error(driver, res));
 
-    StreamBufferPoolMap::Item* item = g_stream_buffer_pool_by_ctx_id->find(ctx_id);
+    StreamBufferPoolMap* map = g_stream_buffer_pool_by_ctx_id.get(lock);
+    StreamBufferPoolMap::Item* item = map->find(ctx_id);
     if (item) {
         return item->value;
     } else {
         StreamBufferPool* pool = stream_buffer_pool_new();
-        g_stream_buffer_pool_by_ctx_id->insert(ctx_id, pool);
+        map->insert(ctx_id, pool);
         return pool;
     }
 }
@@ -3506,7 +3534,8 @@ static Status stage_list_args_on_stream(const DriverApi* driver,
                                         Arena& arena,
                                         const Vec<ListArg>& list_args,
                                         size_t total_list_data_size_words,
-                                        StreamBufferTransaction& tx) {
+                                        StreamBufferTransaction& tx,
+                                        GlobalLock& lock) {
     if (list_args.empty())
         return OK;
 
@@ -3519,7 +3548,7 @@ static Status stage_list_args_on_stream(const DriverApi* driver,
         if (status != CU_STREAM_CAPTURE_STATUS_NONE)
             return raise(PyExc_RuntimeError, "List argument in CUDAGraph isn't supported yet");
 
-        Result<StreamBufferPool*> pool_res = get_stream_buffer_pool(driver, cuda_context);
+        Result<StreamBufferPool*> pool_res = get_stream_buffer_pool(driver, cuda_context, lock);
         if (!pool_res.is_ok()) return ErrorRaised;
 
         tx = stream_buffer_transaction_open(driver, *pool_res, launch_stream);
@@ -3649,7 +3678,8 @@ static Result<Vec<PythonArgKind>>
 get_pyarg_kinds(const Vec<PyTypeObject*>& pyarg_types_depth_first,
                 const Vec<std::optional<AggregateArgType>>& agg_types,
                 const Vec<PyObject*>& leaf_pyarg_objs,
-                const Vec<RefPtr<LeafAnnotationNode>>& flat_param_annotations) {
+                const Vec<RefPtr<LeafAnnotationNode>>& flat_param_annotations,
+                GlobalLock& lock) {
     size_t n = leaf_pyarg_objs.size();
     CHECK(flat_param_annotations.size() == n);
     Vec<PythonArgKind> ret;
@@ -3657,7 +3687,7 @@ get_pyarg_kinds(const Vec<PyTypeObject*>& pyarg_types_depth_first,
     for (size_t i = 0; i < n; ++i) {
         PyObject* obj = leaf_pyarg_objs[i];
         if (flat_param_annotations[i]->constant) {
-            std::optional<ConstantKind> kind = classify_constant(obj, true);
+            std::optional<ConstantKind> kind = classify_constant(obj, true, lock);
             if (!kind.has_value()) {
                 return raise_invalid_kernel_arg_type(
                         pyarg_types_depth_first, agg_types, i,
@@ -3666,7 +3696,7 @@ get_pyarg_kinds(const Vec<PyTypeObject*>& pyarg_types_depth_first,
             }
             ret.push_back(constant_kind_as_arg_kind(*kind));
         } else {
-            std::optional<PythonArgKind> kind = classify_nonconstant_arg(obj);
+            std::optional<PythonArgKind> kind = classify_nonconstant_arg(obj, lock);
             if (!kind.has_value()) {
                 if (PyType_IsSubtype(Py_TYPE(obj), &PyTuple_Type)) {
                     return raise_invalid_kernel_arg_type(
@@ -3674,7 +3704,7 @@ get_pyarg_kinds(const Vec<PyTypeObject*>& pyarg_types_depth_first,
                             "'", Py_TYPE(obj)->tp_name, "' is a subclass of 'tuple'."
                             " Only plain tuples are accepted.");
                 }
-                if (classify_constant(obj, true).has_value()) {
+                if (classify_constant(obj, true, lock).has_value()) {
                     return raise_invalid_kernel_arg_type(
                             pyarg_types_depth_first, agg_types, i,
                             "Objects of type '", Py_TYPE(obj)->tp_name, "' are only accepted"
@@ -3939,7 +3969,8 @@ static PythonArgProfile* python_arg_profile_lookup_impl(
         Vec<PyObject*>* pyarg_objs_breadth_first,
         Vec<PyTypeObject*>* pyarg_types_breadth_first,
         Vec<PyObject*>* leaf_pyarg_objs,
-        Vec<PyPtr>* pyarg_refs) {
+        Vec<PyPtr>* pyarg_refs,
+        GlobalLock& lock) {
     ProfileMapQuery query = {pyarg_types_breadth_first, 0, 0};
     query.mark_start();
     get_pyarg_objects_and_types(pyargs, num_pyargs,
@@ -4014,7 +4045,7 @@ static PythonArgProfile* python_arg_profile_lookup_impl(
                 // Classify the arguments and get the matching ArgumentFamily.
                 Result<Vec<PythonArgKind>> arg_kinds = get_pyarg_kinds(
                         pyarg_types_depth_first, aggregate_types,
-                        *leaf_pyarg_objs, *flat_param_annotations);
+                        *leaf_pyarg_objs, *flat_param_annotations, lock);
                 if (!arg_kinds.is_ok()) return nullptr;
 
                 Vec<ParameterKind> param_kinds = get_parameter_kinds(
@@ -4061,7 +4092,8 @@ static PythonArgProfile* python_arg_profile_lookup(
         PyObject* const* pyargs,
         Py_ssize_t num_pyargs,
         Dispatcher& dispatcher,
-        LaunchHelper& helper) {
+        LaunchHelper& helper,
+        GlobalLock& lock) {
     return python_arg_profile_lookup_impl(
             &dispatcher.arg_profiles,
             pyargs,
@@ -4072,7 +4104,8 @@ static PythonArgProfile* python_arg_profile_lookup(
             &helper.pyarg_objs_breadth_first,
             &helper.pyarg_types_breadth_first,
             &helper.leaf_pyarg_objs,
-            &helper.pyarg_refs);
+            &helper.pyarg_refs,
+            lock);
 }
 
 static Result<PreparedLaunch> prepare_launch_with_extracted_args(
@@ -4085,7 +4118,8 @@ static Result<PreparedLaunch> prepare_launch_with_extracted_args(
         bool capture_kernel_image,
         bool stage_list_args,
         StreamBufferTransaction& tx,
-        CudaContextGuard& ctx_guard) {
+        CudaContextGuard& ctx_guard,
+        GlobalLock& lock) {
     // Get the compute capability of the device this launch targets.
     // Devices with the same compute capability can share a compiled kernel.
     CUdevice dev;
@@ -4111,7 +4145,8 @@ static Result<PreparedLaunch> prepare_launch_with_extracted_args(
                 constants_cursor,
                 helper->identity_constants,
                 family->param_kinds,
-                flat_param_annotations);
+                flat_param_annotations,
+                lock);
         if (!signature) return ErrorRaised;
 
         PyPtr py_compute_capability = steal(Py_BuildValue(
@@ -4137,7 +4172,8 @@ static Result<PreparedLaunch> prepare_launch_with_extracted_args(
     if (stage_list_args
             && !stage_list_args_on_stream(driver, launch_stream, helper->cuda_context,
                                           helper->arena, helper->list_args,
-                                          helper->total_list_data_size_words, tx)) {
+                                          helper->total_list_data_size_words, tx,
+                                          lock)) {
         return ErrorRaised;
     }
 
@@ -4166,9 +4202,10 @@ static Result<PreparedLaunch> prepare_launch(
         bool capture_kernel_image,
         bool stage_list_args,
         StreamBufferTransaction& tx,
-        CudaContextGuard& ctx_guard) {
+        CudaContextGuard& ctx_guard,
+        GlobalLock& lock) {
 
-    LaunchHelperPtr helper = launch_helper_get();
+    LaunchHelperPtr helper = launch_helper_get(lock);
 
     Result<CUcontext> stream_context = get_stream_context(driver, launch_stream);
     if (!stream_context.is_ok()) return ErrorRaised;
@@ -4176,11 +4213,11 @@ static Result<PreparedLaunch> prepare_launch(
 
     Dispatcher& dispatcher = py_unwrap<Dispatcher>(dispatcher_pyobj);
     PythonArgProfile* profile = python_arg_profile_lookup(
-            pyargs, num_pyargs, dispatcher, *helper);
+            pyargs, num_pyargs, dispatcher, *helper, lock);
     if (!profile) return ErrorRaised;
 
     if (!extract_cuda_args(driver, helper->leaf_pyarg_objs, profile->arg_kinds,
-                           profile->flat_param_annotations, *helper)) {
+                           profile->flat_param_annotations, *helper, lock)) {
         return ErrorRaised;
     }
 
@@ -4188,7 +4225,7 @@ static Result<PreparedLaunch> prepare_launch(
             driver, dispatcher_pyobj, launch_stream,
             profile->family.get(), profile->flat_param_annotations,
             std::move(helper), capture_kernel_image, stage_list_args,
-            tx, ctx_guard);
+            tx, ctx_guard, lock);
 }
 
 
@@ -4381,9 +4418,7 @@ Result<NativeLaunchSite*> native_launch_site_create(
         PyObject* const* pyargs,
         Py_ssize_t num_pyargs,
         PyObject* py_host_constant_args) {
-#ifdef Py_GIL_DISABLED
-    PyCriticalSectionGuard guard(&g_launch_mutex);
-#endif
+    GlobalLock lock;
 
     if (!PyTuple_Check(py_host_constant_args))
         return raise(PyExc_TypeError,
@@ -4399,7 +4434,7 @@ Result<NativeLaunchSite*> native_launch_site_create(
         host_constant_args.push_back(value == Py_True);
     }
 
-    LaunchHelperPtr helper = launch_helper_get();
+    LaunchHelperPtr helper = launch_helper_get(lock);
     Dispatcher& dispatcher = py_unwrap<Dispatcher>(dispatcher_object);
 
     // Use a temporary ProfileMap instead of the one from dispatcher.
@@ -4419,15 +4454,16 @@ Result<NativeLaunchSite*> native_launch_site_create(
             &helper->pyarg_objs_breadth_first,
             &helper->pyarg_types_breadth_first,
             &helper->leaf_pyarg_objs,
-            &helper->pyarg_refs);
+            &helper->pyarg_refs,
+            lock);
     if (!profile) return ErrorRaised;
 
-    Result<const DriverApi*> driver_result = get_driver_api();
+    Result<const DriverApi*> driver_result = get_driver_api(lock);
     if (!driver_result.is_ok()) return ErrorRaised;
     const DriverApi* driver = *driver_result;
 
     if (!extract_cuda_args(driver, helper->leaf_pyarg_objs, profile->arg_kinds,
-                           profile->flat_param_annotations, *helper)) {
+                           profile->flat_param_annotations, *helper, lock)) {
         return ErrorRaised;
     }
 
@@ -4670,17 +4706,15 @@ int32_t native_launch_site_launch(
         NativeLaunchSite* site,
         const NativeLaunchConfig& config,
         void** argument_addresses) {
-#ifdef Py_GIL_DISABLED
-    PyCriticalSectionGuard guard(&g_launch_mutex);
-#endif
+    GlobalLock lock;
     if (!validate_native_launch_config(config)) return -1;
 
-    Result<const DriverApi*> driver_result = get_driver_api();
+    Result<const DriverApi*> driver_result = get_driver_api(lock);
     if (!driver_result.is_ok()) return -1;
     const DriverApi* driver = *driver_result;
     CUstream stream = reinterpret_cast<CUstream>(config.stream);
 
-    LaunchHelperPtr helper = launch_helper_get();
+    LaunchHelperPtr helper = launch_helper_get(lock);
     Result<CUcontext> stream_context = get_stream_context(driver, stream);
     if (!stream_context.is_ok()) return -1;
     helper->cuda_context = *stream_context;
@@ -4694,7 +4728,7 @@ int32_t native_launch_site_launch(
             driver, site->dispatcher.get(), stream,
             site->family.get(), site->flat_param_annotations,
             std::move(helper), /*capture_kernel_image=*/false,
-            /*stage_list_args=*/false, transaction, context_guard);
+            /*stage_list_args=*/false, transaction, context_guard, lock);
     if (!prepared.is_ok()) return -1;
 
     CUlaunchAttribute attributes[4];
@@ -4756,13 +4790,13 @@ static Status launch(const DriverApi* driver,
                      CUlaunchAttribute launch_attrs[kMaxCUlaunchAttrs],
                      unsigned num_attrs,
                      PyObject* const* pyargs,
-                     Py_ssize_t num_pyargs
-                     ) {
+                     Py_ssize_t num_pyargs,
+                     GlobalLock& lock) {
     CudaContextGuard ctx_guard(driver);
     StreamBufferTransaction tx;
     Result<PreparedLaunch> prep = prepare_launch(
             driver, dispatcher_pyobj, launch_stream, pyargs, num_pyargs,
-            /*capture_kernel_image=*/false, /*stage_list_args=*/true, tx, ctx_guard);
+            /*capture_kernel_image=*/false, /*stage_list_args=*/true, tx, ctx_guard, lock);
     if (!prep.is_ok()) return ErrorRaised;
 
     CUlaunchConfig config = {
@@ -5188,9 +5222,7 @@ static PyObject* HostDispatcher_call(
         PyObject* self,
         PyObject* args,
         PyObject* kwargs) {
-#ifdef Py_GIL_DISABLED
-    PyCriticalSectionGuard guard(&g_launch_mutex);
-#endif
+    GlobalLock lock;
     if (kwargs && PyDict_Size(kwargs)) {
         raise(
                 PyExc_TypeError,
@@ -5209,9 +5241,9 @@ static PyObject* HostDispatcher_call(
         pyargs.push_back(PyTuple_GET_ITEM(args, i));
 
     Dispatcher& dispatcher = py_unwrap<Dispatcher>(self);
-    LaunchHelperPtr helper = launch_helper_get();
+    LaunchHelperPtr helper = launch_helper_get(lock);
     PythonArgProfile* profile = python_arg_profile_lookup(
-            pyargs.empty() ? nullptr : pyargs.data(), num_args, dispatcher, *helper);
+            pyargs.empty() ? nullptr : pyargs.data(), num_args, dispatcher, *helper, lock);
     if (!profile) return nullptr;
 
     for (const ParameterKind& kind : profile->family->param_kinds) {
@@ -5223,14 +5255,15 @@ static PyObject* HostDispatcher_call(
         }
     }
 
-    Result<const DriverApi*> driver = get_driver_api();
+    Result<const DriverApi*> driver = get_driver_api(lock);
     if (!driver.is_ok()) return nullptr;
     if (!extract_cuda_args(
                 *driver,
                 helper->leaf_pyarg_objs,
                 profile->arg_kinds,
                 profile->flat_param_annotations,
-                *helper)) {
+                *helper,
+                lock)) {
         return nullptr;
     }
 
@@ -5241,7 +5274,8 @@ static PyObject* HostDispatcher_call(
                 helper->constants,
                 helper->identity_constants,
                 profile->family->param_kinds,
-                profile->flat_param_annotations);
+                profile->flat_param_annotations,
+                lock);
         if (!signature) return nullptr;
 
         PyPtr program = steal(PyObject_CallMethod(
@@ -5263,7 +5297,8 @@ static PyObject* HostDispatcher_call(
 
     return compiled_host_program_invoke(
             program_item->value.get(),
-            make_launch_params(*helper));
+            make_launch_params(*helper),
+            lock);
 }
 
 
@@ -5279,9 +5314,7 @@ PyTypeObject Dispatcher::host_pytype = {
 
 
 static PyObject* get_parameter_constraints_from_pyargs(PyObject* self, PyObject* args) {
-#ifdef Py_GIL_DISABLED
-    PyCriticalSectionGuard guard(&g_launch_mutex);
-#endif
+    GlobalLock lock;
     PyObject* dispatcher_pyobj = nullptr;
     PyObject* pyargs = nullptr;
     PyObject* cconv = nullptr;
@@ -5297,13 +5330,13 @@ static PyObject* get_parameter_constraints_from_pyargs(PyObject* self, PyObject*
     PyObject** kernel_args = reinterpret_cast<PyTupleObject*>(pyargs)->ob_item;
     Py_ssize_t num_kernel_args = PyTuple_GET_SIZE(pyargs);
 
-    LaunchHelperPtr helper = launch_helper_get();
+    LaunchHelperPtr helper = launch_helper_get(lock);
 
     PythonArgProfile* profile = python_arg_profile_lookup(
-            kernel_args, num_kernel_args, dispatcher, *helper);
+            kernel_args, num_kernel_args, dispatcher, *helper, lock);
     if (!profile) return nullptr;
 
-    Result<const DriverApi*> driver = get_driver_api();
+    Result<const DriverApi*> driver = get_driver_api(lock);
     if (!driver.is_ok()) return nullptr;
 
     CallConvVersion requested_cconv = py_unwrap<CallingConvention>(cconv).version;
@@ -5311,7 +5344,7 @@ static PyObject* get_parameter_constraints_from_pyargs(PyObject* self, PyObject*
         helper->can_specialize_for_shape = false;
 
     if (!extract_cuda_args(*driver, helper->leaf_pyarg_objs, profile->arg_kinds,
-                           profile->flat_param_annotations, *helper)) {
+                           profile->flat_param_annotations, *helper, lock)) {
         return nullptr;
     }
 
@@ -5319,7 +5352,7 @@ static PyObject* get_parameter_constraints_from_pyargs(PyObject* self, PyObject*
     PyPtr parameters = parse_parameter_constraints(
             helper->constants, helper->identity_constants,
             profile->family->param_kinds, profile->flat_param_annotations,
-            &minimum_cconv);
+            &minimum_cconv, lock);
     return parameters.release();
 }
 
@@ -5468,12 +5501,12 @@ static Result<unsigned> parse_lang_launch_kwargs(PyObject *const *args,
 }
 
 static Status parse_launch_args(PyObject* const* args, Py_ssize_t nargs, const char* signature,
-                                bool with_block, LaunchArgs* out) {
+                                bool with_block, LaunchArgs* out, GlobalLock& lock) {
     if (nargs != 4 + with_block)
         return raise(PyExc_TypeError, "Wrong number of arguments to ", signature);
 
     PyObject* stream_pyobj = args[0];
-    Result<CUstream> stream_res = parse_stream(stream_pyobj);
+    Result<CUstream> stream_res = parse_stream(stream_pyobj, lock);
     if (!stream_res.is_ok()) return ErrorRaised;
     out->stream = *stream_res;
 
@@ -5516,11 +5549,9 @@ static Status parse_launch_args(PyObject* const* args, Py_ssize_t nargs, const c
 static PyObject* launch_impl(PyObject* const* args, Py_ssize_t nargs,
                              PyObject* kwargs, const char* signature, bool with_block
                              ) {
-#ifdef Py_GIL_DISABLED
-    PyCriticalSectionGuard guard(&g_launch_mutex);
-#endif
+    GlobalLock lock;
     LaunchArgs launch_args;
-    if (!parse_launch_args(args, nargs, signature, with_block, &launch_args))
+    if (!parse_launch_args(args, nargs, signature, with_block, &launch_args, lock))
         return nullptr;
 
     CUlaunchAttribute launch_attrs[kMaxCUlaunchAttrs];
@@ -5532,12 +5563,12 @@ static PyObject* launch_impl(PyObject* const* args, Py_ssize_t nargs,
     if (!num_attrs.is_ok())
         return nullptr;
 
-    Result<const DriverApi*> driver = get_driver_api();
+    Result<const DriverApi*> driver = get_driver_api(lock);
     if (!driver.is_ok()) return nullptr;
 
     if (!launch(*driver, launch_args.dispatcher, launch_args.grid,
                 launch_args.block, launch_args.stream, launch_attrs, *num_attrs,
-                launch_args.kernel_args, launch_args.num_kernel_args))
+                launch_args.kernel_args, launch_args.num_kernel_args, lock))
         return nullptr;
 
     return Py_NewRef(Py_None);
@@ -5567,14 +5598,12 @@ static PyObject *launch_extended(PyObject *, PyObject *const *args,
 #define BENCHMARK_SIGNATURE "_benchmark(stream, grid, kernel, pyargs_tuples, /)"
 
 static PyObject* cuda_tile_benchmark(PyObject* mod, PyObject* const* args, Py_ssize_t nargs) {
-#ifdef Py_GIL_DISABLED
-    PyCriticalSectionGuard guard(&g_launch_mutex);
-#endif
+    GlobalLock lock;
     LaunchArgs launch_args;
-    if (!parse_launch_args(args, nargs, BENCHMARK_SIGNATURE, false, &launch_args))
+    if (!parse_launch_args(args, nargs, BENCHMARK_SIGNATURE, false, &launch_args, lock))
         return nullptr;
 
-    Result<const DriverApi*> driver = get_driver_api();
+    Result<const DriverApi*> driver = get_driver_api(lock);
     if (!driver.is_ok()) return nullptr;
 
     CudaContextGuard ctx_guard(*driver);
@@ -5582,7 +5611,7 @@ static PyObject* cuda_tile_benchmark(PyObject* mod, PyObject* const* args, Py_ss
     Result<PreparedLaunch> prep = prepare_launch(
             *driver, launch_args.dispatcher, launch_args.stream,
             launch_args.kernel_args, launch_args.num_kernel_args,
-            /*capture_kernel_image=*/false, /*stage_list_args=*/true, tx, ctx_guard);
+            /*capture_kernel_image=*/false, /*stage_list_args=*/true, tx, ctx_guard, lock);
     if (!prep.is_ok()) return nullptr;
 
     Result<double> elapsed_us = benchmark(
@@ -5599,15 +5628,13 @@ static PyObject* cuda_tile_benchmark(PyObject* mod, PyObject* const* args, Py_ss
 
 static PyObject* cuda_tile_export_ipc_benchmark_payload(PyObject*, PyObject* const* args,
                                                         Py_ssize_t nargs) {
-#ifdef Py_GIL_DISABLED
-    PyCriticalSectionGuard guard(&g_launch_mutex);
-#endif
+    GlobalLock lock;
     LaunchArgs launch_args;
     if (!parse_launch_args(args, nargs, EXPORT_IPC_BENCHMARK_PAYLOAD_SIGNATURE, false,
-                           &launch_args))
+                           &launch_args, lock))
         return nullptr;
 
-    Result<const DriverApi*> driver = get_driver_api();
+    Result<const DriverApi*> driver = get_driver_api(lock);
     if (!driver.is_ok()) return nullptr;
 
     CudaContextGuard ctx_guard(*driver);
@@ -5615,7 +5642,7 @@ static PyObject* cuda_tile_export_ipc_benchmark_payload(PyObject*, PyObject* con
     Result<PreparedLaunch> prep = prepare_launch(
             *driver, launch_args.dispatcher, launch_args.stream,
             launch_args.kernel_args, launch_args.num_kernel_args,
-            /*capture_kernel_image=*/true, /*stage_list_args=*/false, tx, ctx_guard);
+            /*capture_kernel_image=*/true, /*stage_list_args=*/false, tx, ctx_guard, lock);
     if (!prep.is_ok()) return nullptr;
 
     LaunchHelper& helper = *prep->helper;
@@ -5710,9 +5737,7 @@ static PyObject* cuda_tile_export_ipc_benchmark_payload(PyObject*, PyObject* con
 
 static PyObject* cuda_tile_benchmark_with_ipc_payload(PyObject*, PyObject* const* args,
                                                       Py_ssize_t nargs) {
-#ifdef Py_GIL_DISABLED
-    PyCriticalSectionGuard guard(&g_launch_mutex);
-#endif
+    GlobalLock lock;
     if (nargs != 1) {
         raise(PyExc_TypeError, "Wrong number of arguments to ",
               BENCHMARK_WITH_IPC_PAYLOAD_SIGNATURE);
@@ -5730,7 +5755,7 @@ static PyObject* cuda_tile_benchmark_with_ipc_payload(PyObject*, PyObject* const
     if (PyBytes_AsStringAndSize(py_payload, &payload_data, &payload_nbytes) < 0)
         return nullptr;
 
-    LaunchHelperPtr helper = launch_helper_get();
+    LaunchHelperPtr helper = launch_helper_get(lock);
     Result<IpcBenchmarkPayload> payload_res = deserialize_ipc_benchmark_payload(
             payload_data, static_cast<size_t>(payload_nbytes), *helper);
     if (!payload_res.is_ok()) return nullptr;
@@ -5741,7 +5766,7 @@ static PyObject* cuda_tile_benchmark_with_ipc_payload(PyObject*, PyObject* const
         grid.dims[i] = payload.grid_dims[i];
     if (!validate_grid(grid)) return nullptr;
 
-    Result<const DriverApi*> driver = get_driver_api();
+    Result<const DriverApi*> driver = get_driver_api(lock);
     if (!driver.is_ok()) return nullptr;
 
     int device_id = payload.device_id;
@@ -5788,7 +5813,7 @@ static PyObject* cuda_tile_benchmark_with_ipc_payload(PyObject*, PyObject* const
     StreamBufferTransaction tx;
     if (!stage_list_args_on_stream(*driver, launch_stream, ctx, helper->arena,
                                    helper->list_args, helper->total_list_data_size_words,
-                                   tx)) {
+                                   tx, lock)) {
         return nullptr;
     }
 
@@ -5919,6 +5944,8 @@ static Status add_launch_extended_func(PyObject* m) {
 
 
 Status tile_kernel_init(PyObject* m) {
+    GlobalLock lock;
+
     INIT_STRING_IDENT(__cuda_array_interface__);
     INIT_STRING_IDENT(typestr);
     INIT_STRING_IDENT(shape);
@@ -5947,7 +5974,7 @@ Status tile_kernel_init(PyObject* m) {
     if (PyModule_AddObjectRef(m, "ConstantKind", g_constant_kind_enum) < 0)
         return ErrorRaised;
 
-    g_stream_buffer_pool_by_ctx_id = new StreamBufferPoolMap();
+    g_stream_buffer_pool_by_ctx_id.get(lock) = new StreamBufferPoolMap();
 
     if (PyType_Ready(&CallingConvention::pytype) < 0)
         return ErrorRaised;

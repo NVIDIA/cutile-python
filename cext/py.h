@@ -601,3 +601,75 @@ class PyCriticalSectionGuard {
         PyCriticalSection _py_cs;
 };
 #endif
+
+
+// In a GIL build, asserts that we are holding the GIL.
+// In a free-threaded build, enters the global critical section.
+//
+// Passing a reference to an object of this class to a function serves as a "proof"
+// that the lock is being held.
+//
+// For example:
+//
+//     // Helper function that mutates the global state in a thread-unsafe way.
+//     // Takes a `GlobalLock&` reference to indicate that either the GIL or the global
+//     // critical section must be held.
+//     static int next_number(GlobalLock&) {
+//         static int counter = 0;
+//         return counter++;
+//     }
+//
+//     // Method implementation
+//     static PyObject* foo(PyObject* self, PyObject* args) {
+//         // In a GIL build, we know we're holding the GIL since this is a method, and
+//         // thus it's safe to instantiate a GlobalLock.
+//         //
+//         // In a free-threaded build, this will enter the global critical section
+//         // to emulate the GIL.
+//         GlobalLock lock;
+//
+//         // Call the thread-unsafe helper.
+//         int number = next_number(lock);
+//
+//         // ...
+//     }
+class GlobalLock {
+public:
+    GlobalLock()
+#ifdef Py_GIL_DISABLED
+        : guard_(&mutex_)
+#endif
+    {
+#ifndef Py_GIL_DISABLED
+        // Will crash with a fatal error if we aren't holding the GIL
+        PyThreadState_Get();
+#endif // Py_GIL_DISABLED
+    }
+
+    // Use this constructor when you are holding a GILGuard
+    // but you don't necessarily have an attached thread state.
+    explicit GlobalLock(GILGuard& gil_guard)
+#ifdef Py_GIL_DISABLED
+        : guard_(&mutex_)
+#endif
+    {}
+
+    GlobalLock(const GlobalLock&) = delete;
+    void operator==(const GlobalLock&) = delete;
+
+private:
+#ifdef Py_GIL_DISABLED
+    PyCriticalSectionGuard guard_;
+    static PyMutex mutex_;
+#endif
+};
+
+
+template <typename T>
+class ProtectedByGlobalLock {
+    static_assert(std::is_trivially_destructible_v<T>);
+    T object_;
+public:
+    T& get(GlobalLock&) { return object_; }
+};
+

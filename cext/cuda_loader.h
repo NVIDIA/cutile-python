@@ -82,7 +82,7 @@ typedef CUresult (*cuGetProcAddress_v2_t)
 
 Status driver_api_init(DriverApi* driver_api, cuGetProcAddress_v2_t _cuGetProcAddress);
 
-Result<const DriverApi*> get_driver_api();
+Result<const DriverApi*> get_driver_api(GlobalLock& lock);
 
 
 class CudaContextGuard {

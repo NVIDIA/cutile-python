@@ -188,7 +188,8 @@ int CompiledHostProgram_init(PyObject* self, PyObject* args, PyObject* kwargs) {
 
 PyObject* invoke_host_entry(
         CompiledHostProgram& program,
-        void** arguments) {
+        void** arguments,
+        GlobalLock& lock) {
     int32_t result = program.executable.entry(arguments, &program.runtime);
     if (result < 0) {
         if (PyErr_Occurred()) return nullptr;
@@ -196,7 +197,7 @@ PyObject* invoke_host_entry(
         return nullptr;
     }
     if (result != CUDA_SUCCESS) {
-        Result<const DriverApi*> driver_result = get_driver_api();
+        Result<const DriverApi*> driver_result = get_driver_api(lock);
         if (!driver_result.is_ok()) return nullptr;
         const DriverApi* driver = *driver_result;
         raise(PyExc_RuntimeError, "cuda error occurred: ",
@@ -212,6 +213,7 @@ PyObject* CompiledHostProgram_invoke(PyObject* self, PyObject* argument_addresse
         raise(PyExc_TypeError, "compiled host argument addresses must be a tuple");
         return nullptr;
     }
+    GlobalLock lock;
     Py_ssize_t count = PyTuple_GET_SIZE(argument_addresses);
     Vec<void*> arguments;
     arguments.reserve(count);
@@ -221,7 +223,7 @@ PyObject* CompiledHostProgram_invoke(PyObject* self, PyObject* argument_addresse
         if (PyErr_Occurred()) return nullptr;
         arguments.push_back(address);
     }
-    return compiled_host_program_invoke(self, arguments.data());
+    return compiled_host_program_invoke(self, arguments.data(), lock);
 }
 
 
@@ -286,7 +288,8 @@ bool compiled_host_program_check(PyObject* object) {
 }
 
 
-PyObject* compiled_host_program_invoke(PyObject* program_object, void** arguments) {
+PyObject* compiled_host_program_invoke(PyObject* program_object, void** arguments,
+                                       GlobalLock& lock) {
     if (!compiled_host_program_check(program_object)) {
         raise(
                 PyExc_TypeError,
@@ -295,7 +298,7 @@ PyObject* compiled_host_program_invoke(PyObject* program_object, void** argument
         return nullptr;
     }
     CompiledHostProgram& program = py_unwrap<CompiledHostProgram>(program_object);
-    return invoke_host_entry(program, arguments);
+    return invoke_host_entry(program, arguments, lock);
 }
 
 

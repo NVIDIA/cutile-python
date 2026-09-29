@@ -8,5 +8,5 @@
 
 
 bool compiled_host_program_check(PyObject* object);
-PyObject* compiled_host_program_invoke(PyObject* program, void** arguments);
+PyObject* compiled_host_program_invoke(PyObject* program, void** arguments, GlobalLock& lock);
 Status compiled_host_init(PyObject* module);

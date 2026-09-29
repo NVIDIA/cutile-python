@@ -84,17 +84,18 @@ XLA_FFI_Error* xla_internal_error(const XLA_FFI_Api* api, const char* fmt, ...) 
 // state's reference); the registry owns these via heap allocation.
 // `~KernelEntry` unloads the library best-effort.
 struct KernelEntry {
-    CUlibrary  lib = nullptr;
+    CUlibrary lib = nullptr;
     CUkernel kernel = nullptr;
-    size_t    refcount = 0;
+    size_t refcount = 0;
+    const DriverApi* driver_api;
 
-    KernelEntry(CUlibrary l, CUkernel k) : lib(l), kernel(k), refcount(1) {}
+    KernelEntry(CUlibrary l, CUkernel k, const DriverApi* driver_api)
+        : lib(l), kernel(k), refcount(1), driver_api(driver_api) {}
     KernelEntry(const KernelEntry&) = delete;
     KernelEntry& operator=(const KernelEntry&) = delete;
     ~KernelEntry() {
         if (!lib) return;
-        Result<const DriverApi*> d = get_driver_api();
-        if (d.is_ok()) (*d)->cuLibraryUnload(lib);
+        driver_api->cuLibraryUnload(lib);
     }
 };
 
@@ -307,7 +308,7 @@ KernelEntry* load_kernel(const XLA_FFI_Api* api, const DriverApi* d,
             name_buf.data(), static_cast<int>(rc));
         return nullptr;
     }
-    return new KernelEntry(lib, cukernel);
+    return new KernelEntry(lib, cukernel, d);
 }
 
 
@@ -331,10 +332,11 @@ enum : size_t {
 
 XLA_FFI_Error* cutile_call_instantiate(XLA_FFI_CallFrame* cf) {
     GILGuard g;
+    GlobalLock lock(g);
 #ifdef Py_GIL_DISABLED
     PyCriticalSectionGuard guard(&g_kernel_registry->m);
 #endif
-    Result<const DriverApi*> driver_result = get_driver_api();
+    Result<const DriverApi*> driver_result = get_driver_api(lock);
     if (!driver_result.is_ok())
         return xla_internal_error(cf->api, "CUDA driver not available.");
     const DriverApi* d = *driver_result;

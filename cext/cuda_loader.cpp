@@ -73,7 +73,7 @@ static Result<cuGetProcAddress_v2_t> get_cuGetProcAddress_from_python() {
 
 static constexpr int MIN_DRIVER_VERSION = 13000;
 
-Result<const DriverApi*> get_driver_api() {
+Result<const DriverApi*> get_driver_api(GlobalLock& lock) {
     static bool initialized;
     static DriverApi instance;
     if (!initialized) {
