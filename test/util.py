@@ -20,7 +20,7 @@ from torch.testing import make_tensor
 import cuda.tile as ct
 import tempfile
 
-from cuda.tile._compile import get_sm_arch
+from cuda.tile._compile import _bytecode_to_mlir_text, get_sm_arch
 from cuda.tile._ir.typing_support import to_dtype
 
 from cuda.tile import _datatype as datatype
@@ -228,8 +228,7 @@ def _find_filecheck_bin() -> Optional[str]:
 
 
 def filecheck(bytecode_buf: bytearray, check_directive: str) -> None:
-    mod = pytest.importorskip("cuda.tile_internal._internal_cext")
-    mlir_text = mod.bytecode_to_mlir_text(bytecode_buf)
+    mlir_text = _bytecode_to_mlir_text(bytecode_buf)
 
     filecheck_bin = _find_filecheck_bin()
     with (

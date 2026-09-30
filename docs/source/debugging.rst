@@ -43,6 +43,12 @@ Set ``CUDA_TILE_LOGS=CUTILEIR`` to print cuTile Python
 IR during compilation to stderr. This is useful when
 debugging :class:`TileTypeError`.
 
+Set ``CUDA_TILE_LOGS=TILEIR`` to print TileIR text to stderr. Requires
+CUDA Toolkit 13.4 or later.
+
+Set ``CUDA_TILE_DUMP_TILEIR`` to a directory to save TILEIR text to
+files. Requires CUDA Toolkit 13.4 or later.
+
 Set ``CUDA_TILE_TEMP_DIR`` to configure the directory
 for storing temporary files.
 

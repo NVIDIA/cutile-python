@@ -19,7 +19,6 @@ import sys
 import tempfile
 import threading
 import time
-import traceback
 from types import FunctionType
 from typing import Optional, Sequence
 import zipfile
@@ -347,24 +346,6 @@ def _get_array_ty(param: ArrayConstraint,
                    typing_hooks=typing_hooks)
 
 
-def _log_mlir(bytecode_buf):
-    try:
-        from cuda.tile_internal import _internal_cext
-    except ImportError:
-        print("Can't print MLIR because the internal extension is missing. "
-              "This is currently not a public feature", file=sys.stderr)
-        return
-
-    try:
-        text = _internal_cext.bytecode_to_mlir_text(bytecode_buf)
-    except Exception:
-        print("Failed to print MLIR", file=sys.stderr)
-        traceback.print_exc()
-        return
-
-    print(f"Lowering\n==== TILEIR MLIR module ====\n\n{text}", file=sys.stderr)
-
-
 def _compiler_crash_dump(final_ir: Sequence[ir.Block],
                          func_name: str,
                          anonymized_bytecode: bytearray,
@@ -587,9 +568,6 @@ def compile_tile(ann_func: AnnotatedFunction | FunctionType,
         ir_keeper, compiler_options, anonymize_debug_info=False
     )
 
-    if context.config.log_tileir:
-        _log_mlir(bytecode_buf)
-
     if CUDA_TILE_DUMP_BYTECODE is not None:
         if not os.path.isdir(CUDA_TILE_DUMP_BYTECODE):
             os.makedirs(CUDA_TILE_DUMP_BYTECODE)
@@ -598,20 +576,26 @@ def compile_tile(ann_func: AnnotatedFunction | FunctionType,
             print(f"Dumping TILEIR bytecode to file: {f.name}", file=sys.stderr)
             f.write(bytecode_buf)
 
-    # Write MLIR module to file
-    if CUDA_TILE_DUMP_TILEIR is not None:
+    # Write MLIR text to log or file
+    if context.config.log_tileir or CUDA_TILE_DUMP_TILEIR is not None:
         try:
-            from cuda.tile_internal._internal_cext import bytecode_to_mlir_text
-            mlir_text = bytecode_to_mlir_text(bytecode_buf)
-            if not os.path.isdir(CUDA_TILE_DUMP_TILEIR):
-                os.makedirs(CUDA_TILE_DUMP_TILEIR)
-            with unique_path_from_func_desc(CUDA_TILE_DUMP_TILEIR,
-                                            func_desc, '.tileir', mode="w") as f:
-                print(f"Dumping TILEIR MLIR module to file: {f.name}", file=sys.stderr)
-                f.write(mlir_text)
-        except ImportError:
-            print("Can't print MLIR because the internal extension is missing. "
-                  "This is currently not a public feature.", file=sys.stderr)
+            mlir_text = _bytecode_to_mlir_text(
+                bytecode_buf, preview_features=preview_features,
+                temp_dir=context.config.temp_dir,
+                timeout_sec=context.config.compiler_timeout_sec)
+
+            if context.config.log_tileir:
+                print(f"Lowering\n==== TILEIR ====\n\n{mlir_text}", file=sys.stderr)
+
+            if CUDA_TILE_DUMP_TILEIR is not None:
+                if not os.path.isdir(CUDA_TILE_DUMP_TILEIR):
+                    os.makedirs(CUDA_TILE_DUMP_TILEIR)
+                with unique_path_from_func_desc(CUDA_TILE_DUMP_TILEIR,
+                                                func_desc, '.tileir', mode="w") as f:
+                    print(f"Dumping TILEIR MLIR text to file: {f.name}", file=sys.stderr)
+                    f.write(mlir_text)
+        except Exception as exc:
+            print(f"Failed to disassemble TileIR: {exc}", file=sys.stderr)
 
     ret = CompilationResult(signatures,
                             bytecode=bytecode_buf if return_bytecode else None,
@@ -875,6 +859,37 @@ def _find_compiler_bin() -> _CompilerBinary:
                             "`pip install cuda-tile[tileiras]` or "
                             f"available in $PATH or ${cuda_home_var}/bin via system CTK (13.1+)"
                             " installation.")
+
+
+@cache
+def _find_tileirdisasm_bin() -> str:
+    compiler = _find_compiler_bin()
+    binary_name = "tileirdisasm.exe" if is_windows() else "tileirdisasm"
+    bin_dir = os.path.dirname(compiler.path)
+    result = shutil.which(binary_name, path=bin_dir)
+    if result is None:
+        raise FileNotFoundError(f"'tileirdisasm' not found beside tileiras in {bin_dir}; "
+                                "TileIR text dumps require CUDA Toolkit 13.4 or later")
+    return result
+
+
+def _bytecode_to_mlir_text(bytecode: bytes | bytearray, *,
+                           preview_features: Sequence[str] = (),
+                           temp_dir: str | None = None,
+                           timeout_sec: float | None = None) -> str:
+    disassembler = _find_tileirdisasm_bin()
+    with tempfile.TemporaryDirectory(dir=temp_dir) as work_dir:
+        input_file = Path(work_dir) / "input.tileirbc"
+        input_file.write_bytes(bytecode)
+        flags = [f"--preview={feature}" for feature in preview_features]
+        command = [disassembler, str(input_file), *flags]
+        result = subprocess.run(command, capture_output=True, text=True,
+                                encoding="utf-8", timeout=timeout_sec)
+        if result.returncode != 0:
+            raise TileCompilerExecutionError(
+                result.returncode, f"tileirdisasm: {result.stderr.strip()}",
+                Loc.unknown(), ' '.join(flags), None)
+        return result.stdout
 
 
 _SUPPORTED_VERSIONS = [

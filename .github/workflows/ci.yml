@@ -183,7 +183,7 @@ jobs:
         run: pip install dist/*.whl
 
       - name: Run tests
-        run: pytest --ignore experimental --durations=10 --junitxml=test-results.xml -m "not benchmark" -k "not int64_index" .
+        run: pytest --ignore experimental --durations=10 --junitxml=test-results.xml -m "not benchmark and not use_mlir" -k "not int64_index" .
 
       - name: Report test results
         if: ${{ !cancelled() }}
