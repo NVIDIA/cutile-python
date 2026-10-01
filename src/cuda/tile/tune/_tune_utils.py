@@ -207,10 +207,11 @@ def _benchmark_worker_main(conn):
 
 def benchmark_with_timeout(
         stream, grid, kernel, pyargs,
-        timeout_sec: float) -> tuple[float, float | None]:
-    serialized_payload = _export_ipc_benchmark_payload(stream, grid, kernel, pyargs)
+        timeout_sec: float, flush_l2: bool) -> tuple[float, float | None]:
+    serialized_payload = _export_ipc_benchmark_payload(
+        stream, grid, kernel, pyargs, flush_l2)
     if serialized_payload is None:
-        return _benchmark(stream, grid, kernel, pyargs), None
+        return _benchmark(stream, grid, kernel, pyargs, flush_l2), None
 
     with _timed_benchmark_lock:
         runner = _get_timed_benchmark_runner()

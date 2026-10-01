@@ -139,6 +139,7 @@ def exhaustive_search(
     *,
     quiet: bool = False,
     single_run_timeout_sec: float | None = None,
+    flush_l2: bool = True,
 ) -> TuningResult[T]:
     """Searches the entire search space and return the best configuration.
 
@@ -156,6 +157,8 @@ def exhaustive_search(
             enforced by running benchmarks in a subprocess. When None (the
             default), timeouts are disabled and kernels run directly without a
             subprocess.
+        flush_l2: Flush L2 before each kernel run. Defaults to True. Set to False
+            to measure without deliberately evicting cached data.
 
 
     Returns:
@@ -262,6 +265,7 @@ def exhaustive_search(
             grid=grid,
             kernel=updated_kernel,
             get_args=lambda _cfg=cfg: args_fn(_cfg),
+            flush_l2=flush_l2,
         )
 
         try:
@@ -350,6 +354,7 @@ class _TimingCandidate(Generic[T]):
     grid: tuple[int, ...]
     kernel: Any
     get_args: Callable[[], tuple[Any, ...]]
+    flush_l2: bool
     num_samples: int = 0
     mean_us: float = 0.0
     m2: float = 0.0
@@ -362,13 +367,15 @@ class _TimingCandidate(Generic[T]):
             if i == 0 and launch_timeout_sec is not None:
                 # First warmup is timed to ensure it doesn't deadlock.
                 benchmark_with_timeout(
-                    stream, self.grid, self.kernel, self.get_args(), launch_timeout_sec)
+                    stream, self.grid, self.kernel, self.get_args(), launch_timeout_sec,
+                    self.flush_l2)
             else:
-                _benchmark(stream, self.grid, self.kernel, self.get_args())
+                _benchmark(stream, self.grid, self.kernel, self.get_args(), self.flush_l2)
 
     def run_benchmark(self, stream, num_times):
         for _ in range(min(num_times, _MAX_REPEATS - self.num_samples)):
-            self._add_sample(_benchmark(stream, self.grid, self.kernel, self.get_args()))
+            self._add_sample(_benchmark(
+                stream, self.grid, self.kernel, self.get_args(), self.flush_l2))
 
     def converged(self) -> bool:
         # Stop if ...

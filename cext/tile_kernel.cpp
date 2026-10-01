@@ -4835,24 +4835,14 @@ static Result<double> benchmark(const DriverApi* driver,
                                 CUcontext ctx,
                                 CUkernel kernel,
                                 unsigned dynamic_smem_bytes,
-                                LaunchHelper& helper) {
+                                LaunchHelper& helper,
+                                bool flush_l2) {
 #define CU_CHECK(name, expr) \
     do { \
         CUresult res = (expr); \
         if (res != CUDA_SUCCESS) \
             return raise(PyExc_RuntimeError, name ": ", get_cuda_error(driver, res)); \
     } while (0)
-
-    CUdevice device;
-    CU_CHECK("cuCtxGetDevice", driver->cuCtxGetDevice(&device));
-
-    // Query L2 cache size for inter-kernel flush
-    int l2_cache_size = 0;
-    CU_CHECK("cuDeviceGetAttribute", driver->cuDeviceGetAttribute(
-             &l2_cache_size, CU_DEVICE_ATTRIBUTE_L2_CACHE_SIZE, device));
-    // In case the returned l2_cache_size is 0, we set it to a small number
-    // so malloc/memset API below will still work.
-    l2_cache_size = std::max(1024, l2_cache_size);
 
     CudaEvent ev_start(driver);
     CU_CHECK("cuEventCreate", ev_start.create());
@@ -4863,45 +4853,59 @@ static Result<double> benchmark(const DriverApi* driver,
     CU_CHECK("cuGraphCreate", graph.create());
 
     // Build graph:
-    //  1. Malloc the L2 flush buffer.
-    //  2. Flush L2 cache using memset.
+    //  1. [If flush_l2] Malloc the L2 flush buffer.
+    //  2. [If flush_l2] Flush L2 cache using memset.
     //  3. Record start event
     //  4. Launch kernel
     //  5. Record end event
-    //  6. Free the L2 flush buffer.
-
-    CUgraphNode malloc_node = nullptr;
+    //  6. [If flush_l2] Free the L2 flush buffer.
 
     CUDA_MEM_ALLOC_NODE_PARAMS malloc_params = {};
-    malloc_params.bytesize = l2_cache_size;
-    malloc_params.poolProps.allocType = CU_MEM_ALLOCATION_TYPE_PINNED;
-    malloc_params.poolProps.handleTypes = CU_MEM_HANDLE_TYPE_NONE;
-    malloc_params.poolProps.location.type = CU_MEM_LOCATION_TYPE_DEVICE;
-    malloc_params.poolProps.location.id = device;
+    CUgraphNode flush_node = nullptr;
+    if (flush_l2) {
+        CUdevice device;
+        CU_CHECK("cuCtxGetDevice", driver->cuCtxGetDevice(&device));
 
-    CU_CHECK("cuGraphAddMemAllocNode",
-             driver->cuGraphAddMemAllocNode(&malloc_node, graph.get(), nullptr, 0, &malloc_params));
+        // Query L2 cache size for inter-kernel flush
+        int l2_cache_size = 0;
+        CU_CHECK("cuDeviceGetAttribute", driver->cuDeviceGetAttribute(
+                 &l2_cache_size, CU_DEVICE_ATTRIBUTE_L2_CACHE_SIZE, device));
+        // In case the returned l2_cache_size is 0, we set it to a small number
+        // so malloc/memset API below will still work.
+        l2_cache_size = std::max(1024, l2_cache_size);
 
-    CUDA_MEMSET_NODE_PARAMS mparams = {};
-    mparams.dst = malloc_params.dptr;
-    mparams.value = 0x5a;
-    mparams.elementSize = 1;
-    mparams.width = l2_cache_size;
-    mparams.height = 1;
-    mparams.pitch = l2_cache_size;
+        CUgraphNode malloc_node = nullptr;
+        malloc_params.bytesize = l2_cache_size;
+        malloc_params.poolProps.allocType = CU_MEM_ALLOCATION_TYPE_PINNED;
+        malloc_params.poolProps.handleTypes = CU_MEM_HANDLE_TYPE_NONE;
+        malloc_params.poolProps.location.type = CU_MEM_LOCATION_TYPE_DEVICE;
+        malloc_params.poolProps.location.id = device;
 
-    CUgraphNode flush_node;
-    CU_CHECK("cuGraphAddMemsetNode",
-             driver->cuGraphAddMemsetNode(
-                     &flush_node, graph.get(),
-                     &malloc_node, 1,
-                     &mparams, ctx));
+        CU_CHECK("cuGraphAddMemAllocNode",
+                 driver->cuGraphAddMemAllocNode(
+                         &malloc_node, graph.get(), nullptr, 0, &malloc_params));
+
+        CUDA_MEMSET_NODE_PARAMS mparams = {};
+        mparams.dst = malloc_params.dptr;
+        mparams.value = 0x5a;
+        mparams.elementSize = 1;
+        mparams.width = l2_cache_size;
+        mparams.height = 1;
+        mparams.pitch = l2_cache_size;
+
+        CU_CHECK("cuGraphAddMemsetNode",
+                 driver->cuGraphAddMemsetNode(
+                         &flush_node, graph.get(),
+                         &malloc_node, 1,
+                         &mparams, ctx));
+    }
 
     CUgraphNode start_node;
     CU_CHECK("cuGraphAddEventRecordNode",
              driver->cuGraphAddEventRecordNode(
                      &start_node, graph.get(),
-                     &flush_node, 1,
+                     flush_l2 ? &flush_node : nullptr,
+                     flush_l2 ? 1 : 0,
                      ev_start.get()));
 
     // Kernel
@@ -4930,10 +4934,12 @@ static Result<double> benchmark(const DriverApi* driver,
                      &end_node, graph.get(), &kernel_node, 1, ev_end.get()));
 
 
-    CUgraphNode free_node;
-    CU_CHECK("cuGraphAddMemFreeNode",
-             driver->cuGraphAddMemFreeNode(
-                 &free_node, graph.get(), &end_node, 1, malloc_params.dptr));
+    if (flush_l2) {
+        CUgraphNode free_node;
+        CU_CHECK("cuGraphAddMemFreeNode",
+                 driver->cuGraphAddMemFreeNode(
+                     &free_node, graph.get(), &end_node, 1, malloc_params.dptr));
+    }
 
     // Launch and synchronize
     CudaGraphExec graph_exec(driver);
@@ -5595,12 +5601,26 @@ static PyObject *launch_extended(PyObject *, PyObject *const *args,
                      /*with_block=*/true);
 }
 
-#define BENCHMARK_SIGNATURE "_benchmark(stream, grid, kernel, pyargs_tuples, /)"
+#define BENCHMARK_SIGNATURE "_benchmark(stream, grid, kernel, pyargs_tuples, flush_l2=True, /)"
 
 static PyObject* cuda_tile_benchmark(PyObject* mod, PyObject* const* args, Py_ssize_t nargs) {
     GlobalLock lock;
+    bool flush_l2;
+    if (nargs == 5) {
+        if (!PyBool_Check(args[4])) {
+            raise(PyExc_TypeError, "flush_l2 must be a bool");
+            return nullptr;
+        }
+        flush_l2 = args[4] == Py_True;
+    } else if (nargs == 4) {
+        flush_l2 = true;
+    } else {
+        raise(PyExc_TypeError, "Wrong number of arguments to ", BENCHMARK_SIGNATURE);
+        return nullptr;
+    }
+
     LaunchArgs launch_args;
-    if (!parse_launch_args(args, nargs, BENCHMARK_SIGNATURE, false, &launch_args, lock))
+    if (!parse_launch_args(args, 4, BENCHMARK_SIGNATURE, false, &launch_args, lock))
         return nullptr;
 
     Result<const DriverApi*> driver = get_driver_api(lock);
@@ -5617,20 +5637,35 @@ static PyObject* cuda_tile_benchmark(PyObject* mod, PyObject* const* args, Py_ss
     Result<double> elapsed_us = benchmark(
             *driver, launch_args.grid, launch_args.stream,
             prep->helper->cuda_context, prep->kernel,
-            prep->dynamic_smem_bytes, *prep->helper);
+            prep->dynamic_smem_bytes, *prep->helper, flush_l2);
     if (!elapsed_us.is_ok()) return nullptr;
 
     return PyFloat_FromDouble(*elapsed_us);
 }
 
 #define EXPORT_IPC_BENCHMARK_PAYLOAD_SIGNATURE \
-    "_export_ipc_benchmark_payload(stream, grid, kernel, pyargs_tuples, /)"
+    "_export_ipc_benchmark_payload(stream, grid, kernel, pyargs_tuples, flush_l2=True, /)"
 
 static PyObject* cuda_tile_export_ipc_benchmark_payload(PyObject*, PyObject* const* args,
                                                         Py_ssize_t nargs) {
     GlobalLock lock;
+    bool flush_l2;
+    if (nargs == 5) {
+        if (!PyBool_Check(args[4])) {
+            raise(PyExc_TypeError, "flush_l2 must be a bool");
+            return nullptr;
+        }
+        flush_l2 = args[4] == Py_True;
+    } else if (nargs == 4) {
+        flush_l2 = true;
+    } else {
+        raise(PyExc_TypeError, "Wrong number of arguments to ",
+              EXPORT_IPC_BENCHMARK_PAYLOAD_SIGNATURE);
+        return nullptr;
+    }
+
     LaunchArgs launch_args;
-    if (!parse_launch_args(args, nargs, EXPORT_IPC_BENCHMARK_PAYLOAD_SIGNATURE, false,
+    if (!parse_launch_args(args, 4, EXPORT_IPC_BENCHMARK_PAYLOAD_SIGNATURE, false,
                            &launch_args, lock))
         return nullptr;
 
@@ -5714,7 +5749,7 @@ static PyObject* cuda_tile_export_ipc_benchmark_payload(PyObject*, PyObject* con
         grid_dims[i] = static_cast<uint32_t>(launch_args.grid.dims[i]);
 
     PyPtr payload = serialize_ipc_benchmark_payload(
-            grid_dims, device_id, prep->dynamic_smem_bytes, helper.arena,
+            grid_dims, device_id, prep->dynamic_smem_bytes, flush_l2, helper.arena,
             helper.cuarg_offsets, helper.list_args, helper.total_list_data_size_words,
             arena_array_ptrs, ipc_pointer_exporter.ipc_mem_handles,
             cubin_data, static_cast<size_t>(cubin_size),
@@ -5823,7 +5858,7 @@ static PyObject* cuda_tile_benchmark_with_ipc_payload(PyObject*, PyObject* const
 
     Result<double> elapsed_us = benchmark(
             *driver, grid, launch_stream, ctx, kernel->kernel, payload.dynamic_smem_bytes,
-            *helper);
+            *helper, payload.flush_l2);
     if (!elapsed_us.is_ok()) return nullptr;
 
     return PyFloat_FromDouble(*elapsed_us);
@@ -5902,7 +5937,7 @@ static PyMethodDef functions[] = {
         BENCHMARK_SIGNATURE "\n"
         "--\n\n"
         "Benchmark a cuTile kernel using CUDA graphs.\n\n"
-        "Returns total elapsed time in microseconds (L2 flush between invocations).\n"
+        "Returns total elapsed time in microseconds.\n"
     },
     {"_export_ipc_benchmark_payload",
         reinterpret_cast<PyCFunction>(cuda_tile_export_ipc_benchmark_payload), METH_FASTCALL,
@@ -5917,7 +5952,7 @@ static PyMethodDef functions[] = {
         "--\n\n"
         "Benchmark a cuTile kernel with a CUDA IPC payload using CUDA graphs.\n"
         "The IPC payload must be generated by _export_ipc_benchmark_payload().\n"
-        "Returns total elapsed time in microseconds (L2 flush between invocations).\n"
+        "Returns total elapsed time in microseconds.\n"
     },
     {}
 };

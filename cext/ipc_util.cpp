@@ -10,7 +10,7 @@
 
 
 static constexpr uint32_t kSerializationHeader = 0x48454144;
-static constexpr uint32_t kSerializationVersion = 1;
+static constexpr uint32_t kSerializationVersion = 2;
 
 namespace {
 
@@ -87,6 +87,7 @@ struct IpcPayloadReader {
 PyPtr serialize_ipc_benchmark_payload(const uint32_t grid_dims[3],
                                       int device_id,
                                       unsigned dynamic_smem_bytes,
+                                      bool flush_l2,
                                       const Arena& arena,
                                       const Vec<ArenaOffset>& cuarg_offsets,
                                       const Vec<ListArg>& list_args,
@@ -104,6 +105,7 @@ PyPtr serialize_ipc_benchmark_payload(const uint32_t grid_dims[3],
         writer.write<uint32_t>(grid_dims[i]);
     writer.write<uint32_t>(static_cast<uint32_t>(device_id));
     writer.write<uint32_t>(static_cast<uint32_t>(dynamic_smem_bytes));
+    writer.write<uint8_t>(flush_l2 ? 1 : 0);
 
     writer.write_vec(arena);
     writer.write_vec(cuarg_offsets);
@@ -144,6 +146,12 @@ Result<IpcBenchmarkPayload> deserialize_ipc_benchmark_payload(const char* data,
     uint32_t dynamic_smem_bytes;
     if (!reader.read("dynamic_smem_bytes", &dynamic_smem_bytes)) return ErrorRaised;
     payload.dynamic_smem_bytes = static_cast<unsigned>(dynamic_smem_bytes);
+
+    uint8_t flush_l2;
+    if (!reader.read("flush_l2", &flush_l2)) return ErrorRaised;
+    if (flush_l2 > 1)
+        return raise(PyExc_ValueError, "Invalid IPC benchmark payload flush_l2 value");
+    payload.flush_l2 = flush_l2 != 0;
 
     if (!reader.read_vec("arena", &helper.arena)) return ErrorRaised;
     if (!reader.read_vec("cuarg_offsets", &helper.cuarg_offsets)) return ErrorRaised;

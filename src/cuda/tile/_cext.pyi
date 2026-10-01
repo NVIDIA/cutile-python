@@ -136,6 +136,7 @@ def _benchmark(stream: int,
                grid: tuple[int] | tuple[int, int] | tuple[int, int, int],
                kernel,
                pyargs_tuples: tuple[tuple[Any, ...], ...],
+               flush_l2: bool = True,
                /) -> float: ...
 
 
@@ -150,6 +151,7 @@ def _export_ipc_benchmark_payload(stream: int,
                                   grid: tuple[int] | tuple[int, int] | tuple[int, int, int],
                                   kernel,
                                   pyargs_tuples: tuple[Any, ...],
+                                  flush_l2: bool = True,
                                   /) -> bytes | None: ...
 
 

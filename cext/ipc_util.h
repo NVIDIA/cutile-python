@@ -31,6 +31,7 @@ struct IpcBenchmarkPayload {
     uint32_t grid_dims[3];
     int device_id;
     unsigned dynamic_smem_bytes;
+    bool flush_l2;
     Vec<IpcArrayPtrPatch> arena_array_ptrs;
     Vec<CUipcMemHandle> ipc_mem_handles;
     Vec<char> cubin;
@@ -149,6 +150,7 @@ struct IpcHandleCreator {
 PyPtr serialize_ipc_benchmark_payload(const uint32_t grid_dims[3],
                                       int device_id,
                                       unsigned dynamic_smem_bytes,
+                                      bool flush_l2,
                                       const Arena& arena,
                                       const Vec<ArenaOffset>& cuarg_offsets,
                                       const Vec<ListArg>& list_args,

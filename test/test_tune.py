@@ -39,7 +39,7 @@ def test_exhaustive_search_returns_best(monkeypatch):
 
     times = {64: 5.0, 128: 1.0, 256: 3.0}
 
-    def fake_benchmark(stream, grid, kernel, pyargs):
+    def fake_benchmark(stream, grid, kernel, pyargs, flush_l2):
         cfg = pyargs[1]
         return times[cfg]
 
@@ -79,7 +79,7 @@ def test_exhaustive_search_skips_slow_configs(monkeypatch):
     }
     sample_counts = {cfg: 0 for cfg in search_space}
 
-    def fake_benchmark(stream, grid, kernel, pyargs):
+    def fake_benchmark(stream, grid, kernel, pyargs, flush_l2):
         cfg = pyargs[1]
         sample_index = min(sample_counts[cfg], len(times[cfg]) - 1)
         sample_counts[cfg] += 1
@@ -132,7 +132,7 @@ def test_skips_failed_configs(monkeypatch):
         256: TileCompilerExecutionError(1, "simulated error", Loc.unknown(), "", None),
     }
 
-    def fake_benchmark(stream, grid, kernel, pyargs):
+    def fake_benchmark(stream, grid, kernel, pyargs, flush_l2):
         cfg = pyargs[1]
         if cfg in failures:
             raise failures[cfg]
@@ -253,7 +253,7 @@ def test_tune_list_of_arrays_ipc(monkeypatch):
         raising=True)
 
     elapsed_us, wall_time_sec = tune_utils.benchmark_with_timeout(
-        torch.cuda.current_stream(), (1,), add_arrays, (arrays, out), 5.0)
+        torch.cuda.current_stream(), (1,), add_arrays, (arrays, out), 5.0, True)
 
     assert elapsed_us >= 0
     assert wall_time_sec is not None
@@ -325,7 +325,7 @@ def test_ipc_export_none_falls_back(monkeypatch):
         tune_utils, "_export_ipc_benchmark_payload", lambda *args: None, raising=True)
     monkeypatch.setattr(tune_utils, "_benchmark", lambda *args: 123, raising=True)
 
-    assert tune_utils.benchmark_with_timeout(None, (1,), None, (), 5.0) == (123, None)
+    assert tune_utils.benchmark_with_timeout(None, (1,), None, (), 5.0, True) == (123, None)
 
 
 def test_ipc_skip_cache_and_recompile_kernel(monkeypatch):
@@ -342,7 +342,7 @@ def test_ipc_skip_cache_and_recompile_kernel(monkeypatch):
         lambda *args: pytest.fail("Should use IPC payload call"),
         raising=True)
     tune_utils.benchmark_with_timeout(
-        stream, (1,), copy_kernel, (x, out, 16), 5.0)
+        stream, (1,), copy_kernel, (x, out, 16), 5.0, True)
     assert_equal(out, x)
 
     out.zero_()
@@ -362,7 +362,7 @@ def test_tune_scalar_only_ipc(monkeypatch):
         lambda *args: pytest.fail("Should use IPC payload call"),
         raising=True)
     elapsed_us, _ = tune_utils.benchmark_with_timeout(
-        torch.cuda.current_stream(), (1,), scalar_only_kernel, (7,), 5.0)
+        torch.cuda.current_stream(), (1,), scalar_only_kernel, (7,), 5.0, True)
     assert elapsed_us >= 0
 
 
@@ -404,3 +404,34 @@ def test_kernel_generated_per_config():
     assert len(result.failures) == 1
     err_cfg, _, _ = result.failures[0]
     assert err_cfg == 0
+
+
+# ========== Test flush_l2 option ==========
+@pytest.mark.parametrize("flush_l2", [True, False])
+def test_exhaustive_search_with_flush_l2(monkeypatch, flush_l2):
+    x = torch.empty((16,), device="cuda:0")
+    direct_flags = []
+    timeout_flags = []
+
+    def fake_benchmark(stream, grid, kernel, pyargs, flag):
+        direct_flags.append(flag)
+        return 1.0
+
+    def fake_benchmark_with_timeout(stream, grid, kernel, pyargs, timeout_sec, flag):
+        timeout_flags.append(flag)
+        return 1.0, 0.001
+
+    monkeypatch.setattr(tune_mod, "_benchmark", fake_benchmark)
+    monkeypatch.setattr(tune_mod, "benchmark_with_timeout", fake_benchmark_with_timeout)
+    monkeypatch.setattr(tune_mod, "_WARM_UP_REPEATS", 2)
+    monkeypatch.setattr(tune_mod, "_BATCH_REPEATS", 2)
+    monkeypatch.setattr(tune_mod, "_MIN_REPEATS", 2)
+
+    kwargs = {} if flush_l2 else {"flush_l2": False}
+    result = exhaustive_search(
+        [16], torch.cuda.current_stream(), lambda cfg: (1,), dummy_kernel,
+        lambda cfg: (x, cfg), quiet=True, single_run_timeout_sec=5.0, **kwargs)
+
+    assert result.best.config == 16
+    assert timeout_flags == [flush_l2]     # 1st warmup
+    assert direct_flags == [flush_l2] * 3  # 2nd warmup + 2 configs
