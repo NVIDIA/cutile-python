@@ -6,6 +6,7 @@ from cuda.tile._ir.arithmetic_ops import binop_propagate_constant
 import operator
 
 from cuda.tile._ir.ir import add_operation_variadic
+from cuda.tile._ir.type import LooselyTypedScalar
 from cuda.tile._ir.ops_utils import promote_dtypes, promote_types
 
 import cuda.lang._datatype as datatype
@@ -44,9 +45,9 @@ from cuda.tile._ir.arithmetic_ops import (
     mod_tensorlike,
     promote_and_broadcast_to,
     unary,
-    where, invert_tensorlike, divmod_tensorlike,
+    where, invert_tensorlike, logical_not_impl, divmod_tensorlike,
 )
-from cuda.tile._ir.core_ops import build_tuple, strictly_typed_const
+from cuda.tile._ir.core_ops import build_tuple, loosely_typed_const, strictly_typed_const
 from cuda.tile._ir.op_impl import (
     ImplRegistry,
     require_constant_bool,
@@ -201,9 +202,14 @@ def math_bitwise_shift_impl(fn: str, x: Var, y: Var):
     return bitwise_shift_tensorlike(fn, x, y)
 
 
-@impl(cl_math.bitwise_not)
-def math_bitwise_not_impl(x: Var):
+@impl(cl_math.bitwise_not, fixed_args=[False])
+@impl(operator.invert, fixed_args=[True], overload=(TensorLikeTy,))
+def math_bitwise_not_impl(use_operator: bool, x: Var):
     require_scalar_or_vector_type(x)
+    if x.get_type().tensor_dtype() == datatype.bool_ and x.is_constant():
+        if use_operator and isinstance(x.get_loose_type(), LooselyTypedScalar):
+            return loosely_typed_const(~int(x.get_constant()))
+        return logical_not_impl(x)
     return invert_tensorlike(x)
 
 

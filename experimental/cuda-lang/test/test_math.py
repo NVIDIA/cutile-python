@@ -1459,6 +1459,65 @@ def test_bitwise_not():
     assert expected.tolist() == output.tolist()
 
 
+@pytest.mark.parametrize("use_operator", (False, True))
+@pytest.mark.parametrize("constant", (False, True))
+@pytest.mark.parametrize("value", (False, True))
+def test_bitwise_not_bool(value, constant, use_operator):
+    @cl.kernel
+    def kernel(inp, out):
+        if constant:
+            x = cl.bool_(value)
+        else:
+            x = inp[0]
+        if use_operator:
+            result = ~x
+        else:
+            result = cl.bitwise_not(x)
+        if not constant:
+            cl.static_assert(result.dtype == cl.bool_)
+        out[0] = result
+
+    inp = torch.tensor([value], dtype=torch.bool, device="cuda:0")
+    out = torch.empty(1, dtype=torch.int32, device="cuda:0")
+    cl.launch(torch.cuda.current_stream(), (1,), (1,), kernel, (inp, out))
+    assert out.item() == (not value)
+
+
+@pytest.mark.parametrize("value", (False, True))
+def test_bitwise_not_untyped_bool_constant(value):
+    @cl.kernel
+    def kernel(out):
+        out[0] = cl.bitwise_not(value)
+
+    out = torch.empty(1, dtype=torch.bool, device="cuda:0")
+    cl.launch(torch.cuda.current_stream(), (1,), (1,), kernel, (out,))
+    assert out.item() == (not value)
+
+
+@pytest.mark.parametrize("value, expected", ((False, -1), (True, -2)))
+def test_invert_untyped_bool_constant(value, expected):
+    @cl.kernel
+    def kernel(out):
+        out[0] = ~value
+
+    out = torch.empty(1, dtype=torch.int32, device="cuda:0")
+    cl.launch(torch.cuda.current_stream(), (1,), (1,), kernel, (out,))
+    assert out.item() == expected
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="dtypes not yet supported in host code",
+)
+@pytest.mark.parametrize("value", (False, True))
+@pytest.mark.parametrize("use_operator", (False, True))
+def test_bitwise_not_bool_host(value, use_operator):
+    x = cl.bool_(value)
+    result = ~x if use_operator else cl.bitwise_not(x)
+    assert result.dtype == cl.bool_
+    assert bool(result) == (not value)
+
+
 @pytest.mark.parametrize("divmod_func", [divmod, cl.divmod])
 def test_divmod(divmod_func):
     @cl.kernel
