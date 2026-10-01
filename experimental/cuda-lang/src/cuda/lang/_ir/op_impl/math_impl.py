@@ -419,6 +419,11 @@ def _math_pow_impl(x: Var, y: Var, approx: Var):
     x_ty, y_ty = x.get_type(), y.get_type()
     base_dt, exp_dt = x_ty.tensor_dtype(), y_ty.tensor_dtype()
 
+    if base_dt == datatype.bool_ or exp_dt == datatype.bool_:
+        raise TypeCheckingError(
+            "pow does not support bool operands; cast bool to int or float"
+        )
+
     # int32 is the only valid integral exponent dtype
     if is_integral(exp_dt):
         exp_dt = datatype.int32

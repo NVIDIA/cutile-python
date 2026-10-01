@@ -265,6 +265,45 @@ def _pow_test_values(dtype):
     return (1.25, 1.5, 1.75, 2.0)
 
 
+@pytest.mark.parametrize("use_operator", (False, True))
+@pytest.mark.parametrize("vector", (False, True))
+@pytest.mark.parametrize(
+    "lhs_dt, rhs_dt",
+    (
+        (cl.bool_, cl.bool_),
+        (cl.bool_, cl.int32),
+        (cl.int32, cl.bool_),
+        (cl.bool_, cl.float32),
+        (cl.float32, cl.bool_),
+    ),
+)
+def test_pow_bool_operands(lhs_dt, rhs_dt, vector, use_operator):
+    def kernel(lhs, rhs, out):
+        if vector:
+            x = lhs.pointer().load(count=2)
+            y = rhs.pointer().load(count=2)
+        else:
+            x = lhs[0]
+            y = rhs[0]
+        if use_operator:
+            result = x ** y
+        else:
+            result = cl.pow(x, y)
+        if vector:
+            out.pointer().store(result)
+        else:
+            out[0] = result
+
+    lhs = make_symbolic_tensor([2], lhs_dt)
+    rhs = make_symbolic_tensor([2], rhs_dt)
+    out = make_symbolic_tensor([2], cl.float32)
+    compile_kernel(
+        kernel,
+        signature=KernelSignature([lhs, rhs, out]),
+        raises=pytest.raises(TypeCheckingError, match="pow does not support bool operands"),
+    )
+
+
 @pytest.mark.parametrize(
     "lhs_dt, rhs_dt, result_dt",
     (
