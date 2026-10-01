@@ -8,6 +8,7 @@
 
 #include "py.h"
 #include <cuda.h>
+#include <optional>
 
 #define FOREACH_CUDA_FUNCTION_TO_LOAD(X) \
     X(cuInit, "cuInit", 2000) \
@@ -59,6 +60,7 @@
     X(cuGraphDestroy, "cuGraphDestroy", 10000) \
     X(cuGraphAddEventRecordNode, "cuGraphAddEventRecordNode", 11010) \
     X(cuGraphAddKernelNode, "cuGraphAddKernelNode", 12000) \
+    X(cuGraphKernelNodeSetAttribute, "cuGraphKernelNodeSetAttribute", 11000) \
     X(cuGraphAddMemsetNode, "cuGraphAddMemsetNode", 10000) \
     X(cuGraphAddMemAllocNode, "cuGraphAddMemAllocNode", 11040) \
     X(cuGraphAddMemFreeNode, "cuGraphAddMemFreeNode", 11040) \
@@ -73,6 +75,9 @@
 
 struct DriverApi {
     FOREACH_CUDA_FUNCTION_TO_LOAD(DECLARE_CUDA_FUNC_EXTERN)
+    int cuda_version;
+
+    std::optional<CUlaunchAttribute> get_shared_memory_mode_attribute() const;
 };
 
 

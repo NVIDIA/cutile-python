@@ -16,14 +16,9 @@ const char* get_cuda_error(const DriverApi* driver, CUresult res) {
 }
 
 Status check_driver_version(const DriverApi* driver, int minimum_version) {
-    int version;
-    CUresult res = driver->cuDriverGetVersion(&version);
-    if (res != CUDA_SUCCESS) {
-        return raise(PyExc_RuntimeError, "cuDriverGetVersion: ", get_cuda_error(driver, res));
-    }
-    if (version < minimum_version) {
-        int major = version / 1000;
-        int minor = (version % 1000) / 10;
+    if (driver->cuda_version < minimum_version) {
+        int major = driver->cuda_version / 1000;
+        int minor = (driver->cuda_version % 1000) / 10;
         int required_major = minimum_version / 1000;
         return raise(PyExc_RuntimeError,
                      "Minimum driver version required is ", required_major, ".0, got ",
@@ -135,20 +130,12 @@ PyObject* get_compute_capability(PyObject *self, PyObject *args) {
 }
 
 PyObject* get_driver_version(PyObject *self, PyObject *Py_UNUSED(ignored)) {
-    int major, minor;
-
     GlobalLock lock;
     Result<const DriverApi*> driver_result = get_driver_api(lock);
     if (!driver_result.is_ok()) return nullptr;
-    const DriverApi* d = *driver_result;
-
-    CUresult res = d->cuDriverGetVersion(&major);
-    if (res != CUDA_SUCCESS) {
-        raise(PyExc_RuntimeError, "cuDriverGetVersion: ", get_cuda_error(d, res));
-        return nullptr;
-    }
-    minor = (major % 1000) / 10;
-    major = major / 1000;
+    int version = (*driver_result)->cuda_version;
+    int major = version / 1000;
+    int minor = (version % 1000) / 10;
     return Py_BuildValue("(ii)", major, minor);
 }
 

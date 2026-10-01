@@ -4822,6 +4822,11 @@ static Result<double> benchmark(const DriverApi* driver,
     CUgraphNode kernel_node;
     CU_CHECK("cuGraphAddKernelNode",
              driver->cuGraphAddKernelNode(&kernel_node, graph.get(), &start_node, 1, &kparams));
+    if (auto attribute = driver->get_shared_memory_mode_attribute()) {
+        CU_CHECK("cuGraphKernelNodeSetAttribute",
+                 driver->cuGraphKernelNodeSetAttribute(
+                         kernel_node, attribute->id, &attribute->value));
+    }
 
     // Event: end of kernel
     CUgraphNode end_node;
@@ -5293,18 +5298,21 @@ struct LaunchArgs {
 };
 
 
-static Result<unsigned> parse_tile_launch_kwargs(PyObject *const *args,
+static Result<unsigned> parse_tile_launch_kwargs(const DriverApi* driver,
+                                                 PyObject *const *args,
                                                  Py_ssize_t nargs, PyObject *kwargs,
                                                  CUlaunchAttribute launch_attrs[kMaxCUlaunchAttrs]
                                                 ) {
+    size_t num_attrs = 0;
+    if (auto attribute = driver->get_shared_memory_mode_attribute())
+        launch_attrs[num_attrs++] = *attribute;
     if (kwargs == nullptr)
-        return 0;
+        return num_attrs;
 
     CHECK(PyTuple_Check(kwargs) &&
           "Keyword argument tuple is nonnull and not a tuple");
 
     const auto nkwargs = PyTuple_GET_SIZE(kwargs);
-    size_t num_attrs = 0;
 
     for (Py_ssize_t i = 0; i < nkwargs; i++) {
         PyObject *keyword = PyTuple_GET_ITEM(kwargs, i);
@@ -5315,6 +5323,7 @@ static Result<unsigned> parse_tile_launch_kwargs(PyObject *const *args,
             if (!PyBool_Check(kwarg))
                 return raise(PyExc_TypeError,
                              "expected argument ", keyword, " to have type bool");
+            CHECK(num_attrs < kMaxCUlaunchAttrs);
             CUlaunchAttribute *attr = &launch_attrs[num_attrs++];
             attr->id = CU_LAUNCH_ATTRIBUTE_PROGRAMMATIC_STREAM_SERIALIZATION;
             attr->value.programmaticStreamSerializationAllowed = Py_IsTrue(kwarg);
@@ -5458,15 +5467,15 @@ static PyObject* launch_impl(PyObject* const* args, Py_ssize_t nargs,
 
     CUlaunchAttribute launch_attrs[kMaxCUlaunchAttrs];
 
+    Result<const DriverApi*> driver = get_driver_api(lock);
+    if (!driver.is_ok()) return nullptr;
+
     const auto num_attrs = with_block
                            ? parse_lang_launch_kwargs(args, nargs, kwargs, launch_attrs)
-                           : parse_tile_launch_kwargs(args, nargs, kwargs, launch_attrs);
+                           : parse_tile_launch_kwargs(*driver, args, nargs, kwargs, launch_attrs);
 
     if (!num_attrs.is_ok())
         return nullptr;
-
-    Result<const DriverApi*> driver = get_driver_api(lock);
-    if (!driver.is_ok()) return nullptr;
 
     if (!launch(*driver, launch_args.dispatcher, launch_args.grid,
                 launch_args.block, launch_args.stream, launch_attrs, *num_attrs,
