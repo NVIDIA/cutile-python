@@ -202,23 +202,17 @@ PyObject* destroy_stream(PyObject* self, PyObject* arg) {
     Py_RETURN_NONE;
 }
 
-static decltype(cuLaunchKernelEx)* g_real_cuLaunchKernelEx; // Protected by the GIL or g_spy_mutex
-static PyObject* g_cuLaunchKernelEx_spy_callback; // Protected by the GIL or g_spy_mutex
-
-#ifdef Py_GIL_DISABLED
-static PyMutex g_spy_mutex = {0};
-#endif
+static ProtectedByGlobalLock<decltype(cuLaunchKernelEx)*> g_real_cuLaunchKernelEx;
+static ProtectedByGlobalLock<PyObject*> g_cuLaunchKernelEx_spy_callback;
 
 static CUresult shim_cuLaunchKernelEx(
         const CUlaunchConfig *config,
         CUfunction f,
         void** kernelParams,
         void** extra) {
-#ifdef Py_GIL_DISABLED
-    PyCriticalSectionGuard guard(&g_spy_mutex);
-#endif
+    GlobalLock lock;
     PyPtr res = steal(PyObject_CallFunction(
-            g_cuLaunchKernelEx_spy_callback,
+            g_cuLaunchKernelEx_spy_callback.get(lock),
             "(K III III I K)",
             reinterpret_cast<unsigned long long>(f),
             config->gridDimX, config->gridDimY, config->gridDimZ,
@@ -228,13 +222,13 @@ static CUresult shim_cuLaunchKernelEx(
     ));
     if (!res) return CUDA_ERROR_LAUNCH_FAILED;
 
-    return g_real_cuLaunchKernelEx(config, f, kernelParams, extra);
+    return g_real_cuLaunchKernelEx.get(lock)(config, f, kernelParams, extra);
 }
 
 static PyObject* spy_on_cuLaunchKernel_begin(PyObject* self, PyObject* arg) {
     GlobalLock lock;
 
-    if (g_real_cuLaunchKernelEx) {
+    if (g_real_cuLaunchKernelEx.get(lock)) {
         raise(PyExc_RuntimeError, "Already spying");
         return nullptr;
     }
@@ -243,8 +237,8 @@ static PyObject* spy_on_cuLaunchKernel_begin(PyObject* self, PyObject* arg) {
     if (!driver_result.is_ok()) return nullptr;
 
     DriverApi* api = const_cast<DriverApi*>(*driver_result);
-    g_real_cuLaunchKernelEx = api->cuLaunchKernelEx;
-    g_cuLaunchKernelEx_spy_callback = Py_NewRef(arg);
+    g_real_cuLaunchKernelEx.get(lock) = api->cuLaunchKernelEx;
+    g_cuLaunchKernelEx_spy_callback.get(lock) = Py_NewRef(arg);
     api->cuLaunchKernelEx = shim_cuLaunchKernelEx;
     return Py_NewRef(Py_None);
 }
@@ -252,7 +246,7 @@ static PyObject* spy_on_cuLaunchKernel_begin(PyObject* self, PyObject* arg) {
 static PyObject* spy_on_cuLaunchKernel_end(PyObject* self, PyObject* arg) {
     GlobalLock lock;
 
-    if (!g_real_cuLaunchKernelEx) {
+    if (!g_real_cuLaunchKernelEx.get(lock)) {
         raise(PyExc_RuntimeError, "Not spying");
         return nullptr;
     }
@@ -261,9 +255,9 @@ static PyObject* spy_on_cuLaunchKernel_end(PyObject* self, PyObject* arg) {
     if (!driver_result.is_ok()) return nullptr;
 
     DriverApi* api = const_cast<DriverApi*>(*driver_result);
-    api->cuLaunchKernelEx = g_real_cuLaunchKernelEx;
-    g_real_cuLaunchKernelEx = nullptr;
-    Py_CLEAR(g_cuLaunchKernelEx_spy_callback);
+    api->cuLaunchKernelEx = g_real_cuLaunchKernelEx.get(lock);
+    g_real_cuLaunchKernelEx.get(lock) = nullptr;
+    Py_CLEAR(g_cuLaunchKernelEx_spy_callback.get(lock));
     return Py_NewRef(Py_None);
 }
 
