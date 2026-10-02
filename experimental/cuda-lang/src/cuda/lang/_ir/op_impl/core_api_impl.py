@@ -118,9 +118,9 @@ def reinterpret_as_scalar(x: Var[VectorTy], dtype: datatype.DType):
     """Reinterpret a whole vector's bits as a single scalar of ``dtype``, whose
     bitwidth must equal the vector's total bitwidth. Bytes are packed
     little-endian."""
-    if datatype.is_pointer_dtype(dtype):
+    if not datatype.is_numeric(dtype):
         raise TypeCheckingError(
-            "reinterpret_as_scalar only accepts a scalar dtype."
+            "reinterpret_as_scalar only accepts a numeric dtype."
         )
     return reinterpret_to(x, ScalarTy(dtype))
 

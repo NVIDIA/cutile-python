@@ -29,6 +29,7 @@ from cuda.tile._ir.arithmetic_ops import (
     binary_arithmetic_tensorlike,
     binary_arithmetic_tensorlike_raw,
     RawBinaryArithmeticOperation,
+    RawFPowIOperation,
     RawComparisonOperation,
     RawBinaryBitwiseOperation,
     RawBitwiseShiftOperation,
@@ -128,11 +129,13 @@ from .type import (
     Type,
     ArrayTy,
     ScalarTy,
+    OpaqueTy,
     PointerTy,
     VectorTy,
     DTypeSpec,
     SliceValue,
     SliceType,
+    make_rank0_ty,
 )
 
 from .ir import (
@@ -211,7 +214,7 @@ impl = cuda_lang_impl_registry.impl
 @impl(core_api.dtype_of)
 def dtype_of_impl(value: Var):
     ty = value.get_type()
-    if isinstance(ty, (ScalarTy, PointerTy, VectorTy)):
+    if isinstance(ty, (ScalarTy, PointerTy, VectorTy, OpaqueTy)):
         dtype = ty.tensor_dtype()
     else:
         raise TypeCheckingError(
@@ -864,7 +867,7 @@ def tensor_map_tiled_impl(
     l2_promotion = require_constant_enum(l2_promotion, TensorMapL2Promotion)
     oob_fill = require_constant_enum(oob_fill, TensorMapFloatOOBFill)
     data_type = _tensor_map_data_type(array_ty.dtype)
-    map_ty = (ScalarTy(datatype.tensor_map_descriptor)
+    map_ty = (OpaqueTy(datatype.tensor_map_descriptor)
               if array.ctx.execution_space == "host"
               else PointerTy(datatype.pointer_dtype(datatype.tensor_map_descriptor)))
     return add_operation(CreateTensorMap, map_ty,
@@ -955,10 +958,8 @@ def require_constant_result_dtype(dtype: Var) -> Type:
         raise TypeCheckingError(f"Expected a dtype constructor but got {dtype}")
 
     const_dtype = dtype.get_constant()
-    if datatype.is_pointer_dtype(const_dtype):
-        return PointerTy(const_dtype)
-    elif isinstance(const_dtype, datatype.DType):
-        return ScalarTy(const_dtype)
+    if isinstance(const_dtype, datatype.DType):
+        return make_rank0_ty(const_dtype)
     else:
         raise TypeCheckingError(f"Expected a type spec but got {dtype}")
 
@@ -1010,6 +1011,7 @@ __all__ = (
     "MakeDummy",
     "Return",
     "RawBinaryArithmeticOperation",
+    "RawFPowIOperation",
     "RawBinaryBitwiseOperation",
     "RawBitwiseShiftOperation",
     "RawComparisonOperation",

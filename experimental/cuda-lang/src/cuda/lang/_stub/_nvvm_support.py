@@ -11,7 +11,7 @@ from typing import Callable, Any, Annotated, NamedTuple, Sequence
 
 from cuda.lang._execution import stub
 from cuda.lang._ir.op_defs import call_intrinsic
-from cuda.lang._ir.type import PointerTy, ScalarTy, VectorTy, make_rank0_ty
+from cuda.lang._ir.type import OpaqueTy, PointerTy, ScalarTy, VectorTy, make_rank0_ty
 from cuda.lang._ir.type_checking_helpers import require_vector_type, require_scalar_or_vector_type
 from cuda.lang._exception import TypeCheckingError, InvalidValueError
 from cuda.lang._passes.ir2llvm import DIRECTLY_SUPPORTED_FLOATS
@@ -198,7 +198,7 @@ def mangle_intrinsic_name(intrinsic_name: str, operand_types: Sequence[Type | No
 
 
 def _mangle_type_name(ty: Type) -> str:
-    if isinstance(ty, PointerTy | ScalarTy):
+    if isinstance(ty, PointerTy | ScalarTy | OpaqueTy):
         return _mangle_dtype_name(ty.tensor_dtype())
     elif isinstance(ty, VectorTy):
         return f"v{ty.length}" + _mangle_dtype_name(ty.element_dtype)

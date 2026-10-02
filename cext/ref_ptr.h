@@ -11,21 +11,60 @@
 #include "check.h"
 #include "hash_map.h"
 
+#if defined(Py_GIL_DISABLED) && defined(_MSC_VER)
+#include <atomic>
+#endif
+
+
+// A reference count that starts at 1. In a free-threaded build, it is updated atomically.
+struct ReferenceCounter {
+    ReferenceCounter() = default;
+
+    ReferenceCounter(const ReferenceCounter&) = delete;
+    void operator=(const ReferenceCounter&) = delete;
+
+    void increment() {
+#if !defined(Py_GIL_DISABLED)
+        ++count_;
+#elif defined(_MSC_VER)
+        std::atomic_ref<size_t>(count_).fetch_add(1, std::memory_order_relaxed);
+#else
+        __atomic_fetch_add(&count_, 1, __ATOMIC_RELAXED);
+#endif
+    }
+
+    // Returns true if the count has dropped to zero
+    [[nodiscard]] bool decrement() {
+#if !defined(Py_GIL_DISABLED)
+        size_t old = count_--;
+#elif defined(_MSC_VER)
+        size_t old = std::atomic_ref<size_t>(count_).fetch_sub(1, std::memory_order_acq_rel);
+#else
+        size_t old = __atomic_fetch_sub(&count_, 1, __ATOMIC_ACQ_REL);
+#endif
+        CHECK(old);
+        return old == 1;
+    }
+
+    // Once decrement() has returned true, the count is no longer needed,
+    // and its storage can be reused, e.g. for an intrusive linked list
+    size_t count_ = 1;
+};
+
 
 template <typename Derived>  // curiously recurring template
 struct SimpleRefcount {
-    size_t refcount = 1;
+    ReferenceCounter refcount;
 };
 
 template <typename T>
 void reference_add(SimpleRefcount<T>& obj) {
-    ++obj.refcount;
+    obj.refcount.increment();
 }
 
 template <typename T>
 void reference_remove(SimpleRefcount<T>& obj) {
-    CHECK(obj.refcount);
-    if (!--obj.refcount) delete static_cast<T*>(&obj);
+    if (obj.refcount.decrement()) delete static_cast<T*>(&obj);
 }
 
 
@@ -72,12 +111,7 @@ public:
 
     template <typename T2>
     RefPtr& operator= (RefPtr<T2>&& that) {
-        if (this != &that) {
-            if (ptr_) reference_remove(*ptr_);
-            ptr_ = that.ptr_;
-            that.ptr_ = nullptr;
-        }
-        return *this;
+        return (*this = RefPtr(std::move(that)));
     }
 
     T& operator* () const {

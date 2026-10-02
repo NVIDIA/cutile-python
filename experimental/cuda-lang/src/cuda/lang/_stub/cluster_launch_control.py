@@ -6,17 +6,15 @@ from .core_api import Pointer
 from cuda.lang._datatype import (
     bool_,
     cluster_launch_control_token,
-    mbarrier,
     int32,
 )
-from cuda.tile._memory_model import MemorySpace
 from cuda.lang._execution import stub
 
 
 @stub
 def cluster_launch_control_try_cancel(
-    addr: "Pointer[cluster_launch_control_token, MemorySpace.SHARED]",
-    mbar: "Pointer[mbarrier, MemorySpace.SHARED]",
+    addr: Pointer,
+    mbar: Pointer,
     multicast: bool = False,
 ) -> None:
     """Try to cancel a pending block and write the response token to ``addr``.

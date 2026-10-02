@@ -16,7 +16,8 @@ from cuda.tile._stub import (
 from cuda.lang._enums import AtomicOp, MemoryOrder, ShuffleKind
 from cuda.tile._memory_model import MemoryScope, MemorySpace
 from cuda.lang._datatype import DType, uint32, uint64
-from .types import Pointer, Scalar, Vector
+from .types import OpaqueValue, Pointer, Scalar, Vector
+from cuda.tile._cext import _tensor_to_ir_var
 
 T = TypeVar("T")
 
@@ -61,7 +62,7 @@ class Array(TileArray, Generic[T]):
     @staticmethod
     @stub(compiled_host=True)
     def from_parts(
-        pointer: Pointer[T],
+        pointer: Pointer,
         shape: int | tuple[int, ...],
         strides: int | tuple[int, ...] | None = None,
     ) -> "Array[T]":
@@ -118,7 +119,7 @@ class Array(TileArray, Generic[T]):
     @stub(compiled_host=True)
     def pointer(
         self, index_or_indices: int | tuple[int, ...] | None = None
-    ) -> "Pointer[T]":
+    ) -> "Pointer":
         """Return a pointer to an array element.
 
         With no index, return a pointer to the first element. With a scalar
@@ -149,8 +150,8 @@ def dtype_of(value, /) -> DType:
     """
     Returns the data type of a scalar, pointer, or vector value.
     """
-    if isinstance(value, Scalar | Pointer | Vector):
-        return value._var.get_type().tensor_dtype()
+    if isinstance(value, Scalar | Pointer | Vector | OpaqueValue):
+        return _tensor_to_ir_var(value).get_type().tensor_dtype()
     elif isinstance(value, bool | int | float):
         from cuda.tile._ir.typing_support import dtype_of_constant_scalar
         return dtype_of_constant_scalar(value)
@@ -548,7 +549,7 @@ def clock(dtype=uint32):
 @stub
 def atomic_rmw(
     op: AtomicOp,
-    ptr: Pointer[T],
+    ptr: Pointer,
     operand: T,
     operand2: T | None = None,
     /,
@@ -628,7 +629,7 @@ def shuffle_sync(
 
 
 @stub
-def address_space_cast(value: Pointer[T], memory_space: MemorySpace) -> Pointer[T]:
+def address_space_cast(value: Pointer, memory_space: MemorySpace) -> Pointer:
     """Cast a pointer to the given memory space, preserving dtype.
 
     Args:
@@ -646,7 +647,7 @@ def address_space_cast(value: Pointer[T], memory_space: MemorySpace) -> Pointer[
 
 
 @stub
-def map_shared_to_cluster(pointer: Pointer[T], rank: int) -> Pointer[T]:
+def map_shared_to_cluster(pointer: Pointer, rank: int) -> Pointer:
     """
     Map a pointer in shared memory from another CTA within the same cluster
     with rank ``rank`` to this CTA.
@@ -674,7 +675,7 @@ def shared_cluster_leader_bit_mask() -> int:
 
 
 @stub
-def map_shared_to_block_pair_leader(pointer: Pointer[T]) -> Pointer[T]:
+def map_shared_to_block_pair_leader(pointer: Pointer) -> Pointer:
     """
     Map a shared-memory pointer to the same offset in the leader block of its
     two-block group while preserving the pointer type.

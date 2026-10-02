@@ -378,3 +378,25 @@ def test_comparison_bool_value(op, lhs, rhs, expect):
     out = torch.zeros(1, dtype=torch.int8).cuda(0)
     cl.launch(torch.cuda.current_stream(), (2,), (2,), kernel, (out, inp))
     assert out.cpu().item() == expect
+
+
+@pytest.mark.parametrize(
+    "operation, reference",
+    [
+        (cl.wrapping_add, operator.add),
+        (cl.wrapping_sub, operator.sub),
+        (cl.wrapping_mul, operator.mul),
+    ],
+)
+def test_wrapping_arithmetic(operation, reference):
+    @cl.kernel
+    def kernel(inp, out):
+        out[0] = operation(inp[0], inp[1])
+        v = inp.pointer().load(count=2)
+        out.pointer(2).store(operation(v, 110))
+
+    inp = torch.tensor([150, 110], dtype=torch.uint8, device="cuda:0")
+    out = torch.zeros(4, dtype=torch.uint8, device="cuda:0")
+    cl.launch(torch.cuda.current_stream(), (1,), (1,), kernel, (inp, out))
+    expected = [reference(150, 110), 0, reference(150, 110), reference(110, 110)]
+    assert out.tolist() == [x % 256 for x in expected]

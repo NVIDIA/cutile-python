@@ -29,10 +29,17 @@ class DispatchMode:
     def call_tile_function_from_host(self, func, args, kwargs):
         raise NotImplementedError()
 
+    def unsupported_call_message(self, what: str) -> str:
+        """Explains why `what` (e.g. "Tile.extract()") can't be evaluated in this mode."""
+        raise NotImplementedError()
+
 
 class NormalMode(DispatchMode):
     def call_tile_function_from_host(self, func, args, kwargs):
         raise RuntimeError("Device functions can only be called from device code.")
+
+    def unsupported_call_message(self, what: str) -> str:
+        return f"{what} is only supported in device code"
 
 
 class StaticEvalMode(DispatchMode):
@@ -66,6 +73,9 @@ class StaticEvalMode(DispatchMode):
 
         where = self._kind._value_
         raise TileStaticEvalError(f"{what} inside {where}.")
+
+    def unsupported_call_message(self, what: str) -> str:
+        return f"{what} cannot be used inside {self._kind._value_}"
 
 
 class _CurrentModeTL(threading.local):

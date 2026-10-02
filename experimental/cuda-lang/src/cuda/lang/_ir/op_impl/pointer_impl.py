@@ -12,6 +12,7 @@ from cuda.lang._ir.type import (
     ArrayTy,
     ArrayValue,
     MemorySpace,
+    OpaqueTy,
     PointerInfoTy,
     PointerTy,
     ScalarTy,
@@ -236,8 +237,7 @@ def pointer_getitem(object: Var[PointerTy], key: Var[Type]):
 
 
 def _require_tensor_map_descriptor_value(value: Var) -> None:
-    value_ty = require_scalar_type(value)
-    if value_ty.dtype is not datatype.tensor_map_descriptor:
+    if value.get_type() != OpaqueTy(datatype.tensor_map_descriptor):
         raise TypeCheckingError(
             "Tensor-map descriptor stores require a tensor_map_descriptor value"
         )
@@ -596,6 +596,11 @@ def pointer_opaque_impl(object: Var[PointerTy], name: Var):
     return loosely_typed_const(object.get_type().opaque)
 
 
+@impl(getattr, overload=(PointerTy, "pointer_dtype"))
+def pointer_pointer_dtype_impl(object: Var[PointerTy], name: Var):
+    return loosely_typed_const(object.get_type().pointer_dtype)
+
+
 @impl(getattr, overload=(PointerTy, "pointee_dtype"))
 def pointer_pointee_dtype_impl(object: Var[PointerTy], name: Var):
     ty = object.get_type()
@@ -617,6 +622,28 @@ def getattr_pointer_method(object: Var, name: Var):
     name = require_constant_str(name)
     unbound_func = getattr(Pointer, name)
     return bind_method(object, unbound_func)
+
+
+@impl(Pointer.load)
+def pointer_method_load(self: Var, count: Var, alignment: Var) -> Var:
+    return pointer_load(self, count, alignment)
+
+
+@impl(Pointer.store)
+def pointer_method_store(self: Var, value: Var, alignment: Var) -> None:
+    return pointer_store(self, value, alignment)
+
+
+@impl(Pointer.atomic_load)
+def pointer_method_atomic_load(self: Var, memory_order: Var, memory_scope: Var, mmio: Var,
+                               alignment: Var) -> Var:
+    return pointer_atomic_load(self, memory_order, memory_scope, mmio, alignment)
+
+
+@impl(Pointer.atomic_store)
+def pointer_method_atomic_store(self: Var, value: Var, memory_order: Var, memory_scope: Var,
+                                mmio: Var, alignment: Var) -> None:
+    return pointer_atomic_store(self, value, memory_order, memory_scope, mmio, alignment)
 
 
 @impl(core_api.address_space_cast)

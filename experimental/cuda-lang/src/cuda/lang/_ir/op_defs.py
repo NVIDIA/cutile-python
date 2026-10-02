@@ -208,7 +208,6 @@ class MathBinaryOperation(Operation, opcode="math_binary"):
     fn: str = attribute()
     lhs: Var = operand()
     rhs: Var = operand()
-    approx: bool = attribute(default=False)
     propagate_nan: bool = attribute(default=False)
 
 

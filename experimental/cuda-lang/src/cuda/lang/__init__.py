@@ -53,6 +53,9 @@ from ._stub.math import (
     add,
     sub,
     mul,
+    wrapping_add,
+    wrapping_sub,
+    wrapping_mul,
     fma,
     truediv,
     floordiv,
@@ -108,6 +111,7 @@ from ._stub.types import (
     Scalar,
     Vector,
     Pointer,
+    OpaqueValue,
 )
 from ._enums import VectorReduction
 from ._stub.copy_async import (
@@ -376,6 +380,7 @@ __all__ = (
     "Pointer",
     "Scalar",
     "Vector",
+    "OpaqueValue",
     "VectorReduction",
     "MemorySpace",
     "MemoryScope",
@@ -486,6 +491,9 @@ __all__ = (
     "add",
     "sub",
     "mul",
+    "wrapping_add",
+    "wrapping_sub",
+    "wrapping_mul",
     "fma",
     "truediv",
     "floordiv",

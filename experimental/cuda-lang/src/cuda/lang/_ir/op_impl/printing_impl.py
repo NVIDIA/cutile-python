@@ -20,9 +20,9 @@ from cuda.tile._passes.hir2ir import call_function
 
 from ..ir import Var, add_operation
 from ..op_defs import BitCast
-from ..type import PointerTy, ScalarTy, VectorTy, type_bitwidth
+from ..type import OpaqueTy, PointerTy, ScalarTy, VectorTy, type_bitwidth
 from .core_api_impl import bitcast
-from .vector_impl import vector_getitem
+from .vector_impl import vector_getitem_raw
 
 
 _registry = ImplRegistry()
@@ -40,7 +40,7 @@ async def repr_vector(x: Var[VectorTy]):
     separator = ""
     for index in range(vector_type.length):
         builder.append_literal_piece(separator)
-        item = vector_getitem(x, loosely_typed_const(index))
+        item = vector_getitem_raw(x, loosely_typed_const(index))
         item_repr = await call_function(builtins.repr, item)
         builder.append_string_var(item_repr)
         separator = ", "
@@ -65,7 +65,7 @@ def to_uint32_words(x: Var[ScalarTy | PointerTy]) -> tuple[Var[ScalarTy], ...]:
         x=x,
     )
     return tuple(
-        vector_getitem(words, loosely_typed_const(index)) for index in range(word_count)
+        vector_getitem_raw(words, loosely_typed_const(index)) for index in range(word_count)
     )
 
 
@@ -87,7 +87,7 @@ async def repr_tensorlike_impl(x: Var[TensorLikeTy]):
         return await repr_vector(x)
     if isinstance(value_type, PointerTy):
         return format_hex_le(x)
-    if isinstance(value_type, ScalarTy) and value_type.dtype is datatype.mbarrier:
+    if isinstance(value_type, OpaqueTy) and value_type.dtype is datatype.mbarrier:
         return format_hex_le(x)
     return tile_repr_tensorlike_impl(x)
 
@@ -113,7 +113,7 @@ async def build_formatted_string_impl(
         value = formatted_values[piece.value_idx]
         value_type = value.get_type()
 
-        if isinstance(value_type, VectorTy | PointerTy | ScalarTy):
+        if isinstance(value_type, VectorTy | PointerTy | ScalarTy | OpaqueTy):
             formatted_values[piece.value_idx] = await call_function(str, value)
 
     return await tile_build_formatted_string(

@@ -30,7 +30,7 @@ from cuda.lang._exception import CompilerExecutionError, TypeCheckingError
 from cuda.lang._ir import ir
 from cuda.lang._ir.op_defs import KernelLaunch
 from cuda.lang._ir.ops import cuda_lang_impl_registry
-from cuda.lang._ir.type import PointerTy, ScalarTy
+from cuda.lang._ir.type import OpaqueTy, PointerTy, ScalarTy
 from cuda.lang._passes.ast2hir import get_function_hir
 from cuda.lang._passes.flatten_cfg import flatten_cfg
 from cuda.lang._passes.ir2mlir.host import HostIR2MLIR, _KernelLaunchBinding
@@ -172,7 +172,7 @@ def _make_fake_launch_argument(
         sources.append(argument)
         return _fake_pointer(argument_type.pointer_dtype)
 
-    if isinstance(argument_type, ScalarTy):
+    if isinstance(argument_type, ScalarTy | OpaqueTy):
         sources.append(argument)
         return _fake_scalar(argument_type.dtype)
 

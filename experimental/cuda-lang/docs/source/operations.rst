@@ -133,6 +133,9 @@ Math
     add
     sub
     mul
+    wrapping_add
+    wrapping_sub
+    wrapping_mul
     fma
     truediv
     floordiv

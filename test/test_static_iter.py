@@ -172,7 +172,7 @@ def test_static_iter_dynamic_bound():
     x = torch.zeros((10,), dtype=torch.int32, device="cuda:0")
     with pytest.raises(ct.TileStaticEvalError,
                        match=re.escape("Symbolic tile has no concrete value"
-                                       " and thus cannot be converted to an integer")):
+                                       " and thus cannot be used as index")):
         ct.launch(torch.cuda.current_stream(), (1,), kernel, (x, 3))
 
 

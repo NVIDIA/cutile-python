@@ -61,6 +61,8 @@ add_library(_cext_static STATIC
     cuda_loader.cpp
     cuda_helper.cpp
     dtype.cpp
+    enums.cpp
+    error.cpp
     ipc_util.cpp
     memory.cpp
     py.cpp
@@ -68,12 +70,26 @@ add_library(_cext_static STATIC
     stream_buffer.cpp
     tensor_map.cpp
     tile_kernel.cpp
+    value.cpp
     xla_ffi.cpp
     xla_ffi_py.cpp
     )
 
+# Docstrings of the types defined in value.cpp, generated from their stubs in _cext.pyi
+set(cext_pyi ${CMAKE_SOURCE_DIR}/src/cuda/tile/_cext.pyi)
+set(cext_generated_dir ${CMAKE_CURRENT_BINARY_DIR}/generated)
+add_custom_command(
+    OUTPUT ${cext_generated_dir}/cext_docstrings.h
+    COMMAND ${CMAKE_COMMAND} -E make_directory ${cext_generated_dir}
+    COMMAND ${Python_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/gen_docstrings.py
+            ${cext_pyi} ${cext_generated_dir}/cext_docstrings.h
+    DEPENDS ${cext_pyi} ${CMAKE_CURRENT_SOURCE_DIR}/gen_docstrings.py
+    COMMENT "Generating cext_docstrings.h from _cext.pyi"
+)
+target_sources(_cext_static PRIVATE ${cext_generated_dir}/cext_docstrings.h)
+
 target_compile_options(_cext_static PUBLIC ${cext_compile_flags} ${nostdlib_flags})
-target_include_directories(_cext_static PRIVATE ${cext_include_dirs})
+target_include_directories(_cext_static PRIVATE ${cext_include_dirs} ${cext_generated_dir})
 target_link_options(_cext_static PUBLIC ${cext_link_flags} ${nostdlib_flags})
 
 
@@ -139,4 +155,4 @@ add_test_executable(test_hash_map test/test_hash_map.cpp memory.cpp)
 
 add_test_executable(test_vec test/test_vec.cpp memory.cpp)
 
-add_test_executable(test_string_builder test/test_string_builder.cpp py.cpp)
+add_test_executable(test_string_builder test/test_string_builder.cpp memory.cpp py.cpp)

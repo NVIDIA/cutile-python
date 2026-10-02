@@ -25,8 +25,9 @@ from cuda.tile._ir.ops_utils import get_ftof_rounding_min_version
 from .aggregate_support import unflatten_aggregates
 from .arithmetic_ops import reshape, broadcast_to, astype, compare_tensorlike, \
     binary_bitwise_tensorlike, bitwise_shift_tensorlike, binary_arithmetic_tensorlike, \
-    compare_tensorlike_raw, where, binary_bitwise_tensorlike_raw, where_raw, TileReshape, \
-    mod_tensorlike, pow_tensorlike, promote_and_broadcast_to, arithmetic_impl_registry, \
+    binary_wrapping_arithmetic_tensorlike, compare_tensorlike_raw, where, \
+    binary_bitwise_tensorlike_raw, where_raw, TileReshape, \
+    promote_and_broadcast_to, arithmetic_impl_registry, \
     unary, UnaryBehavior, UNARY_INT_FLOAT, UNARY_ANYTHING, UNARY_BOOL_INT, \
     UNARY_STRICT_FLOAT, UNARY_FLOAT, divmod_tensorlike, logical_not_impl
 from .cast_ops import implicit_cast
@@ -57,12 +58,12 @@ from .ops_utils import (
     rounding_mode_to_bytecode, get_default_rounding_mode, get_dtype,
     memory_order_to_bytecode,
     memory_scope_to_bytecode, broadcast_shapes2, is_shape_broadcastable_to, BroadcastError,
-    promote_dtypes, validate_memory_order_and_scope,
+    validate_memory_order_and_scope,
 )
 from .type import (
-    PartitionViewTy, StridedViewTy, GatherScatterViewTy, TupleTy, TileTy, NoneType, ArrayTy,
+    PartitionViewTy, StridedViewTy, GatherScatterViewTy, TupleTy, TileTy, ArrayTy,
     ListTy, Type, TensorLikeTy, LooselyTypedScalar, TokenTy, TiledViewTy,
-    RawArrayMemoryTy, IndexSliceTy,
+    RawArrayMemoryTy, IndexSliceTy, var2sym,
 )
 from cuda.tile._datatype import (
     DType, is_integral, is_float, is_signed, is_boolean, PointerInfo,
@@ -74,7 +75,7 @@ from cuda.tile._ir2bytecode import (
 )
 import cuda.tile._bytecode as bc
 from cuda.tile._bytecode.version import BytecodeVersion
-from cuda.tile._cext import encode_float
+from cuda.tile._cext import encode_float, _tile_matmul, _tile_item, _tile_getitem
 from .._debug import CUDA_TILE_TESTING_DISABLE_DIV
 
 tile_impl_registry = ImplRegistry()
@@ -176,13 +177,17 @@ def tile_bitwise_shift_function_impl(fn: str, x: Var, y: Var):
 
 @impl(ct.floordiv, fixed_args=["floordiv"])
 @impl(ct.cdiv, fixed_args=["cdiv"])
+@impl(ct.mod, fixed_args=["mod"])
+@impl(ct.pow, fixed_args=["pow"])
 def tile_binary_arithmetic_function_impl(fn: str, x: Var, y: Var) -> Var:
     return binary_arithmetic_tensorlike(fn, ensure_tile(x), ensure_tile(y))
 
 
-@impl(ct.pow)
-def tile_pow_function_impl(x: Var, y: Var) -> Var:
-    return pow_tensorlike(ensure_tile(x), ensure_tile(y))
+@impl(ct.wrapping_add, fixed_args=["wrapping_add"])
+@impl(ct.wrapping_sub, fixed_args=["wrapping_sub"])
+@impl(ct.wrapping_mul, fixed_args=["wrapping_mul"])
+def tile_binary_wrapping_arithmetic_function_impl(fn: str, x: Var, y: Var) -> Var:
+    return binary_wrapping_arithmetic_tensorlike(fn, ensure_tile(x), ensure_tile(y))
 
 
 @impl(ct.atan2, min_version=BytecodeVersion.V_13_2)
@@ -211,16 +216,9 @@ def binary_arithmetic_impl_with_rd_and_ftz(fn: str, x: Var, y: Var,
     return binary_arithmetic_tensorlike(fn, x, y, rounding_mode, flush_to_zero)
 
 
-@impl(ct.mod)
-def tile_mod_function_impl(x: Var, y: Var):
-    return mod_tensorlike(ensure_tile(x, datatype.is_numeric), ensure_tile(y, datatype.is_numeric))
-
-
 @impl(ct.divmod)
 def tile_divmod_function_impl(x: Var, y: Var):
-    return divmod_tensorlike(
-        ensure_tile(x, datatype.is_numeric), ensure_tile(y, datatype.is_numeric)
-    )
+    return divmod_tensorlike(ensure_tile(x), ensure_tile(y))
 
 
 @impl(slice)
@@ -234,53 +232,9 @@ def slice_impl(start: Var, stop: Var, step: Var) -> Var:
 # Tile getitem
 # ===========================================================================================
 
-def tile_expand_dims(x: Var, index: Tuple[Any, ...]) -> Var:
-    x_type = x.get_type()
-
-    for idx in index:
-        if idx not in (None, Ellipsis, slice(None)):
-            raise TileTypeError(
-                f"Expected `None|np.newaxis` or `ellipsis` or full slice (`:`), "
-                f"but got {idx}. Hint: Directly indexing a tile is not supported, "
-                f"use `extract` or `item`.")
-
-    num_slices = sum(1 for idx in index if isinstance(idx, slice))
-    if num_slices > x_type.ndim:
-        raise TileTypeError(f"Tile is {x_type.ndim}-dimensional, "
-                            f"but {num_slices} were indexed")
-    axes = []
-    ellipsis_idx = None
-    for i, idx in enumerate(index):
-        if idx is Ellipsis:
-            if ellipsis_idx is not None:
-                raise TileTypeError("Only one ellipsis is allowed")
-            ellipsis_idx = i
-        elif idx is None:
-            axes.append(i - len(index) if ellipsis_idx is not None and i > ellipsis_idx else i)
-    new_rank = x_type.ndim + len(axes)
-    new_shape = list(x_type.shape)
-    for axis in axes:
-        normalized_axis = axis + new_rank if axis < 0 else axis
-        new_shape.insert(normalized_axis, 1)
-    return reshape(x, tuple(new_shape))
-
-
-@impl(operator.getitem, overload=(TileTy, NoneType))
-def getitem_tile_none_impl(object: Var, key: Var) -> Var:
-    return tile_expand_dims(object, (None,))
-
-
-@impl(operator.getitem, overload=(TileTy, TupleTy))
-def getitem_tile_tuple_impl(object: Var, key: Var) -> Var:
-    if not key.is_constant():
-        raise TileTypeError("Tile subscript must be a constant tuple")
-    return tile_expand_dims(object, key.get_constant())
-
-
 @impl(operator.getitem, overload=(TileTy, WILDCARD))
-def getitem_tile_fallback_impl(object: Var, key: Var) -> Var:
-    raise TileTypeError("Directly indexing a tile is not supported; "
-                        "use `extract()` or `item()` instead.")
+def getitem_tile_impl(object: Var, key: Var) -> Var:
+    return sym2var(_tile_getitem(var2sym(object), var2sym(key)))
 
 
 # ===========================================================================================
@@ -2180,31 +2134,24 @@ def mma_impl(x: Var, y: Var, acc: Var, use_fast_acc: Var) -> Var:
     return add_operation(TileMma, acc_tile_type, use_fast_acc=use_fast_acc, x=x, y=y, acc=acc)
 
 
+def matmul_raw(x: Var, y: Var) -> Var:
+    """Multiplies tiles of the same dtype, with shapes (*batch, M, K) and (*batch, K, N).
+
+    Returns a tile of shape (*batch, M, N) with the same dtype.
+    """
+    x_ty = x.get_type()
+    y_ty = y.get_type()
+    acc_dtype = datatype._resolve_mma_supported_dtype(x_ty.dtype, y_ty.dtype, None)
+    acc_ty = TileTy(acc_dtype, x_ty.shape[:-1] + y_ty.shape[-1:])
+    acc_value = strictly_typed_const(0, acc_ty)
+    matmul_result = add_operation(TileMma, acc_ty, x=x, y=y, acc=acc_value)
+    return astype(matmul_result, x_ty.dtype)
+
+
 @impl(ct.matmul)
 @impl(operator.matmul, overload=(TileTy, TileTy))
 def matmul_impl(x: Var, y: Var) -> Var:
-    x_tile_type = require_tile_type(x, datatype.is_numeric)
-    y_tile_type = require_tile_type(y, datatype.is_numeric)
-    x_shape_orig = x_tile_type.shape
-    y_shape_orig = y_tile_type.shape
-    x_shape, y_shape, acc_shape, output_shape = _matmul_broadcast_shape(x_shape_orig, y_shape_orig)
-    common_dtype = promote_dtypes(x_tile_type.dtype, y_tile_type.dtype)
-    acc_dtype = datatype._resolve_mma_supported_dtype(common_dtype, common_dtype, None)
-    x = promote_and_broadcast_to(x, TileTy(common_dtype, x_shape))
-    if len(y_shape_orig) == 1:
-        # When y is 1d, we cannot directly use cast for reshape + broadcast
-        # because y is first reshaped to 2d by appending 1.
-        # Therefore, we need to first reshape y from (k,) to (k, 1) and then
-        # apply the reshape+broadcast rule for batch dims
-        y_shape_2d = (y_shape_orig[0], 1)
-        y = reshape(y, y_shape_2d)
-    y = promote_and_broadcast_to(y, TileTy(common_dtype, y_shape))
-    acc_ty = TileTy(acc_dtype, acc_shape)
-    acc_value = strictly_typed_const(0, acc_ty)
-    matmul_result = add_operation(TileMma, acc_ty, x=x, y=y, acc=acc_value)
-    matmul_result = astype(matmul_result, common_dtype)
-    ret = reshape(matmul_result, output_shape)
-    return ret
+    return sym2var(_tile_matmul(var2sym(x), var2sym(y)))
 
 
 @dataclass(eq=False)
@@ -3373,7 +3320,37 @@ def insert_impl(x: Var, index: Var, value: Var) -> Var:
 
 @impl(ct.Tile.item)
 def tile_item(self: Var) -> Var:
-    return reshape(self, ())
+    return sym2var(_tile_item(var2sym(self)))
+
+
+@impl(ct.Tile.extract)
+def tile_extract_impl(self: Var, index: Var, shape: Var) -> Var:
+    return extract_impl(self, index, shape)
+
+
+@impl(ct.Tile.insert, min_version=BytecodeVersion.V_13_4)
+def tile_insert_impl(self: Var, index: Var, value: Var) -> Var:
+    return insert_impl(self, index, value)
+
+
+@impl(ct.Tile.reshape)
+def tile_reshape_impl(self: Var, shape: Var) -> Var:
+    return reshape_impl(self, shape)
+
+
+@impl(ct.Tile.permute)
+def tile_permute_impl(self: Var, axes: Var) -> Var:
+    return permute_impl(self, axes)
+
+
+@impl(ct.Tile.transpose)
+def tile_transpose_impl(self: Var, axis0: Var, axis1: Var) -> Var:
+    return transpose_impl(self, axis0, axis1)
+
+
+@impl(ct.Tile.astype)
+def tile_astype_impl(self: Var, dtype: Var, rounding_mode: Var) -> Var:
+    return astype_impl(self, dtype, rounding_mode)
 
 
 @impl(ct.Array.tiled_view)

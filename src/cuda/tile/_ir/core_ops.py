@@ -3,11 +3,12 @@
 # SPDX-License-Identifier: Apache-2.0
 import dataclasses
 import functools
+import inspect
 import operator
 from contextlib import _GeneratorContextManager
 from dataclasses import dataclass
 from types import MethodType, FunctionType, BuiltinFunctionType, MappingProxyType, \
-    NotImplementedType
+    NotImplementedType, MethodDescriptorType
 from typing import Any, Optional, Sequence
 
 from typing_extensions import override
@@ -15,8 +16,9 @@ from typing_extensions import override
 import cuda.tile._bytecode as bc
 from cuda.tile import TileTypeError, ensure_constant
 import cuda.tile._datatype as datatype
-from cuda.tile._cext import foreign_dtype_object_to_native, encode_float, decode_float
-from cuda.tile._datatype import numeric_dtype_category, is_integral
+from cuda.tile._cext import (foreign_dtype_object_to_native, encode_float, decode_float,
+                             Tile, Scalar, Vector, Pointer, OpaqueValue, _tensor_to_ir_var)
+from cuda.tile._datatype import DType, numeric_dtype_category, is_integral
 from cuda.tile._exception import Loc, TileSyntaxError, TileValueError, TypeCheckingError
 from cuda.tile._execution import is_static_def
 from cuda.tile._ir import hir_stubs, hir
@@ -410,6 +412,12 @@ def loosely_typed_const(value: Any,
 
 def strictly_typed_const(value: Any, ty: Type) -> Var:
     return _strictly_typed_const_inner(Builder.get_current(), value, ty)
+
+
+def strictly_typed_const_tensorlike(value: Any, dtype: DType, shape: tuple[int, ...]) -> Var:
+    builder = Builder.get_current()
+    ty = builder.ir_ctx.typing_hooks.get_tensor_like_type(dtype, shape)
+    return strictly_typed_const(value, ty)
 
 
 def _map_nested_tuple(func, value):
@@ -915,6 +923,19 @@ def bind_method(object: Var, func) -> Var:
     return make_aggregate(agg_value, res_ty)
 
 
+# Returns the method descriptor if `x` is a builtin method bound to an instance, or None
+# otherwise (e.g., for a module-level builtin function, which is bound to its module)
+def _try_unbind_builtin_method(x) -> MethodDescriptorType | None:
+    if not isinstance(x, BuiltinFunctionType):
+        return None
+    self = x.__self__
+    descr = inspect.getattr_static(type(self), x.__name__, None)
+    # Equality of builtin methods compares both the bound object and the underlying C function
+    if not isinstance(descr, MethodDescriptorType) or descr.__get__(self) != x:
+        return None
+    return descr
+
+
 def sym2var(x: Any, constant_only: bool = False) -> Var:
     # TODO: verify we don't have a stale closure
 
@@ -922,6 +943,12 @@ def sym2var(x: Any, constant_only: bool = False) -> Var:
         if constant_only:
             raise TileTypeError("Cannot create a constant from a symbolic value")
         return x._var
+
+    if isinstance(x, Tile | Scalar | Vector | Pointer | OpaqueValue):
+        var = _tensor_to_ir_var(x)
+        if constant_only and not var.is_constant():
+            raise TileTypeError("Cannot create a constant from a symbolic value")
+        return var
 
     if isinstance(x, tuple):
         return build_tuple(tuple(sym2var(item, constant_only=constant_only) for item in x))
@@ -939,10 +966,15 @@ def sym2var(x: Any, constant_only: bool = False) -> Var:
 
     if isinstance(x, MethodType):
         self_var = sym2var(x.__self__, constant_only=constant_only)
-        if not isinstance(x.__func__, FunctionType | BuiltinFunctionType):
+        if not isinstance(x.__func__, FunctionType | BuiltinFunctionType | MethodDescriptorType):
             raise TileTypeError(f"Object of type {type(x).__name__}"
                                 f" cannot be used as a function for binding a method")
         return bind_method(self_var, x.__func__)
+
+    descr = _try_unbind_builtin_method(x)
+    if descr is not None:
+        self_var = sym2var(x.__self__, constant_only=constant_only)
+        return bind_method(self_var, descr)
 
     # Transform a third party typed scalar (e.g., np.int16(5)) into a strictly typed constant
     native_dtype = foreign_dtype_object_to_native(type(x))

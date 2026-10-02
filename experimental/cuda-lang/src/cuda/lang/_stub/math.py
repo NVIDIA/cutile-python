@@ -4,6 +4,7 @@
 
 from cuda.lang._execution import stub
 from cuda.lang._enums import RoundingMode, SaturationMode
+from cuda.tile._cext import _binary_wrapping_arithmetic_tensorlike
 
 
 @stub(static_eval_ok=True, compiled_host=True)
@@ -36,6 +37,54 @@ def sub(x, y, /, *, rounding_mode: RoundingMode | None = None,
 def mul(x, y, /):
     """Compute ``x * y``."""
     ...
+
+
+@stub(host=True, compiled_host=True)
+def wrapping_add(x, y, /):
+    """Compute ``x + y`` for integers, wrapping around on overflow.
+
+    Unlike :func:`add`, the dtypes are not promoted: ``x`` and ``y`` must have the same
+    integer dtype, and the result is computed modulo 2**bitwidth of that dtype.
+    A loosely typed constant is converted to the dtype of the other operand,
+    also modulo 2**bitwidth: for example, -1 becomes 255 for uint8.
+
+    At least one of the operands must have a concrete dtype, since loosely typed constants
+    don't have a bit width. For example, ``wrapping_add(1, 2)`` is an error,
+    but ``wrapping_add(uint8(150), 110)`` is ``uint8(4)``.
+    """
+    return _binary_wrapping_arithmetic_tensorlike("wrapping_add", x, y, False)
+
+
+@stub(host=True, compiled_host=True)
+def wrapping_sub(x, y, /):
+    """Compute ``x - y`` for integers, wrapping around on overflow.
+
+    Unlike :func:`sub`, the dtypes are not promoted: ``x`` and ``y`` must have the same
+    integer dtype, and the result is computed modulo 2**bitwidth of that dtype.
+    A loosely typed constant is converted to the dtype of the other operand,
+    also modulo 2**bitwidth: for example, -1 becomes 255 for uint8.
+
+    At least one of the operands must have a concrete dtype, since loosely typed constants
+    don't have a bit width. For example, ``wrapping_sub(1, 2)`` is an error,
+    but ``wrapping_sub(uint8(0), 1)`` is ``uint8(255)``.
+    """
+    return _binary_wrapping_arithmetic_tensorlike("wrapping_sub", x, y, False)
+
+
+@stub(host=True, compiled_host=True)
+def wrapping_mul(x, y, /):
+    """Compute ``x * y`` for integers, wrapping around on overflow.
+
+    Unlike :func:`mul`, the dtypes are not promoted: ``x`` and ``y`` must have the same
+    integer dtype, and the result is computed modulo 2**bitwidth of that dtype.
+    A loosely typed constant is converted to the dtype of the other operand,
+    also modulo 2**bitwidth: for example, -1 becomes 255 for uint8.
+
+    At least one of the operands must have a concrete dtype, since loosely typed constants
+    don't have a bit width. For example, ``wrapping_mul(1, 2)`` is an error,
+    but ``wrapping_mul(uint8(16), 17)`` is ``uint8(16)``.
+    """
+    return _binary_wrapping_arithmetic_tensorlike("wrapping_mul", x, y, False)
 
 
 @stub
@@ -279,8 +328,8 @@ def pow(x, y, /, *, approx=False):
     """Calculate the value of ``x`` to the power of ``y``.
 
     Args:
-        approx: Whether to use an approximate implementation if one is available
-            for the given operand types.
+        approx: Whether to use an approximate implementation. Only supported for float32.
+            Has no effect for integer exponents, which use an exact implementation.
     """
     ...
 
@@ -388,6 +437,9 @@ __all__ = (
     "add",
     "sub",
     "mul",
+    "wrapping_add",
+    "wrapping_sub",
+    "wrapping_mul",
     "fma",
     "truediv",
     "floordiv",

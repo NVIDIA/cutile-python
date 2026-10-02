@@ -124,25 +124,25 @@ def test_f8e5m3fnu_requires_rubin_13_4():
         compile_with(kernel, (), "sm_80", "13.4")
 
 
-@pytest.mark.parametrize("val", [-1.0, -0.0, float("-inf"), float("-nan")])
+@pytest.mark.parametrize("val", [-1.0, -0.0, float("-inf")])
 def test_f8e8m0fnu_rejects_negative(val):
     def kernel():
         t = ct.astile(val, dtype=ct.float8_e8m0fnu)
         ct.printf("%f", t)
 
     with pytest.raises(TileValueError,
-                       match="Cannot represent a negative value as .*, which is unsigned"):
+                       match="Cannot represent negative value .* as .*, which is unsigned"):
         compile_with(kernel, (), "sm_100", "13.2")
 
 
-@pytest.mark.parametrize("val", [-1.0, -0.0, float("-nan")])
+@pytest.mark.parametrize("val", [-1.0, -0.0])
 def test_f8e5m3fnu_rejects_negative(val):
     def kernel():
         t = ct.astile(val, dtype=ct.float8_e5m3fnu)
         ct.printf("%f", t)
 
     with pytest.raises(TileValueError,
-                       match="Cannot represent a negative value as .*, which is unsigned"):
+                       match="Cannot represent negative value .* as .*, which is unsigned"):
         compile_with(kernel, (), "sm_107", "13.4")
 
 

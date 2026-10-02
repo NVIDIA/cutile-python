@@ -46,7 +46,7 @@ def test_symbolic_array():
 
 def test_symbolic_vector():
     def checks(sym):
-        assert sym.element_dtype is cl.int32
+        assert sym.dtype is cl.int32
         assert sym.element_count == 4
         assert str(sym) == "<vector[int32, count=4]>"
 
@@ -80,7 +80,7 @@ def test_symbolic_scalar_getitem():
         k,
         signature=KernelSignature([make_symbolic_scalar(cl.int32)]),
         raises=pytest.raises(
-            StaticEvalError, match="'SymbolicScalar' object is not subscriptable"
+            StaticEvalError, match="'cuda.lang.Scalar' object is not subscriptable"
         ),
     )
 

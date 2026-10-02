@@ -6,7 +6,7 @@ from typing import Any, Callable
 
 import cuda.lang._datatype as datatype
 from cuda.lang._exception import UnsupportedFeatureError
-from cuda.lang._ir.type import MemorySpace, ScalarTy, VectorTy, PointerTy
+from cuda.lang._ir.type import MemorySpace, OpaqueTy, ScalarTy, VectorTy, PointerTy
 from cuda.lang._target import TargetInfo
 from cuda.tile import DType
 from cuda.tile._ir.ir import Var
@@ -143,9 +143,9 @@ def require_boolean_scalar_type(var: Var):
         raise make_type_checking_error(f"Expected boolean scalar but got {ty}", var)
 
 
-def require_cluster_launch_control_token_type(var: Var) -> ScalarTy:
+def require_cluster_launch_control_token_type(var: Var) -> OpaqueTy:
     ty = var.get_type()
-    if ty != ScalarTy(cluster_launch_control_token):
+    if ty != OpaqueTy(cluster_launch_control_token):
         raise make_type_checking_error(f"Expected a cluster_launch_control_token,"
                                        f" but given value has type {ty}")
     return ty

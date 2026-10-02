@@ -3,26 +3,24 @@
 # SPDX-License-Identifier: Apache-2.0
 
 from __future__ import annotations
-from typing import TYPE_CHECKING, TypeVar
+from typing import TYPE_CHECKING
 
 from cuda.lang._execution import stub
 from cuda.lang._enums import MemoryOrder
 from cuda.tile._memory_model import MemoryScope
 
 if TYPE_CHECKING:
-    from .types import Pointer, Vector
-
-T = TypeVar("T")
+    from .types import Pointer, Scalar, Vector
 
 
 @stub
 def load(
-    pointer: Pointer[T],
+    pointer: Pointer,
     /,
     *,
     count: int | None = None,
     alignment: int | None = None,
-) -> T | Vector[T]:
+) -> Scalar | Pointer | Vector:
     """Load one or more consecutive values from this address.
 
     This operation is valid only for a typed pointer.
@@ -43,8 +41,8 @@ def load(
 
 @stub
 def store(
-    pointer: Pointer[T],
-    value: T | Vector[T],
+    pointer: Pointer,
+    value: Scalar | Pointer | Vector | int | float | bool,
     /,
     *,
     alignment: int | None = None,
@@ -68,14 +66,14 @@ def store(
 
 @stub
 def atomic_load(
-    pointer: Pointer[T],
+    pointer: Pointer,
     /,
     *,
     memory_order: MemoryOrder = MemoryOrder.ACQUIRE,
     memory_scope: MemoryScope = MemoryScope.DEVICE,
     mmio: bool = False,
     alignment: int | None = None,
-) -> T:
+) -> Scalar | Pointer:
     """Atomically load one value from this address.
 
     This operation is valid only for a typed pointer. The pointee size must
@@ -99,8 +97,8 @@ def atomic_load(
 
 @stub
 def atomic_store(
-    pointer: Pointer[T],
-    value: T,
+    pointer: Pointer,
+    value: Scalar | Pointer | int | float | bool,
     /,
     *,
     memory_order: MemoryOrder = MemoryOrder.RELEASE,

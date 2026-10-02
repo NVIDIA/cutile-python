@@ -36,4 +36,25 @@ int32_t native_launch_site_launch(
         const NativeLaunchConfig& config,
         void** argument_addresses);
 
+
+// Kinds of constant values that are allowed as kernel arguments.
+#define FOREACH_CONSTANT_KIND(X) \
+    X(Bool) \
+    X(Int) \
+    X(Float) \
+    X(None_) \
+    X(String) \
+    X(Enum) \
+    X(NativeDType) \
+    X(ForeignDType)
+
+#define CONSTANT_KIND_ENTRY(name) name,
+
+enum class ConstantKind : uint8_t {
+    FOREACH_CONSTANT_KIND(CONSTANT_KIND_ENTRY)
+};
+
+std::optional<ConstantKind> classify_constant(PyObject* obj, bool kernel_arg, GlobalLock& lock);
+
+
 Status tile_kernel_init(PyObject* m);

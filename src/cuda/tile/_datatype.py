@@ -486,7 +486,7 @@ def foreign_pointer_pointee_dtype(dtype: DType) -> DType:
     return _foreign_pointer_pointee_dtype(dtype)
 
 
-@stub(host=True, static_eval_ok=True)
+@stub(host=True)
 def foreign_pointer_dtype(pointee_dtype: DType) -> DType:
     if not isinstance(pointee_dtype, DType):
         raise TypeError("pointee_dtype must be a cuda.tile dtype")

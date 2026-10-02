@@ -562,23 +562,6 @@ struct AggregateArgType {
 };
 
 
-// Kinds of constant values that are allowed as kernel arguments.
-#define FOREACH_CONSTANT_KIND(X) \
-    X(Bool) \
-    X(Int) \
-    X(Float) \
-    X(None_) \
-    X(String) \
-    X(Enum) \
-    X(NativeDType) \
-    X(ForeignDType)
-
-#define CONSTANT_KIND_ENTRY(name) name,
-
-enum class ConstantKind : uint8_t {
-    FOREACH_CONSTANT_KIND(CONSTANT_KIND_ENTRY)
-};
-
 
 #define CONSTANT_KIND_NAME_STR(name) #name,
 static const char g_constant_kind_names[][16] = {
@@ -911,8 +894,7 @@ static PyObject* foreign_dtype_object_to_native(PyObject* self, PyObject* object
 }
 
 
-static std::optional<ConstantKind> classify_constant(PyObject* obj, bool kernel_arg,
-                                                     GlobalLock& lock) {
+std::optional<ConstantKind> classify_constant(PyObject* obj, bool kernel_arg, GlobalLock& lock) {
     if (PyBool_Check(obj))
         return ConstantKind::Bool;
 
@@ -5883,12 +5865,6 @@ static Status add_launch_extended_func(PyObject* m) {
         return ErrorRaised;
     return OK;
 }
-
-#define INIT_STRING_CONSTANT(name, value) \
-    if (!(name = PyUnicode_InternFromString(value))) return ErrorRaised
-
-#define INIT_STRING_IDENT(ident) INIT_STRING_CONSTANT(g_##ident##_pyunicode, #ident)
-
 
 Status tile_kernel_init(PyObject* m) {
     GlobalLock lock;

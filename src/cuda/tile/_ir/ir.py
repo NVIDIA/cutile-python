@@ -462,6 +462,10 @@ class Builder:
         assert ret is not None, "No IR builder is currently active"
         return ret
 
+    @staticmethod
+    def have_current() -> bool:
+        return _current_builder.builder is not None
+
     @contextmanager
     def change_loc(self, loc: Loc):
         old_loc = self._loc

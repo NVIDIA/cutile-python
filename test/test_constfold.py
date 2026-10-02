@@ -327,15 +327,25 @@ def test_strictly_typed_integer_constant_truncation():
     assert_equal(z, torch.arange(-1000, 1000, device="cuda:0").to(torch.uint8).to(torch.int64))
 
 
-def test_strictly_typed_integer_constant_truncation_unary():
+def test_strictly_typed_integer_constant_invert():
     @ct.kernel
     def kernel(x):
         ct.scatter(x, 0, ct.int64(~ct.uint32(3)))
-        ct.scatter(x, 1, ct.int64(-ct.uint32(3)))
 
-    x = torch.zeros(2, dtype=torch.int64, device="cuda:0")
+    x = torch.zeros(1, dtype=torch.int64, device="cuda:0")
     ct.launch(torch.cuda.current_stream(), (1,), kernel, (x,))
-    assert x.tolist() == [0xfffffffc, 0xfffffffd]
+    assert x.tolist() == [0xfffffffc]
+
+
+def test_strictly_typed_integer_constant_overflow_unary():
+    @ct.kernel
+    def kernel(x):
+        ct.scatter(x, 0, ct.int64(-ct.uint32(3)))
+
+    x = torch.zeros(1, dtype=torch.int64, device="cuda:0")
+    with pytest.raises(ct.TileValueError,
+                       match="Overflow in unsigned 32-bit integer negation"):
+        ct.launch(torch.cuda.current_stream(), (1,), kernel, (x,))
 
 
 def test_strictly_typed_boolean_constant_truncation():
@@ -349,15 +359,28 @@ def test_strictly_typed_boolean_constant_truncation():
     assert x.tolist() == [1, 1]
 
 
-def test_strictly_typed_integer_constant_truncation_binary():
+def test_strictly_typed_integer_constant_overflow_binary():
     @ct.kernel
     def kernel(x):
-        t = ct.uint8(150) + ct.uint8(110)  # 260 = 4 (mod 256)
+        t = ct.uint8(150) + ct.uint8(110)
         ct.scatter(x, 0, ct.int64(t))
 
     x = torch.zeros(1, dtype=torch.int64, device="cuda:0")
-    ct.launch(torch.cuda.current_stream(), (1,), kernel, (x,))
-    assert x.tolist() == [4]
+    with pytest.raises(ct.TileValueError,
+                       match="Overflow in unsigned 8-bit integer addition"):
+        ct.launch(torch.cuda.current_stream(), (1,), kernel, (x,))
+
+
+def test_strictly_typed_uint64_constant_subtraction_overflow():
+    @ct.kernel
+    def kernel(x):
+        t = ct.uint64(2**63) - ct.uint64(2**63 + 1)
+        ct.scatter(x, 0, ct.int64(t))
+
+    x = torch.zeros(1, dtype=torch.int64, device="cuda:0")
+    with pytest.raises(ct.TileValueError,
+                       match="Overflow in unsigned 64-bit integer subtraction"):
+        ct.launch(torch.cuda.current_stream(), (1,), kernel, (x,))
 
 
 def test_strictly_typed_float_constant_rounding():
@@ -377,7 +400,7 @@ def test_strictly_typed_unsigned_float_constant_from_negative():
         ct.float8_e8m0fnu(-0.2)
 
     with pytest.raises(ct.TileValueError,
-                       match="Cannot represent a negative value as float8_e8m0fnu"):
+                       match="Cannot represent negative value .* as float8_e8m0fnu"):
         ct.launch(torch.cuda.current_stream(), (1,), kernel, ())
 
 

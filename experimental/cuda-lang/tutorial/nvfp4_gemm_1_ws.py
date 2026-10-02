@@ -66,8 +66,8 @@ _DEFAULT_TOLERANCE = 1.0e-1
 
 
 def _to_float16_vector(
-    values: cl.Vector[cl.float32], base: int, count: int
-) -> cl.Vector[cl.float16]:
+    values: cl.Vector, base: int, count: int
+) -> cl.Vector:
     return values[base:base + count].astype(cl.float16)
 
 

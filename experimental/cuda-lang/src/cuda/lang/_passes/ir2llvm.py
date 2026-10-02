@@ -49,7 +49,7 @@ def dtype_to_llvm(dtype: datatype.DType, tt: llvm.TypeTable,
 
 
 def type_to_llvm(ty: ir_type.Type, tt: llvm.TypeTable, storage: bool) -> llvm.Type:
-    if isinstance(ty, ir_type.ScalarTy):
+    if isinstance(ty, ir_type.ScalarTy | ir_type.OpaqueTy):
         return dtype_to_llvm(ty.dtype, tt, storage)
     elif isinstance(ty, ir_type.PointerTy):
         return dtype_to_llvm(ty.pointer_dtype, tt, storage)

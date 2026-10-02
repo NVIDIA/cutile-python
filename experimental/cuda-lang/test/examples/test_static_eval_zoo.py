@@ -9,11 +9,8 @@ from cuda.lang._exception import CompilerExecutionError
 from test.util import compile_kernel
 import cuda.lang as cl
 from cuda.lang._stub.foreign_function import _call_foreign_function as ffi
-from cuda.lang._ir.type import (
-    SymbolicArray,
-    SymbolicVector,
-    SymbolicScalar,
-)
+from cuda.lang import Vector, Scalar
+from cuda.lang._ir.type import SymbolicArray
 
 from dataclasses import dataclass, replace
 import functools
@@ -131,7 +128,7 @@ def static_overload(function):
 @static_overload
 def ffi_overload(arg):
     match arg:
-        case SymbolicScalar():
+        case Scalar():
             dtype = arg.dtype
             entrypoint = f"fn_{dtype}"
 
@@ -195,12 +192,12 @@ def test_static_overload_selection():
     @static_overload
     def scalarize(x):
         match x:
-            case int() | float() | SymbolicScalar():
+            case int() | float() | Scalar():
                 # return lambda x: x
                 def identity(x):
                     return x
                 return identity
-            case SymbolicVector():
+            case Vector():
                 # return lambda x: x.reduce(cl.VectorReduction.min)
                 def vred(x):
                     return x.reduce(cl.VectorReduction.min)
@@ -208,7 +205,7 @@ def test_static_overload_selection():
             case SymbolicArray():
                 return scalarize_array
             case _:
-                raise NotImplementedError()
+                raise NotImplementedError(f"{x}")
 
     def overloaded_min(*args):
         cl.static_assert(len(args) > 0)

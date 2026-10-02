@@ -12,6 +12,7 @@ from typing import Annotated, Any, TypeVar, Union, Literal, Optional, Protocol, 
 from cuda.tile._memory_model import MemoryOrder, MemoryScope
 from cuda.tile._execution import function, stub
 from cuda.tile._datatype import DType, int32, int64
+from cuda.tile._cext import Tile, _binary_wrapping_arithmetic_tensorlike
 from cuda.tile._numeric_semantics import RoundingMode, PaddingMode
 
 
@@ -595,212 +596,6 @@ class RawArrayMemory:
         For each offset, reads the memory element, computes the bitwise XOR with ``update``,
         writes the result back, and returns the original value.
         """
-
-
-class Tile:
-    """Class for |tile| objects."""
-
-    @property
-    @function
-    def dtype(self) -> "DType":
-        """The |data type| of the |tile|'s elements.
-
-        Returns:
-            DType (constant):
-        """
-
-    @property
-    @function
-    def shape(self) -> tuple[int, ...]:
-        """The number of elements in each of the |tile|'s dimensions.
-
-        Returns:
-            tuple[const int,...]:
-        """
-
-    @property
-    @function
-    def ndim(self) -> int:
-        """The number of dimensions in the |tile|.
-
-        Returns:
-            int (constant):
-        """
-
-    @stub
-    def item(self) -> "Tile":
-        """Equivalent to self.reshape(()).
-
-        Returns:
-            Tile: A scalar tile.
-
-        Examples:
-
-            .. testcode::
-                :template: setup_only.py
-
-                @ct.kernel
-                def kernel(x):
-                    idx = ct.full((1,), 2, dtype=ct.int32).item()
-                    tile = ct.load(x, (idx,), shape=(4,))
-                    print(tile)
-
-                x = torch.arange(16, device='cuda:0')
-                ct.launch(stream, (1,), kernel, (x,))
-
-            .. testoutput::
-
-                [8, 9, 10, 11]
-        """
-
-    def extract(self, index, shape):
-        """See :py:func:`extract`."""
-        return extract(self, index, shape)
-
-    def insert(self, index, value) -> "Tile":
-        """See :py:func:`insert`."""
-        return insert(self, index, value)
-
-    def reshape(self, shape) -> "Tile":
-        """See :py:func:`reshape`."""
-        return reshape(self, shape)
-
-    def permute(self, axes) -> "Tile":
-        """See :py:func:`permute`."""
-        return permute(self, axes)
-
-    def transpose(self, axis0=None, axis1=None) -> "Tile":
-        """See :py:func:`transpose`."""
-        return transpose(self, axis0, axis1)
-
-    def astype(self, dtype, *, rounding_mode: Optional[RoundingMode] = None) -> "Tile":
-        """See :py:func:`astype`."""
-        return astype(self, dtype, rounding_mode=rounding_mode)
-
-    @function
-    def __index__(self) -> int:
-        """0D Tile can be used as index in range"""
-
-    def __getitem__(self, index) -> "Tile":
-        """Syntax sugar for expand_dim"""
-        return expand_dims(self, index)
-
-    def __add__(self, other) -> "Tile":
-        return _binop(add, other, self, other)
-
-    def __sub__(self, other) -> "Tile":
-        return _binop(sub, other, self, other)
-
-    def __mul__(self, other) -> "Tile":
-        return _binop(mul, other, self, other)
-
-    def __truediv__(self, other) -> "Tile":
-        return _binop(truediv, other, self, other)
-
-    def __floordiv__(self, other) -> "Tile":
-        return _binop(floordiv, other, self, other)
-
-    def __mod__(self, other) -> "Tile":
-        return _binop(mod, other, self, other)
-
-    def __pow__(self, other) -> "Tile":
-        return _binop(pow, other, self, other)
-
-    def __and__(self, other) -> "Tile":
-        return _binop(bitwise_and, other, self, other)
-
-    def __or__(self, other) -> "Tile":
-        return _binop(bitwise_or, other, self, other)
-
-    def __xor__(self, other) -> "Tile":
-        return _binop(bitwise_xor, other, self, other)
-
-    def __radd__(self, other) -> "Tile":
-        return _binop(add, other, other, self)
-
-    def __rsub__(self, other) -> "Tile":
-        return _binop(sub, other, other, self)
-
-    def __rmul__(self, other) -> "Tile":
-        return _binop(mul, other, other, self)
-
-    def __rtruediv__(self, other) -> "Tile":
-        return _binop(truediv, other, other, self)
-
-    def __rfloordiv__(self, other) -> "Tile":
-        return _binop(floordiv, other, other, self)
-
-    def __rmod__(self, other) -> "Tile":
-        return _binop(mod, other, other, self)
-
-    def __rpow__(self, other) -> "Tile":
-        return _binop(pow, other, other, self)
-
-    def __rand__(self, other) -> "Tile":
-        return _binop(bitwise_and, other, other, self)
-
-    def __ror__(self, other) -> "Tile":
-        return _binop(bitwise_or, other, other, self)
-
-    def __rxor__(self, other) -> "Tile":
-        return _binop(bitwise_xor, other, other, self)
-
-    def __ge__(self, other) -> "Tile":
-        return greater_equal(self, other)
-
-    def __gt__(self, other) -> "Tile":
-        return greater(self, other)
-
-    def __le__(self, other) -> "Tile":
-        return less_equal(self, other)
-
-    def __lt__(self, other) -> "Tile":
-        return less(self, other)
-
-    def __eq__(self, other) -> "Tile":
-        return equal(self, other)
-
-    def __ne__(self, other) -> "Tile":
-        return not_equal(self, other)
-
-    def __neg__(self) -> "Tile":
-        return negative(self)
-
-    def __invert__(self) -> "Tile":
-        return bitwise_not(self)
-
-    def __matmul__(self, other) -> "Tile":
-        return _binop(matmul, other, self, other)
-
-    def __rmatmul__(self, other) -> "Tile":
-        return _binop(matmul, other, other, self)
-
-    def __divmod__(self, other):
-        return _binop(divmod, other, self, other)
-
-    def __rdivmod__(self, other):
-        return _binop(divmod, other, other, self)
-
-    def __lshift__(self, other):
-        return _binop(bitwise_lshift, other, self, other)
-
-    def __rlshift__(self, other):
-        return _binop(bitwise_lshift, other, other, self)
-
-    def __rshift__(self, other):
-        return _binop(bitwise_rshift, other, self, other)
-
-    def __rrshift__(self, other):
-        return _binop(bitwise_rshift, other, other, self)
-
-
-def _binop(func, other, lhs, rhs):
-    if not isinstance(other, _TILE_LIKE_TYPES):
-        return NotImplemented
-    return func(lhs, rhs)
-
-
-_TILE_LIKE_TYPES = (Tile, int, float, bool)
 
 
 TileOrScalar = Union[Tile, Scalar]
@@ -3341,6 +3136,111 @@ def mul(x, y, /, *, rounding_mode: Optional[RoundingMode] = None,
     pass
 
 
+@stub(host=True)
+def wrapping_add(x, y, /) -> TileOrScalar:
+    """Elementwise integer addition that wraps around on overflow.
+
+    Args:
+        x (Tile): LHS tile.
+        y (Tile): RHS tile.
+
+    The `shape` of `x` and `y` will be broadcasted. Unlike :func:`add`, the dtypes are not
+    promoted: `x` and `y` must have the same integer dtype, and the result is computed
+    modulo 2**bitwidth of that dtype. A loosely typed constant is converted to the dtype
+    of the other operand, also modulo 2**bitwidth: for example, -1 becomes 255 for uint8.
+
+    At least one of the operands must have a concrete dtype, since loosely typed constants
+    don't have a bit width. For example, ``ct.wrapping_add(1, 2)`` is an error,
+    but ``ct.wrapping_add(ct.uint8(150), 110)`` is ``ct.uint8(4)``.
+
+    Returns:
+        Tile:
+
+    Examples:
+
+        .. testcode::
+            :template: kernel_wrapper.py
+
+            tx = ct.arange(4, dtype=ct.int8)
+            print(ct.wrapping_add(tx, 126))
+
+        .. testoutput::
+
+            [126, 127, -128, -127]
+    """
+    return _binary_wrapping_arithmetic_tensorlike("wrapping_add", x, y, False)
+
+
+@stub(host=True)
+def wrapping_sub(x, y, /) -> TileOrScalar:
+    """Elementwise integer subtraction that wraps around on overflow.
+
+    Args:
+        x (Tile): LHS tile.
+        y (Tile): RHS tile.
+
+    The `shape` of `x` and `y` will be broadcasted. Unlike :func:`sub`, the dtypes are not
+    promoted: `x` and `y` must have the same integer dtype, and the result is computed
+    modulo 2**bitwidth of that dtype. A loosely typed constant is converted to the dtype
+    of the other operand, also modulo 2**bitwidth: for example, -1 becomes 255 for uint8.
+
+    At least one of the operands must have a concrete dtype, since loosely typed constants
+    don't have a bit width. For example, ``ct.wrapping_sub(1, 2)`` is an error,
+    but ``ct.wrapping_sub(ct.uint8(0), 1)`` is ``ct.uint8(255)``.
+
+    Returns:
+        Tile:
+
+    Examples:
+
+        .. testcode::
+            :template: kernel_wrapper.py
+
+            tx = ct.arange(4, dtype=ct.int8)
+            print(ct.wrapping_sub(-127, tx))
+
+        .. testoutput::
+
+            [-127, -128, 127, 126]
+    """
+    return _binary_wrapping_arithmetic_tensorlike("wrapping_sub", x, y, False)
+
+
+@stub(host=True)
+def wrapping_mul(x, y, /) -> TileOrScalar:
+    """Elementwise integer multiplication that wraps around on overflow.
+
+    Args:
+        x (Tile): LHS tile.
+        y (Tile): RHS tile.
+
+    The `shape` of `x` and `y` will be broadcasted. Unlike :func:`mul`, the dtypes are not
+    promoted: `x` and `y` must have the same integer dtype, and the result is computed
+    modulo 2**bitwidth of that dtype. A loosely typed constant is converted to the dtype
+    of the other operand, also modulo 2**bitwidth: for example, -1 becomes 255 for uint8.
+
+    At least one of the operands must have a concrete dtype, since loosely typed constants
+    don't have a bit width. For example, ``ct.wrapping_mul(1, 2)`` is an error,
+    but ``ct.wrapping_mul(ct.uint8(16), 17)`` is ``ct.uint8(16)``.
+
+    Returns:
+        Tile:
+
+    Examples:
+
+        .. testcode::
+            :template: kernel_wrapper.py
+
+            tx = ct.arange(4, dtype=ct.int8)
+            print(ct.wrapping_mul(tx, 64))
+
+        .. testoutput::
+
+            [0, 64, -128, -64]
+    """
+    return _binary_wrapping_arithmetic_tensorlike("wrapping_mul", x, y, False)
+
+
 @_doc_binary_op('/')
 @stub(static_eval_ok=True)
 def truediv(x, y, /, *, rounding_mode: Optional[RoundingMode] = None,
@@ -3670,7 +3570,7 @@ def maximum(x, y, /, *, flush_to_zero: bool = False, propagate_nan: bool = False
     pass
 
 
-@stub(host=True, static_eval_ok=True)
+@stub(host=True)
 def cdiv(x, y, /) -> TileOrScalar:
     """Computes ceil(x / y). Can be used on the host.
 
@@ -4564,7 +4464,7 @@ def static_assert(condition, message=None, /):
     """
 
 
-@stub(host=True, static_eval_ok=True)
+@stub(host=True)
 def static_iter(iterable):
     """Iterates at compile time.
 

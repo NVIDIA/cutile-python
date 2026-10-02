@@ -299,18 +299,25 @@ def test_pow_bool_operands(lhs_dt, rhs_dt, vector, use_operator):
     lhs = make_symbolic_tensor([2], lhs_dt)
     rhs = make_symbolic_tensor([2], rhs_dt)
     out = make_symbolic_tensor([2], cl.float32)
+    if datatype.is_float(lhs_dt) or datatype.is_float(rhs_dt):
+        # Like other arithmetic operations, pow promotes a bool operand to the other dtype
+        raises = None
+    elif lhs_dt == rhs_dt:
+        raises = pytest.raises(TypeCheckingError,
+                               match="Binary arithmetic is not supported for booleans")
+    else:
+        raises = pytest.raises(TypeCheckingError,
+                               match="Exponentiation of non-constant integers is not supported")
     compile_kernel(
         kernel,
         signature=KernelSignature([lhs, rhs, out]),
-        raises=pytest.raises(TypeCheckingError, match="pow does not support bool operands"),
+        raises=raises,
     )
 
 
 @pytest.mark.parametrize(
     "lhs_dt, rhs_dt, result_dt",
     (
-        (cl.int32, cl.int32, cl.float32),
-        (cl.uint32, cl.uint32, cl.float32),
         (cl.float16, cl.int32, cl.float16),
         (cl.float32, cl.int32, cl.float32),
         (cl.float64, cl.int32, cl.float64),
@@ -362,12 +369,30 @@ def test_pow(lhs_dt, rhs_dt, result_dt, vector):
     rhs_values = rhs.cpu().tolist()
     expected_values = [x**y for x, y in zip(lhs_values, rhs_values, strict=True)]
     expected = torch.tensor(expected_values, dtype=result_torch_dt)
-    if datatype.is_float(result_dt):
-        assert_close_float(out.cpu(), expected, result_dt)
-        assert_close_float(operator_out.cpu(), expected, result_dt)
-    else:
-        torch.testing.assert_close(out.cpu(), expected, rtol=0, atol=0)
-        torch.testing.assert_close(operator_out.cpu(), expected, rtol=0, atol=0)
+    assert_close_float(out.cpu(), expected, result_dt)
+    assert_close_float(operator_out.cpu(), expected, result_dt)
+
+
+@pytest.mark.parametrize("dtype", (cl.int32, cl.uint32))
+@pytest.mark.parametrize("vector", (False, True))
+@pytest.mark.parametrize("use_operator", (False, True))
+def test_pow_integers(dtype, vector, use_operator):
+    def pow(x, y):
+        return x ** y if use_operator else device_math.pow(x, y)
+
+    def kernel(lhs, rhs, out):
+        if vector:
+            out.pointer().store(pow(lhs.pointer().load(count=2), rhs.pointer().load(count=2)))
+        else:
+            out[0] = pow(lhs[0], rhs[0])
+
+    arr = make_symbolic_tensor([2], dtype)
+    compile_kernel(
+        kernel,
+        signature=KernelSignature([arr, arr, arr]),
+        raises=pytest.raises(TypeCheckingError,
+                             match="Exponentiation of non-constant integers is not supported"),
+    )
 
 
 @pytest.mark.parametrize(
@@ -434,12 +459,13 @@ def test_pow_scalar_vector_broadcast(lhs_dt, rhs_dt, result_dt, vector_side):
         # Integer exponent cast to i32.
         (datatype.float64, datatype.int8, "math.fpowi", "__nv_powi"),
         (datatype.float64, datatype.int16, "math.fpowi", "__nv_powi"),
-        (datatype.float64, datatype.int64, "math.fpowi", "__nv_powi"),
+        # Integer exponent that may not fit in i32 is cast to float.
+        (datatype.float64, datatype.int64, "math.powf", "__nv_pow"),
         # promote floats to same type
         (datatype.float32, datatype.float64, "math.powf", "__nv_pow"),
         (datatype.float64, datatype.float32, "math.powf", "__nv_pow"),
         # half precision promotion
-        (datatype.float16, datatype.float16, "math.powf", "__nv{approx}_powf"),
+        (datatype.float16, datatype.float16, "math.powf", "__nv_powf"),
     ),
 )
 @pytest.mark.parametrize("approx", (False, True))
@@ -457,11 +483,22 @@ def test_pow_math_dialect(
     return_type = (
         "double" if libdevice_name in ("__nv_pow", "__nv_powi") else "float"
     )
-    compile_kernel(
-        kernel,
-        signature=KernelSignature([lhs, rhs, out]),
-        assert_in_nvvm=f"call {return_type} @{libdevice_name}(",
-    )
+    # approx is only supported for float32, and has no effect for integer exponents
+    float32_only = (datatype.float32, datatype.float32)
+    if approx and datatype.is_float(rhs_dt) and (lhs_dt, rhs_dt) != float32_only:
+        compile_kernel(
+            kernel,
+            signature=KernelSignature([lhs, rhs, out]),
+            raises=pytest.raises(
+                TypeCheckingError, match=r"pow\(approx=True\) is only supported for float32"
+            ),
+        )
+    else:
+        compile_kernel(
+            kernel,
+            signature=KernelSignature([lhs, rhs, out]),
+            assert_in_nvvm=f"call {return_type} @{libdevice_name}(",
+        )
 
 
 @pytest.mark.skipif(
@@ -1280,17 +1317,19 @@ def test_integer_remainder_requires_integer(lhs_dtype, rhs_dtype):
 
 
 @pytest.mark.parametrize(
-    "operation,dtype,check",
+    "operation,dtype,checks",
     (
-        (operator.floordiv, cl.float32, ("arith.divf", "math.floor")),
-        (operator.mod, cl.float32, "callee = @__nv_fmodf"),
-        (cl.cdiv, cl.int32, "arith.ceildivsi"),
-        (cl.cdiv, cl.uint32, "arith.ceildivui"),
-        (cl.integer_remainder, cl.int32, "arith.remsi"),
-        (cl.integer_remainder, cl.uint32, "arith.remui"),
+        (operator.floordiv, cl.float32, dict(assert_in_mlir=("arith.divf", "math.floor"))),
+        (operator.mod, cl.float32, dict(assert_in_nvvm="call float @__nv_fmodf")),
+        (device_math.mod, cl.float32, dict(assert_in_nvvm="call float @__nv_fmodf")),
+        (operator.mod, cl.float64, dict(assert_in_nvvm="call double @__nv_fmod")),
+        (cl.cdiv, cl.int32, dict(assert_in_mlir="arith.ceildivsi")),
+        (cl.cdiv, cl.uint32, dict(assert_in_mlir="arith.ceildivui")),
+        (cl.integer_remainder, cl.int32, dict(assert_in_mlir="arith.remsi")),
+        (cl.integer_remainder, cl.uint32, dict(assert_in_mlir="arith.remui")),
     ),
 )
-def test_division_mlir(operation, dtype, check):
+def test_division_codegen(operation, dtype, checks):
     def kernel(lhs, rhs, out):
         out[0] = operation(lhs[0], rhs[0])
 
@@ -1300,7 +1339,7 @@ def test_division_mlir(operation, dtype, check):
     compile_kernel(
         kernel,
         signature=KernelSignature([lhs, rhs, out]),
-        assert_in_mlir=check,
+        **checks,
     )
 
 

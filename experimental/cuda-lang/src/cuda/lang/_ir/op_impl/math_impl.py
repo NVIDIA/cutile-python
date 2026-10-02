@@ -7,7 +7,7 @@ import operator
 
 from cuda.tile._ir.ir import add_operation_variadic
 from cuda.tile._ir.type import LooselyTypedScalar
-from cuda.tile._ir.ops_utils import promote_dtypes, promote_types
+from cuda.tile._ir.ops_utils import promote_types
 
 import cuda.lang._datatype as datatype
 from cuda.lang._exception import TypeCheckingError
@@ -26,7 +26,6 @@ from cuda.lang._ir.op_defs import (
     MathUnaryOperation,
 )
 from cuda.lang._ir.type_checking_helpers import (
-    broadcast_to_same_shape,
     common_type,
     require_scalar_type,
     require_scalar_or_vector_float_type,
@@ -40,9 +39,9 @@ from cuda.tile._ir.arithmetic_ops import (
     binary_arithmetic_tensorlike,
     binary_arithmetic_tensorlike_raw,
     binary_bitwise_tensorlike,
+    binary_wrapping_arithmetic_tensorlike,
     bitwise_shift_tensorlike,
     compare_tensorlike,
-    mod_tensorlike,
     promote_and_broadcast_to,
     unary,
     where, invert_tensorlike, logical_not_impl, divmod_tensorlike,
@@ -73,6 +72,15 @@ def math_binary_arithmetic_impl(fn: str, x: Var, y: Var):
     require_scalar_or_vector_type(x)
     require_scalar_or_vector_type(y)
     return binary_arithmetic_tensorlike(fn, x, y)
+
+
+@impl(cl_math.wrapping_add, fixed_args=["wrapping_add"])
+@impl(cl_math.wrapping_sub, fixed_args=["wrapping_sub"])
+@impl(cl_math.wrapping_mul, fixed_args=["wrapping_mul"])
+def math_binary_wrapping_arithmetic_impl(fn: str, x: Var, y: Var):
+    require_scalar_or_vector_type(x)
+    require_scalar_or_vector_type(y)
+    return binary_wrapping_arithmetic_tensorlike(fn, x, y)
 
 
 @impl(cl_math.add, fixed_args=["add"])
@@ -225,70 +233,11 @@ def math_comparison_impl(fn: str, x: Var, y: Var):
     return compare_tensorlike(fn, x, y)
 
 
-def get_libdevice_fmod_function(dtype):
-    match dtype:
-        case datatype.float32:
-            entrypoint = "__nv_fmodf"
-        case datatype.float64:
-            entrypoint = "__nv_fmod"
-        case _:
-            raise TypeCheckingError(f"mod is not valid for dtype {dtype}")
-    return lambda x, y: add_operation(
-        ForeignFunction,
-        ScalarTy(dtype),
-        function_name=entrypoint,
-        operands_=(x, y),
-    )
-
-
-def float_modulo_with_corrected_sign(value: Var, y: Var) -> Var:
-    """
-    Python modulo takes the sign from the second operand
-
-    https://docs.python.org/3.14/reference/expressions.html
-    > The modulo operator always yields a result with the same sign as its
-    > second operand
-
-    but libdevice's mod gives the same sign as the first argument, so we correct
-    the sign after calling libdevice.
-
-    https://docs.nvidia.com/cuda/libdevice-users-guide/__nv_fmod.html
-    """
-    ty = value.get_type()
-    assert ty == y.get_type()
-    zero = strictly_typed_const(0, ty)
-    value_sign = compare_tensorlike("lt", value, zero)
-    y_sign = compare_tensorlike("lt", y, zero)
-
-    sign_mismatch = binary_bitwise_tensorlike("xor", value_sign, y_sign)
-    fixed_value = binary_arithmetic_tensorlike("add", value, y)
-    corrected_value = where(sign_mismatch, fixed_value, value)
-
-    value_is_zero = compare_tensorlike("eq", value, zero)
-    negative_zero = unary("neg", UNARY_INT_FLOAT, zero)
-    signed_zero = where(y_sign, negative_zero, zero)
-    return where(value_is_zero, signed_zero, corrected_value)
-
-
-@impl(operator.mod, overload=(TensorLikeTy, TensorLikeTy))
 @impl(cl_math.mod)
 def math_mod_impl(x: Var, y: Var):
     require_scalar_or_vector_type(x, datatype.is_numeric)
     require_scalar_or_vector_type(y, datatype.is_numeric)
-    ty = common_type(x, y)
-    dtype = ty.tensor_dtype()
-    if not is_float(dtype):
-        return mod_tensorlike(x, y)
-
-    x = promote_and_broadcast_to(x, ty)
-    y = promote_and_broadcast_to(y, ty)
-    call_dtype = datatype.float32 if dtype.bitwidth < 32 else dtype
-    call_x = astype(x, call_dtype)
-    call_y = astype(y, call_dtype)
-    scalar_fn = get_libdevice_fmod_function(call_dtype)
-    value = vector_elementwise_apply(scalar_fn, call_x, call_y)
-    value = astype(value, dtype)
-    return float_modulo_with_corrected_sign(value, y)
+    return binary_arithmetic_tensorlike("mod", x, y)
 
 
 @impl(cl_math.integer_remainder)
@@ -421,60 +370,19 @@ def math_float_fpclass_impl(fn: str, x: Var):
     return vector_elementwise_apply(scalar_fpclass, x)
 
 
-def _math_pow_impl(x: Var, y: Var, approx: Var):
-    x_ty, y_ty = x.get_type(), y.get_type()
-    base_dt, exp_dt = x_ty.tensor_dtype(), y_ty.tensor_dtype()
-
-    if base_dt == datatype.bool_ or exp_dt == datatype.bool_:
-        raise TypeCheckingError(
-            "pow does not support bool operands; cast bool to int or float"
-        )
-
-    # int32 is the only valid integral exponent dtype
-    if is_integral(exp_dt):
-        exp_dt = datatype.int32
-
-    # integral base is promoted to float
-    if is_integral(base_dt):
-        # 8b-32b ints are promoted to single-precision floats
-        if base_dt.bitwidth <= 32:
-            base_dt = datatype.float32
-        else:
-            base_dt = datatype.float64
-
-    # if either operand is half precision float, promote to single
-    if base_dt == datatype.float16:
-        base_dt = datatype.float32
-    if exp_dt == datatype.float16:
-        exp_dt = datatype.float32
-
-    # if both operands are floats, promote to the larger one
-    if is_float(base_dt) and is_float(exp_dt) and base_dt.bitwidth != exp_dt.bitwidth:
-        base_dt = exp_dt = promote_dtypes(base_dt, exp_dt)
-
-    x = astype(x, base_dt)
-    y = astype(y, exp_dt)
-    x, y = broadcast_to_same_shape(x, y)
-
-    return add_operation(
-        MathBinaryOperation,
-        x.get_type(),
-        fn="pow",
-        lhs=x,
-        rhs=y,
-        approx=require_constant_bool(approx),
-    )
-
-
 @impl(cl_math.pow)
 def math_pow_impl(x: Var, y: Var, approx: Var):
-    return _math_pow_impl(x, y, approx)
-
-
-@impl(operator.pow, overload=(TensorLikeTy, TensorLikeTy))
-def math_operator_pow_impl(x: Var, y: Var):
-    approx = strictly_typed_const(False, ScalarTy(datatype.bool_))
-    return _math_pow_impl(x, y, approx)
+    # The approximate implementation doesn't support negative bases, so it is not used for
+    # integer exponents. Instead, these use FPowI, which is exact.
+    rounding_mode = None
+    if require_constant_bool(approx) and is_float(y.get_loose_type().tensor_dtype()):
+        dtype = common_type(x, y).tensor_dtype()
+        if dtype != datatype.float32:
+            raise TypeCheckingError(
+                f"pow(approx=True) is only supported for float32, not {dtype}"
+            )
+        rounding_mode = RoundingMode.APPROX
+    return binary_arithmetic_tensorlike("pow", x, y, rounding_mode)
 
 
 @impl(cl_math.atan2, fixed_args=["atan2"])

@@ -4,6 +4,7 @@
 import re
 
 import pytest
+import math
 from math import ceil
 
 import torch
@@ -480,6 +481,29 @@ def test_array_mod(shape, tile, x_dtype, y_dtype, tmp_path, mod_func):
         assert_equal(z, ref)
 
 
+def test_array_float_mod_special_values():
+    @ct.kernel
+    def kernel(x, y, z):
+        tx = ct.load(x, index=(0,), shape=(8,))
+        ty = ct.load(y, index=(0,), shape=(8,))
+        ct.store(z, index=(0,), tile=tx % ty)
+
+    inf = math.inf
+    xs = [-4.0, 4.0, -0.0, 0.0, inf, 1.0, 3.0, -5.5]
+    ys = [2.0, -2.0, 2.0, -2.0, 2.0, 0.0, -inf, 2.0]
+    x = torch.tensor(xs, dtype=torch.float32, device="cuda:0")
+    y = torch.tensor(ys, dtype=torch.float32, device="cuda:0")
+    z = torch.zeros_like(x)
+    ct.launch(torch.cuda.current_stream(), (1,), kernel, (x, y, z))
+    # Python's % for floats: a zero result takes the sign of the divisor
+    expected = [0.0, -0.0, 0.0, -0.0, math.nan, math.nan, -inf, 0.5]
+    for got, want in zip(z.tolist(), expected, strict=True):
+        if math.isnan(want):
+            assert math.isnan(got)
+        else:
+            assert got == want and math.copysign(1.0, got) == math.copysign(1.0, want)
+
+
 @pytest.mark.parametrize("divmod_func", [divmod, ct.divmod])
 @pytest.mark.parametrize("x_dtype", int_dtypes, ids=dtype_id)
 @pytest.mark.parametrize("y_dtype", int_dtypes, ids=dtype_id)
@@ -819,7 +843,7 @@ def test_array_bitwise_logical(shape, tile, x_dtype, y_dtype, op_symbol, op_func
                 kernel = array_kernel('bitwise', expr, tmp_path)
                 launch_binary(kernel, x, y, z, tile)
         elif to_dtype(x_dtype) != to_dtype(y_dtype):
-            with pytest.raises(TileTypeError, match=r'Bitwise operands must have same data type'):
+            with pytest.raises(TileTypeError, match=r'Bitwise operands must have the same dtype'):
                 kernel = array_kernel('bitwise', expr, tmp_path)
                 launch_binary(kernel, x, y, z, tile)
         else:
@@ -856,7 +880,7 @@ def test_array_bitwise_shift(shape, tile, x_dtype, y_dtype, op_symbol, op_func, 
     for expr in [f"tz = tx {op_symbol} ty", f"tz = {op_func}(tx, ty)"]:
         if x_dtype.is_floating_point or y_dtype.is_floating_point:
             with pytest.raises(TileTypeError,
-                               match=r'Bitwise shift requires an integer'):
+                               match=r'side of bitwise shift must be an integer'):
                 kernel = array_kernel('bitwise', expr, tmp_path)
                 launch_binary(kernel, x, y, z, tile)
         else:
@@ -890,7 +914,7 @@ def test_array_scalar_bitwise(shape, dtype, tile, op, tmp_path):
     z = torch.zeros_like(x)
     kernel = array_scalar_kernel('bitwise', f'tz = tx {op} y', tmp_path)
     with raises_if(dtype != torch.int32, TileTypeError,
-                   match="Bitwise operands must have same data type"):
+                   match="Bitwise operands must have the same dtype"):
         launch_binary(kernel, x, y, z, tile)
         ref = bitwise_reference(op, x, y)
         assert_equal(z, ref)
@@ -959,3 +983,75 @@ def test_array_atan2(shape, tile, x_dtype, y_dtype, tmp_path):
     else:
         launch_binary(kernel, x, y, z, tile)
         assert_close(z, torch.atan2(x, y))
+
+
+wrapping_arithmetic_cases = [
+    pytest.param("ct.wrapping_add", lambda x, y: x + y, id="add"),
+    pytest.param("ct.wrapping_sub", lambda x, y: x - y, id="sub"),
+    pytest.param("ct.wrapping_mul", lambda x, y: x * y, id="mul"),
+]
+
+
+# Torch integer arithmetic wraps around, so it serves as the reference
+@pytest.mark.parametrize("dtype", [torch.int8, torch.uint8, torch.int32, torch.int64],
+                         ids=dtype_id)
+@pytest.mark.parametrize("op_func, ref_func", wrapping_arithmetic_cases)
+def test_array_wrapping_arithmetic(shape, tile, dtype, op_func, ref_func, tmp_path):
+    info = torch.iinfo(dtype)
+    x = torch.randint(info.min, info.max, shape, dtype=dtype, device='cuda:0')
+    y = torch.randint(info.min, info.max, shape, dtype=dtype, device='cuda:0')
+    z = torch.zeros_like(x)
+    kernel = array_kernel("wrapping_arithmetic", f"tz = {op_func}(tx, ty)", tmp_path)
+    launch_binary(kernel, x, y, z, tile)
+    assert_equal(z, ref_func(x, y))
+
+
+@pytest.mark.parametrize("op_func, ref_func", wrapping_arithmetic_cases)
+def test_array_scalar_wrapping_arithmetic(shape, tile, op_func, ref_func, tmp_path):
+    x = torch.randint(-128, 127, shape, dtype=torch.int8, device='cuda:0')
+    z = torch.zeros_like(x)
+    # The loosely typed constant is converted to int8 modulo 256, i.e. 300 becomes 44
+    kernel = array_scalar_kernel("wrapping_arithmetic", f"tz = {op_func}(tx, 300)", tmp_path)
+    launch_binary(kernel, x, x, z, tile)
+    assert_equal(z, ref_func(x, torch.tensor(44, dtype=torch.int8)))
+
+
+def test_wrapping_arithmetic_constant():
+    @ct.kernel
+    def kernel(z):
+        ct.scatter(z, 0, ct.int64(ct.wrapping_add(ct.uint8(150), 110)))
+        ct.scatter(z, 1, ct.int64(ct.wrapping_sub(ct.uint8(0), 1)))
+        ct.scatter(z, 2, ct.int64(ct.wrapping_mul(ct.int8(64), ct.int8(2))))
+
+    z = torch.zeros(3, dtype=torch.int64, device='cuda:0')
+    ct.launch(torch.cuda.current_stream(), (1,), kernel, (z,))
+    assert z.tolist() == [4, 255, -128]
+
+
+def test_wrapping_arithmetic_in_static_eval():
+    @ct.kernel
+    def kernel(x, z):
+        a = ct.uint8(150)
+        b = ct.uint8(0)
+        ct.static_assert(ct.wrapping_add(a, 110) == 4)
+        c = ct.static_eval(ct.wrapping_sub(b, 1))
+        tx = ct.load(x, index=(0,), shape=(4,))
+        tz = ct.static_eval(ct.wrapping_mul(tx, c))
+        ct.store(z, index=(0,), tile=tz)
+
+    x = torch.tensor([0, 1, 2, 3], dtype=torch.uint8, device='cuda:0')
+    z = torch.zeros_like(x)
+    ct.launch(torch.cuda.current_stream(), (1,), kernel, (x, z))
+    assert z.tolist() == [0, 255, 254, 253]
+
+
+@pytest.mark.parametrize("expr, error_type, msg", [
+    ("ct.wrapping_add(1, 2)", TileTypeError, "needs an explicit bit width"),
+    ("ct.wrapping_add(ct.int8(1), ct.int16(2))", TileTypeError, "must have the same dtype"),
+    ("ct.wrapping_add(ct.float32(1), 2)", TileTypeError, "must be an integer"),
+])
+def test_wrapping_arithmetic_errors(expr, error_type, msg, tmp_path):
+    kernel = scalar_kernel("wrapping_arithmetic_error", f"c = {expr}", tmp_path)
+    x = torch.zeros((1,), dtype=torch.int32, device='cuda:0')
+    with pytest.raises(error_type, match=msg):
+        launch_binary(kernel, x, x, x, 1)

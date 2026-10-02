@@ -2,12 +2,11 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 from dataclasses import dataclass
-from typing import Sequence
+from typing import Any, Sequence
 
 from typing_extensions import override
 
 from cuda.lang._ir.ir import LocalArrayContextManagerValue
-from cuda.lang._stub.types import Scalar, Pointer, Vector
 from cuda.tile._ir.type import (
     Type,
     TupleTy,
@@ -28,7 +27,6 @@ from cuda.tile._ir.type import (
     TupleValue,
     PointerInfoTy,
     TensorLikeTy,
-    Symbol,
     SymbolicArray,
     SymbolicClosure,
     SliceType,
@@ -38,6 +36,7 @@ from cuda.tile._ir.type import (
 )
 import cuda.lang._datatype as datatype
 from cuda.tile._datatype import DType, PointerInfo
+from cuda.tile._cext import _make_symbolic_tensor, _make_constant_0d_tensor
 from cuda.tile._ir.ir import Var, AggregateValue, TypingHooks
 from cuda.lang._exception import TypeCheckingError
 
@@ -48,6 +47,34 @@ class ScalarTy(TensorLikeTy):
 
     def __post_init__(self):
         assert isinstance(self.dtype, DType)
+        assert datatype.is_numeric(self.dtype)
+
+    @override
+    def tensor_dtype(self) -> "DType":
+        return self.dtype
+
+    @override
+    def tensor_shape(self) -> tuple[int, ...]:
+        return ()
+
+    def __str__(self):
+        return str(self.dtype)
+
+    @override
+    def make_symbol(self, var: "Var") -> Any:
+        if var.is_constant():
+            return _make_constant_0d_tensor(var.get_constant(), self.dtype, False)
+        return _make_symbolic_tensor(var, False)
+
+
+# A value of an opaque dtype, such as mbarrier or tensor_map_descriptor
+@dataclass(frozen=True)
+class OpaqueTy(TensorLikeTy):
+    dtype: DType
+
+    def __post_init__(self):
+        assert isinstance(self.dtype, DType)
+        assert not datatype.is_numeric(self.dtype)
         assert not datatype.is_pointer_dtype(self.dtype)
 
     @override
@@ -62,44 +89,8 @@ class ScalarTy(TensorLikeTy):
         return str(self.dtype)
 
     @override
-    def make_symbol(self, var: "Var") -> Symbol:
-        return SymbolicScalar(var)
-
-
-class SymbolicScalar(Symbol, Scalar):
-    def __init__(self, var: "Var[ScalarTy]"):
-        Symbol.__init__(self, var)
-
-    @property
-    def dtype(self):
-        return self._var.get_type().dtype
-
-    def __bool__(self):
-        raise ValueError(
-            "Symbolic scalar has no concrete value and thus cannot be converted"
-            " to boolean"
-        )
-
-    def __int__(self):
-        raise ValueError(
-            "Symbolic scalar has no concrete value and thus cannot be converted"
-            " to an integer"
-        )
-
-    def __float__(self):
-        raise ValueError(
-            "Symbolic scalar has no concrete value and thus cannot be converted"
-            " to a float"
-        )
-
-    def __index__(self):
-        raise ValueError(
-            "Symbolic scalar has no concrete value and thus cannot be converted"
-            " to an integer"
-        )
-
-    def __repr__(self):
-        return f"<scalar[{self.dtype}]>"
+    def make_symbol(self, var: "Var") -> Any:
+        return _make_symbolic_tensor(var, False)
 
 
 @dataclass(frozen=True)
@@ -134,32 +125,8 @@ class PointerTy(TensorLikeTy):
         return str(self.pointer_dtype)
 
     @override
-    def make_symbol(self, var: "Var") -> Symbol:
-        return SymbolicPointer(var)
-
-
-class SymbolicPointer(Symbol, Pointer):
-    def __init__(self, var: "Var[PointerTy]"):
-        Symbol.__init__(self, var)
-
-    @property
-    def pointer_dtype(self):
-        return self._var.get_type().pointer_dtype
-
-    @property
-    def opaque(self) -> bool:
-        return PointerInfo(self.pointer_dtype).opaque
-
-    @property
-    def pointee_dtype(self) -> DType:
-        return PointerInfo(self.pointer_dtype).pointee_dtype
-
-    @property
-    def memory_space(self) -> MemorySpace:
-        return PointerInfo(self.pointer_dtype).memory_space
-
-    def __repr__(self):
-        return f"<{self.pointer_dtype}>"
+    def make_symbol(self, var: "Var") -> Any:
+        return _make_symbolic_tensor(var, False)
 
 
 @dataclass(frozen=True)
@@ -187,35 +154,20 @@ class VectorTy(TensorLikeTy):
         return f"Vector[{self.element_dtype}, {self.length}]"
 
     @override
-    def make_symbol(self, var: "Var") -> Symbol:
-        return SymbolicVector(var)
-
-
-class SymbolicVector(Symbol, Vector):
-    def __init__(self, var: "Var[VectorTy]"):
-        Symbol.__init__(self, var)
-
-    @property
-    def element_dtype(self) -> "DType":
-        return self._var.get_type().element_dtype
-
-    @property
-    def element_count(self) -> int:
-        return self._var.get_type().length
-
-    def __len__(self) -> int:
-        return self.element_count
-
-    def __repr__(self):
-        return f"<vector[{self.element_dtype}, count={self.element_count}]>"
+    def make_symbol(self, var: "Var") -> Any:
+        return _make_symbolic_tensor(var, False)
 
 
 def is_vector_ty(ty: Type) -> bool:
     return isinstance(ty, VectorTy)
 
 
-def make_rank0_ty(dtype: DType) -> ScalarTy | PointerTy:
-    return PointerTy(dtype) if datatype.is_pointer_dtype(dtype) else ScalarTy(dtype)
+def make_rank0_ty(dtype: DType) -> ScalarTy | PointerTy | OpaqueTy:
+    if datatype.is_pointer_dtype(dtype):
+        return PointerTy(dtype)
+    if datatype.is_numeric(dtype):
+        return ScalarTy(dtype)
+    return OpaqueTy(dtype)
 
 
 def make_vector_ty(dtype: DType, length: int) -> VectorTy:
@@ -284,8 +236,8 @@ def type_bitwidth(x: Type):
     match x:
         case PointerTy() as pt:
             return pt.pointer_dtype.bitwidth
-        case ScalarTy() as st:
-            return st.dtype.bitwidth
+        case ScalarTy() | OpaqueTy() as ty:
+            return ty.dtype.bitwidth
         case VectorTy() as vt:
             return vt.element_dtype.bitwidth * vt.length
     raise TypeCheckingError(f"Cannot access bitwidth of type '{x}'")
@@ -296,6 +248,7 @@ __all__ = (
     "TupleTy",
     "ArrayTy",
     "ScalarTy",
+    "OpaqueTy",
     "StreamTy",
     "PointerTy",
     "VectorTy",
@@ -320,9 +273,6 @@ __all__ = (
     "LangTypingHooks",
     "SymbolicArray",
     "SymbolicClosure",
-    "SymbolicVector",
-    "SymbolicScalar",
-    "SymbolicPointer",
     "SliceType",
     "SliceValue",
     "EllipsisType",

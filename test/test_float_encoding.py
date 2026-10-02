@@ -269,10 +269,16 @@ def test_low_precision_float_from_bits(type, value_table):
         assert bits == encode_float(val, type)
 
 
+@pytest.mark.parametrize("dtype", [ct.float8_e8m0fnu, ct.float8_e5m3fnu])
+def test_encode_negative_nan_as_unsigned(dtype):
+    assert encode_float(-math.nan, dtype) == 0xff
+
+
 def test_encode_not_representable():
     with pytest.raises(ValueError, match="Cannot represent NaN as float4_e2m1fn"):
         encode_float(math.nan, ct.float4_e2m1fn)
-    with pytest.raises(ValueError, match="Cannot represent a negative value as float8_e8m0fnu"):
+    with pytest.raises(OverflowError,
+                       match="Cannot represent negative value -1.0 as float8_e8m0fnu"):
         encode_float(-1.0, ct.float8_e8m0fnu)
 
 
