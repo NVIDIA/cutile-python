@@ -262,20 +262,17 @@ def _get_mlir_unary_op_for_op_and_type(
 
 
 def _invert_boolean(operand):
-    mlir_bool = dtype_to_mlir_type(datatype.bool_)
-    false = mlir_constant_of_type(mlir_bool, 0)
+    false = mlir_constant_of_type(operand.type, 0)
     cmp = mlir.arith.add_CmpIOp(
         predicate=mlir.arith.CmpIPredicate.eq, lhs=operand, rhs=false
     )
-    cmp = mlir.arith.add_ExtUIOp(out_type=mlir_bool, in_=cmp)
-    return cmp
+    return mlir.arith.add_ExtUIOp(out_type=operand.type, in_=cmp)
 
 
 def _invert_int(dtype, operand):
     assert is_integral(dtype)
-    mlir_dtype = dtype_to_mlir_type(dtype)
     all_ones = (1 << dtype.bitwidth) - 1
-    all_ones_mlir = mlir_constant_of_type(mlir_dtype, all_ones)
+    all_ones_mlir = mlir_constant_of_type(operand.type, all_ones)
     return mlir.arith.add_XOrIOp(lhs=operand, rhs=all_ones_mlir)
 
 

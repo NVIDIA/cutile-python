@@ -9,7 +9,7 @@ import pytest
 import torch
 
 import cuda.lang as cl
-from cuda.lang._datatype import to_torch_dtype
+from cuda.lang._datatype import is_signed, to_torch_dtype
 from cuda.lang._exception import TypeCheckingError, InvalidValueError
 from cuda.lang.compilation import KernelSignature, ScalarConstraint
 
@@ -71,6 +71,56 @@ def test_pointer_vector_ldst(element_count, dtype):
     got = A.cpu().tolist()
     expect = torch.tensor(values, dtype=to_torch_dtype(dtype)).tolist()
     assert got == expect, f"{expect=} {got=}"
+
+
+@pytest.mark.parametrize("operation", ("~", "not", "cl.bitwise_not"))
+@pytest.mark.parametrize("values", ((False, False), (False, True), (True, False), (True, True)))
+def test_bool_vector_inversion(values, operation):
+    @cl.kernel
+    def kernel(inp, out):
+        v = cl.Vector(inp[0], inp[1])
+        if operation == "~":
+            result = ~v
+        elif operation == "not":
+            result = not v
+        else:
+            result = cl.bitwise_not(v)
+        out[0] = result[0]
+        out[1] = result[1]
+        out[2] = result.reduce(cl.VectorReduction.bitwise_and)
+
+    inp = torch.tensor(values, dtype=torch.bool, device="cuda:0")
+    out = torch.empty(3, dtype=torch.bool, device="cuda:0")
+    cl.launch(torch.cuda.current_stream(), (1,), (1,), kernel, (inp, out))
+    expected = [not value for value in values]
+    assert out.cpu().tolist() == [*expected, all(expected)]
+
+
+@pytest.mark.parametrize("use_operator", (False, True))
+@pytest.mark.parametrize(
+    "dtype",
+    (cl.int8, cl.int16, cl.int32, cl.int64, cl.uint8, cl.uint16, cl.uint32, cl.uint64),
+)
+def test_integer_vector_inversion(dtype, use_operator):
+    @cl.kernel
+    def kernel(inp, out):
+        v = inp.pointer().load(count=4)
+        if use_operator:
+            result = ~v
+        else:
+            result = cl.bitwise_not(v)
+        for i in range(4):
+            out[i] = result[i]
+        out[4] = result.reduce(cl.VectorReduction.bitwise_and)
+
+    values = (0, 1, 3, 7)
+    inp = torch.tensor(values, dtype=to_torch_dtype(dtype), device="cuda:0")
+    out = torch.empty(5, dtype=to_torch_dtype(dtype), device="cuda:0")
+    cl.launch(torch.cuda.current_stream(), (1,), (1,), kernel, (inp, out))
+    mask = -1 if is_signed(dtype) else (1 << dtype.bitwidth) - 1
+    expected = [value ^ mask for value in values]
+    reduction = expected[0] & expected[1] & expected[2] & expected[3]
+    assert out.cpu().tolist() == [*expected, reduction]
 
 
 def test_vector_apis():
