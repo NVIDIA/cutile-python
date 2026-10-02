@@ -125,3 +125,22 @@ def test_static_eval_dispatch_binop_via_rhs():
     x = torch.zeros(12, dtype=torch.int32, device="cuda")
     cl.launch(torch.cuda.current_stream(), (1,), (4,), kern, (x,))
     assert x.tolist() == [5, 6, 7, 8, 51, 52, 53, 54, 52, 53, 54, 55]
+
+
+def test_static_iter_in_static_eval():
+    z = []
+
+    @cl.static_def
+    def foo(x):
+        for i in cl.static_iter(x):
+            print(i)
+            z.append(i)
+
+    tup = (1, 2, 3, 4, 5)
+
+    @cl.kernel()
+    def kernel():
+        foo(tup)
+
+    cl.launch(torch.cuda.current_stream(), (1,), (1,), kernel, ())
+    assert z == list(tup)

@@ -4564,7 +4564,7 @@ def static_assert(condition, message=None, /):
     """
 
 
-@stub
+@stub(host=True, static_eval_ok=True)
 def static_iter(iterable):
     """Iterates at compile time.
 
@@ -4609,6 +4609,7 @@ def static_iter(iterable):
         ([0, 0, 0, 0], [1, 1, 1, 1], [2, 2, 2, 2], [3, 3, 3, 3])
         ([1, 1, 1, 1], [3, 3, 3, 3], [5, 5, 5, 5], [3, 3, 3, 3])
     """
+    return iterable
 
 
 @stub(host=True, compiled_host=True)
