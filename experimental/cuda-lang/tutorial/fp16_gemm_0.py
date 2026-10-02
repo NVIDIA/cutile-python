@@ -7,8 +7,7 @@ Computes ``C = A @ B.T`` with an optional FP16 row bias using a 128x128x64
 tile, one shared-memory stage, explicit TMA and mbarrier operations, tcgen05
 MMA into TMEM, FP32 accumulation, and an FP16 epilogue. A and B are row-major,
 K-contiguous tensors; ``order="F"`` expresses K as the leading TMA coordinate.
-Tensor maps declared in ``@cl.kernel`` are hoisted into the generated host
-program. K and ``has_bias`` are specialization keys, while M and N remain
+K and ``has_bias`` are specialization keys, while M and N remain
 runtime dimensions of C. The CLI validates inputs and checks correctness.
 """
 
@@ -39,8 +38,8 @@ def _to_float16_vector(values, base, vsize):
 
 @cl.kernel
 def _kernel(
-    a,
-    b,
+    a_tmap,
+    b_tmap,
     c,
     bias,
     k: cl.Constant[int],
@@ -55,22 +54,6 @@ def _kernel(
     tile_n = cl.block_index(1)
     off_m = tile_m * BLOCK_M
     off_n = tile_n * BLOCK_N
-
-    # A/B are ordinary row-major (rows, K) arrays. ``order="F"`` reverses the
-    # tensor-map modes to (K, rows), making K the contiguous TMA coordinate.
-    # The explicit mode order makes K the leading tensor-map dimension.
-    a_tmap = cl.tensor_map_tiled(
-        a,
-        (BLOCK_K, BLOCK_M),
-        order="F",
-        swizzle=cl.SwizzleMode.SWIZZLE_128B,
-    )
-    b_tmap = cl.tensor_map_tiled(
-        b,
-        (BLOCK_K, BLOCK_N),
-        order="F",
-        swizzle=cl.SwizzleMode.SWIZZLE_128B,
-    )
 
     ab_full = cl.shared_array(1, cl.mbarrier, alignment=8)
     ab_empty = cl.shared_array(1, cl.mbarrier, alignment=8)
@@ -262,6 +245,21 @@ def run(tensors: dict[str, torch.Tensor], stream=None) -> None:
         raise ValueError("C must have shape (M, N)")
     _validate_mnk((m, n, k))
 
+    # A/B are ordinary row-major (rows, K) arrays. ``order="F"`` reverses the
+    # tensor-map modes to (K, rows), making K the contiguous TMA coordinate.
+    # The explicit mode order makes K the leading tensor-map dimension.
+    a_tmap = cl.tensor_map_tiled(
+        a,
+        (BLOCK_K, BLOCK_M),
+        order="F",
+        swizzle=cl.SwizzleMode.SWIZZLE_128B,
+    )
+    b_tmap = cl.tensor_map_tiled(
+        b,
+        (BLOCK_K, BLOCK_N),
+        order="F",
+        swizzle=cl.SwizzleMode.SWIZZLE_128B,
+    )
     bias = tensors.get("bias")
     if bias is not None and bias.shape != (m,):
         raise ValueError("bias must have shape (M,)")
@@ -275,7 +273,7 @@ def run(tensors: dict[str, torch.Tensor], stream=None) -> None:
         (cl.cdiv(m, BLOCK_M), cl.cdiv(n, BLOCK_N), 1),
         (BLOCK_THREADS, 1, 1),
         _kernel,
-        (a, b, c, bias_arg, k, bias is not None),
+        (a_tmap, b_tmap, c, bias_arg, k, bias is not None),
     )
 
 

@@ -406,12 +406,7 @@ def validate_program(program):
 
 
 @cl.kernel
-def tma_copy_kernel(input_tensor, output_tensor):
-    tensor_map = cl.tensor_map_tiled(
-        input_tensor,
-        (TILE_SIZE, 1),
-        order="F",
-    )
+def tma_copy_kernel(output_tensor, tensor_map, num_rows: cl.Constant[int]):
     shared_memory = cl.shared_array(
         (NUM_STAGES, TILE_SIZE),
         cl.float16,
@@ -445,7 +440,7 @@ def tma_copy_kernel(input_tensor, output_tensor):
         shared_memory=shared_memory,
         full_mbarrier=full_mbarriers.pointer(),
         empty_mbarrier=empty_mbarriers.pointer(),
-        num_rows=input_tensor.shape[0],
+        num_rows=num_rows,
         loop_offset=cl.int32(0),
         gmem_idx=cl.int32(0),
         producer_ready=cl.bool_(False),
@@ -472,13 +467,14 @@ def test_tma_copy_program_builder(rows, columns):
         device="cuda:0",
     )
     output_tensor = torch.zeros_like(input_tensor)
+    tensor_map = cl.tensor_map_tiled(input_tensor, (TILE_SIZE, 1), order="F")
 
     cl.launch(
         torch.cuda.current_stream(),
         (columns // TILE_SIZE,),
         (256,),
         tma_copy_kernel,
-        (input_tensor, output_tensor),
+        (output_tensor, tensor_map, rows),
     )
 
     torch.testing.assert_close(output_tensor, input_tensor, rtol=0, atol=0)

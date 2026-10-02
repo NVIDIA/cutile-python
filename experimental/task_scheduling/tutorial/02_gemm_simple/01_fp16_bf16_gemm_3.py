@@ -485,19 +485,7 @@ def make_gemm_kernel(device_manager):
     """Specialize the kernel for one frozen task manager."""
 
     @cl.kernel
-    def gemm_kernel(a, b, c, k, is_bf16: cl.Constant[bool]):
-        a_map = cl.tensor_map_tiled(
-            a,
-            (BLOCK_K, BLOCK_M),
-            order="F",
-            swizzle=cl.SwizzleMode.SWIZZLE_128B,
-        )
-        b_map = cl.tensor_map_tiled(
-            b,
-            (BLOCK_K, BLOCK_N),
-            order="F",
-            swizzle=cl.SwizzleMode.SWIZZLE_128B,
-        )
+    def gemm_kernel(a_map, b_map, c, k, is_bf16: cl.Constant[bool]):
         device_allocators = device_manager.setup_resources_and_tasks()
         tmem_storage = cl.shared_array(
             1,
@@ -598,12 +586,18 @@ def run(tensors: dict[str, torch.Tensor], stream=None, *, verbose=False) -> None
     if verbose:
         program.manager.print_verbose_report()
     gemm_kernel = make_gemm_kernel(program.device_manager)
+    a_map = cl.tensor_map_tiled(
+        a, (BLOCK_K, BLOCK_M), order="F", swizzle=cl.SwizzleMode.SWIZZLE_128B
+    )
+    b_map = cl.tensor_map_tiled(
+        b, (BLOCK_K, BLOCK_N), order="F", swizzle=cl.SwizzleMode.SWIZZLE_128B
+    )
     cl.launch(
         torch.cuda.current_stream() if stream is None else stream,
         (m // BLOCK_M, n // BLOCK_N, 1),
         (BLOCK_THREADS, 1, 1),
         gemm_kernel,
-        (a, b, c, k, a.dtype == torch.bfloat16),
+        (a_map, b_map, c, k, a.dtype == torch.bfloat16),
     )
 
 

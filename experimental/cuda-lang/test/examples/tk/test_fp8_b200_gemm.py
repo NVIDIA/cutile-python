@@ -243,9 +243,9 @@ def store_persistent_partition(
 
 @cl.kernel
 def fp8_b200_gemm_kernel(
-    a,
-    b,
-    c,
+    a_tmap,
+    b_tmap,
+    c_tmap,
     m: cl.Constant[int],
     n: cl.Constant[int],
     k: cl.Constant[int],
@@ -269,18 +269,6 @@ def fp8_b200_gemm_kernel(
     # The first dimension is contiguous so each TMA atom contains 128 FP8
     # values.  cuda.lang encodes all byte-sized FP8 tensor-map elements as U8;
     # the tcgen05 instruction descriptor supplies the numerical interpretation.
-    a_tmap = cl.tensor_map_tiled(
-        a,
-        (128, cta_m, 1),
-        swizzle=cl.SwizzleMode.SWIZZLE_128B,
-    )
-    b_tmap = cl.tensor_map_tiled(
-        b,
-        (128, cta_n, 1),
-        swizzle=cl.SwizzleMode.SWIZZLE_128B,
-    )
-    c_tmap = cl.tensor_map_tiled(c, (tile_n, cta_m), order="F")
-
     a_smem = cl.shared_array(
         (stages, cta_m * tile_k),
         cl.uint8,
@@ -443,9 +431,9 @@ def fp8_b200_gemm_kernel(
 
 
 def _fp8_b200_gemm_persistent_kernel(
-    a,
-    b,
-    c,
+    a_tmap,
+    b_tmap,
+    c_tmap,
     m: cl.Constant[int],
     n: cl.Constant[int],
     k: cl.Constant[int],
@@ -473,17 +461,6 @@ def _fp8_b200_gemm_persistent_kernel(
     tiles_m = m // (consumer_tile_m * num_consumers)
     tiles_n = n // tile_n
 
-    a_tmap = cl.tensor_map_tiled(
-        a,
-        (128, cta_m, tile_k // 128),
-        swizzle=cl.SwizzleMode.SWIZZLE_128B,
-    )
-    b_tmap = cl.tensor_map_tiled(
-        b,
-        (128, cta_n, tile_k // 128),
-        swizzle=cl.SwizzleMode.SWIZZLE_128B,
-    )
-    c_tmap = cl.tensor_map_tiled(c, (subtile_n, cta_m), order="F")
     if tid == 0:
         cl.prefetch_tensor_map(a_tmap)
         cl.prefetch_tensor_map(b_tmap)
@@ -846,7 +823,7 @@ def prepare_fp8_b200_gemm_b(b):
     return make_fp8_tma_view(b.T.contiguous())
 
 
-def launch_fp8_b200_gemm(a, b, c, config, stream=None, b_tma_view=None):
+def launch_fp8_b200_gemm(a, b, c, config, b_tma_view=None):
     m, k = a.shape
     bk, n = b.shape
     assert bk == k
@@ -858,8 +835,6 @@ def launch_fp8_b200_gemm(a, b, c, config, stream=None, b_tma_view=None):
     assert k % config.tile_k == 0
 
     tasks = (m // (256 * config.num_consumers)) * (n // config.tile_n)
-    if stream is None:
-        stream = torch.cuda.current_stream()
     if b_tma_view is None:
         b_tma_view = prepare_fp8_b200_gemm_b(b)
     kernel = (
@@ -867,15 +842,25 @@ def launch_fp8_b200_gemm(a, b, c, config, stream=None, b_tma_view=None):
         if config.num_consumers == 1
         else fp8_b200_gemm_persistent_two_consumer_kernel
     )
+    a_view = make_fp8_tma_view(a)
+    a_tmap = cl.tensor_map_tiled(
+        a_view, (128, 128, config.tile_k // 128),
+        swizzle=cl.SwizzleMode.SWIZZLE_128B,
+    )
+    b_tmap = cl.tensor_map_tiled(
+        b_tma_view, (128, config.tile_n // 2, config.tile_k // 128),
+        swizzle=cl.SwizzleMode.SWIZZLE_128B,
+    )
+    c_tmap = cl.tensor_map_tiled(c, (config.tile_n // config.epilogue_stages, 128), order="F")
     cl.launch(
-        stream,
+        torch.cuda.current_stream(),
         (tasks * 2,),
         (config.num_warps * WARP_SIZE,),
         kernel,
         (
-            make_fp8_tma_view(a),
-            b_tma_view,
-            c,
+            a_tmap,
+            b_tmap,
+            c_tmap,
             m,
             n,
             k,
@@ -946,6 +931,16 @@ def test_fp8_b200_gemm(m, n, k):
     b = torch.randn((k, n), dtype=torch.float32, device="cuda:0").to(torch.float8_e4m3fn)
     c = torch.empty((m, n), dtype=torch.bfloat16, device="cuda:0")
     tiles = (m // 256) * (n // 256)
+    a_view = make_fp8_tma_view(a)
+    b_rows = b.T.contiguous()
+    b_view = make_fp8_tma_view(b_rows)
+    a_tmap = cl.tensor_map_tiled(
+        a_view, (128, 128, 1), swizzle=cl.SwizzleMode.SWIZZLE_128B
+    )
+    b_tmap = cl.tensor_map_tiled(
+        b_view, (128, 128, 1), swizzle=cl.SwizzleMode.SWIZZLE_128B
+    )
+    c_tmap = cl.tensor_map_tiled(c, (256, 128), order="F")
 
     cl.launch(
         torch.cuda.current_stream(),
@@ -953,9 +948,9 @@ def test_fp8_b200_gemm(m, n, k):
         (4 * WARP_SIZE,),
         fp8_b200_gemm_kernel,
         (
-            make_fp8_tma_view(a),
-            make_fp8_tma_view(b.T.contiguous()),
-            c,
+            a_tmap,
+            b_tmap,
+            c_tmap,
             m,
             n,
             k,

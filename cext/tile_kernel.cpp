@@ -445,26 +445,9 @@ namespace { struct HostProgram {
     Vec<int64_t> op_attrs;
 }; }
 
-namespace { struct HoistedTensorMap {
-    enum { kMaxRank = 5 };
-
-    CUtensorMapDataType data_type;
-    uint32_t rank;
-    uint32_t base_ptr_param_idx;
-    HostProgram shape_stride_program;
-    uint32_t box_dim[kMaxRank];
-    uint32_t traversal_steps[kMaxRank];
-    CUtensorMapInterleave interleave;
-    CUtensorMapSwizzle swizzle;
-    CUtensorMapL2promotion l2_promotion;
-    CUtensorMapFloatOOBfill oob_fill;
-}; }
-
 struct TileKernel {
     CudaKernel cukernel;
     HostProgram dyn_smem_size_prog;
-    Vec<HoistedTensorMap> hoisted_tensor_maps;
-
     // For an identity constant (e.g., Enum values), the key of KernelMap contains the constant's
     // address encoded as an int64_t. Just by itself, this is prone to the ABA problem:
     // if the constant is freed, another object could be allocated at the same address.
@@ -3157,144 +3140,6 @@ static PyObject* py_tensor_map_tiled(PyObject*, PyObject* args) {
 }
 
 
-static Result<HoistedTensorMap> hoisted_tensor_map_parse(PyObject* map_pyobj) {
-    HoistedTensorMap ret;
-
-    // Data type
-    PyPtr py_data_type = getattr(map_pyobj, "data_type");
-    if (!py_data_type) return ErrorRaised;
-    ret.data_type = static_cast<CUtensorMapDataType>(pylong_as<long>(py_data_type));
-    if (PyErr_Occurred()) return ErrorRaised;
-    if (!tensor_map_data_type_bitwidth(ret.data_type).is_ok())
-        return ErrorRaised;
-
-    // Base ptr
-    PyPtr py_base_ptr_param_idx = getattr(map_pyobj, "base_ptr_param");
-    ret.base_ptr_param_idx = pylong_as<uint32_t>(py_base_ptr_param_idx);
-    if (PyErr_Occurred()) return ErrorRaised;
-
-    // Rank
-    PyPtr py_rank = getattr(map_pyobj, "rank");
-    if (!py_rank) return ErrorRaised;
-    long rank = pylong_as<long>(py_rank);
-    if (PyErr_Occurred()) return ErrorRaised;
-    if (rank < 1)
-        return raise(PyExc_ValueError, "Rank of HoistedTensorMap is too small");
-    if (rank > HoistedTensorMap::kMaxRank)
-        return raise(PyExc_ValueError, "Rank of HoistedTensorMap is too large");
-    ret.rank = static_cast<uint32_t>(rank);
-
-    // Shape/stride program
-    PyPtr py_shape_stride_program = getattr(map_pyobj, "shape_stride_program");
-    if (!py_shape_stride_program) return ErrorRaised;
-    Result<HostProgram> prog_res = host_program_parse(py_shape_stride_program.get(), rank * 2);
-    if (!prog_res.is_ok()) return ErrorRaised;
-    ret.shape_stride_program = *prog_res;
-
-    // Box dim & traversal steps
-    PyPtr py_tile_shape = getattr(map_pyobj, "tile_shape");
-    if (!py_tile_shape) return ErrorRaised;
-    if (!PyTuple_Check(py_tile_shape.get()))
-        return raise(PyExc_TypeError, "HoistedTensorMap.tile_shape is not a tuple");
-    if (PyTuple_GET_SIZE(py_tile_shape.get()) != rank)
-        return raise(PyExc_TypeError, "Size of HoistedTensorMap.tile_shape doesn't match rank");
-    for (long i = 0; i < rank; ++i) {
-        PyObject* py_dim = PyTuple_GET_ITEM(py_tile_shape.get(), i);
-        ret.traversal_steps[i] = 1;
-        ret.box_dim[i] = pylong_as<uint32_t>(py_dim);
-        if (PyErr_Occurred()) return ErrorRaised;
-    }
-
-    // Swizzle
-    PyPtr py_swizzle = getattr(map_pyobj, "swizzle");
-    if (!py_swizzle) return ErrorRaised;
-    PyPtr py_swizzle_val = getattr(py_swizzle, "_value_");
-    if (!py_swizzle_val) return ErrorRaised;
-    ret.swizzle = static_cast<CUtensorMapSwizzle>(pylong_as<long>(py_swizzle_val));
-    if (PyErr_Occurred()) return ErrorRaised;
-
-    // L2 promotion
-    PyPtr py_l2_promotion = getattr(map_pyobj, "l2_promotion");
-    if (!py_l2_promotion) return ErrorRaised;
-    PyPtr py_l2_promotion_val = getattr(py_l2_promotion, "_value_");
-    if (!py_l2_promotion_val) return ErrorRaised;
-    ret.l2_promotion = static_cast<CUtensorMapL2promotion>(
-            pylong_as<long>(py_l2_promotion_val));
-    if (PyErr_Occurred()) return ErrorRaised;
-
-    PyPtr py_interleave = getattr(map_pyobj, "interleave");
-    if (!py_interleave) return ErrorRaised;
-    PyPtr py_interleave_value = getattr(py_interleave, "value");
-    if (!py_interleave_value) return ErrorRaised;
-    ret.interleave = static_cast<CUtensorMapInterleave>(
-            pylong_as<int>(py_interleave_value));
-    if (PyErr_Occurred()) return ErrorRaised;
-    PyPtr py_oob_fill = getattr(map_pyobj, "oob_fill");
-    if (!py_oob_fill) return ErrorRaised;
-    PyPtr py_oob_fill_value = getattr(py_oob_fill, "value");
-    if (!py_oob_fill_value) return ErrorRaised;
-    ret.oob_fill = static_cast<CUtensorMapFloatOOBfill>(
-            pylong_as<int>(py_oob_fill_value));
-    if (PyErr_Occurred()) return ErrorRaised;
-    return ret;
-}
-
-static Status hoisted_tensor_map_encode(const DriverApi& driver,
-                                        const Vec<HoistedTensorMap>& maps,
-                                        LaunchHelper& helper) {
-    if (maps.empty()) return OK;
-
-    for (const HoistedTensorMap& m : maps) {
-        arena_pad_to_alignment<alignof(CUtensorMap)>(helper.arena);
-        ArenaOffset tensor_map_offset = arena_alloc_words(
-                helper.arena, sizeof(CUtensorMap) / sizeof(Word));
-        void* storage = static_cast<void*>(helper.arena.data() + tensor_map_offset);
-        CUtensorMap* dst = new (storage) CUtensorMap();
-
-        int64_t stack[HostProgram::kMaxStackDepth];
-        host_program_eval(m.shape_stride_program, helper.arena, helper.cuarg_offsets, stack);
-
-        uint32_t rank = m.rank;
-        if (!tensor_map_validate_tile(
-                    m.data_type, rank, m.box_dim, m.interleave, m.swizzle))
-            return ErrorRaised;
-        uint64_t global_dim[HoistedTensorMap::kMaxRank];
-        void* global_address =
-                helper.arena[helper.cuarg_offsets[m.base_ptr_param_idx]].device_ptr;
-        if (!tensor_map_validate_global_address(m.data_type, m.interleave, global_address))
-            return ErrorRaised;
-        if (!tensor_map_encode_global_dimensions(
-                    m.data_type, rank, stack, global_dim))
-            return ErrorRaised;
-        uint64_t global_strides[HoistedTensorMap::kMaxRank - 1];
-        if (!tensor_map_encode_global_strides(
-                    m.data_type, m.interleave, rank, stack + rank, global_strides))
-            return ErrorRaised;
-
-        CUresult res = driver.cuTensorMapEncodeTiled(
-            dst,
-            m.data_type,
-            rank,
-            global_address,
-            global_dim,
-            global_strides,
-            m.box_dim,
-            m.traversal_steps,
-            m.interleave,
-            m.swizzle,
-            m.l2_promotion,
-            m.oob_fill
-        );
-        if (res != CUDA_SUCCESS)
-            return raise(PyExc_RuntimeError, "Failed to encode tiled tensor map: ",
-                         get_cuda_error(&driver, res));
-
-        helper.cuarg_offsets.push_back(tensor_map_offset);
-    }
-    return OK;
-}
-
-
 static Result<TileKernel> compile(const DriverApi* driver,
                                   PyObject* dispatcher_pyobj,
                                   PyObject* signature,
@@ -3310,24 +3155,21 @@ static Result<TileKernel> compile(const DriverApi* driver,
         return raise(PyExc_TypeError, "Expected compile() to return a tuple, got ",
                      Py_TYPE(compile_result.get())->tp_name);
 
-    if (PyTuple_GET_SIZE(compile_result.get()) != 4)
-        return raise(PyExc_TypeError, "Expected compile() to return a 4-tuple, got length ",
+    if (PyTuple_GET_SIZE(compile_result.get()) != 3)
+        return raise(PyExc_TypeError, "Expected compile() to return a 3-tuple, got length ",
                       PyTuple_GET_SIZE(compile_result.get()));
 
     PyObject* py_cubin_bytes = PyTuple_GET_ITEM(compile_result.get(), 0);
     PyObject* py_cufunc_name = PyTuple_GET_ITEM(compile_result.get(), 1);
     PyObject* py_dyn_smem_size_prog = PyTuple_GET_ITEM(compile_result.get(), 2);
-    PyObject* py_hoisted_tensor_maps = PyTuple_GET_ITEM(compile_result.get(), 3);
 
     if (!PyBytes_Check(py_cubin_bytes)
-            || !PyUnicode_Check(py_cufunc_name)
-            || (py_hoisted_tensor_maps != Py_None && !PyList_Check(py_hoisted_tensor_maps))) {
+            || !PyUnicode_Check(py_cufunc_name)) {
         return raise(PyExc_TypeError,
-                     "Expected compile() to return (bytes, str, HostProgram|None, list|None),"
+                     "Expected compile() to return (bytes, str, HostProgram|None),"
                      " got ", Py_TYPE(py_cubin_bytes)->tp_name,
                      ", ", Py_TYPE(py_cufunc_name)->tp_name,
-                     ", ", Py_TYPE(py_dyn_smem_size_prog)->tp_name,
-                     ", ", Py_TYPE(py_hoisted_tensor_maps)->tp_name);
+                     ", ", Py_TYPE(py_dyn_smem_size_prog)->tp_name);
     }
 
     char* cubin_data;
@@ -3351,25 +3193,13 @@ static Result<TileKernel> compile(const DriverApi* driver,
     Result<HostProgram> dyn_smem_size_prog = host_program_parse(py_dyn_smem_size_prog, 1);
     if (!dyn_smem_size_prog.is_ok()) return ErrorRaised;
 
-    Py_ssize_t num_hoisted_tensor_maps = PyList_Size(py_hoisted_tensor_maps);
-    Vec<HoistedTensorMap> hoisted_tensor_maps;
-    hoisted_tensor_maps.reserve(num_hoisted_tensor_maps);
-    for (Py_ssize_t i = 0; i < num_hoisted_tensor_maps; ++i) {
-        PyObject* map_pyobj = PyList_GetItem(py_hoisted_tensor_maps, i);
-        if (!map_pyobj) return ErrorRaised;
-        Result<HoistedTensorMap> map_res = hoisted_tensor_map_parse(map_pyobj);
-        if (!map_res.is_ok()) return ErrorRaised;
-        hoisted_tensor_maps.push_back(*map_res);
-    }
-
     if (image) {
         image->cubin = newref(py_cubin_bytes);
         image->symbol = newref(py_cufunc_name);
     }
 
     return TileKernel{std::move(*cukernel),
-                      std::move(*dyn_smem_size_prog),
-                      std::move(hoisted_tensor_maps)};
+                      std::move(*dyn_smem_size_prog)};
 }
 
 enum class StreamKind {
@@ -4221,9 +4051,6 @@ static Result<PreparedLaunch> prepare_launch_with_extracted_args(
                                           lock)) {
         return ErrorRaised;
     }
-
-    if (!hoisted_tensor_map_encode(*driver, kernel_item->value.hoisted_tensor_maps, *helper))
-        return ErrorRaised;
 
     int64_t stack[HostProgram::kMaxStackDepth];
     host_program_eval(kernel_item->value.dyn_smem_size_prog,
@@ -5750,13 +5577,11 @@ static PyObject* cuda_tile_export_ipc_benchmark_payload(PyObject*, PyObject* con
     if (!prep.is_ok()) return nullptr;
 
     LaunchHelper& helper = *prep->helper;
-    TileKernel* tile_kernel = prep->tile_kernel;
     CHECK(prep->kernel_image.has_value());
     KernelImage& kernel_image = *prep->kernel_image;
 
-    // IPC payload is not supported for hoisted tensor maps yet.
-    // TODO: support hoisted tensor maps
-    if (!tile_kernel->hoisted_tensor_maps.empty() || helper.has_tensor_map)
+    // IPC payload is not supported for tensor maps yet.
+    if (helper.has_tensor_map)
         Py_RETURN_NONE;
 
     char* cubin_data;

@@ -364,9 +364,8 @@ def make_tma_copy_conditional_kernel(device_manager):
 
     @cl.kernel
     def tma_copy_conditional_kernel(
-        input_, output, trace, num_rows, highlight_row: cl.Constant[int]
+        tensor_map, output, trace, num_rows, highlight_row: cl.Constant[int]
     ):
-        tensor_map = cl.tensor_map_tiled(input_, (TILE_SIZE, 1), order="F")
         if cl.lane_index() == 0:
             cl.prefetch_tensor_map(tensor_map)
         device_allocators = device_manager.setup_resources_and_tasks()
@@ -496,12 +495,13 @@ def run_tma_copy_conditional_kernel_prim(
     input_ = torch.randn(rows_cols, device="cuda:0", dtype=torch.float16)
     output = torch.zeros_like(input_)
     trace = torch.zeros((rows, TRACE_COLUMNS), device="cuda:0", dtype=torch.float16)
+    tensor_map = cl.tensor_map_tiled(input_, (TILE_SIZE, 1), order="F")
     cl.launch(
         torch.cuda.current_stream(),
         (columns // TILE_SIZE,),
         (BLOCK_THREADS,),
         tma_copy_conditional_kernel,
-        (input_, output, trace, rows, highlight_row),
+        (tensor_map, output, trace, rows, highlight_row),
     )
     torch.testing.assert_close(output, input_, rtol=0, atol=0)
     _verify_trace_markers(

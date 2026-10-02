@@ -154,7 +154,7 @@ _TILE_SCHEDULER.validate()
 
 
 @cl.kernel
-def _kernel(a, b, c, bias, k: cl.Constant[int], has_bias: cl.Constant[bool]):
+def _kernel(c, bias, a_tmap, b_tmap, k: cl.Constant[int], has_bias: cl.Constant[bool]):
     """Warp-specialized persistent two-CTA FP16 tcgen05 GEMM kernel."""
     m, n = c.shape
     cl.static_assert(k % 8 == 0, "K must be divisible by 8 for TMA alignment")
@@ -163,19 +163,6 @@ def _kernel(a, b, c, bias, k: cl.Constant[int], has_bias: cl.Constant[bool]):
     warp = tid // WARP_SIZE
     rank = cl.block_in_cluster_index(0)
     is_leader = rank == 0
-
-    a_tmap = cl.tensor_map_tiled(
-        a,
-        (BLOCK_K, CTA_M),
-        order="F",
-        swizzle=cl.SwizzleMode.SWIZZLE_128B,
-    )
-    b_tmap = cl.tensor_map_tiled(
-        b,
-        (BLOCK_K, CTA_N),
-        order="F",
-        swizzle=cl.SwizzleMode.SWIZZLE_128B,
-    )
 
     if warp == MMA_WARP:
         cl.prefetch_tensor_map(a_tmap)
@@ -571,12 +558,18 @@ def run(tensors: dict[str, torch.Tensor], stream=None) -> None:
 
     bias_arg = c.reshape(-1) if bias is None else bias
     cuda_stream = torch.cuda.current_stream() if stream is None else stream
+    a_tmap = cl.tensor_map_tiled(
+        a, (BLOCK_K, CTA_M), order="F", swizzle=cl.SwizzleMode.SWIZZLE_128B
+    )
+    b_tmap = cl.tensor_map_tiled(
+        b, (BLOCK_K, CTA_N), order="F", swizzle=cl.SwizzleMode.SWIZZLE_128B
+    )
     cl.launch(
         cuda_stream,
         _TILE_SCHEDULER.host_grid(m, n),
         (BLOCK_THREADS, 1, 1),
         _kernel,
-        (a, b, c, bias_arg, k, bias is not None),
+        (c, bias_arg, a_tmap, b_tmap, k, bias is not None),
         block_in_cluster_count=_TILE_SCHEDULER.cluster_shape_mnk,
     )
 

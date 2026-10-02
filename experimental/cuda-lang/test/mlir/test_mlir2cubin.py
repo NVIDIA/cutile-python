@@ -26,7 +26,7 @@ class _HackKernel(_cext.TileDispatcher):
         super().__init__(annotations)
 
     def _compile(self, signature, ctx, compute_capability):
-        return self._cubin, self._func_name, None, []
+        return self._cubin, self._func_name, None
 
 
 def test_mlir2cubin_debug_options(monkeypatch):

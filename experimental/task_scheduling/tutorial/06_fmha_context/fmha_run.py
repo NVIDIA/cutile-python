@@ -14,10 +14,10 @@ import torch
 import torch.nn.functional as F
 
 try:
-    from .fmha_kernel import build_fmha_task_manager, get_fmha_kernel
+    from .fmha_kernel import build_fmha_task_manager, get_fmha_kernel, make_kv_tensor_maps
     from .fmha_resources import FmhaConfig, SUPPORTED_TILES
 except ImportError:
-    from fmha_kernel import build_fmha_task_manager, get_fmha_kernel
+    from fmha_kernel import build_fmha_task_manager, get_fmha_kernel, make_kv_tensor_maps
     from fmha_resources import FmhaConfig, SUPPORTED_TILES
 
 
@@ -131,6 +131,9 @@ def _prepare_launch(
         grid = (physical_q_tiles * num_heads_q, batch_size, 1)
     else:
         grid = (physical_q_tiles, batch_size, num_heads_q)
+    k_view = _tma_view(k, cfg)
+    v_view = _tma_view(v, cfg)
+    k_map, v_map = make_kv_tensor_maps(k_view, v_view, cfg)
     return (
         torch.cuda.current_stream() if stream is None else stream,
         grid,
@@ -138,8 +141,8 @@ def _prepare_launch(
         kernel,
         (
             q.flatten(),
-            _tma_view(k, cfg),
-            _tma_view(v, cfg),
+            k_map,
+            v_map,
             o.flatten(),
             seqlen_q,
             k.shape[1],

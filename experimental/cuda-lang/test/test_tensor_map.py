@@ -101,19 +101,6 @@ def test_interleaved_tensor_map_eager_and_compiled(interleave, swizzle, tile_sha
         )
         cl.launch(stream, (1,), (128,), copy_descriptor, (descriptor, output))
 
-    @cl.kernel
-    def device_created(source, output):
-        descriptor = cl.tensor_map_tiled(
-            source, tile_shape, order="F", interleave=interleave, swizzle=swizzle,
-        )
-        shared = cl.shared_array(1, cl.tensor_map_descriptor, alignment=128).pointer()
-        lane = cl.thread_index(0)
-        if lane == 0:
-            shared[0] = descriptor.load()
-        cl.barrier_sync_block_aligned()
-        shared_bytes = cl.bitcast(shared, cl.pointer_dtype(cl.uint8, cl.MemorySpace.SHARED))
-        output[lane] = shared_bytes[lane]
-
     source = torch.empty((4, 4, 32), dtype=torch.float16, device="cuda")
     eager = cl.tensor_map_tiled(
         source, tile_shape, order="F", interleave=interleave, swizzle=swizzle,
@@ -126,8 +113,6 @@ def test_interleaved_tensor_map_eager_and_compiled(interleave, swizzle, tile_sha
         assert bytes(eager) != bytes(noninterleaved)
     output = torch.empty(128, dtype=torch.uint8, device="cuda")
     launcher(torch.cuda.current_stream(), source, output)
-    assert bytes(output.cpu().tolist()) == bytes(eager)
-    cl.launch(torch.cuda.current_stream(), (1,), (128,), device_created, (source, output))
     assert bytes(output.cpu().tolist()) == bytes(eager)
 
 

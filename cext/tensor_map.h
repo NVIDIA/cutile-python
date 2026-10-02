@@ -44,19 +44,6 @@ Status tensor_map_validate_global_address(
         CUtensorMapInterleave interleave,
         const void* global_address);
 
-Status tensor_map_encode_global_dimensions(
-        CUtensorMapDataType data_type,
-        int32_t rank,
-        const int64_t* global_dimensions,
-        uint64_t* encoded_dimensions);
-
-Status tensor_map_encode_global_strides(
-        CUtensorMapDataType data_type,
-        CUtensorMapInterleave interleave,
-        int32_t rank,
-        const int64_t* global_element_strides,
-        uint64_t* encoded_byte_strides);
-
 int32_t native_tensor_map_encode_tiled(
         GlobalLock& lock,
         void* descriptor,

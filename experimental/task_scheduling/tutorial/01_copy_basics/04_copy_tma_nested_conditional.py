@@ -358,9 +358,8 @@ def make_tma_copy_nested_conditional_kernel(device_manager):
 
     @cl.kernel
     def tma_copy_nested_conditional_kernel(
-        input_, output, trace, num_rows, stop_row, copied_rows
+        tensor_map, output, trace, num_rows, stop_row, copied_rows
     ):
-        tensor_map = cl.tensor_map_tiled(input_, (TILE_SIZE, 1), order="F")
         if cl.lane_index() == 0:
             cl.prefetch_tensor_map(tensor_map)
         device_allocators = device_manager.setup_resources_and_tasks()
@@ -414,12 +413,13 @@ def run_tma_copy_nested_conditional_kernel_prim(
     trace = torch.zeros((rows, TRACE_COLUMNS), device="cuda:0", dtype=torch.float16)
     # A sentinel catches missing post-loop writes even when stop_row is zero.
     copied_rows = torch.full((2,), -1, device="cuda:0", dtype=torch.int32)
+    tensor_map = cl.tensor_map_tiled(input_, (TILE_SIZE, 1), order="F")
     cl.launch(
         torch.cuda.current_stream(),
         (columns // TILE_SIZE,),
         (BLOCK_THREADS,),
         kernel,
-        (input_, output, trace, rows, -1 if stop_row is None else stop_row, copied_rows),
+        (tensor_map, output, trace, rows, -1 if stop_row is None else stop_row, copied_rows),
     )
     expected = input_.clone()
     if stop_row is not None:

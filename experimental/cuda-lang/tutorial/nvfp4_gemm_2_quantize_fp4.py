@@ -193,45 +193,26 @@ def _pack_e4m3_scales(scales):
 
 @cl.kernel
 def _kernel(
-    a,
-    b,
-    sfa,
-    sfb,
-    c,
+    output,
     c_scale,
     alpha,
+    a_tmap,
+    b_tmap,
+    sfa_tmap,
+    sfb_tmap,
+    m: cl.Constant[int],
+    n: cl.Constant[int],
     k: cl.Constant[int],
     output_fp4: cl.Constant[bool],
     scale_bulk_copy: cl.Constant[bool],
 ):
     """CTA_2 NVFP4 GEMM with FP16 or fused FP4 output."""
     cl.static_assert(k % BLOCK_K == 0, "K must be divisible by 256")
-    packed_k, m, batch_count = a.shape
-    n = b.shape[1]
     tid = cl.thread_index(0)
     warp = tid // WARP_SIZE
     lane = tid % WARP_SIZE
     rank = cl.block_in_cluster_index(0)
     is_leader = rank == 0
-
-    a_tmap = cl.tensor_map_tiled(
-        a,
-        (PACKED_BLOCK_K, CTA_M, 1),
-        swizzle=cl.SwizzleMode.SWIZZLE_128B,
-    )
-    b_tmap = cl.tensor_map_tiled(
-        b,
-        (PACKED_BLOCK_K, CTA_N, 1),
-        swizzle=cl.SwizzleMode.SWIZZLE_128B,
-    )
-    sfa_tmap = cl.tensor_map_tiled(sfa, (256, 4, 1, 1))
-    sfb_tmap = cl.tensor_map_tiled(sfb, (256, 4, 1, 1))
-    if output_fp4:
-        c_tmap = cl.tensor_map_tiled(
-            c,
-            (FP4_SMEM_BYTES_PER_ROW, WARP_SIZE, 1),
-            swizzle=cl.SwizzleMode.SWIZZLE_128B,
-        )
 
     ab_full = cl.shared_array(AB_STAGES, cl.mbarrier, alignment=8, dynamic=True)
     ab_empty = cl.shared_array(AB_STAGES, cl.mbarrier, alignment=8, dynamic=True)
@@ -748,7 +729,7 @@ def _kernel(
                         values = _to_float16_vector(
                             accumulators, vector_idx * vsize, vsize
                         )
-                        c.pointer((row, col, tile_l)).store(
+                        output.pointer((row, col, tile_l)).store(
                             values, alignment=VEC_BYTES
                         )
 
@@ -760,7 +741,7 @@ def _kernel(
                 if cl.elect_sync():
                     cl.copy_async_bulk_tensor_shared_to_global(
                         c_smem.pointer() + epi_warp * FP4_SMEM_BYTES_PER_WARP,
-                        c_tmap,
+                        output,
                         (
                             coord_n_c // 2,
                             coord_m + epi_warp * WARP_SIZE,
@@ -926,19 +907,36 @@ def run(
     _validate_mnkl((m, n, k, batch))
 
     cuda_stream = torch.cuda.current_stream() if stream is None else stream
+    a_tmap = cl.tensor_map_tiled(
+        a, (PACKED_BLOCK_K, CTA_M, 1), swizzle=cl.SwizzleMode.SWIZZLE_128B
+    )
+    b_tmap = cl.tensor_map_tiled(
+        b, (PACKED_BLOCK_K, CTA_N, 1), swizzle=cl.SwizzleMode.SWIZZLE_128B
+    )
+    sfa_tmap = cl.tensor_map_tiled(sfa, (256, 4, 1, 1))
+    sfb_tmap = cl.tensor_map_tiled(sfb, (256, 4, 1, 1))
+    output = (
+        cl.tensor_map_tiled(
+            c, (FP4_SMEM_BYTES_PER_ROW, WARP_SIZE, 1),
+            swizzle=cl.SwizzleMode.SWIZZLE_128B,
+        )
+        if out_dtype == "fp4" else c
+    )
     cl.launch(
         cuda_stream,
         (m // CTA_M, n // BLOCK_N, batch),
         (BLOCK_THREADS, 1, 1),
         _kernel,
         (
-            a,
-            b,
-            sfa,
-            sfb,
-            c,
+            output,
             c_scale,
             alpha,
+            a_tmap,
+            b_tmap,
+            sfa_tmap,
+            sfb_tmap,
+            m,
+            n,
             k,
             out_dtype == "fp4",
             scale_bulk_copy,

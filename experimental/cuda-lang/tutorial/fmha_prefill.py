@@ -638,10 +638,11 @@ def _issue_pv(
     min_blocks_per_sm=1,
 )
 def _fmha_prefill_kernel(
-    q,
-    k,
-    v,
     o,
+    q_tmap,
+    k_tmap,
+    v_tmap,
+    o_tmap,
     lse,
     sinks,
     cumulative_q,
@@ -679,7 +680,6 @@ def _fmha_prefill_kernel(
     input_tma_slices = 1
     input_tma_granularity = head_dim
     input_swizzle = cl.SwizzleMode.SWIZZLE_128B
-    input_l2 = cl.TensorMapL2Promotion.L2_128B
     mma_kind = cl.Tcgen05MMAKind.F16
     if cl.ensure_constant(input_kind == ELEMENT_BF16):
         input_dtype = cl.bfloat16
@@ -693,19 +693,15 @@ def _fmha_prefill_kernel(
         input_tma_granularity = 64
     if cl.ensure_constant(input_bits == 16 and head_dim == 32):
         input_swizzle = cl.SwizzleMode.SWIZZLE_64B
-        input_l2 = cl.TensorMapL2Promotion.L2_64B
     if cl.ensure_constant(input_bits == 8 and head_dim == 32):
         input_swizzle = cl.SwizzleMode.SWIZZLE_32B
-        input_l2 = cl.TensorMapL2Promotion.NONE
     if cl.ensure_constant(input_bits == 8 and head_dim == 64):
         input_swizzle = cl.SwizzleMode.SWIZZLE_64B
-        input_l2 = cl.TensorMapL2Promotion.L2_64B
 
     output_dtype = cl.float16
     output_bits = 16
     output_tma_slices = 1
     output_tma_granularity = head_dim
-    output_swizzle = cl.SwizzleMode.SWIZZLE_128B
     if cl.ensure_constant(output_kind == ELEMENT_BF16):
         output_dtype = cl.bfloat16
     if cl.ensure_constant(output_kind == ELEMENT_E4M3):
@@ -714,13 +710,6 @@ def _fmha_prefill_kernel(
     if cl.ensure_constant(output_bits == 16 and head_dim == 128):
         output_tma_slices = 2
         output_tma_granularity = 64
-    if cl.ensure_constant(output_bits == 16 and head_dim == 32):
-        output_swizzle = cl.SwizzleMode.SWIZZLE_64B
-    if cl.ensure_constant(output_bits == 8 and head_dim == 32):
-        output_swizzle = cl.SwizzleMode.SWIZZLE_32B
-    if cl.ensure_constant(output_bits == 8 and head_dim == 64):
-        output_swizzle = cl.SwizzleMode.SWIZZLE_64B
-
     q_stage_elements = MMA_M * head_dim
     kv_stage_elements = MMA_N * head_dim
     o_stage_elements = MMA_M * head_dim
@@ -790,65 +779,6 @@ def _fmha_prefill_kernel(
     # predicate as warp-uniform.
     warp = cl.shuffle_sync(cl.ShuffleKind.INDEX, tid // WARP_SIZE, 0)[0]
     lane = tid % WARP_SIZE
-    if variable_length:
-        q_tmap = cl.tensor_map_tiled(
-            q,
-            (input_tma_granularity, 1, MMA_M),
-            order=(0, 1, 2),
-            swizzle=input_swizzle,
-            l2_promotion=input_l2,
-        )
-        k_tmap = cl.tensor_map_tiled(
-            k,
-            (input_tma_granularity, 1, MMA_N),
-            order=(0, 1, 2),
-            swizzle=input_swizzle,
-            l2_promotion=input_l2,
-        )
-        v_tmap = cl.tensor_map_tiled(
-            v,
-            (input_tma_granularity, 1, MMA_N),
-            order=(0, 1, 2),
-            swizzle=input_swizzle,
-            l2_promotion=input_l2,
-        )
-        o_tmap = cl.tensor_map_tiled(
-            o,
-            (output_tma_granularity, 1, MMA_M),
-            order=(0, 1, 2),
-            swizzle=output_swizzle,
-            l2_promotion=cl.TensorMapL2Promotion.NONE,
-        )
-    else:
-        q_tmap = cl.tensor_map_tiled(
-            q,
-            (input_tma_granularity, 1, MMA_M, 1),
-            order=(0, 1, 2, 3),
-            swizzle=input_swizzle,
-            l2_promotion=input_l2,
-        )
-        k_tmap = cl.tensor_map_tiled(
-            k,
-            (input_tma_granularity, 1, MMA_N, 1),
-            order=(0, 1, 2, 3),
-            swizzle=input_swizzle,
-            l2_promotion=input_l2,
-        )
-        v_tmap = cl.tensor_map_tiled(
-            v,
-            (input_tma_granularity, 1, MMA_N, 1),
-            order=(0, 1, 2, 3),
-            swizzle=input_swizzle,
-            l2_promotion=input_l2,
-        )
-        o_tmap = cl.tensor_map_tiled(
-            o,
-            (output_tma_granularity, 1, MMA_M, 1),
-            order=(0, 1, 2, 3),
-            swizzle=output_swizzle,
-            l2_promotion=cl.TensorMapL2Promotion.NONE,
-        )
-
     # Initialize pipeline stages cooperatively with warp 0. Dynamic lane
     # indexing keeps one static PTX site per pipeline half while initializing
     # every physical barrier exactly once.
@@ -3054,16 +2984,56 @@ def launch(
         # The byte view is zero-copy and matches the kernel's explicit E4M3
         # packing and UINT8 tensor-map encoding.
         output_launch = output_launch.view(torch.int8)
+    q_view = _make_tma_view(tensors["q"])
+    k_view = _make_tma_view(tensors["k"])
+    v_view = _make_tma_view(tensors["v"])
+    o_view = _make_tma_view(output_launch)
+    input_element_bytes = 1 if config.in_dtype == "Float8E4M3FN" else 2
+    output_element_bytes = 1 if config.out_dtype == "Float8E4M3FN" else 2
+    input_granularity = min(config.head_dim, 128 // input_element_bytes)
+    output_granularity = min(config.head_dim, 128 // output_element_bytes)
+    swizzles = {
+        32: cl.SwizzleMode.SWIZZLE_32B,
+        64: cl.SwizzleMode.SWIZZLE_64B,
+        128: cl.SwizzleMode.SWIZZLE_128B,
+    }
+    input_span = input_granularity * input_element_bytes
+    output_span = output_granularity * output_element_bytes
+    input_l2 = {
+        32: cl.TensorMapL2Promotion.NONE,
+        64: cl.TensorMapL2Promotion.L2_64B,
+        128: cl.TensorMapL2Promotion.L2_128B,
+    }[input_span]
+    trailing = () if config.variable_length else (1,)
+    order = tuple(range(3 if config.variable_length else 4))
+    q_tmap = cl.tensor_map_tiled(
+        q_view, (input_granularity, 1, MMA_M) + trailing,
+        order=order, swizzle=swizzles[input_span], l2_promotion=input_l2,
+    )
+    k_tmap = cl.tensor_map_tiled(
+        k_view, (input_granularity, 1, MMA_N) + trailing,
+        order=order, swizzle=swizzles[input_span], l2_promotion=input_l2,
+    )
+    v_tmap = cl.tensor_map_tiled(
+        v_view, (input_granularity, 1, MMA_N) + trailing,
+        order=order, swizzle=swizzles[input_span], l2_promotion=input_l2,
+    )
+    o_tmap = cl.tensor_map_tiled(
+        o_view, (output_granularity, 1, MMA_M) + trailing,
+        order=order, swizzle=swizzles[output_span],
+        l2_promotion=cl.TensorMapL2Promotion.NONE,
+    )
     cl.launch(
         stream,
         (grid,),
         (THREADS_PER_CTA,),
         _fmha_prefill_kernel,
         (
-            _make_tma_view(tensors["q"]),
-            _make_tma_view(tensors["k"]),
-            _make_tma_view(tensors["v"]),
-            _make_tma_view(output_launch),
+            o_view,
+            q_tmap,
+            k_tmap,
+            v_tmap,
+            o_tmap,
             tensors["_lse_arg"].reshape(-1),
             tensors["_sinks_arg"],
             tensors["_cum_seqlen_q_arg"],

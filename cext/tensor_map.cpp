@@ -52,8 +52,7 @@ Result<uint32_t> tensor_map_data_type_bitwidth(CUtensorMapDataType dtype) {
     case CU_TENSOR_MAP_DATA_TYPE_16U4_ALIGN8B:
     case CU_TENSOR_MAP_DATA_TYPE_16U4_ALIGN16B:
     case CU_TENSOR_MAP_DATA_TYPE_16U6_ALIGN16B:
-        // TODO: Support packed tensor-map data types after removing the
-        // legacy hoisted tensor-map encoding path.
+        // TODO: Support packed tensor-map data types
         return raise(
                 PyExc_ValueError,
                 "Can't create tensor map: unsupported data type ", dtype);

@@ -1103,8 +1103,8 @@ def kernel(device_task_manager):
 
     @cl.kernel(max_threads_per_block=(block_size,))
     def gemm_kernel(
-        a,
-        b,
+        tma_a_desc,
+        tma_b_desc,
         mC_mn,
         bias,
         m: cl.int32,
@@ -1116,18 +1116,6 @@ def kernel(device_task_manager):
         is_bf16: cl.Constant[bool],
         has_bias: cl.Constant[bool],
     ):
-        tma_a_desc = cl.tensor_map_tiled(
-            a,
-            (mma_tiler_mnk[2], mma_tiler_mnk_per_cta[0]),
-            order="F",
-            swizzle=cl.SwizzleMode.SWIZZLE_128B,
-        )
-        tma_b_desc = cl.tensor_map_tiled(
-            b,
-            (mma_tiler_mnk[2], mma_tiler_mnk_per_cta[1]),
-            order="F",
-            swizzle=cl.SwizzleMode.SWIZZLE_128B,
-        )
         warp_index = cl.warp_index()
         # Overlap tensor-map fetch with resource setup and cluster sync.
         if warp_index == load_a_task_warp_idx:
@@ -1288,14 +1276,26 @@ def host_function(
         pipeline.task_manager.print_verbose_report()
     compiled_kernel = kernel(pipeline.device_task_manager)
     grid = compute_grid(pipeline.work_queue, use_clc_dynamic_scheduler)
+    tma_a_desc = cl.tensor_map_tiled(
+        a,
+        (mma_tiler_mnk[2], mma_tiler_mnk_per_cta[0]),
+        order="F",
+        swizzle=cl.SwizzleMode.SWIZZLE_128B,
+    )
+    tma_b_desc = cl.tensor_map_tiled(
+        b,
+        (mma_tiler_mnk[2], mma_tiler_mnk_per_cta[1]),
+        order="F",
+        swizzle=cl.SwizzleMode.SWIZZLE_128B,
+    )
     cl.launch(
         torch.cuda.current_stream() if stream is None else stream,
         grid,
         (block_size, 1, 1),
         compiled_kernel,
         (
-            a,
-            b,
+            tma_a_desc,
+            tma_b_desc,
             c,
             c.reshape(-1) if bias is None else bias,
             m,

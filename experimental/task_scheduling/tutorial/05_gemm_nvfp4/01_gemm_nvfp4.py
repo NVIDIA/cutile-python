@@ -1011,28 +1011,15 @@ def make_gemm_kernel(
     # Publish the specialized task partition so ptxas can honor setmaxnreg.
     @cl.kernel(max_threads_per_block=(config.block_threads,))
     def gemm_kernel(
-        a: torch.Tensor,
-        b: torch.Tensor,
-        sfa: torch.Tensor,
-        sfb: torch.Tensor,
+        a_map,
+        b_map,
+        sfa_map,
+        sfb_map,
         c: torch.Tensor,
         problem_m: ct.ScalarInt64,
         problem_n: ct.ScalarInt64,
         num_k_tiles: ct.ScalarInt64,
     ) -> None:
-        a_map = cl.tensor_map_tiled(
-            a,
-            (PACKED_BLOCK_K, CTA_M, 1),
-            swizzle=cl.SwizzleMode.SWIZZLE_128B,
-        )
-        b_map = cl.tensor_map_tiled(
-            b,
-            (PACKED_BLOCK_K, CTA_N, 1),
-            swizzle=cl.SwizzleMode.SWIZZLE_128B,
-        )
-        sfa_map = cl.tensor_map_tiled(sfa, (256, 4, 1, 1))
-        sfb_map = cl.tensor_map_tiled(sfb, (256, 4, 1, 1))
-
         # Materialize the unified SMEM and barrier allocators before reading
         # their named allocations.
         device_allocators = device_manager.setup_resources_and_tasks()
@@ -1250,12 +1237,20 @@ def run(
     program = get_gemm_program(use_two_tma_warps)
     if verbose:
         program.manager.print_verbose_report()
+    a_map = cl.tensor_map_tiled(
+        a, (PACKED_BLOCK_K, CTA_M, 1), swizzle=cl.SwizzleMode.SWIZZLE_128B
+    )
+    b_map = cl.tensor_map_tiled(
+        b, (PACKED_BLOCK_K, CTA_N, 1), swizzle=cl.SwizzleMode.SWIZZLE_128B
+    )
+    sfa_map = cl.tensor_map_tiled(sfa, (256, 4, 1, 1))
+    sfb_map = cl.tensor_map_tiled(sfb, (256, 4, 1, 1))
     cl.launch(
         torch.cuda.current_stream() if stream is None else stream,
         (m // CTA_M, n // BLOCK_N, batch),
         (program.block_threads, 1, 1),
         program.kernel,
-        (a, b, sfa, sfb, c, m, n, k // BLOCK_K),
+        (a_map, b_map, sfa_map, sfb_map, c, m, n, k // BLOCK_K),
         block_in_cluster_count=(CLUSTER_M, 1, 1),
     )
 

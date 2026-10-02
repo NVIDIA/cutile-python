@@ -213,9 +213,11 @@ def _peer_vector(y_accum, base, groups, lane):
 
 @cl.kernel
 def _kernel(
-    a,
-    b,
-    c,
+    a_tmap,
+    b_tmap,
+    c_tmap,
+    n: cl.Constant[int],
+    k: cl.Constant[int],
     tile_m: cl.Constant[int],
     tile_n: cl.Constant[int],
     cluster_size: cl.Constant[int],
@@ -225,9 +227,6 @@ def _kernel(
     reduction_chunk_elems: cl.Constant[int],
     num_batches: cl.Constant[int],
 ):
-    m, n, batch_count = c.shape
-    k = a.shape[0]
-
     tid = cl.thread_index(0)
     lane = tid % WARP_SIZE
     warp = tid // WARP_SIZE
@@ -237,29 +236,6 @@ def _kernel(
     cta_rank = cl.block_in_cluster_index(2)
 
     epilogue_subtile_n = min(32, tile_n)
-    if tile_m == 128:
-        c_tmap = cl.tensor_map_tiled(
-            c,
-            (tile_m, epilogue_subtile_n, 1),
-            swizzle=cl.SwizzleMode.SWIZZLE_128B,
-        )
-    else:
-        c_tmap = cl.tensor_map_tiled(
-            c,
-            (tile_m, epilogue_subtile_n, 1),
-            swizzle=cl.SwizzleMode.SWIZZLE_64B,
-        )
-    a_tmap = cl.tensor_map_tiled(
-        a,
-        (TILE_K, tile_m, 1),
-        swizzle=cl.SwizzleMode.SWIZZLE_128B,
-    )
-    b_tmap = cl.tensor_map_tiled(
-        b,
-        (TILE_K, tile_n, 1),
-        swizzle=cl.SwizzleMode.SWIZZLE_128B,
-    )
-
     ab_full = cl.shared_array(num_ab_stages, cl.mbarrier, alignment=8)
     ab_empty = cl.shared_array(num_ab_stages, cl.mbarrier, alignment=8)
     acc_full = cl.shared_array(1, cl.mbarrier, alignment=8)
@@ -815,15 +791,29 @@ def run(
     a_bytes = a.view(torch.uint8)
     b_bytes = b.view(torch.uint8)
     c_bytes = c.view(torch.uint8)
+    a_tmap = cl.tensor_map_tiled(
+        a_bytes, (TILE_K, tile_m, 1), swizzle=cl.SwizzleMode.SWIZZLE_128B
+    )
+    b_tmap = cl.tensor_map_tiled(
+        b_bytes, (TILE_K, tile_n, 1), swizzle=cl.SwizzleMode.SWIZZLE_128B
+    )
+    c_swizzle = (
+        cl.SwizzleMode.SWIZZLE_128B if tile_m == 128 else cl.SwizzleMode.SWIZZLE_64B
+    )
+    c_tmap = cl.tensor_map_tiled(
+        c_bytes, (tile_m, min(32, tile_n), 1), swizzle=c_swizzle
+    )
     cl.launch(
         cuda_stream,
         (cl.cdiv(m, tile_m), cl.cdiv(n, tile_n), batch * cluster_size),
         (BLOCK_THREADS, 1, 1),
         _kernel,
         (
-            a_bytes,
-            b_bytes,
-            c_bytes,
+            a_tmap,
+            b_tmap,
+            c_tmap,
+            n,
+            k,
             tile_m,
             tile_n,
             cluster_size,

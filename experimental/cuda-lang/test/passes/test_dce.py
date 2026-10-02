@@ -24,7 +24,7 @@ from ..util import get_ir, make_symbolic_scalar, make_symbolic_tensor
 
 def _get_transformed_ir(func, constraints):
     body = get_ir(func, constraints)
-    dyn_smem_size_program, _ = _transform_ir(body, body.ctx)
+    dyn_smem_size_program = _transform_ir(body, body.ctx)
     return body, dyn_smem_size_program
 
 

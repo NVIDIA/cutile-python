@@ -143,7 +143,7 @@ class kernel(TileDispatcher):
             self._compiler_options,
             context)
         [kernel_sig] = result.kernel_signatures
-        return result.cubin, kernel_sig.symbol, None, []
+        return result.cubin, kernel_sig.symbol, None
 
     @property
     def _pyfunc(self):

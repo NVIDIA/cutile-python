@@ -73,10 +73,10 @@ def _to_float16_vector(
 
 @cl.kernel
 def _kernel(
-    a: torch.Tensor,
-    b: torch.Tensor,
-    sfa: torch.Tensor,
-    sfb: torch.Tensor,
+    a_tmap,
+    b_tmap,
+    sfa_tmap,
+    sfb_tmap,
     c: torch.Tensor,
     problem_m: ct.ScalarInt64,
     problem_n: ct.ScalarInt64,
@@ -96,19 +96,6 @@ def _kernel(
     coord_m = block_m * CTA_M
     coord_n_b = block_n * BLOCK_N + rank * CTA_N
     coord_n_c = block_n * BLOCK_N
-
-    a_tmap = cl.tensor_map_tiled(
-        a,
-        (PACKED_BLOCK_K, CTA_M, 1),
-        swizzle=cl.SwizzleMode.SWIZZLE_128B,
-    )
-    b_tmap = cl.tensor_map_tiled(
-        b,
-        (PACKED_BLOCK_K, CTA_N, 1),
-        swizzle=cl.SwizzleMode.SWIZZLE_128B,
-    )
-    sfa_tmap = cl.tensor_map_tiled(sfa, (256, 4, 1, 1))
-    sfb_tmap = cl.tensor_map_tiled(sfb, (256, 4, 1, 1))
 
     ab_full = cl.shared_array(
         AB_STAGES, cl.mbarrier, alignment=8, dynamic=True
@@ -548,12 +535,20 @@ def run(tensors: dict[str, torch.Tensor], stream=None) -> None:
         )
 
     cuda_stream = torch.cuda.current_stream() if stream is None else stream
+    a_tmap = cl.tensor_map_tiled(
+        a, (PACKED_BLOCK_K, CTA_M, 1), swizzle=cl.SwizzleMode.SWIZZLE_128B
+    )
+    b_tmap = cl.tensor_map_tiled(
+        b, (PACKED_BLOCK_K, CTA_N, 1), swizzle=cl.SwizzleMode.SWIZZLE_128B
+    )
+    sfa_tmap = cl.tensor_map_tiled(sfa, (256, 4, 1, 1))
+    sfb_tmap = cl.tensor_map_tiled(sfb, (256, 4, 1, 1))
     cl.launch(
         cuda_stream,
         (m // CTA_M, n // BLOCK_N, batch),
         (BLOCK_THREADS, 1, 1),
         _kernel,
-        (a, b, sfa, sfb, c, m, n, k // BLOCK_K),
+        (a_tmap, b_tmap, sfa_tmap, sfb_tmap, c, m, n, k // BLOCK_K),
         block_in_cluster_count=(CLUSTER_M, 1, 1),
     )
 

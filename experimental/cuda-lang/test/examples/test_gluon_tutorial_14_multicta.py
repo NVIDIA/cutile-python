@@ -179,8 +179,8 @@ def test_multicta_softmax(m, n):
 
 @cl.kernel
 def tma_multicast_copy_kernel(
-    inp,
-    out,
+    in_tmap,
+    out_tmap,
     tile_m: cl.Constant[int],
     tile_n: cl.Constant[int],
     num_ctas: cl.Constant[int],
@@ -189,8 +189,6 @@ def tma_multicast_copy_kernel(
     tile_bytes = tile_elements * 2
     smem = cl.shared_array(tile_elements, cl.float16, alignment=128)
     mbar = cl.shared_array(1, cl.mbarrier, alignment=8).pointer()
-    in_tmap = cl.tensor_map_tiled(inp, (tile_n, tile_m), order="F")
-    out_tmap = cl.tensor_map_tiled(out, (tile_n, tile_m), order="F")
 
     tid = cl.thread_index(0)
     rank = cl.block_in_cluster_index(0)
@@ -234,12 +232,14 @@ def test_tma_multicast_copy():
     torch.manual_seed(0)
     inp = torch.randn((tile_m, tile_n), dtype=torch.float16, device="cuda:0")
     out = torch.empty_like(inp)
+    in_tmap = cl.tensor_map_tiled(inp, (tile_n, tile_m), order="F")
+    out_tmap = cl.tensor_map_tiled(out, (tile_n, tile_m), order="F")
     cl.launch(
         torch.cuda.current_stream(),
         (num_ctas,),
         (128,),
         tma_multicast_copy_kernel,
-        (inp, out, tile_m, tile_n, num_ctas),
+        (in_tmap, out_tmap, tile_m, tile_n, num_ctas),
         block_in_cluster_count=(num_ctas, 1, 1),
     )
     torch.cuda.synchronize()
@@ -271,7 +271,7 @@ def store_fp16_tmem_tile(dst, tmem_base, warp, column, row, output_column, n):
 
 
 @cl.kernel
-def two_cta_tcgen05_kernel(a, b, c):
+def two_cta_tcgen05_kernel(a_tmap, b_tmap, c_tmap):
     cta_m = 128
     cta_n = 64
     tile_n = 128
@@ -282,9 +282,6 @@ def two_cta_tcgen05_kernel(a, b, c):
     warp = tid // WARP_SIZE
     rank = cl.block_in_cluster_index(0)
 
-    a_tmap = cl.tensor_map_tiled(a, (64, cta_m, 1), swizzle=cl.SwizzleMode.SWIZZLE_128B)
-    b_tmap = cl.tensor_map_tiled(b, (64, cta_n, 1), swizzle=cl.SwizzleMode.SWIZZLE_128B)
-    c_tmap = cl.tensor_map_tiled(c, (tile_n, cta_m), order="F")
     a_smem = cl.shared_array(cta_m * tile_k, cl.float16, alignment=512)
     b_smem = cl.shared_array(cta_n * tile_k, cl.float16, alignment=512)
     c_smem = cl.shared_array(cta_m * tile_n, cl.float16, alignment=128)
@@ -413,12 +410,18 @@ def test_two_cta_tcgen05():
     a = torch.randn((m, k), dtype=torch.float16, device="cuda:0")
     b = torch.randn((k, n), dtype=torch.float16, device="cuda:0")
     c = torch.empty((m, n), dtype=torch.float16, device="cuda:0")
+    a_view = make_3d_view(a)
+    b_rows = b.T.contiguous()
+    b_view = make_3d_view(b_rows)
+    a_tmap = cl.tensor_map_tiled(a_view, (64, 128, 1), swizzle=cl.SwizzleMode.SWIZZLE_128B)
+    b_tmap = cl.tensor_map_tiled(b_view, (64, 64, 1), swizzle=cl.SwizzleMode.SWIZZLE_128B)
+    c_tmap = cl.tensor_map_tiled(c, (128, 128), order="F")
     cl.launch(
         torch.cuda.current_stream(),
         (2,),
         (4 * WARP_SIZE,),
         two_cta_tcgen05_kernel,
-        (make_3d_view(a), make_3d_view(b.T.contiguous()), c),
+        (a_tmap, b_tmap, c_tmap),
         block_in_cluster_count=(2, 1, 1),
     )
     torch.cuda.synchronize()
@@ -426,7 +429,7 @@ def test_two_cta_tcgen05():
 
 
 @cl.kernel
-def tma_tcgen05_kernel(a, b, c):
+def tma_tcgen05_kernel(a_tmap, b_tmap, c_tmap):
     cta_m = 128
     cta_n = 64
     tile_n = 128
@@ -439,9 +442,6 @@ def tma_tcgen05_kernel(a, b, c):
     rank = cl.block_in_cluster_index(0)
     pair_rank = rank % 2
 
-    a_tmap = cl.tensor_map_tiled(a, (64, cta_m, 1), swizzle=cl.SwizzleMode.SWIZZLE_128B)
-    b_tmap = cl.tensor_map_tiled(b, (64, cta_n, 1), swizzle=cl.SwizzleMode.SWIZZLE_128B)
-    c_tmap = cl.tensor_map_tiled(c, (tile_n, cta_m), order="F")
     a_smem = cl.shared_array(cta_m * tile_k, cl.float16, alignment=512)
     b_smem = cl.shared_array(cta_n * tile_k, cl.float16, alignment=512)
     c_smem = cl.shared_array(cta_m * tile_n, cl.float16, alignment=128)
@@ -574,12 +574,18 @@ def test_tma_tcgen05():
     a = torch.randn((m, k), dtype=torch.float16, device="cuda:0")
     b = torch.randn((k, n), dtype=torch.float16, device="cuda:0")
     c = torch.empty((m, n), dtype=torch.float16, device="cuda:0")
+    a_view = make_3d_view(a)
+    b_rows = b.T.contiguous()
+    b_view = make_3d_view(b_rows)
+    a_tmap = cl.tensor_map_tiled(a_view, (64, 128, 1), swizzle=cl.SwizzleMode.SWIZZLE_128B)
+    b_tmap = cl.tensor_map_tiled(b_view, (64, 64, 1), swizzle=cl.SwizzleMode.SWIZZLE_128B)
+    c_tmap = cl.tensor_map_tiled(c, (128, 128), order="F")
     cl.launch(
         torch.cuda.current_stream(),
         (4,),
         (4 * WARP_SIZE,),
         tma_tcgen05_kernel,
-        (make_3d_view(a), make_3d_view(b.T.contiguous()), c),
+        (a_tmap, b_tmap, c_tmap),
         block_in_cluster_count=(4, 1, 1),
     )
     torch.cuda.synchronize()
@@ -704,9 +710,9 @@ def store_matmul_partition(
 
 @cl.kernel
 def matmul_multicta_kernel(
-    a,
-    b,
-    c,
+    a_tmap,
+    b_tmap,
+    c_tmap,
     m: cl.Constant[int],
     n: cl.Constant[int],
     k: cl.Constant[int],
@@ -729,9 +735,6 @@ def matmul_multicta_kernel(
     tiles_m = m // tile_m
     tiles_n = n // tile_n
 
-    a_tmap = cl.tensor_map_tiled(a, (64, cta_m, 1), swizzle=cl.SwizzleMode.SWIZZLE_128B)
-    b_tmap = cl.tensor_map_tiled(b, (64, cta_n, 1), swizzle=cl.SwizzleMode.SWIZZLE_128B)
-    c_tmap = cl.tensor_map_tiled(c, (subtile_n, cta_m), order="F")
     a_smem = cl.shared_array((stages, cta_m * tile_k), cl.float16, alignment=512)
     b_smem = cl.shared_array((stages, cta_n * tile_k), cl.float16, alignment=512)
     c_smem = cl.shared_array(
@@ -1043,15 +1046,21 @@ def test_matmul_multicta():
     b = torch.randn((k, n), dtype=torch.float16, device="cuda:0")
     c = torch.empty((m, n), dtype=torch.float16, device="cuda:0")
     tiles = (m // 256) * (n // 256)
+    a_view = make_3d_view(a)
+    b_rows = b.T.contiguous()
+    b_view = make_3d_view(b_rows)
+    a_tmap = cl.tensor_map_tiled(a_view, (64, 128, 1), swizzle=cl.SwizzleMode.SWIZZLE_128B)
+    b_tmap = cl.tensor_map_tiled(b_view, (64, 128, 1), swizzle=cl.SwizzleMode.SWIZZLE_128B)
+    c_tmap = cl.tensor_map_tiled(c, (32, 128), order="F")
     cl.launch(
         torch.cuda.current_stream(),
         (tiles * 2,),
         (4 * WARP_SIZE,),
         matmul_multicta_kernel,
         (
-            make_3d_view(a),
-            make_3d_view(b.T.contiguous()),
-            c,
+            a_tmap,
+            b_tmap,
+            c_tmap,
             m,
             n,
             k,

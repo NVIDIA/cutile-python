@@ -240,7 +240,6 @@ def _swizzle_mode(cfg):
 def make_fmha_kernel(task_manager, cfg: FmhaConfig):
     """Specialize the CUDA Lang kernel around one frozen device schedule."""
     task_manager = task_manager.to_device()
-    swizzle = _swizzle_mode(cfg)
 
     @cl.kernel(
         max_threads_per_block=(cfg.block_threads, 1, 1),
@@ -248,8 +247,8 @@ def make_fmha_kernel(task_manager, cfg: FmhaConfig):
     )
     def fmha_kernel(
         q,
-        k,
-        v,
+        tma_k_desc,
+        tma_v_desc,
         o,
         seqlen_q,
         seqlen_k,
@@ -264,28 +263,6 @@ def make_fmha_kernel(task_manager, cfg: FmhaConfig):
         is_causal: cl.Constant[bool],
         use_causal_head_fast_grid: cl.Constant[bool],
     ):
-        tma_k_desc = cl.tensor_map_tiled(
-            k,
-            (
-                tma_swizzle_chunk_elems,
-                kv_tile,
-                head_dim // tma_swizzle_chunk_elems,
-                1,
-                1,
-            ),
-            swizzle=swizzle,
-        )
-        tma_v_desc = cl.tensor_map_tiled(
-            v,
-            (
-                tma_swizzle_chunk_elems,
-                kv_tile,
-                head_dim // tma_swizzle_chunk_elems,
-                1,
-                1,
-            ),
-            swizzle=swizzle,
-        )
         if cl.lane_index() == 0:
             cl.prefetch_tensor_map(tma_k_desc)
             cl.prefetch_tensor_map(tma_v_desc)
@@ -309,6 +286,21 @@ def make_fmha_kernel(task_manager, cfg: FmhaConfig):
         )
 
     return fmha_kernel
+
+
+def make_kv_tensor_maps(k_view, v_view, cfg: FmhaConfig):
+    tile_shape = (
+        cfg.tma_swizzle_chunk_elems,
+        cfg.kv_tile,
+        cfg.tma_swizzle_chunks,
+        1,
+        1,
+    )
+    swizzle = _swizzle_mode(cfg)
+    return (
+        cl.tensor_map_tiled(k_view, tile_shape, swizzle=swizzle),
+        cl.tensor_map_tiled(v_view, tile_shape, swizzle=swizzle),
+    )
 
 
 _TASK_MANAGER_CACHE = {}

@@ -34,7 +34,6 @@ from cuda.lang._passes.ir2mlir import ir2mlir
 from cuda.lang._passes.flatten_cfg import flatten_cfg
 from cuda.lang._passes.simt_semantics import simt_semantic_analysis
 from cuda.lang._passes.handle_dyn_shared_mem import handle_dynamic_shared_memory
-from cuda.lang._passes.hoist_tensor_map import hoist_tensor_maps, HoistedTensorMap
 from cuda.lang.compilation import (
     KernelSignature,
     ParameterConstraint,
@@ -206,7 +205,6 @@ def get_compute_capability() -> ComputeCapability:
 class CompilationResult:
     kernel_signatures: Sequence[KernelSignature]
     dyn_smem_size_program: HostProgram | None
-    hoisted_tensor_maps: list[HoistedTensorMap]
     timings: CompilationTimings | None = None
 
     stderr: bytes | None = None
@@ -251,7 +249,7 @@ def _transform_ir(
     func_ir: ir.Block,
     ctx: ir.IRContext,
     timer: CompilationTimer | None = None,
-) -> tuple[HostProgram | None, list[HoistedTensorMap]]:
+) -> HostProgram | None:
     timer = timer or CompilationTimer()
 
     with timer.phase("ir.simt_semantic_analysis"):
@@ -263,15 +261,12 @@ def _transform_ir(
         dyn_smem_size_program = handle_dynamic_shared_memory(
             func_ir, host_program_by_var
         )
-    with timer.phase("ir.tensor_map_hoisting"):
-        hoisted_tensor_maps = hoist_tensor_maps(func_ir, host_program_by_var)
-
     with timer.phase("ir.eliminate_assign_ops"):
         eliminate_assign_ops(func_ir)
     with timer.phase("ir.dead_code_elimination"):
         dead_code_elimination_pass(func_ir)
 
-    return dyn_smem_size_program, hoisted_tensor_maps
+    return dyn_smem_size_program
 
 
 def compile_simt(
@@ -341,7 +336,7 @@ def compile_simt(
     if log_flags.log_ir:
         _dump("IR (pre-transforms)", func_ir)
 
-    dyn_smem_size_program, hoisted_tensor_maps = _transform_ir(func_ir, ctx, timer)
+    dyn_smem_size_program = _transform_ir(func_ir, ctx, timer)
 
     if log_flags.log_ir:
         _dump("IR (post-transforms)", func_ir)
@@ -442,7 +437,6 @@ def compile_simt(
     return CompilationResult(
         kernel_signatures=[signature],
         dyn_smem_size_program=dyn_smem_size_program,
-        hoisted_tensor_maps=hoisted_tensor_maps,
         timings=timings if keep_timings else None,
         hir=func_hir if keep_hir else None,
         final_ir=flattened_ir if keep_final_ir else None,

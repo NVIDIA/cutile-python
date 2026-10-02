@@ -122,10 +122,10 @@ def v_descriptor(pointer, chunk):
     min_blocks_per_sm=1,
 )
 def mha_kernel(
-    q,
-    k,
-    v,
-    o,
+    q_tmap,
+    k_tmap,
+    v_tmap,
+    o_tmap,
     lse,
     batch: cl.Constant[int],
     q_sequence: cl.Constant[int],
@@ -168,21 +168,6 @@ def mha_kernel(
     warp_in_group = (tid % WARPGROUP_SIZE) // WARP_SIZE
     lane_in_group = tid % WARPGROUP_SIZE
     rank = cl.block_in_cluster_index(0)
-
-    q_tmap = cl.tensor_map_tiled(
-        q, (64, BLOCK_M, HEAD_DIM_QK // 64, 1, 1), swizzle=cl.SwizzleMode.SWIZZLE_128B
-    )
-    k_tmap = cl.tensor_map_tiled(
-        k,
-        (64, BLOCK_N // 2, HEAD_DIM_QK // 64, 1, 1),
-        swizzle=cl.SwizzleMode.SWIZZLE_128B,
-    )
-    v_tmap = cl.tensor_map_tiled(
-        v, (64, BLOCK_N, 1, 1, 1), swizzle=cl.SwizzleMode.SWIZZLE_128B
-    )
-    o_tmap = cl.tensor_map_tiled(
-        o, (64, BLOCK_M, HEAD_DIM_V // 64, 1, 1), swizzle=cl.SwizzleMode.SWIZZLE_128B
-    )
 
     if tid == 0:
         cl.prefetch_tensor_map(q_tmap)
@@ -773,16 +758,35 @@ def run_mha(q, k, v):
     lse = torch.empty(
         (batch, heads, 1, q_sequence), dtype=torch.float32, device=q.device
     )
+    q_view = make_tma_view(q)
+    k_view = make_tma_view(k)
+    v_view = make_tma_view(v)
+    o_view = make_tma_view(output)
+    q_tmap = cl.tensor_map_tiled(
+        q_view, (64, BLOCK_M, HEAD_DIM_QK // 64, 1, 1),
+        swizzle=cl.SwizzleMode.SWIZZLE_128B,
+    )
+    k_tmap = cl.tensor_map_tiled(
+        k_view, (64, BLOCK_N // 2, HEAD_DIM_QK // 64, 1, 1),
+        swizzle=cl.SwizzleMode.SWIZZLE_128B,
+    )
+    v_tmap = cl.tensor_map_tiled(
+        v_view, (64, BLOCK_N, 1, 1, 1), swizzle=cl.SwizzleMode.SWIZZLE_128B
+    )
+    o_tmap = cl.tensor_map_tiled(
+        o_view, (64, BLOCK_M, HEAD_DIM_V // 64, 1, 1),
+        swizzle=cl.SwizzleMode.SWIZZLE_128B,
+    )
     cl.launch(
         torch.cuda.current_stream(),
         (NUM_SMS,),
         (THREADS,),
         mha_kernel,
         (
-            make_tma_view(q),
-            make_tma_view(k),
-            make_tma_view(v),
-            make_tma_view(output),
+            q_tmap,
+            k_tmap,
+            v_tmap,
+            o_tmap,
             lse.reshape(-1),
             batch,
             q_sequence,

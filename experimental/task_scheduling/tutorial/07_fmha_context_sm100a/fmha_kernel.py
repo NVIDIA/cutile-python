@@ -1090,64 +1090,16 @@ def make_fmha_kernel(device_task_manager, num_kv_tiles, q_offset, cfg, heads):
             min_blocks_per_sm=1,
         )
         def fmha_kernel(
-            q,
-            k,
-            v,
-            o,
+            tma_q_desc,
+            tma_k_desc,
+            tma_v_desc,
+            tma_o_desc,
             scale_softmax_log2,
             output_scale,
             cum_seqlen_q,
             cum_seqlen_k,
             page_idx_kv,
         ):
-            ragged_q = _make_ragged_tma_array(q, heads, fmha_config)
-            ragged_o = _make_ragged_tma_array(o, heads, fmha_config)
-            tma_q_desc = cl.tensor_map_tiled(
-                ragged_q,
-                (
-                    fmha_config.tma_copy_q_granu_inner,
-                    1,
-                    fmha_config.q_tile_m,
-                    1,
-                    1,
-                ),
-                order=(0, 1, 2, 3, 4),
-                swizzle=cl.SwizzleMode.SWIZZLE_128B,
-                l2_promotion=cl.TensorMapL2Promotion.NONE,
-            )
-            paged_kv_box = (
-                fmha_config.tma_copy_kv_granu_inner,
-                fmha_config.num_tokens_per_page,
-                1,
-                1,
-            )
-            tma_k_desc = cl.tensor_map_tiled(
-                k,
-                paged_kv_box,
-                order=(0, 1, 2, 3),
-                swizzle=cl.SwizzleMode.SWIZZLE_128B,
-                l2_promotion=cl.TensorMapL2Promotion.L2_128B,
-            )
-            tma_v_desc = cl.tensor_map_tiled(
-                v,
-                paged_kv_box,
-                order=(0, 1, 2, 3),
-                swizzle=cl.SwizzleMode.SWIZZLE_128B,
-                l2_promotion=cl.TensorMapL2Promotion.L2_128B,
-            )
-            tma_o_desc = cl.tensor_map_tiled(
-                ragged_o,
-                (
-                    fmha_config.tma_copy_o_granu_inner,
-                    1,
-                    fmha_config.q_tile_m,
-                    1,
-                    1,
-                ),
-                order=(0, 1, 2, 3, 4),
-                swizzle=cl.SwizzleMode.SWIZZLE_128B,
-                l2_promotion=cl.TensorMapL2Promotion.NONE,
-            )
             kernel_body(
                 tma_q_desc,
                 tma_k_desc,
@@ -1167,65 +1119,15 @@ def make_fmha_kernel(device_task_manager, num_kv_tiles, q_offset, cfg, heads):
             min_blocks_per_sm=1,
         )
         def fmha_kernel(
-            q,
-            k,
-            v,
-            o,
+            tma_q_desc,
+            tma_k_desc,
+            tma_v_desc,
+            tma_o_desc,
             scale_softmax_log2,
             output_scale,
             cum_seqlen_q,
             cum_seqlen_k,
         ):
-            ragged_q = _make_ragged_tma_array(q, heads, fmha_config)
-            ragged_o = _make_ragged_tma_array(o, heads, fmha_config)
-            tma_q_desc = cl.tensor_map_tiled(
-                ragged_q,
-                (
-                    fmha_config.tma_copy_q_granu_inner,
-                    1,
-                    fmha_config.q_tile_m,
-                    1,
-                    1,
-                ),
-                order=(0, 1, 2, 3, 4),
-                swizzle=cl.SwizzleMode.SWIZZLE_128B,
-                l2_promotion=cl.TensorMapL2Promotion.NONE,
-            )
-            tma_k_desc = cl.tensor_map_tiled(
-                k,
-                (
-                    fmha_config.tma_copy_kv_granu_inner,
-                    1,
-                    fmha_config.kv_tile_n,
-                ),
-                order=(0, 1, 2),
-                swizzle=cl.SwizzleMode.SWIZZLE_128B,
-                l2_promotion=cl.TensorMapL2Promotion.NONE,
-            )
-            tma_v_desc = cl.tensor_map_tiled(
-                v,
-                (
-                    fmha_config.tma_copy_kv_granu_inner,
-                    1,
-                    fmha_config.kv_tile_n,
-                ),
-                order=(0, 1, 2),
-                swizzle=cl.SwizzleMode.SWIZZLE_128B,
-                l2_promotion=cl.TensorMapL2Promotion.NONE,
-            )
-            tma_o_desc = cl.tensor_map_tiled(
-                ragged_o,
-                (
-                    fmha_config.tma_copy_o_granu_inner,
-                    1,
-                    fmha_config.q_tile_m,
-                    1,
-                    1,
-                ),
-                order=(0, 1, 2, 3, 4),
-                swizzle=cl.SwizzleMode.SWIZZLE_128B,
-                l2_promotion=cl.TensorMapL2Promotion.NONE,
-            )
             kernel_body(
                 tma_q_desc,
                 tma_k_desc,
@@ -1244,65 +1146,13 @@ def make_fmha_kernel(device_task_manager, num_kv_tiles, q_offset, cfg, heads):
             min_blocks_per_sm=1,
         )
         def fmha_kernel(
-            q,
-            k,
-            v,
-            o,
+            tma_q_desc,
+            tma_k_desc,
+            tma_v_desc,
+            tma_o_desc,
             scale_softmax_log2,
             output_scale,
         ):
-            tma_q_desc = cl.tensor_map_tiled(
-                q,
-                (
-                    fmha_config.tma_copy_q_granu_inner,
-                    1,
-                    fmha_config.q_tile_m,
-                    1,
-                ),
-                order=(0, 1, 2, 3),
-                swizzle=cl.SwizzleMode.SWIZZLE_128B,
-                l2_promotion=(
-                    cl.TensorMapL2Promotion.NONE
-                    if fmha_config.head_paired
-                    else cl.TensorMapL2Promotion.L2_128B
-                ),
-            )
-            tma_k_desc = cl.tensor_map_tiled(
-                k,
-                (
-                    fmha_config.tma_copy_kv_granu_inner,
-                    1,
-                    fmha_config.kv_tile_n,
-                    1,
-                ),
-                order=(0, 1, 2, 3),
-                swizzle=cl.SwizzleMode.SWIZZLE_128B,
-                l2_promotion=cl.TensorMapL2Promotion.L2_128B,
-            )
-            tma_v_desc = cl.tensor_map_tiled(
-                v,
-                (
-                    fmha_config.tma_copy_kv_granu_inner,
-                    1,
-                    fmha_config.kv_tile_n,
-                    1,
-                ),
-                order=(0, 1, 2, 3),
-                swizzle=cl.SwizzleMode.SWIZZLE_128B,
-                l2_promotion=cl.TensorMapL2Promotion.L2_128B,
-            )
-            tma_o_desc = cl.tensor_map_tiled(
-                o,
-                (
-                    fmha_config.tma_copy_o_granu_inner,
-                    1,
-                    fmha_config.q_tile_m,
-                    1,
-                ),
-                order=(0, 1, 2, 3),
-                swizzle=cl.SwizzleMode.SWIZZLE_128B,
-                l2_promotion=cl.TensorMapL2Promotion.NONE,
-            )
             kernel_body(
                 tma_q_desc,
                 tma_k_desc,
@@ -1391,3 +1241,139 @@ def get_kernel(pipeline):
             pipeline.num_heads_q,
         )
     return _KERNEL_CACHE[key]
+
+
+_HOST_LAUNCHER_CACHE = {}
+
+
+def get_host_launcher(pipeline):
+    """Encode tensor maps on the host before launching the FMHA kernel."""
+    key = id(pipeline.device_task_manager)
+    if key in _HOST_LAUNCHER_CACHE:
+        return _HOST_LAUNCHER_CACHE[key]
+
+    cfg = pipeline.cfg
+    heads = pipeline.num_heads_q
+    kernel = get_kernel(pipeline)
+    grid = compute_grid(pipeline)
+    block = (cfg.block_threads,)
+    cluster = cfg.cluster_shape
+
+    if cfg.use_paged_kv:
+
+        @cl.host_entry
+        def launcher(stream, q, k, v, o, scale, output_scale, cum_q, cum_k, page_idx):
+            ragged_q = _make_ragged_tma_array(q, heads, cfg)
+            ragged_o = _make_ragged_tma_array(o, heads, cfg)
+            q_map = cl.tensor_map_tiled(
+                ragged_q,
+                (cfg.tma_copy_q_granu_inner, 1, cfg.q_tile_m, 1, 1),
+                order=(0, 1, 2, 3, 4),
+                swizzle=cl.SwizzleMode.SWIZZLE_128B,
+                l2_promotion=cl.TensorMapL2Promotion.NONE,
+            )
+            kv_box = (cfg.tma_copy_kv_granu_inner, cfg.num_tokens_per_page, 1, 1)
+            k_map = cl.tensor_map_tiled(
+                k, kv_box, order=(0, 1, 2, 3),
+                swizzle=cl.SwizzleMode.SWIZZLE_128B,
+                l2_promotion=cl.TensorMapL2Promotion.L2_128B,
+            )
+            v_map = cl.tensor_map_tiled(
+                v, kv_box, order=(0, 1, 2, 3),
+                swizzle=cl.SwizzleMode.SWIZZLE_128B,
+                l2_promotion=cl.TensorMapL2Promotion.L2_128B,
+            )
+            o_map = cl.tensor_map_tiled(
+                ragged_o,
+                (cfg.tma_copy_o_granu_inner, 1, cfg.q_tile_m, 1, 1),
+                order=(0, 1, 2, 3, 4),
+                swizzle=cl.SwizzleMode.SWIZZLE_128B,
+                l2_promotion=cl.TensorMapL2Promotion.NONE,
+            )
+            cl.launch(
+                stream, grid, block, kernel,
+                (q_map, k_map, v_map, o_map, scale, output_scale,
+                 cum_q, cum_k, page_idx),
+                block_in_cluster_count=cluster,
+                programmatic_dependent_launch=False,
+            )
+
+    elif cfg.has_varlen:
+
+        @cl.host_entry
+        def launcher(stream, q, k, v, o, scale, output_scale, cum_q, cum_k):
+            ragged_q = _make_ragged_tma_array(q, heads, cfg)
+            ragged_o = _make_ragged_tma_array(o, heads, cfg)
+            q_map = cl.tensor_map_tiled(
+                ragged_q,
+                (cfg.tma_copy_q_granu_inner, 1, cfg.q_tile_m, 1, 1),
+                order=(0, 1, 2, 3, 4),
+                swizzle=cl.SwizzleMode.SWIZZLE_128B,
+                l2_promotion=cl.TensorMapL2Promotion.NONE,
+            )
+            kv_box = (cfg.tma_copy_kv_granu_inner, 1, cfg.kv_tile_n)
+            k_map = cl.tensor_map_tiled(
+                k, kv_box, order=(0, 1, 2),
+                swizzle=cl.SwizzleMode.SWIZZLE_128B,
+                l2_promotion=cl.TensorMapL2Promotion.NONE,
+            )
+            v_map = cl.tensor_map_tiled(
+                v, kv_box, order=(0, 1, 2),
+                swizzle=cl.SwizzleMode.SWIZZLE_128B,
+                l2_promotion=cl.TensorMapL2Promotion.NONE,
+            )
+            o_map = cl.tensor_map_tiled(
+                ragged_o,
+                (cfg.tma_copy_o_granu_inner, 1, cfg.q_tile_m, 1, 1),
+                order=(0, 1, 2, 3, 4),
+                swizzle=cl.SwizzleMode.SWIZZLE_128B,
+                l2_promotion=cl.TensorMapL2Promotion.NONE,
+            )
+            cl.launch(
+                stream, grid, block, kernel,
+                (q_map, k_map, v_map, o_map, scale, output_scale, cum_q, cum_k),
+                block_in_cluster_count=cluster,
+                programmatic_dependent_launch=False,
+            )
+
+    else:
+
+        @cl.host_entry
+        def launcher(stream, q, k, v, o, scale, output_scale):
+            q_map = cl.tensor_map_tiled(
+                q,
+                (cfg.tma_copy_q_granu_inner, 1, cfg.q_tile_m, 1),
+                order=(0, 1, 2, 3),
+                swizzle=cl.SwizzleMode.SWIZZLE_128B,
+                l2_promotion=(
+                    cl.TensorMapL2Promotion.NONE
+                    if cfg.head_paired else cl.TensorMapL2Promotion.L2_128B
+                ),
+            )
+            kv_box = (cfg.tma_copy_kv_granu_inner, 1, cfg.kv_tile_n, 1)
+            k_map = cl.tensor_map_tiled(
+                k, kv_box, order=(0, 1, 2, 3),
+                swizzle=cl.SwizzleMode.SWIZZLE_128B,
+                l2_promotion=cl.TensorMapL2Promotion.L2_128B,
+            )
+            v_map = cl.tensor_map_tiled(
+                v, kv_box, order=(0, 1, 2, 3),
+                swizzle=cl.SwizzleMode.SWIZZLE_128B,
+                l2_promotion=cl.TensorMapL2Promotion.L2_128B,
+            )
+            o_map = cl.tensor_map_tiled(
+                o,
+                (cfg.tma_copy_o_granu_inner, 1, cfg.q_tile_m, 1),
+                order=(0, 1, 2, 3),
+                swizzle=cl.SwizzleMode.SWIZZLE_128B,
+                l2_promotion=cl.TensorMapL2Promotion.NONE,
+            )
+            cl.launch(
+                stream, grid, block, kernel,
+                (q_map, k_map, v_map, o_map, scale, output_scale),
+                block_in_cluster_count=cluster,
+                programmatic_dependent_launch=False,
+            )
+
+    _HOST_LAUNCHER_CACHE[key] = launcher
+    return launcher

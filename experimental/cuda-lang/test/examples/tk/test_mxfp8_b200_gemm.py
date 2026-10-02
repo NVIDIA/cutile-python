@@ -291,11 +291,11 @@ def store_output_tile(
     max_registers_per_thread=256,
 )
 def mxfp8_b200_gemm_kernel(
-    a,
-    a_scales,
-    b,
-    b_scales,
-    c,
+    a_tmap,
+    a_scale_tmap,
+    b_tmap,
+    b_scale_tmap,
+    c_tmap,
     m: cl.Constant[int],
     n: cl.Constant[int],
     k: cl.Constant[int],
@@ -320,19 +320,6 @@ def mxfp8_b200_gemm_kernel(
     scale_loader_warp = 6
     data_loader_warp = 7
 
-    a_tmap = cl.tensor_map_tiled(
-        a,
-        (128, CTA_M, 1),
-        swizzle=cl.SwizzleMode.SWIZZLE_128B,
-    )
-    b_tmap = cl.tensor_map_tiled(
-        b,
-        (128, cta_n, 1),
-        swizzle=cl.SwizzleMode.SWIZZLE_128B,
-    )
-    a_scale_tmap = cl.tensor_map_tiled(a_scales, (16, 32, 1, 1))
-    b_scale_tmap = cl.tensor_map_tiled(b_scales, (16, 32, 1, 1))
-    c_tmap = cl.tensor_map_tiled(c, (output_width, CTA_M), order="F")
     if tid == 0:
         cl.prefetch_tensor_map(a_tmap)
         cl.prefetch_tensor_map(a_scale_tmap)
@@ -714,17 +701,30 @@ def launch_mxfp8_b200_gemm(
     blocks = min(tasks * 2, multiprocessors - multiprocessors % 2)
     if stream is None:
         stream = torch.cuda.current_stream()
+    a_view = make_fp8_tma_view(a)
+    a_scale_view = make_mxfp8_scale_tma_view(a_scales)
+    b_view = make_fp8_tma_view(b)
+    b_scale_view = make_mxfp8_scale_tma_view(b_scales)
+    a_tmap = cl.tensor_map_tiled(
+        a_view, (128, CTA_M, 1), swizzle=cl.SwizzleMode.SWIZZLE_128B
+    )
+    b_tmap = cl.tensor_map_tiled(
+        b_view, (128, config.tile_n // 2, 1), swizzle=cl.SwizzleMode.SWIZZLE_128B
+    )
+    a_scale_tmap = cl.tensor_map_tiled(a_scale_view, (16, 32, 1, 1))
+    b_scale_tmap = cl.tensor_map_tiled(b_scale_view, (16, 32, 1, 1))
+    c_tmap = cl.tensor_map_tiled(c, (config.tile_n // config.epilogue_stages, CTA_M), order="F")
     cl.launch(
         stream,
         (blocks,),
         (config.num_warps * WARP_SIZE,),
         mxfp8_b200_gemm_kernel,
         (
-            make_fp8_tma_view(a),
-            make_mxfp8_scale_tma_view(a_scales),
-            make_fp8_tma_view(b),
-            make_mxfp8_scale_tma_view(b_scales),
-            c,
+            a_tmap,
+            a_scale_tmap,
+            b_tmap,
+            b_scale_tmap,
+            c_tmap,
             m,
             n,
             k,

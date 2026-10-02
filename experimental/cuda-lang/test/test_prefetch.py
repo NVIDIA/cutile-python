@@ -4,16 +4,15 @@
 import re
 
 import pytest
+import torch
 
 import cuda.lang as cl
 from cuda.lang.compilation import CallingConvention, KernelSignature, TensorMapConstraint
 from cuda.tile._cext import cconv_v3_enabled
 
-from test.util import compile_kernel, make_symbolic_tensor
+from test.util import compile_kernel, require_hopper_or_newer
 
 HOPPER_TARGET = {"gpu_name": "sm_90", "arch": "compute_90"}
-
-SIG_I32 = KernelSignature([make_symbolic_tensor((16,), cl.int32)])
 
 
 @pytest.mark.parametrize(
@@ -99,17 +98,16 @@ def test_prefetch_uniform():
     )
 
 
+@require_hopper_or_newer()
+@pytest.mark.skipif(not cconv_v3_enabled(), reason="Tensor-map arguments require cconv3")
 def test_prefetch_tensor_map():
-    def kernel(x):
-        tensor_map = cl.tensor_map_tiled(x, 16)
+    @cl.kernel
+    def kernel(tensor_map):
         cl.prefetch_tensor_map(tensor_map)
 
-    compile_kernel(
-        kernel,
-        signature=SIG_I32,
-        assert_in_ptx="prefetch.tensormap",
-        **HOPPER_TARGET,
-    )
+    source = torch.empty(16, dtype=torch.int32, device="cuda")
+    tensor_map = cl.tensor_map_tiled(source, 16)
+    cl.launch(torch.cuda.current_stream(), (1,), (1,), kernel, (tensor_map,))
 
 
 @pytest.mark.skipif(not cconv_v3_enabled(), reason="Requires cconv3 enabled")

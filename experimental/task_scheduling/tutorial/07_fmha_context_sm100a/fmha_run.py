@@ -7,13 +7,11 @@ import argparse
 import math
 import statistics
 
-import cuda.lang as cl
 import torch
 
 try:
     from .fmha_kernel import (
-        compute_grid,
-        get_kernel,
+        get_host_launcher,
         get_pipeline,
         make_paged_kv_tma_view,
         make_tma_view,
@@ -27,8 +25,7 @@ try:
     )
 except ImportError:
     from fmha_kernel import (
-        compute_grid,
-        get_kernel,
+        get_host_launcher,
         get_pipeline,
         make_paged_kv_tma_view,
         make_tma_view,
@@ -436,7 +433,7 @@ def run(
         seq_k = k.shape[1]
 
     pipeline = get_pipeline(batch, seq_q, seq_k, heads, cfg, verbose=verbose)
-    kernel = get_kernel(pipeline)
+    launcher = get_host_launcher(pipeline)
     if stream is None:
         stream = torch.cuda.current_stream()
     arguments = (
@@ -451,15 +448,7 @@ def run(
         arguments += (tensors["qo_indptr"], tensors["kv_indptr"])
     if cfg.use_paged_kv:
         arguments += (tensors["page_idx_kv"].reshape(-1),)
-    cl.launch(
-        stream,
-        compute_grid(pipeline),
-        (pipeline.cfg.block_threads,),
-        kernel,
-        arguments,
-        block_in_cluster_count=pipeline.cfg.cluster_shape,
-        programmatic_dependent_launch=False,
-    )
+    launcher(stream, *arguments)
     return out
 
 

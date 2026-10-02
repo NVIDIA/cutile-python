@@ -6,7 +6,8 @@ import pytest
 
 import cuda.lang as cl
 from cuda.lang._exception import TypeCheckingError
-from cuda.lang.compilation import KernelSignature
+from cuda.lang.compilation import CallingConvention, KernelSignature, TensorMapConstraint
+from cuda.tile._cext import cconv_v3_enabled
 
 from .util import (
     compile_kernel,
@@ -24,21 +25,22 @@ class CopyAsyncPtxTestBase:
     def signature():
         return KernelSignature(
             [
-                make_symbolic_tensor((1, 1), cl.int32),
+                TensorMapConstraint(),
                 make_symbolic_scalar(cl.bool_),
                 make_symbolic_scalar(cl.int32),
                 make_symbolic_scalar(cl.int32),
                 32,
                 8,
-            ]
+            ],
+            calling_convention=CallingConvention.cutile_python_v3(),
         )
 
 
+@pytest.mark.skipif(not cconv_v3_enabled(), reason="Tensor-map arguments require cconv3")
 class TestG2S(CopyAsyncPtxTestBase):
     def test_l2_cache_hint(self):
         @cl.kernel
-        def kernel(x, i, j, H: cl.Constant[int], W: cl.Constant[int]):
-            tensor_map = cl.tensor_map_tiled(x, (H, W))
+        def kernel(tensor_map, i, j, H: cl.Constant[int], W: cl.Constant[int]):
             smem = cl.shared_array(shape=(H * W,), dtype=cl.int32, alignment=512)
             mbar = cl.shared_array(1, cl.mbarrier, alignment=8).pointer()
             cache_hint = cl.create_fractional_cache_policy(
@@ -56,20 +58,19 @@ class TestG2S(CopyAsyncPtxTestBase):
         compile_kernel(
             kernel,
             signature=KernelSignature([
-                make_symbolic_tensor((1, 1), cl.int32),
+                TensorMapConstraint(),
                 make_symbolic_scalar(cl.int32),
                 make_symbolic_scalar(cl.int32),
                 32,
                 8,
-            ]),
+            ], calling_convention=CallingConvention.cutile_python_v3()),
             assert_in_ptx="cp.async.bulk.tensor.2d.shared::cta.global",
             **HOPPER_TARGET,
         )
 
     def test_shared_cluster_group_with_predicate_and_multicast(self):
         @cl.kernel
-        def kernel(x, pred, i, j, H: cl.Constant[int], W: cl.Constant[int]):
-            tensor_map = cl.tensor_map_tiled(x, (H, W))
+        def kernel(tensor_map, pred, i, j, H: cl.Constant[int], W: cl.Constant[int]):
             smem = cl.shared_array(shape=(H * W,), dtype=cl.int32, alignment=512)
             smem = cl.map_shared_to_cluster(smem.pointer(), 0)
             mbar = cl.shared_array(1, cl.mbarrier, alignment=8).pointer()
@@ -96,8 +97,7 @@ class TestG2S(CopyAsyncPtxTestBase):
 
     def test_shared_cluster_mbarrier_address_space(self):
         @cl.kernel
-        def kernel(x, pred, i, j, H: cl.Constant[int], W: cl.Constant[int]):
-            tensor_map = cl.tensor_map_tiled(x, (H, W))
+        def kernel(tensor_map, pred, i, j, H: cl.Constant[int], W: cl.Constant[int]):
             smem = cl.shared_array(shape=(H * W,), dtype=cl.int32, alignment=512)
             smem = cl.map_shared_to_cluster(smem.pointer(), 0)
             mbar = cl.shared_array(1, cl.mbarrier, alignment=8).pointer()
@@ -122,8 +122,7 @@ class TestG2S(CopyAsyncPtxTestBase):
             raises=pytest.raises(TypeCheckingError, match=match),
         )
 
-    def k1(x, pred, i, j, H: cl.Constant[int], W: cl.Constant[int]):
-        tensor_map = cl.tensor_map_tiled(x, (H, W))
+    def k1(tensor_map, pred, i, j, H: cl.Constant[int], W: cl.Constant[int]):
         smem = cl.shared_array(shape=(H * W,), dtype=cl.int32, alignment=512)
         mbar = cl.shared_array(1, cl.mbarrier, alignment=8).pointer()
 
@@ -135,8 +134,7 @@ class TestG2S(CopyAsyncPtxTestBase):
             predicate=pred,
         )
 
-    def k2(x, pred, i, j, H: cl.Constant[int], W: cl.Constant[int]):
-        tensor_map = cl.tensor_map_tiled(x, (H, W))
+    def k2(tensor_map, pred, i, j, H: cl.Constant[int], W: cl.Constant[int]):
         smem = cl.shared_array(shape=(H * W,), dtype=cl.int32, alignment=512)
         mbar = cl.shared_array(1, cl.mbarrier, alignment=8).pointer()
 
@@ -148,8 +146,7 @@ class TestG2S(CopyAsyncPtxTestBase):
             multicast_mask=0xFF,
         )
 
-    def k3(x, pred, i, j, H: cl.Constant[int], W: cl.Constant[int]):
-        tensor_map = cl.tensor_map_tiled(x, (H, W))
+    def k3(tensor_map, pred, i, j, H: cl.Constant[int], W: cl.Constant[int]):
         smem = cl.shared_array(shape=(H * W,), dtype=cl.int32, alignment=512)
         mbar = cl.shared_array(1, cl.mbarrier, alignment=8).pointer()
 
@@ -179,8 +176,7 @@ class TestG2S(CopyAsyncPtxTestBase):
     @pytest.mark.parametrize("cluster", (True, False))
     def test_im2col_offsets_without_required_load_mode(self, cluster):
         @cl.kernel
-        def kernel(x, pred, i, j, H: cl.Constant[int], W: cl.Constant[int]):
-            tensor_map = cl.tensor_map_tiled(x, (H, W))
+        def kernel(tensor_map, pred, i, j, H: cl.Constant[int], W: cl.Constant[int]):
             smem = cl.shared_array(shape=(H * W,), dtype=cl.int32, alignment=512)
             smem = smem.pointer()
             if cluster:
@@ -205,8 +201,7 @@ class TestG2S(CopyAsyncPtxTestBase):
     )
     def test_im2col_load_modes_require_offsets(self, mode):
         @cl.kernel
-        def kernel(x, pred, i, j, H: cl.Constant[int], W: cl.Constant[int]):
-            tensor_map = cl.tensor_map_tiled(x, (H, W))
+        def kernel(tensor_map, pred, i, j, H: cl.Constant[int], W: cl.Constant[int]):
             smem = cl.shared_array(shape=(H * W,), dtype=cl.int32, alignment=512)
             mbar = cl.shared_array(1, cl.mbarrier, alignment=8).pointer()
 
@@ -230,7 +225,7 @@ class TestG2S(CopyAsyncPtxTestBase):
     def test_im2col_load_mode_rank3(self):
         @cl.kernel
         def kernel(
-            x,
+            tensor_map,
             pred,
             i,
             j,
@@ -239,7 +234,6 @@ class TestG2S(CopyAsyncPtxTestBase):
             H: cl.Constant[int],
             W: cl.Constant[int],
         ):
-            tensor_map = cl.tensor_map_tiled(x, (D, H, W))
             smem = cl.shared_array(shape=(H * W,), dtype=cl.int32, alignment=512)
             mbar = cl.shared_array(1, cl.mbarrier, alignment=8).pointer()
 
@@ -256,7 +250,7 @@ class TestG2S(CopyAsyncPtxTestBase):
             kernel,
             signature=KernelSignature(
                 [
-                    make_symbolic_tensor((1, 1, 1), cl.int32),
+                    TensorMapConstraint(),
                     make_symbolic_scalar(cl.bool_),
                     make_symbolic_scalar(cl.int32),
                     make_symbolic_scalar(cl.int32),
@@ -264,7 +258,8 @@ class TestG2S(CopyAsyncPtxTestBase):
                     4,
                     32,
                     8,
-                ]
+                ],
+                calling_convention=CallingConvention.cutile_python_v3(),
             ),
             assert_in_ptx="cp.async.bulk.tensor.3d.shared::cta.global.im2col",
             **HOPPER_TARGET,
@@ -272,8 +267,7 @@ class TestG2S(CopyAsyncPtxTestBase):
 
     def test_tile_gather4_rejects_im2col_offsets(self):
         @cl.kernel
-        def kernel(x, pred, i, j, H: cl.Constant[int], W: cl.Constant[int]):
-            tensor_map = cl.tensor_map_tiled(x, (H, W))
+        def kernel(tensor_map, pred, i, j, H: cl.Constant[int], W: cl.Constant[int]):
             smem = cl.shared_array(shape=(H * W,), dtype=cl.int32, alignment=512)
             mbar = cl.shared_array(1, cl.mbarrier, alignment=8).pointer()
 
@@ -297,7 +291,7 @@ class TestG2S(CopyAsyncPtxTestBase):
 
     def test_invalid_tensor_map_pointer(self):
         @cl.kernel
-        def kernel(x, pred, i, j, H: cl.Constant[int], W: cl.Constant[int]):
+        def kernel(tensor_map, pred, i, j, H: cl.Constant[int], W: cl.Constant[int]):
             smem = cl.shared_array(shape=(H * W,), dtype=cl.int32, alignment=512)
             mbar = cl.shared_array(1, cl.mbarrier, alignment=8).pointer()
 
@@ -318,11 +312,11 @@ class TestG2S(CopyAsyncPtxTestBase):
         )
 
 
+@pytest.mark.skipif(not cconv_v3_enabled(), reason="Tensor-map arguments require cconv3")
 class TestS2G(CopyAsyncPtxTestBase):
     def test_l2_cache_hint(self):
         @cl.kernel
-        def kernel(x, pred, i, j, H: cl.Constant[int], W: cl.Constant[int]):
-            tensor_map = cl.tensor_map_tiled(x, (H, W))
+        def kernel(tensor_map, pred, i, j, H: cl.Constant[int], W: cl.Constant[int]):
             smem = cl.shared_array(shape=(H * W,), dtype=cl.int32, alignment=512)
             cache_hint = cl.create_fractional_cache_policy(
                 cl.CachePolicy.L2_EVICT_FIRST
@@ -344,8 +338,7 @@ class TestS2G(CopyAsyncPtxTestBase):
 
     def test_predicate(self):
         @cl.kernel
-        def kernel(x, pred, i, j, H: cl.Constant[int], W: cl.Constant[int]):
-            tensor_map = cl.tensor_map_tiled(x, (H, W))
+        def kernel(tensor_map, pred, i, j, H: cl.Constant[int], W: cl.Constant[int]):
             smem = cl.shared_array(shape=(H * W,), dtype=cl.int32, alignment=512)
 
             cl.copy_async_bulk_tensor_shared_to_global(
@@ -364,8 +357,7 @@ class TestS2G(CopyAsyncPtxTestBase):
 
     def test_im2col_store_mode_rank2_is_rejected(self):
         @cl.kernel
-        def kernel(x, pred, i, j, H: cl.Constant[int], W: cl.Constant[int]):
-            tensor_map = cl.tensor_map_tiled(x, (H, W))
+        def kernel(tensor_map, pred, i, j, H: cl.Constant[int], W: cl.Constant[int]):
             smem = cl.shared_array(shape=(H * W,), dtype=cl.int32, alignment=512)
 
             cl.copy_async_bulk_tensor_shared_to_global(
@@ -385,7 +377,7 @@ class TestS2G(CopyAsyncPtxTestBase):
     def test_im2col_store_mode_rank3(self):
         @cl.kernel
         def kernel(
-            x,
+            tensor_map,
             pred,
             i,
             j,
@@ -394,7 +386,6 @@ class TestS2G(CopyAsyncPtxTestBase):
             H: cl.Constant[int],
             W: cl.Constant[int],
         ):
-            tensor_map = cl.tensor_map_tiled(x, (D, H, W))
             smem = cl.shared_array(shape=(H * W,), dtype=cl.int32, alignment=512)
 
             cl.copy_async_bulk_tensor_shared_to_global(
@@ -408,7 +399,7 @@ class TestS2G(CopyAsyncPtxTestBase):
             kernel,
             signature=KernelSignature(
                 [
-                    make_symbolic_tensor((1, 1, 1), cl.int32),
+                    TensorMapConstraint(),
                     make_symbolic_scalar(cl.bool_),
                     make_symbolic_scalar(cl.int32),
                     make_symbolic_scalar(cl.int32),
@@ -416,7 +407,8 @@ class TestS2G(CopyAsyncPtxTestBase):
                     4,
                     32,
                     8,
-                ]
+                ],
+                calling_convention=CallingConvention.cutile_python_v3(),
             ),
             assert_in_ptx="cp.async.bulk.tensor.3d.global.shared::cta.im2col",
             **HOPPER_TARGET,

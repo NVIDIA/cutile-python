@@ -85,10 +85,7 @@ def _normalize_order(
     return tuple(result)
 
 
-# Keep tile execution enabled during the compatibility phase. Once existing
-# call sites have migrated, this becomes host-only and CreateTensorMap hoisting
-# can be removed from device compilation.
-@stub(host=True, compiled_host=True)
+@stub(host=True, compiled_host=True, tile=False)
 def tensor_map_tiled(array,
                      tile_shape: int | tuple[int, ...],
                      *,

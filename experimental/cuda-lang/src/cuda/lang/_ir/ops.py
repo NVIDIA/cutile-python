@@ -806,8 +806,8 @@ _dtype_to_tensor_map_type = {
 
 
 def _tensor_map_data_type(dtype: datatype.DType):
-    # TODO: Add explicit packed encodings after removing the legacy hoisted
-    # tensor-map creation path. Sub-byte types cannot be inferred here because
+    # TODO: Add explicit packed encodings tensor-map creation path.
+    # Sub-byte types cannot be inferred here because
     # the same logical width has multiple CUDA tensor-map encodings.
     try:
         return _dtype_to_tensor_map_type[dtype]

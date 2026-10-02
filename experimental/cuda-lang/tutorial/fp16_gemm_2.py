@@ -42,10 +42,9 @@ def _slice_float32_vector(values, base, vsize):
 
 
 @cl.kernel
-def _kernel(a, b, c, bias, has_bias: cl.Constant[bool]):
+def _kernel(c, bias, a_tmap, b_tmap, k: cl.Constant[int], has_bias: cl.Constant[bool]):
     """Two-CTA FP16 tcgen05 GEMM kernel with FP32 output."""
     m, n = c.shape
-    k = a.shape[1]
     tid = cl.thread_index(0)
     warp = tid // WARP_SIZE
     block_m = cl.block_index(0)
@@ -59,21 +58,6 @@ def _kernel(a, b, c, bias, has_bias: cl.Constant[bool]):
     off_m = (block_m // CLUSTER_M) * TILE_M + cta_m
     off_n_b = block_n * TILE_N + rank * CTA_N
     off_n_c = block_n * TILE_N
-
-    # A/B are row-major (rows, K). order="F" makes the tensor-map coordinate
-    # order (K, rows), matching the source descriptors.
-    a_tmap = cl.tensor_map_tiled(
-        a,
-        (BLOCK_K, CTA_M),
-        order="F",
-        swizzle=cl.SwizzleMode.SWIZZLE_128B,
-    )
-    b_tmap = cl.tensor_map_tiled(
-        b,
-        (BLOCK_K, CTA_N),
-        order="F",
-        swizzle=cl.SwizzleMode.SWIZZLE_128B,
-    )
 
     ab_full = cl.shared_array(1, cl.mbarrier, alignment=8, dynamic=True)
     ab_empty = cl.shared_array(1, cl.mbarrier, alignment=8, dynamic=True)
@@ -323,12 +307,19 @@ def run(tensors: dict[str, torch.Tensor], stream=None) -> None:
     bias_arg = c.reshape(-1) if bias is None else bias
     grid_m = cl.cdiv(cl.cdiv(m, CTA_M), CLUSTER_M) * CLUSTER_M
     cuda_stream = torch.cuda.current_stream() if stream is None else stream
+    # A/B are row-major (rows, K); order="F" maps coordinates to (K, rows).
+    a_tmap = cl.tensor_map_tiled(
+        a, (BLOCK_K, CTA_M), order="F", swizzle=cl.SwizzleMode.SWIZZLE_128B
+    )
+    b_tmap = cl.tensor_map_tiled(
+        b, (BLOCK_K, CTA_N), order="F", swizzle=cl.SwizzleMode.SWIZZLE_128B
+    )
     cl.launch(
         cuda_stream,
         (grid_m, cl.cdiv(n, TILE_N), 1),
         (BLOCK_THREADS, 1, 1),
         _kernel,
-        (a, b, c, bias_arg, bias is not None),
+        (c, bias_arg, a_tmap, b_tmap, k, bias is not None),
         block_in_cluster_count=(CLUSTER_M, 1, 1),
     )
 

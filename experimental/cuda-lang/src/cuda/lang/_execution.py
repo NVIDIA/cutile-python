@@ -256,7 +256,6 @@ class kernel(_cext.TileDispatcher):
             result.cubin,
             kernel_sig.symbol,
             result.dyn_smem_size_program,
-            result.hoisted_tensor_maps,
         )
 
     @property
