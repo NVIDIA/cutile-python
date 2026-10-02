@@ -3,13 +3,14 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import cuda.lang._datatype as datatype
-from cuda.lang._enums import MbarrierScope
+from cuda.lang._enums import MbarrierLayout, MbarrierScope
 from cuda.lang._exception import InternalError, TypeCheckingError
 from cuda.lang._ir.ir import Var, add_operation
 from cuda.lang._ir.op_defs import RawLLVMIntrinsic
 from cuda.lang._ir.type import MemorySpace, ScalarTy
 from cuda.lang._ir.type_checking_helpers import is_none, require_mbarrier_ptr
 from cuda.lang._stub import mbarrier
+from .inline_ptx_impl import inline_ptx
 from cuda.tile._ir.arithmetic_ops import astype
 from cuda.tile._ir.ir import add_operation_variadic
 from cuda.tile._ir.op_impl import (
@@ -28,15 +29,24 @@ def mbarrier_impl_registry() -> ImplRegistry:
 
 
 @impl(mbarrier.mbarrier_initialize)
-def mbarrier_initialize_impl(mbar: Var, participants: Var) -> Var:
-    require_mbarrier_ptr(mbar)
+def mbarrier_initialize_impl(mbar: Var, participants: Var, layout: Var) -> None:
+    require_mbarrier_ptr(mbar, (MemorySpace.SHARED,))
+    layout_suffix = ""
+    if not is_none(layout):
+        layout = require_constant_enum(layout, MbarrierLayout)
+        layout_suffix = f".layout::v{layout.value}"
     participants = astype(participants, datatype.int32)
-    add_operation_variadic(
-        RawLLVMIntrinsic,
-        tuple(),
-        intrinsic="llvm.nvvm.mbarrier.init.shared",
-        operands_=(mbar, participants),
-    )
+    instruction = f"mbarrier.init{layout_suffix}.shared::cta.b64"
+    inline_ptx(f"{instruction} [%0], %1;", mbar, participants)
+
+
+@impl(mbarrier.mbarrier_has_layout)
+def mbarrier_has_layout_impl(mbar: Var, layout: Var) -> Var:
+    require_mbarrier_ptr(mbar, (MemorySpace.SHARED,))
+    layout = require_constant_enum(layout, MbarrierLayout)
+    instruction = f"mbarrier.check_layout.layout::v{layout.value}.shared::cta.b64"
+    results = inline_ptx(f"{instruction} %0, [%1];", datatype.bool_, mbar)
+    return results[0]
 
 
 @impl(mbarrier.mbarrier_invalidate)

@@ -11,6 +11,22 @@ from cuda.tile._exception import InvalidValueError
 from .util import compile_kernel
 
 
+@pytest.mark.parametrize("left,right", ((False, False), (False, True), (True, False), (True, True)))
+def test_inline_ptx_bool(left, right):
+    @cl.kernel
+    def kernel(inputs, out):
+        predicate = cl._inline_ptx(
+            "and.pred %0, %1, %2;", cl.bool_, inputs[0], inputs[1]
+        )[0]
+        cl.static_assert(cl.dtype_of(predicate) == cl.bool_)
+        out[()] = predicate
+
+    inputs = torch.tensor([left, right], dtype=torch.bool).cuda(0)
+    out = torch.tensor(False, dtype=torch.bool).cuda(0)
+    cl.launch(torch.cuda.current_stream(), (1,), (1,), kernel, (inputs, out))
+    assert out.cpu().item() == (left and right)
+
+
 def test_inline_ptx_multiple_outputs_runtime():
     @cl.kernel
     def kernel(out):

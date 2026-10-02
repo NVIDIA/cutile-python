@@ -4,7 +4,7 @@
 
 from typing import Literal
 
-from cuda.lang._enums import MbarrierScope
+from cuda.lang._enums import MbarrierLayout, MbarrierScope
 from cuda.lang._execution import stub
 from cuda.lang._datatype import uint64, bool_
 from cuda.lang._enums import MemoryOrder
@@ -15,12 +15,30 @@ WaitMemoryOrder = Literal[MemoryOrder.RELAXED, MemoryOrder.ACQUIRE]
 
 
 @stub
-def mbarrier_initialize(mbar, participants: int) -> None:
-    """Initialize an mbarrier with the expected participant count.
+def mbarrier_initialize(
+    mbar, participants: int, *, layout: MbarrierLayout | None = None
+) -> None:
+    """Initialize an mbarrier with the expected participant count and layout.
 
     Args:
-        mbar: Pointer to mbarrier in shared memory.
-        participants: Initial expected arrival count for each phase.
+        mbar: Pointer to mbarrier in block-local shared memory.
+        participants: Initial expected arrival count for each phase. Must be
+            between 1 and 1,048,575 for version 0, or 1 and 511 for version 1.
+        layout: Storage layout. Explicit layouts require SM90 or newer.
+    """
+    ...
+
+
+@stub
+def mbarrier_has_layout(mbar, layout: MbarrierLayout) -> "bool_":
+    """Test whether an initialized mbarrier has the specified storage layout.
+
+    Args:
+        mbar: Pointer to mbarrier in block-local shared memory.
+        layout: Storage layout to check for.
+
+    Returns:
+        True if the mbarrier has the specified layout.
     """
     ...
 

@@ -1522,9 +1522,10 @@ def lower_get_dyn_shared_memory_base_ptr(
 def lower_inline_ptx(
     context: DeviceLoweringContext, operation: ops.InlinePTX
 ) -> Sequence[mlir.Value]:
-    ro_args = [context.get_var(x) for x in operation.inputs]
-    wo_types = [dtype_to_mlir_type(x.get_type().tensor_dtype())
-                for x in operation.result_vars]
+    ro_args = [_lower_intrinsic_operand(context, x) for x in operation.inputs]
+    wo_types = list(_lower_intrinsic_result_type(
+        context, (x.get_type() for x in operation.result_vars)
+    ))
 
     processed_pieces = []
     for piece in operation.text:
@@ -1538,12 +1539,13 @@ def lower_inline_ptx(
             assert False, piece
 
     ptx_code = "".join(processed_pieces)
-    return mlir.nvvm.add_InlinePtxOp(
+    results = mlir.nvvm.add_InlinePtxOp(
         ptxCode=ptx_code,
         readOnlyArgs=ro_args,
         readWriteArgs=(),
         writeOnlyArgs_types=wo_types,
     )
+    return tuple(_lower_intrinsic_result(context, results))
 
 
 def _lower_intrinsic_operand(context: MLIRLoweringContext, operand: ir.Var) -> mlir.Value:

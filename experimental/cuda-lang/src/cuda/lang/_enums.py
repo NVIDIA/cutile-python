@@ -55,6 +55,17 @@ class SaturationMode(Enum):
     """Limit a floating-point result to ``[0.0, 1.0]``."""
 
 
+class MbarrierLayout(Enum):
+    """Layout of an mbarrier object.
+
+    Different layouts are capable of holding different ranges of values.
+    Refer to the PTX documentation:
+    https://docs.nvidia.com/cuda/parallel-thread-execution/index.html#mbarrier-counts
+    """
+    V0 = 0
+    V1 = 1
+
+
 class MbarrierScope(Enum):
     """Scope of the threads that observe an mbarrier operation."""
 
@@ -226,6 +237,7 @@ __all__ = (
     "TensorMapFloatOOBFill",
     "TensorMapL2Promotion",
     "MbarrierScope",
+    "MbarrierLayout",
     "TMALoadMode",
     "TMAStoreMode",
     "CTAGroup",

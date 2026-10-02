@@ -228,8 +228,10 @@ from cuda.lang._stub.tcgen05 import (
 )
 
 from cuda.lang._stub.mbarrier import (
+    MbarrierLayout,
     MbarrierScope,
     mbarrier_initialize,
+    mbarrier_has_layout,
     mbarrier_invalidate,
     mbarrier_arrive,
     mbarrier_arrive_expect_transaction,
@@ -423,8 +425,10 @@ __all__ = (
     "TMAStoreMode",
     "nanosleep",
     "mbarrier",
+    "MbarrierLayout",
     "MbarrierScope",
     "mbarrier_initialize",
+    "mbarrier_has_layout",
     "mbarrier_invalidate",
     "mbarrier_arrive",
     "mbarrier_arrive_expect_transaction",
