@@ -769,8 +769,10 @@ def _expr_stmt(expr: ast.Expr, ctx: _Context):
     _expr(expr.value, ctx)
 
 
-def _propagate_return(ctx: _Context):
+def _propagate_return(ctx: _Context, body_block):
     if ctx.mode != HirMode.HELPER_FUNCTION:
+        return
+    if ctx.name_to_local_idx["$returning"] not in body_block.stored_indices:
         return
     # In order to propagate an early return, insert the following:
     #    if $returning:
@@ -810,6 +812,7 @@ def _for_stmt(stmt: ast.For, ctx: _Context):
     ctx.parent_loops.pop()
 
     ctx.call_void(op, (body_block, iterable))
+    _propagate_return(ctx, body_block)
 
 
 @_register(_stmt_handlers, ast.Raise)
@@ -1037,7 +1040,7 @@ def _while_stmt(stmt: ast.While, ctx: _Context):
         ctx.parent_loops.pop()
 
     ctx.call_void(hir_stubs.loop, (body_block, None))
-    _propagate_return(ctx)
+    _propagate_return(ctx, body_block)
 
 
 @_register(_expr_handlers, ast.BoolOp)
@@ -1146,15 +1149,15 @@ def _continue_stmt(stmt: ast.Continue, ctx: _Context) -> None:
 
 @_register(_stmt_handlers, ast.Break)
 def _break_stmt(stmt: ast.Break, ctx: _Context) -> None:
-    if ctx.parent_loops and ctx.parent_loops[-1] in (LoopKind.STATIC_FOR,):
+    if ctx.parent_loops and ctx.parent_loops[-1] is LoopKind.STATIC_FOR:
         raise ctx.syntax_error("Break in a for loop with static_iter() is not supported")
     ctx.set_block_jump(hir.Jump.BREAK)
 
 
 @_register(_stmt_handlers, ast.Return)
 def _return_stmt(stmt: ast.Return, ctx: _Context) -> None:
-    if ctx.parent_loops and ctx.parent_loops[-1] in (LoopKind.FOR, LoopKind.STATIC_FOR):
-        raise ctx.syntax_error("Returning from a for loop is not supported")
+    if ctx.parent_loops and ctx.parent_loops[-1] is LoopKind.STATIC_FOR:
+        raise ctx.syntax_error("Returning from a for loop with static_iter() is not supported")
 
     return_val = None if stmt.value is None else _expr(stmt.value, ctx)
     if ctx.mode == HirMode.ENTRY_POINT:

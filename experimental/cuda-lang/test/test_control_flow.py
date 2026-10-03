@@ -62,6 +62,67 @@ def test_for_loop(start, step):
     assert dx[0] == expect
 
 
+def test_for_loop_early_return():
+    @cl.kernel
+    def kernel(X):
+        X[0] = 1
+        for i in range(4):
+            if i == 2:
+                return
+            X[0] += 1
+
+    X = torch.tensor([3], dtype=torch.int32, device="cuda")
+    cl.launch(torch.cuda.current_stream(), (1,), (1,), kernel, (X,))
+    assert X[0] == 3
+
+
+def test_nested_fn_for_loop_early_return():
+    @cl.kernel
+    def kernel(X):
+        def foo():
+            r = 1
+            for i in range(4):
+                if i == 2:
+                    return r
+                r += 1
+            return r
+        X[0] = foo()
+
+    X = torch.tensor([3], dtype=torch.int32, device="cuda")
+    cl.launch(torch.cuda.current_stream(), (1,), (1,), kernel, (X,))
+    assert X[0] == 3
+
+
+@cl.function
+def foo_cl_fn():
+    r = 1
+    for i in range(4):
+        if i == 2:
+            return r
+        r += 1
+    return r
+
+
+def test_cl_fn_for_loop_early_return():
+    @cl.kernel
+    def kernel(X):
+        X[0] = foo_cl_fn()
+
+    X = torch.tensor([3], dtype=torch.int32, device="cuda")
+    cl.launch(torch.cuda.current_stream(), (1,), (1,), kernel, (X,))
+    assert X[0] == 3
+
+
+def test_for_loop_early_return_reject_return_val():
+    @cl.kernel
+    def kernel():
+        for i in range(4):
+            if i == 2:
+                return 0
+    with pytest.raises(TypeCheckingError, match="kernels cannot return values"):
+        cl.launch(torch.cuda.current_stream(), (1,), (1,), kernel, ())
+
+
 def test_negative_stride():
     @cl.kernel
     def kernel():

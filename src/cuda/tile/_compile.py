@@ -46,6 +46,7 @@ from cuda.tile._ir.ops import loosely_typed_const, tile_impl_registry, build_tup
 from cuda.tile._ir.type import TileTy, ArrayTy, ListTy
 from cuda.tile._ir.typing_support import get_dataclass_info
 from cuda.tile._passes.ast2hir import get_function_hir, HirMode
+from cuda.tile._passes.for_loop_return import lower_for_with_return
 from cuda.tile._passes.for_loop_break import lower_for_with_break
 from cuda.tile._passes.code_motion import hoist_loop_invariants
 from cuda.tile._passes.unhoist_partition_views import unhoist_partition_views
@@ -104,6 +105,7 @@ def _transform_ir(func_body: ir.Block,
                   param_constraints: Sequence[tuple[tuple[ir.Var, ...], ParameterConstraint]]
                   ) -> DataflowResult:
     eliminate_assign_ops(func_body)
+    lower_for_with_return(func_body)
     lower_for_with_break(func_body)
     dead_code_elimination_pass(func_body)
     dataflow_result = dataflow_analysis(func_body, param_constraints)

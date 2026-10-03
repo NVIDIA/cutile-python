@@ -188,10 +188,15 @@ ELLIPSIS = EllipsisType()
 
 # Type that generates an error when used.
 
+class InvalidReason(enum.IntEnum):
+    UNDEFINED = 0
+
+
 @dataclass
 class InvalidType(Type):
     error_message: str
     loc: Loc
+    reason: InvalidReason | None = None
 
     def __repr__(self):
         return f"<Invalid type: {self.error_message}>"

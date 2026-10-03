@@ -17,7 +17,8 @@ from cuda.tile._ir.ir import Operation, Var, operand, Block, nested_block, Build
 from cuda.tile._ir.op_impl import ImplRegistry, require_optional_range_type, \
     require_bool_scalar_type
 from cuda.tile._ir.scope import Scope, ControlFlowInfo, JumpInfo
-from cuda.tile._ir.type import InvalidType, TupleValue, RangeValue, NONE, TokenTy, Type
+from cuda.tile._ir.type import InvalidType, TupleValue, RangeValue, NONE, TokenTy, Type, \
+    InvalidReason
 from cuda.tile._ir2bytecode import BytecodeContext, typeid, generate_bytecode_for_block
 import cuda.tile._bytecode as bc
 
@@ -103,6 +104,14 @@ class Loop(Operation, opcode="loop"):
         return f"{header_str} (with {carried_vars_str})"
 
 
+def _undefined_retval(var: Var) -> bool:
+    # A helper may first assign `$retval` inside a loop so we ignore undefined paths when merging it
+    ty = var.get_type_allow_invalid()
+    return (isinstance(ty, InvalidType) and
+            var.get_original_name() == "$retval" and
+            ty.reason is InvalidReason.UNDEFINED)
+
+
 @impl(hir_stubs.loop)
 async def loop_impl(body: hir.Block, iterable: Var):
     from .._passes.hir2ir import dispatch_hir_block, retarget_loc
@@ -131,7 +140,8 @@ async def loop_impl(body: hir.Block, iterable: Var):
         # A `for` loop may have 0 iterations, so initial values need to be propagated
         # to the loop's results.
         for initial_var, state in zip(initial_values, var_states, strict=True):
-            state.result_phi.propagate(initial_var)
+            if not _undefined_retval(initial_var):
+                state.result_phi.propagate(initial_var)
         # Create an induction variable
         induction_var = builder.ir_ctx.make_temp(builder.loc)
         induction_var.set_type(builder.ir_ctx.typing_hooks.get_tensor_like_type(range_ty.dtype, ()))
@@ -167,7 +177,8 @@ async def loop_impl(body: hir.Block, iterable: Var):
             if is_continue or (is_break and range_ty is not None):
                 state.body_phi.propagate(output, fail_eagerly=True)
             if range_ty is not None or not is_continue:
-                state.result_phi.propagate(output)
+                if not _undefined_retval(output):
+                    state.result_phi.propagate(output)
 
     # Determine the final loop variable types and filter out invalid variables
     mask = []

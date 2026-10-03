@@ -82,7 +82,7 @@ def test_static_iter_return_not_allowed():
 
     x = torch.zeros((10,), dtype=torch.int32, device="cuda:0")
     with pytest.raises(ct.TileSyntaxError,
-                       match="Returning from a for loop is not supported"):
+                       match="Returning from a for loop with static_iter\\(\\) is not supported"):
         ct.launch(torch.cuda.current_stream(), (1,), kernel, (x,))
 
 

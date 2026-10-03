@@ -12,7 +12,7 @@ from typing import TypeVar, Generic, Callable
 from cuda.tile._exception import Loc, FunctionDesc, TileSyntaxError
 from cuda.tile._ir import hir
 from cuda.tile._ir.ir import Operation, Var, IRContext
-from cuda.tile._ir.type import InvalidType, ContextManagerState
+from cuda.tile._ir.type import InvalidType, ContextManagerState, InvalidReason
 
 
 @dataclass(frozen=True)
@@ -78,7 +78,8 @@ class LocalScope:
         if var is None:
             name = self._local_names[index]
             var = self._ir_ctx.make_var(name, loc)
-            var.set_type(InvalidType(f"Use of potentially undefined variable `{name}`", loc=loc))
+            var.set_type(InvalidType(f"Use of potentially undefined variable `{name}`", loc=loc,
+                                     reason=InvalidReason.UNDEFINED))
         return var
 
     def map_all_vars(self, func: Callable[[Var], Var]):

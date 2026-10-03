@@ -19,7 +19,6 @@ def _has_break(block: Block):
 
 
 def _append_continue(loop: Loop, done_body):
-
     then_block = Block(loop.body.ctx, loop.loc)
     then_block.append(Continue(values=tuple(loop.body.params[1:]), result_vars=(), loc=loop.loc))
 

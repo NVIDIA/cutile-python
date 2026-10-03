@@ -337,6 +337,66 @@ class TestForLoop:
 
     @staticmethod
     @ct.kernel
+    def early_return_for_loop(x, n, tile: ct.Constant[int]):
+        i = ct.bid(0)
+        xi = ct.load(x, index=(i,), shape=(tile,))
+        ct.store(x, index=(i,), tile=xi + n - 3)
+        for i in range(n):
+            if i == 0:
+                return
+        ct.store(x, index=(i,), tile=xi)
+
+    @staticmethod
+    @ct.kernel
+    def early_return_for_loop_nested_fn(x, n, tile: ct.Constant[int]):
+        i = ct.bid(0)
+        xi = ct.load(x, index=(i,), shape=(tile,))
+
+        def foo():
+            r = 0
+            for i in range(n):
+                if i == n - 3:
+                    return r
+                r += 1
+            return r
+
+        xi += foo()
+        ct.store(x, index=(i,), tile=xi)
+
+    @staticmethod
+    @ct.kernel
+    def early_return_for_loop_nested_while(x, n, tile: ct.Constant[int]):
+        i = ct.bid(0)
+        xi = ct.load(x, index=(i,), shape=(tile,))
+        done = True
+        for _ in range(1):
+            while done:
+                done = False
+                ct.store(x, index=(i,), tile=xi + n - 3)
+                return
+        ct.store(x, index=(i,), tile=xi)
+
+    @pytest.mark.parametrize(
+        "func_name",
+        [
+            "early_return_for_loop",
+            "early_return_for_loop_nested_fn",
+            "early_return_for_loop_nested_while"
+        ],
+    )
+    @pytest.mark.parametrize("n", [3, 5, 6, 8])
+    def test_early_return_for_loop(self, func_name, n):
+        func = getattr(self, func_name)
+        N = 256
+        tile = 128
+        x = torch.zeros(N, dtype=torch.float32, device='cuda')
+        ref = torch.zeros_like(x) + n - 3
+        grid = ((N // tile), 1, 1)
+        ct.launch(torch.cuda.current_stream(), grid, func, (x, n, tile))
+        assert_equal(x, ref)
+
+    @staticmethod
+    @ct.kernel
     def tuple_fibonacci(x):
         t = ct.load(x, index=(0,), shape=(1,)), ct.load(x, index=(1,), shape=(1,))
         for i in range(5):

@@ -9,7 +9,7 @@ import torch
 from math import ceil
 import cuda.tile as ct
 from util import assert_close
-from cuda.tile._exception import TileTypeError, TileSyntaxError, TileRecursionError, \
+from cuda.tile._exception import TileTypeError, TileRecursionError, \
     UnsupportedSyntaxError
 
 
@@ -224,6 +224,7 @@ def early_return_inside_for_loop(n):
         a, b = b, a + b
         if b > n:
             return b
+    return 0
 
 
 def early_return_inside_loop(helper_func):
@@ -247,8 +248,8 @@ def test_early_return_inside_for_loop():
     n = torch.tensor([15], dtype=torch.int32, device="cuda:0")
     out = torch.zeros_like(n)
     kernel = early_return_inside_loop(early_return_inside_for_loop)
-    with pytest.raises(TileSyntaxError, match="Returning from a for loop is not supported"):
-        ct.launch(torch.cuda.current_stream(), (1,), kernel, (n, out))
+    ct.launch(torch.cuda.current_stream(), (1,), kernel, (n, out))
+    assert out.cpu().item() == 21
 
 
 def test_return_type_mismatch():
