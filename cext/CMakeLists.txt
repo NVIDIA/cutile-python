@@ -10,6 +10,11 @@ if (MSVC)
     # Default visibility is already hidden
     string(REPLACE "/EHsc" "" CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS}")
     set(cext_compile_flags /GR- /GS- /EHs- -DNDEBUG)
+    # For arm64 add flag to disable calls to out-of-line helpers for atomic operations 
+    # to avoid undefined reference error during compilation
+    if (CMAKE_GENERATOR_PLATFORM STREQUAL "ARM64")
+        list(APPEND cext_compile_flags /forceInterlockedFunctions-)
+    endif()
     # /NODEFAULTLIB and /NOENTRY to disable dependency on runtime lib msvcrt.dll
     set(cext_link_flags /NODEFAULTLIB /NOENTRY)
     # set Py_GIL_DISABLED macro, at it is not defined automatically on Windows
