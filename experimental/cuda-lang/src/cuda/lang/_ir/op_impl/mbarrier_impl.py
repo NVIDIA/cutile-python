@@ -8,7 +8,11 @@ from cuda.lang._exception import InternalError, TypeCheckingError
 from cuda.lang._ir.ir import Var, add_operation
 from cuda.lang._ir.op_defs import RawLLVMIntrinsic
 from cuda.lang._ir.type import MemorySpace, ScalarTy
-from cuda.lang._ir.type_checking_helpers import is_none, require_mbarrier_ptr
+from cuda.lang._ir.type_checking_helpers import (
+    is_none,
+    require_mbarrier_ptr,
+    require_target_greater_equal,
+)
 from cuda.lang._stub import mbarrier
 from .inline_ptx_impl import inline_ptx
 from cuda.tile._ir.arithmetic_ops import astype
@@ -33,6 +37,7 @@ def mbarrier_initialize_impl(mbar: Var, participants: Var, layout: Var) -> None:
     require_mbarrier_ptr(mbar, (MemorySpace.SHARED,))
     layout_suffix = ""
     if not is_none(layout):
+        require_target_greater_equal(9, 0, "mbarrier_initialize with an explicit layout")
         layout = require_constant_enum(layout, MbarrierLayout)
         layout_suffix = f".layout::v{layout.value}"
     participants = astype(participants, datatype.int32)
@@ -42,6 +47,7 @@ def mbarrier_initialize_impl(mbar: Var, participants: Var, layout: Var) -> None:
 
 @impl(mbarrier.mbarrier_has_layout)
 def mbarrier_has_layout_impl(mbar: Var, layout: Var) -> Var:
+    require_target_greater_equal(9, 0, "mbarrier_has_layout")
     require_mbarrier_ptr(mbar, (MemorySpace.SHARED,))
     layout = require_constant_enum(layout, MbarrierLayout)
     instruction = f"mbarrier.check_layout.layout::v{layout.value}.shared::cta.b64"

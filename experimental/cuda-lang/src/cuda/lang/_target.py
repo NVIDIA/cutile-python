@@ -4,12 +4,7 @@
 
 import re
 from dataclasses import dataclass
-from enum import Enum, auto
-from functools import cache
-
-
-class TargetFeature(Enum):
-    PACKED_F32X2 = auto()
+from ._exception import InternalError
 
 
 @dataclass(frozen=True)
@@ -22,8 +17,14 @@ class TargetInfo:
     def from_arch(cls, arch: str) -> "TargetInfo":
         return _parse_target_name(arch, "compute")
 
-    def supports(self, feature: TargetFeature) -> bool:
-        return feature in _features_for_target(self)
+    @staticmethod
+    def get_current() -> "TargetInfo":
+        """Return the GPU target of the active IR builder's context."""
+        from cuda.lang._ir.ir import TileBuilder
+        ctx = TileBuilder.get_current().ir_ctx
+        if ctx.target_info is None:
+            raise InternalError("The current IR context has no GPU target")
+        return ctx.target_info
 
 
 def _parse_target_name(name: str, prefix: str) -> TargetInfo:
@@ -40,12 +41,4 @@ def _parse_target_name(name: str, prefix: str) -> TargetInfo:
     )
 
 
-@cache
-def _features_for_target(target: TargetInfo) -> frozenset[TargetFeature]:
-    features = set()
-    if (target.major, target.minor) >= (10, 0):
-        features.add(TargetFeature.PACKED_F32X2)
-    return frozenset(features)
-
-
-__all__ = ("TargetFeature", "TargetInfo")
+__all__ = ("TargetInfo",)

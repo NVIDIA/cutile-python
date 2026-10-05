@@ -22,7 +22,7 @@ from cuda.lang._mlir._builtins import _Cursor
 import cuda.lang._mlir.extras.types as T
 import cuda.lang._ir.type as ir_type
 from cuda.lang.compilation import KernelSignature
-from cuda.lang._target import TargetFeature, TargetInfo
+from cuda.lang._target import TargetInfo
 import cuda.lang._datatype as datatype
 from cuda.tile import _cext
 from cuda.tile._datatype import PointerInfo, is_integral
@@ -520,7 +520,8 @@ def lower_fma(
         and not operation.relu
         and not operation.oob
     )
-    if packed_f32x2 and context.target_info.supports(TargetFeature.PACKED_F32X2):
+    target = context.target_info
+    if packed_f32x2 and (target.major, target.minor) >= (10, 0):
         result = mlir.add_operation(
             name="nvvm.fma.packed.f32x2",
             result_type=mlir_result_type,
@@ -685,7 +686,8 @@ def _lower_binary_arith_with_nvvm_modifiers(
         and res_type.length % 2 == 0
         and res_dtype == datatype.float32
     )
-    if packed_f32x2 and context.target_info.supports(TargetFeature.PACKED_F32X2):
+    target = context.target_info
+    if packed_f32x2 and (target.major, target.minor) >= (10, 0):
         result = mlir.add_operation(
             name=f"nvvm.{operation.fn}.packed.f32x2",
             result_type=result_mlir_type,

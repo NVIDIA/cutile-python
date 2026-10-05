@@ -5,7 +5,9 @@
 from typing import Any, Callable
 
 import cuda.lang._datatype as datatype
+from cuda.lang._exception import UnsupportedFeatureError
 from cuda.lang._ir.type import MemorySpace, ScalarTy, VectorTy, PointerTy
+from cuda.lang._target import TargetInfo
 from cuda.tile import DType
 from cuda.tile._ir.ir import Var
 from cuda.tile._ir.op_impl import (  # noqa: F401
@@ -25,6 +27,25 @@ from cuda.lang._datatype import (
     is_float,
     mbarrier,
 )
+
+
+def require_target_exact(major: int, minor: int, arch_flag: str, message: str) -> None:
+    target = TargetInfo.get_current()
+    required_target = TargetInfo(major, minor, arch_flag or None)
+    if target != required_target:
+        raise UnsupportedFeatureError(
+            f"GPU target {target} does not match required target {required_target}:"
+            + message
+        )
+
+
+def require_target_greater_equal(major: int, minor: int, message: str) -> None:
+    target = TargetInfo.get_current()
+    if (target.major, target.minor) < (major, minor):
+        raise UnsupportedFeatureError(
+            f"GPU target {target} is below required compute capability {major}.{minor}:"
+            + message
+        )
 
 
 def is_none(var: Var):

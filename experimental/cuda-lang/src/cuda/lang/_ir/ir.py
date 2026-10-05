@@ -6,6 +6,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 import itertools
 from collections import defaultdict
+from cuda.lang._target import TargetInfo
 from cuda.tile._ir.ir import (
     Block as TileBlock,
     Builder as TileBuilder,
@@ -92,6 +93,7 @@ class IRContext(TileIRContext):
         log_ir_on_error: bool = True,
         *,
         execution_space: ExecutionSpace = "device",
+        target_info: TargetInfo | None = None,
     ):
         from cuda.lang._ir.type import LangTypingHooks
         self._block_names: dict[int, str] = {}
@@ -99,6 +101,13 @@ class IRContext(TileIRContext):
         super().__init__(log_ir_on_error, tileiras_version=None,
                          typing_hooks=LangTypingHooks(),
                          execution_space=execution_space)
+        if execution_space == "host" and target_info is not None:
+            raise ValueError("Cannot set a GPU target on a host IR context")
+        self._target_info = target_info
+
+    @property
+    def target_info(self) -> TargetInfo | None:
+        return self._target_info
 
     def make_block(self, name: str, loc: Loc, params: tuple[Var, ...] = ()) -> Block:
         block = Block(self, loc)

@@ -6,7 +6,7 @@ import torch
 import pytest
 
 import cuda.lang as cl
-from cuda.lang._exception import TypeCheckingError
+from cuda.lang._exception import TypeCheckingError, UnsupportedFeatureError
 from cuda.lang._ir.ops import RawLLVMIntrinsic
 from cuda.lang.compilation import KernelSignature
 
@@ -109,6 +109,25 @@ def test_initialize_and_invalidate(layout):
         gpu_name="sm_80",
         arch="compute_80",
     )
+
+
+@pytest.mark.parametrize("layout", tuple(cl.MbarrierLayout))
+@pytest.mark.parametrize("operation", (cl.mbarrier_initialize, cl.mbarrier_has_layout))
+def test_mbarrier_layout_rejects_unsupported_target(operation, layout):
+    initialize = operation is cl.mbarrier_initialize
+
+    def kernel():
+        mbar = cl.shared_array(1, cl.mbarrier, alignment=8).pointer()
+        if initialize:
+            operation(mbar, 1, layout=layout)
+        else:
+            operation(mbar, layout)
+
+    with pytest.raises(UnsupportedFeatureError) as error:
+        cl.compile_simt(kernel, [KernelSignature([])], arch="compute_80", gpu_name="sm_100a")
+    assert "TargetInfo(major=8, minor=0, suffix=None)" in error.value.message
+    assert "9.0" in error.value.message
+    assert operation.__name__ in error.value.message
 
 
 @pytest.mark.parametrize("layout", (*cl.MbarrierLayout, "V0", "V1"))

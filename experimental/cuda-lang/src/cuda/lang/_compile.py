@@ -2,6 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+from cuda.tile._exception import InternalError
 from copy import deepcopy
 from functools import total_ordering
 import sys
@@ -326,7 +327,27 @@ def compile_simt(
     if signature.symbol is None:
         signature = signature.with_mangled_symbol(function.pyfunc.__name__)
 
-    ctx = ctx or ir.IRContext(log_ir_on_error=log_flags.log_hir or log_flags.log_ir)
+    with timer.phase("ir.target_resolution"):
+        if gpu_name is None or arch is None:
+            cc = compute_capability or get_compute_capability()
+            suffix = "a" if cc >= (9, 0) else ""
+            gpu_name = gpu_name or cc.gpu_name + suffix
+            arch = arch or cc.arch + suffix
+
+        target_info = TargetInfo.from_arch(arch)
+
+    if ctx is None:
+        ctx = ir.IRContext(
+            log_ir_on_error=log_flags.log_hir or log_flags.log_ir,
+            target_info=target_info,
+        )
+    if ctx.execution_space != "device":
+        raise ValueError("Cannot compile device code with a host IR context")
+    if ctx.target_info != target_info:
+        raise InternalError(
+            f"Target info on supplied context ({ctx.target_info}) "
+            f"does not match target info inferred from the architecture ({target_info})"
+        )
 
     with timer.phase("ir.hir2ir"):
         func_ir = get_function_ir(
@@ -347,15 +368,6 @@ def compile_simt(
     if log_flags.log_flattened_ir:
         _dump("Flattened IR", flattened_ir)
 
-    with timer.phase("ir.target_resolution"):
-        if gpu_name is None or arch is None:
-            cc = compute_capability or get_compute_capability()
-            suffix = "a" if cc >= (9, 0) else ""
-            gpu_name = gpu_name or cc.gpu_name + suffix
-            arch = arch or cc.arch + suffix
-
-        target_info = TargetInfo.from_arch(arch)
-
     need_nvvm = log_flags.log_nvvm or keep_nvvm
     need_ptx = log_flags.log_ptx or keep_ptx
 
@@ -367,10 +379,10 @@ def compile_simt(
         program = nvvm.create_program()
         program.add_module(bitcode, "main")
         program.add_module(libdevice, "libdevice")
-        ptx = program.compile(["-arch=" + cc.arch])
+        ptx = program.compile(["-arch=" + arch])
 
         ptx_compiler: PtxCompiler = PtxCompiler.get()
-        cubin = ptx_compiler.compile(ptx, cc.gpu_name)
+        cubin = ptx_compiler.compile(ptx, gpu_name)
 
         if need_nvvm:
             # FIXME: actually find the llvm-dis instead of assuming it is in the PATH

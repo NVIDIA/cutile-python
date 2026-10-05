@@ -3,6 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 from test.util import compile_kernel
+from dataclasses import replace
 import cuda.lang as cl
 import cuda.lang._datatype as datatype
 import builtins
@@ -18,7 +19,8 @@ from cuda.lang._stub import math as device_math
 from cuda.lang.compilation import KernelSignature
 from cuda.lang._exception import CompilerExecutionError, TypeCheckingError
 from cuda.lang._fp_utils import _FLOAT_SMALLEST_NORMAL, isnormal
-from cuda.lang._target import TargetFeature, TargetInfo
+from cuda.lang._target import TargetInfo
+from cuda.lang._passes.ir2mlir import pass_definition
 from .util import make_symbolic_tensor
 
 
@@ -1683,14 +1685,16 @@ def test_arith_f32_scalar_modes(
 def test_arith_f32x2_nvvm_toolchain_packing(
     monkeypatch, op_name, device_op, rounding_mode, flush_to_zero
 ):
-    original_supports = TargetInfo.supports
+    original_lowering = pass_definition._lower_binary_arith_with_nvvm_modifiers
 
-    def supports_without_packed_f32x2(self, feature):
-        if feature is TargetFeature.PACKED_F32X2:
-            return False
-        return original_supports(self, feature)
+    def lower_without_packed_f32x2(context, operation, res_type):
+        return original_lowering(
+            replace(context, target_info=TargetInfo(9, 0)), operation, res_type
+        )
 
-    monkeypatch.setattr(TargetInfo, "supports", supports_without_packed_f32x2)
+    monkeypatch.setattr(
+        pass_definition, "_lower_binary_arith_with_nvvm_modifiers", lower_without_packed_f32x2
+    )
 
     def kernel():
         values = cl.shared_array(2, cl.float32)
@@ -1705,7 +1709,7 @@ def test_arith_f32x2_nvvm_toolchain_packing(
 
     rnd = rounding_mode.name.lower()
     ftz = ".ftz" if flush_to_zero else ""
-    # If this starts emitting packed PTX, remove the special PACKED_F32X2
+    # If this starts emitting packed PTX, remove the special packed f32x2
     # target lowering and rely on the toolchain to pack nvvm.addf/subf.
     compile_kernel(
         kernel,
