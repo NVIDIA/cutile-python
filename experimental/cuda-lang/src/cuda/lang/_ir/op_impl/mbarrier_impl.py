@@ -10,6 +10,7 @@ from cuda.lang._ir.op_defs import RawLLVMIntrinsic
 from cuda.lang._ir.type import MemorySpace, ScalarTy
 from cuda.lang._ir.type_checking_helpers import (
     is_none,
+    require_integral_scalar_type,
     require_mbarrier_ptr,
     require_target_greater_equal,
 )
@@ -196,6 +197,19 @@ def mbarrier_complete_transaction_impl(mbar: Var, bytes: Var, scope: Var) -> Var
         (),
         intrinsic=intrinsic,
         operands_=(mbar, bytes),
+    )
+
+
+@impl(mbarrier.mbarrier_pending_count)
+def mbarrier_pending_count_impl(state: Var) -> Var:
+    require_target_greater_equal(8, 0, "mbarrier_pending_count")
+    require_integral_scalar_type(state, bitwidth=64)
+    state = astype(state, datatype.int64)
+    return add_operation(
+        RawLLVMIntrinsic,
+        ScalarTy(datatype.uint32),
+        intrinsic="llvm.nvvm.mbarrier.pending.count",
+        operands_=(state,),
     )
 
 

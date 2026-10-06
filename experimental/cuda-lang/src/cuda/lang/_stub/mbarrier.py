@@ -6,7 +6,7 @@ from typing import Literal
 
 from cuda.lang._enums import MbarrierLayout, MbarrierScope
 from cuda.lang._execution import stub
-from cuda.lang._datatype import uint64, bool_
+from cuda.lang._datatype import uint32, uint64, bool_
 from cuda.lang._enums import MemoryOrder
 
 
@@ -163,6 +163,20 @@ def mbarrier_complete_transaction(
         mbar: Pointer to mbarrier in shared memory.
         bytes: Number of completed transaction bytes to subtract.
         scope: Visibility scope.
+    """
+    ...
+
+
+@stub
+def mbarrier_pending_count(state) -> "uint32":
+    """Query the pending arrival count from the opaque mbarrier state.
+
+    Args:
+        state: 64-bit token returned by ``mbarrier_arrive_drop_nocomplete``
+            or ``mbarrier_arrive_nocomplete``.
+
+    Returns:
+        Pending arrival count before the arrival that produced ``state``.
     """
     ...
 

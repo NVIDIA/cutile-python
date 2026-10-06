@@ -269,6 +269,78 @@ class TestArriveNocompleteRequirePointer:
         )
 
 
+@pytest.mark.parametrize("dtype", (cl.int64, cl.uint64))
+def test_pending_count_ptx(dtype):
+    @cl.kernel
+    def kernel(out):
+        out[0] = cl.mbarrier_pending_count(dtype(0))
+
+    compile_kernel(
+        kernel,
+        signature=KernelSignature(
+            [
+                make_symbolic_tensor(1, cl.uint32),
+            ]
+        ),
+        assert_in_nvvm="llvm.nvvm.mbarrier.pending.count",
+        assert_in_ptx="mbarrier.pending_count",
+        gpu_name="sm_80",
+        arch="compute_80",
+    )
+
+
+@pytest.mark.parametrize("operation", (
+    cl._nvvm.mbarrier_arrive_noComplete_shared,
+    cl._nvvm.mbarrier_arrive_drop_noComplete_shared,
+))
+@pytest.mark.parametrize("count", (1, 2))
+@require_hopper_or_newer()
+def test_pending_count_before_arrival(operation, count):
+    @cl.kernel
+    def kernel(out, count):
+        mbar = cl.shared_array(1, cl.mbarrier, alignment=8).pointer()
+        cl.mbarrier_initialize(mbar, count + 3)
+        state = operation(mbar, cl.int32(count))
+        out[0] = cl.mbarrier_pending_count(state)
+        next_state = operation(mbar, cl.int32(1))
+        out[1] = cl.mbarrier_pending_count(next_state)
+        out[2] = cl.mbarrier_pending_count(cl.uint64(state))
+        cl.mbarrier_arrive(mbar, 2)
+        cl.mbarrier_invalidate(mbar)
+
+    out = torch.zeros(3, dtype=torch.uint32).cuda(0)
+    cl.launch(torch.cuda.current_stream(), (1,), (1,), kernel, (out, count))
+    assert out.cpu().tolist() == [count + 3, 3, count + 3]
+
+
+@pytest.mark.parametrize("state_dtype", (cl.int32, cl.uint32, cl.float64))
+def test_pending_count_rejects_invalid_state_type(state_dtype):
+    @cl.kernel
+    def kernel(state):
+        cl.mbarrier_pending_count(state)
+
+    compile_kernel(
+        kernel,
+        signature=KernelSignature([make_symbolic_scalar(state_dtype)]),
+        raises=pytest.raises(TypeCheckingError, match="scalar integral"),
+        **HOPPER_TARGET,
+    )
+
+
+def test_pending_count_rejects_unsupported_target():
+    @cl.kernel
+    def kernel(state):
+        cl.mbarrier_pending_count(state)
+
+    compile_kernel(
+        kernel,
+        signature=KernelSignature([make_symbolic_scalar(cl.uint64)]),
+        raises=pytest.raises(UnsupportedFeatureError, match="mbarrier_pending_count"),
+        gpu_name="sm_75",
+        arch="compute_75",
+    )
+
+
 @pytest.mark.parametrize("scope", SCOPES)
 @pytest.mark.parametrize("memory_order", ARRIVE_MEMORY_ORDERS)
 @pytest.mark.parametrize("drop", [False, True])
