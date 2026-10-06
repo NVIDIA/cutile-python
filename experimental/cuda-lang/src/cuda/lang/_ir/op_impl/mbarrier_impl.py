@@ -124,6 +124,20 @@ def mbarrier_arrive_impl(
     return results[0] if return_type else None
 
 
+@impl(mbarrier.mbarrier_arrive_nocomplete, fixed_args=['noComplete'])
+@impl(mbarrier.mbarrier_arrive_drop_nocomplete, fixed_args=['drop.noComplete'])
+def mbarrier_arrive_nocomplete_impl(kind: str, mbar: Var, count: Var) -> Var:
+    require_mbarrier_ptr(mbar, (MemorySpace.SHARED,))
+    count = astype(count, datatype.int32)
+    intrinsic = f"llvm.nvvm.mbarrier.arrive.{kind}.shared"
+    return add_operation(
+        RawLLVMIntrinsic,
+        ScalarTy(datatype.uint64),
+        intrinsic=intrinsic,
+        operands_=(mbar, count),
+    )
+
+
 @impl(mbarrier.mbarrier_arrive_expect_transaction)
 def mbarrier_arrive_expect_transaction_impl(
     mbar: Var,

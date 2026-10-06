@@ -10,7 +10,12 @@ from cuda.lang._exception import TypeCheckingError, UnsupportedFeatureError
 from cuda.lang._ir.ops import RawLLVMIntrinsic
 from cuda.lang.compilation import KernelSignature
 
-from .util import compile_kernel, make_symbolic_tensor, require_hopper_or_newer
+from .util import (
+    compile_kernel,
+    make_symbolic_scalar,
+    make_symbolic_tensor,
+    require_hopper_or_newer,
+)
 
 HOPPER_TARGET = {"gpu_name": "sm_90", "arch": "compute_90"}
 
@@ -185,6 +190,83 @@ def test_mbarrier_bad_layout(operation, layout):
 
 ARRIVE_MEMORY_ORDERS = [cl.MemoryOrder.RELEASE, cl.MemoryOrder.RELAXED]
 WAIT_MEMORY_ORDERS = [cl.MemoryOrder.ACQUIRE, cl.MemoryOrder.RELAXED]
+
+
+NO_COMPLETE_ARRIVALS = {
+    cl.mbarrier_arrive_nocomplete: "mbarrier.arrive.noComplete.shared.b64",
+    cl.mbarrier_arrive_drop_nocomplete: "mbarrier.arrive_drop.noComplete.shared.b64",
+}
+
+
+@pytest.mark.parametrize(("operation", "instruction"), NO_COMPLETE_ARRIVALS.items())
+@pytest.mark.parametrize("count_dtype", (cl.int32, cl.uint32))
+def test_arrive_nocomplete_ptx(operation, instruction, count_dtype):
+    @cl.kernel
+    def kernel(count):
+        mbar = cl.shared_array(1, cl.mbarrier, alignment=8).pointer()
+        operation(mbar, count)
+
+    compile_kernel(
+        kernel,
+        signature=KernelSignature([make_symbolic_scalar(count_dtype)]),
+        assert_in_ptx=instruction,
+        gpu_name="sm_80",
+        arch="compute_80",
+    )
+
+
+@pytest.mark.parametrize("operation", NO_COMPLETE_ARRIVALS.keys())
+@pytest.mark.parametrize("count", (1, 2))
+@require_hopper_or_newer()
+def test_arrive_nocomplete_phases(operation, count):
+    next_count = 1 if operation is cl.mbarrier_arrive_drop_nocomplete else count + 1
+
+    @cl.kernel
+    def kernel(out, count):
+        mbar = cl.shared_array(1, cl.mbarrier, alignment=8).pointer()
+        cl.mbarrier_initialize(mbar, count + 1)
+        state = operation(mbar, count)
+        out[0] = cl.mbarrier_test_wait(mbar, state)
+        cl.mbarrier_arrive(mbar)
+        out[1] = cl.mbarrier_test_wait(mbar, state)
+        state = cl.mbarrier_arrive(mbar, next_count)
+        out[2] = cl.mbarrier_test_wait(mbar, state)
+        cl.mbarrier_invalidate(mbar)
+
+    out = torch.zeros(3, dtype=torch.bool).cuda(0)
+    cl.launch(torch.cuda.current_stream(), (1,), (1,), kernel, (out, count))
+    assert out.cpu().tolist() == [False, True, True]
+
+
+class TestArriveNocompleteRequirePointer:
+
+    @staticmethod
+    def shared_cluster_kernel(op):
+        @cl.kernel
+        def kernel():
+            mbar = cl.shared_array(1, cl.mbarrier, alignment=8).pointer()
+            mbar = cl.map_shared_to_cluster(mbar, 0)
+            op(mbar, 1)
+        return kernel
+
+    @staticmethod
+    def int_kernel(op):
+        @cl.kernel
+        def kernel():
+            i64_ptr = cl.shared_array(1, cl.int64, alignment=8).pointer()
+            op(i64_ptr, 1)
+        return kernel
+
+    @pytest.mark.parametrize("operation", NO_COMPLETE_ARRIVALS.keys())
+    @pytest.mark.parametrize("factory", (shared_cluster_kernel, int_kernel))
+    def test_requires_pointer(self, operation, factory):
+        kernel = factory(operation)
+
+        compile_kernel(
+            kernel,
+            raises=pytest.raises(TypeCheckingError),
+            **HOPPER_TARGET,
+        )
 
 
 @pytest.mark.parametrize("scope", SCOPES)

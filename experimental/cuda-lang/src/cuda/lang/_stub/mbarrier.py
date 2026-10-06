@@ -81,6 +81,34 @@ def mbarrier_arrive(
 
 
 @stub
+def mbarrier_arrive_nocomplete(mbar, count: int) -> "uint64":
+    """Arrive without completing the current phase.
+
+    Args:
+        mbar: Pointer to mbarrier in block-local shared memory.
+        count: Amount to subtract from the pending arrival count.
+
+    Returns:
+        Opaque 64-bit token for the phase before the arrival.
+    """
+    ...
+
+
+@stub
+def mbarrier_arrive_drop_nocomplete(mbar, count: int) -> "uint64":
+    """Arrive without completing the phase and drop expected arrivals.
+
+    Args:
+        mbar: Pointer to mbarrier in block-local shared memory.
+        count: Amount to subtract from the pending and expected arrival counts.
+
+    Returns:
+        Opaque 64-bit token for the phase before the arrival.
+    """
+    ...
+
+
+@stub
 def mbarrier_arrive_expect_transaction(
     mbar,
     bytes: int,
