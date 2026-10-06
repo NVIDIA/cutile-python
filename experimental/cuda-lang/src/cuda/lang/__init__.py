@@ -113,6 +113,8 @@ from ._enums import VectorReduction
 from ._stub.copy_async import (
     TMALoadMode,
     TMAStoreMode,
+    copy_async_mbarrier_arrive,
+    copy_async_mbarrier_arrive_no_increment,
     copy_async_bulk_tensor_shared_to_global,
     copy_async_bulk_tensor_global_to_shared,
     copy_async_bulk_commit_group,
@@ -472,6 +474,8 @@ __all__ = (
     "grid_dependency_control_wait",
     "grid_dependency_control_launch_dependents",
     "bitcast",
+    "copy_async_mbarrier_arrive",
+    "copy_async_mbarrier_arrive_no_increment",
     "copy_async_bulk_tensor_shared_to_global",
     "copy_async_bulk_tensor_global_to_shared",
     "copy_async_bulk_commit_group",

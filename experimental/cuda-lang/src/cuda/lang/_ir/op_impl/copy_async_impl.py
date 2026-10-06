@@ -25,6 +25,7 @@ from ..type_checking_helpers import (
     require_none,
     require_optional,
     require_pointer_in_memory_space,
+    require_target_greater_equal,
     require_uniform_int_tuple_type,
     tensor_map_descriptor_pointer_like,
 )
@@ -41,6 +42,20 @@ def copy_async_impl_registry() -> ImplRegistry:
 
 def _optional_operand(value):
     return None if value is None or is_none(value) else value
+
+
+@impl(copy_async.copy_async_mbarrier_arrive, fixed_args=["arrive"])
+@impl(copy_async.copy_async_mbarrier_arrive_no_increment, fixed_args=["arrive.noinc"])
+def copy_async_mbarrier_arrive_impl(kind: str, mbar: Var) -> None:
+    require_target_greater_equal(8, 0, "copy_async_mbarrier_arrive")
+    require_mbarrier_ptr(mbar, (MemorySpace.SHARED,))
+    intrinsic = f"llvm.nvvm.cp.async.mbarrier.{kind}.shared"
+    add_operation_variadic(
+        RawLLVMIntrinsic,
+        (),
+        intrinsic=intrinsic,
+        operands_=(mbar,),
+    )
 
 
 def validate_g2s_mode(mode: copy_async.TMALoadMode, im2col_count: int) -> None:

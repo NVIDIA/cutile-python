@@ -8,6 +8,26 @@ from . import nvvm as _nvvm
 
 
 @stub
+def copy_async_mbarrier_arrive(mbar) -> None:
+    """Signal an arrival after earlier ``cp.async`` copies complete.
+
+    Args:
+        mbar: Pointer to an mbarrier in shared memory.
+    """
+    ...
+
+
+@stub
+def copy_async_mbarrier_arrive_no_increment(mbar) -> None:
+    """Signal an asynchronous-copy arrival without incrementing the count.
+
+    Args:
+        mbar: Pointer to an mbarrier in shared memory.
+    """
+    ...
+
+
+@stub
 def copy_async_bulk_tensor_global_to_shared(
     src_tensor_map_descriptor,
     src_coordinates,

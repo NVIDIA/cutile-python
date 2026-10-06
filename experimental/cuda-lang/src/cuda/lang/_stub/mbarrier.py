@@ -247,11 +247,20 @@ def mbarrier_try_wait(
     """
 
 
-def mbarrier_wait(*args, time_hint=10_000, **kwargs):
+def mbarrier_wait(
+    mbar,
+    state,
+    *,
+    time_hint: int = 10_000,
+    scope: MbarrierScope = MbarrierScope.BLOCK,
+    memory_order: WaitMemoryOrder = MemoryOrder.ACQUIRE,
+):
     """Synchronously wait for an mbarrier to complete.
     Accepts the same arguments as :func:``mbarrier_try_wait``.
     """
-    while not mbarrier_try_wait(*args, time_hint=time_hint, **kwargs):
+    while not mbarrier_try_wait(
+        mbar, state, time_hint=time_hint, scope=scope, memory_order=memory_order
+    ):
         pass
 
 
@@ -279,9 +288,18 @@ def mbarrier_try_wait_parity(
     """
 
 
-def mbarrier_wait_parity(*args, time_hint=10_000, **kwargs):
+def mbarrier_wait_parity(
+    mbar,
+    parity: int,
+    *,
+    time_hint: int = 10_000,
+    scope: MbarrierScope = MbarrierScope.BLOCK,
+    memory_order: WaitMemoryOrder = MemoryOrder.ACQUIRE,
+):
     """Synchronously wait for an mbarrier to complete for a given phase parity.
     Accepts the same arguments as :func:``mbarrier_try_wait_parity``.
     """
-    while not mbarrier_try_wait_parity(*args, time_hint=time_hint, **kwargs):
+    while not mbarrier_try_wait_parity(
+        mbar, parity, time_hint=time_hint, scope=scope, memory_order=memory_order
+    ):
         pass

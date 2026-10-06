@@ -259,6 +259,8 @@ def _implicit_cast_with_fallback(src: Var, target_dtype: DType, error_context: s
     try:
         return implicit_cast(src, target_dtype, error_context)
     except (TypeCheckingError, InvalidValueError):
+        # TODO: should we bitcast pointer of the same bitwidth to the expected
+        # type?
         if not (datatype.is_integral(src.get_type().dtype) and datatype.is_integral(target_dtype)):
             raise
 

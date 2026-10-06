@@ -3,9 +3,10 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import pytest
+import torch
 
 import cuda.lang as cl
-from cuda.lang._exception import TypeCheckingError
+from cuda.lang._exception import TypeCheckingError, UnsupportedFeatureError
 from cuda.lang.compilation import CallingConvention, KernelSignature, TensorMapConstraint
 from cuda.tile._cext import cconv_v3_enabled
 
@@ -13,11 +14,84 @@ from .util import (
     compile_kernel,
     make_symbolic_scalar,
     make_symbolic_tensor,
+    require_hopper_or_newer,
 )
 
 
 HOPPER_TARGET = {"gpu_name": "sm_90", "arch": "compute_90"}
 SM100_TARGET = {"gpu_name": "sm_100a", "arch": "compute_100a"}
+
+
+COPY_ASYNC_ARRIVALS = {
+    cl.copy_async_mbarrier_arrive: "cp.async.mbarrier.arrive",
+    cl.copy_async_mbarrier_arrive_no_increment: "cp.async.mbarrier.arrive.noinc",
+}
+
+
+@pytest.mark.parametrize(("operation", "instruction"), COPY_ASYNC_ARRIVALS.items())
+def test_copy_async_mbarrier_arrive_ptx(operation, instruction):
+    @cl.kernel
+    def kernel():
+        mbar = cl.shared_array(1, cl.mbarrier, alignment=8).pointer()
+        operation(mbar)
+
+    compile_kernel(
+        kernel,
+        assert_in_ptx=instruction,
+        gpu_name="sm_80",
+        arch="compute_80",
+    )
+
+
+@pytest.mark.parametrize("operation", COPY_ASYNC_ARRIVALS.keys())
+def test_copy_async_mbarrier_arrive_unsupported_target(operation):
+    @cl.kernel
+    def kernel():
+        mbar = cl.shared_array(1, cl.mbarrier, alignment=8).pointer()
+        operation(mbar)
+
+    compile_kernel(
+        kernel,
+        raises=pytest.raises(UnsupportedFeatureError, match="copy_async_mbarrier_arrive"),
+        gpu_name="sm_75",
+        arch="compute_75",
+    )
+
+
+@pytest.mark.parametrize("arrival_operation", COPY_ASYNC_ARRIVALS.keys())
+@pytest.mark.parametrize("arrivals", (1, 2))
+@require_hopper_or_newer()
+def test_copy_async_mbarrier_arrive_completion(arrival_operation, arrivals):
+    participants = 32
+    if arrival_operation is cl.copy_async_mbarrier_arrive_no_increment:
+        participants += arrivals
+    size = arrivals * 4
+
+    @cl.kernel
+    def kernel(src, out):
+        tid = cl.thread_index(0)
+        memory = cl.shared_array(size, cl.int32, alignment=16)
+        mbar = cl.shared_array(1, cl.mbarrier, alignment=8).pointer()
+        if tid == 0:
+            cl.mbarrier_initialize(mbar, participants)
+        cl.barrier_sync_block_aligned()
+
+        if tid == 0:
+            for i in range(arrivals):
+                ptr = src.pointer(4 * i)
+                ptr = cl.bitcast(ptr, cl.opaque_pointer_dtype('GLOBAL'))
+                cl._nvvm.cp_async_ca_shared_global_16(memory.pointer(4 * i), ptr)
+                arrival_operation(mbar)
+
+        state = cl.mbarrier_arrive(mbar)
+        cl.mbarrier_wait(mbar, state)
+        out[tid] = memory[tid % size]
+
+    src = torch.arange(1, size + 1, dtype=torch.int32).cuda(0)
+    out = torch.zeros(32, dtype=torch.int32).cuda(0)
+    cl.launch(torch.cuda.current_stream(), (1,), (32,), kernel, (src, out))
+    expected = src.cpu()[torch.arange(32) % size]
+    assert torch.equal(out.cpu(), expected)
 
 
 class CopyAsyncPtxTestBase:
