@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 setuptools==84.0.0
-pytest==9.0.1
+pytest==9.0.3
 pytest-benchmark==5.1.0
 pytest-cov==6.2.1
 pytest-env==1.2.0
