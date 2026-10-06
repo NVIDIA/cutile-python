@@ -3,8 +3,6 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # Maintain a separate file for free-threading version. This can be removed when ABI environment markers are supported.(PEP 780)
--r requirements-ft.txt
-
+-r requirements-common.txt
 
 numba-cuda[cu13]==0.30.0
-cupy-cuda13x==14.0.1

@@ -2,20 +2,6 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-setuptools==84.0.0
-pytest==9.0.3
-pytest-benchmark==5.1.0
-pytest-cov==6.2.1
-pytest-env==1.2.0
-flake8==7.3.0
-pytest-cov==6.2.1
+-r requirements-common.txt
 
-numpy==2.2.0; python_version < "3.11"
-numpy==2.4.4; python_version >= "3.11"
-
-jax[cuda13]==0.10.0; sys_platform == 'linux' and python_version >= "3.11"
-flatbuffers==25.12.19; sys_platform == 'linux' and python_version >= "3.11"
-
-
---extra-index-url https://download.pytorch.org/whl/cu130
-torch==2.10.0
+cuda-core==1.2.0
