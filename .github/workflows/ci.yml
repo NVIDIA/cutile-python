@@ -32,12 +32,12 @@ jobs:
       build_py313: ghcr.io/nvidia/cutile-python/build_py_3.13_x86_64:2026-08-17-e66dd3d7ef7a
       build_py314: ghcr.io/nvidia/cutile-python/build_py_3.14_x86_64:2026-08-17-931831a8d099
       build_py314t: ghcr.io/nvidia/cutile-python/build_py_3.14t_x86_64:2026-08-17-28bcee962449
-      test_py310: ghcr.io/nvidia/cutile-python/test_py_3.10_x86_64:2026-08-17-8549280618e3
-      test_py311: ghcr.io/nvidia/cutile-python/test_py_3.11_x86_64:2026-08-17-a437217a163c
-      test_py312: ghcr.io/nvidia/cutile-python/test_py_3.12_x86_64:2026-08-17-85d044574dad
-      test_py313: ghcr.io/nvidia/cutile-python/test_py_3.13_x86_64:2026-08-17-7f71fb21a2a9
-      test_py314: ghcr.io/nvidia/cutile-python/test_py_3.14_x86_64:2026-08-17-4e620388d66f
-      test_py314t: ghcr.io/nvidia/cutile-python/test_py_3.14t_x86_64:2026-08-17-68e4e9c53f83
+      test_py310: ghcr.io/nvidia/cutile-python/test_py_3.10_x86_64:2026-10-07-930ad3efefbb
+      test_py311: ghcr.io/nvidia/cutile-python/test_py_3.11_x86_64:2026-10-07-6c9a98aa0164
+      test_py312: ghcr.io/nvidia/cutile-python/test_py_3.12_x86_64:2026-10-07-e9e9091b2165
+      test_py313: ghcr.io/nvidia/cutile-python/test_py_3.13_x86_64:2026-10-07-747bd6e13da8
+      test_py314: ghcr.io/nvidia/cutile-python/test_py_3.14_x86_64:2026-10-07-014972b99f54
+      test_py314t: ghcr.io/nvidia/cutile-python/test_py_3.14t_x86_64:2026-10-07-6fc242eed61d
     steps:
       - run: echo "Defining image tags"
 
