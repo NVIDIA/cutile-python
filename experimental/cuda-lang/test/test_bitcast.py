@@ -8,6 +8,7 @@ import cuda.lang as cl
 import pytest
 import torch
 
+from cuda.tile._cext import cconv_v3_enabled
 from cuda.lang._exception import CompilerExecutionError, TypeCheckingError
 from cuda.lang.compilation import KernelSignature
 from .util import filecheck, make_symbolic_tensor
@@ -123,6 +124,26 @@ def test_bitcast_between_pointers():
     cl.launch(torch.cuda.current_stream(), (1,), (1,), kernel, (out,))
     got = out.cpu().item()
     assert got == 0xDEADBEEF, f"0x{got:x}"
+
+
+@pytest.mark.skipif(not cconv_v3_enabled(), reason="Requires cconv3 enabled")
+def test_bitcast_in_host_entry():
+    @cl.kernel
+    def read_uint16(pointer, output):
+        cl.static_assert(pointer.pointee_dtype == cl.uint16)
+        output[0] = pointer[0]
+
+    @cl.host_entry
+    def launcher(source, output):
+        pointer = cl.bitcast(source.pointer(), cl.pointer_dtype(cl.uint16))
+        cl.launch(None, (1,), (1,), read_uint16, (pointer, output))
+
+    source = torch.tensor([0x34, 0x12], dtype=torch.uint8, device="cuda").view(
+        torch.float8_e4m3fn
+    )
+    output = torch.zeros(1, dtype=torch.uint16, device="cuda")
+    launcher(source, output)
+    assert output.item() == 0x1234
 
 
 @pytest.mark.parametrize("from_mspace", cl.MemorySpace._member_map_.values())

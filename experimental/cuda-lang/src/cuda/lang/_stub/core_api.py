@@ -118,7 +118,7 @@ class Array(TileArray, Generic[T]):
         ...
 
 
-@stub(host=True)
+@stub(host=True, compiled_host=True)
 def dtype_of(value, /) -> DType:
     """
     Returns the data type of a scalar, pointer, or vector value.
@@ -681,7 +681,7 @@ def grid_dependency_control_launch_dependents() -> None:
     """Launch dependent grids in a programmatic dependent launch."""
 
 
-@stub
+@stub(compiled_host=True)
 def bitcast(x, /, dtype):
     """Reinterpret a value as being of specified data type.
     """

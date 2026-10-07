@@ -488,13 +488,13 @@ class PointerInfo:
         return hash(self._dtype)
 
 
-@stub(host=True)
+@stub(host=True, compiled_host=True)
 def is_pointer_dtype(dtype: DType) -> bool:
     """Return whether ``dtype`` is a pointer dtype."""
     return _is_pointer_dtype(dtype)
 
 
-@stub(host=True)
+@stub(host=True, compiled_host=True)
 def pointer_dtype(pointee_dtype: DType,
                   memory_space: MemorySpace = MemorySpace.GENERIC) -> DType:
     """Return the dtype for a pointer to ``pointee_dtype`` in ``memory_space``.
@@ -509,7 +509,7 @@ def pointer_dtype(pointee_dtype: DType,
     return _get_pointer_dtype(pointee_dtype, memory_space)
 
 
-@stub(host=True)
+@stub(host=True, compiled_host=True)
 def opaque_pointer_dtype(memory_space: MemorySpace = MemorySpace.GENERIC) -> DType:
     """Return the dtype for an opaque pointer in ``memory_space``.
 

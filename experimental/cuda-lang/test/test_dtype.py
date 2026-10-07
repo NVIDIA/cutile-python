@@ -80,6 +80,18 @@ def test_dtype_of():
     cl.launch(torch.cuda.current_stream(), (1,), (1,), kern, (x,))
 
 
+def test_dtype_helpers_in_host_entry():
+    @cl.host_entry
+    def inspect(value):
+        cl.static_assert(cl.dtype_of(value) == cl.int32)
+        dtype = cl.pointer_dtype(cl.uint16)
+        cl.static_assert(cl.is_pointer_dtype(dtype))
+        cl.static_assert(cl.is_pointer_dtype(cl.opaque_pointer_dtype()))
+        cl.static_assert(cl.PointerInfo(dtype).pointee_dtype == cl.uint16)
+
+    inspect(42)
+
+
 @pytest.mark.parametrize(
     "memory_space, bitwidth",
     (
