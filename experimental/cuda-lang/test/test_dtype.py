@@ -2,12 +2,30 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+import pickle
+
 import torch.cuda
 import pytest
 
 import cuda.lang as cl
 import cuda.lang._datatype as datatype
+from cuda.tile import _cext
 from test.util import compile_kernel
+
+
+def test_tensor_map_descriptor_dtype():
+    dtype = cl.tensor_map_descriptor
+    assert isinstance(dtype, datatype.DType)
+    assert dtype is _cext.tensor_map_descriptor
+    assert dtype.name == "tensor_map_descriptor"
+    assert dtype.bitwidth == 8 * _cext._TENSOR_MAP_DESCRIPTOR_BYTES
+    assert not datatype.is_numeric(dtype)
+    assert not cl.is_pointer_dtype(dtype)
+    assert pickle.loads(pickle.dumps(dtype)) is dtype
+
+    pointer_dtype = cl.pointer_dtype(dtype)
+    assert cl.PointerInfo(pointer_dtype).pointee_dtype is dtype
+    assert pickle.loads(pickle.dumps(pointer_dtype)) is pointer_dtype
 
 
 @pytest.mark.parametrize("dtype", datatype.arithmetic_float_dtypes)

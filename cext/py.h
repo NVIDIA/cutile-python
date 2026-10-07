@@ -10,7 +10,9 @@
 #include "ref_ptr.h"
 #include "vec.h"
 #include <Python.h>
+#include <array>
 #include <optional>
+#include <tuple>
 
 
 using PyPtr = RefPtr<PyObject>;
@@ -96,13 +98,23 @@ T& py_unwrap(PyObject* pyobj) {
 }
 
 template <typename T>
-PyObject* pywrapper_new(PyTypeObject* type, PyObject*, PyObject*) {
+T& py_unwrap(const PyPtr& pyobj) {
+    return py_unwrap<T>(pyobj.get());
+}
+
+template <typename T>
+PyPtr py_create_object(PyTypeObject* type = &T::pytype) {
     PyObject* ret = type->tp_alloc(type, 0);
-    if (!ret) return nullptr;
+    if (!ret) return {};
 
     T& obj = py_unwrap<T>(ret);
     new (&obj) T();
-    return ret;
+    return steal(ret);
+}
+
+template <typename T>
+PyObject* pywrapper_new(PyTypeObject* type, PyObject*, PyObject*) {
+    return py_create_object<T>(type).release();
 }
 
 template <typename T>
@@ -303,99 +315,48 @@ public:
         discard();
     }
 
-    void append(const char* s) {
+    void append_cstring(const char* s) {
         handle_error([=] { return write_ascii(s); });
     }
 
-    void append(char c) {
+    void append_char(char c) {
         Py_UCS4 usc4 = static_cast<unsigned char>(c);
         handle_error([=] { return write_char(usc4); });
     }
 
-    void append(unsigned int x) {
-        append_sprintf<30>("%u", x);
+    void append_pyobject_str(PyObject* obj) {
+        handle_error([=] { return write_str(obj); });
     }
 
-    void append(int x) {
-        append_sprintf<30>("%d", x);
+    void append_pyobject_repr(PyObject* obj) {
+        handle_error([=] { return write_repr(obj); });
     }
 
-    void append(unsigned long x) {
-        append_sprintf<30>("%lu", x);
-    }
-
-    void append(long x) {
-        append_sprintf<30>("%ld", x);
-    }
-
-    void append(unsigned long long x) {
-        append_sprintf<30>("%llu", x);
-    }
-
-    void append(long long x) {
-        append_sprintf<30>("%lld", x);
-    }
-
-    void append(PyObject* obj) {
-        handle_error([=] { return obj ? write_str(obj) : write_ascii("(null)"); });
-    }
-
-    void append(UseRepr u) {
-        handle_error([=] { return u.obj ? write_repr(u.obj) : write_ascii("(null)"); });
-    }
-
-    void append(const PyPtr& obj) {
-        append(obj.get());
-    }
-
-    template <typename T, typename = std::enable_if_t<std::is_enum_v<T>>>
-    void append(const T& value) {
-        append(static_cast<std::underlying_type_t<T>>(value));
+    template <size_t BufSize, typename... Args>
+    void append_sprintf(const char* fmt, Args&&... args) {
+        handle_error([&] {
+            char buf[BufSize];
+            int r = PyOS_snprintf(buf, sizeof buf, fmt, std::forward<Args>(args)...);
+            if (r < 0 || r >= (int) sizeof buf) {
+                PyErr_SetString(PyExc_RuntimeError, "snprintf() failed");
+                return -1;
+            }
+            return write_ascii(buf, r);
+        });
     }
 
     template <typename T>
-    void append(const T* ptr) {
-        append_sprintf<30>("%p", ptr);
-    }
-
-    template <typename T>
-    void append(const Vec<T>& vec) {
-        append("[");
-        const char* comma = "";
-        for (const T& x : vec) {
-            append(comma);
-            append(x);
-            comma = ", ";
-        }
-        append("]");
-    }
-
-    template <typename T>
-    void append(const Result<T>& res) {
-        if (res.is_ok()) {
-            append("OK(");
-            append(*res);
-            append(")");
-        } else {
-            append("ErrorRaised");
-        }
-    }
-
-    template <typename T>
-    void append(const std::optional<T>& opt) {
-        if (opt.has_value()) {
-            append("std::optional{");
-            append(*opt);
-            append("}");
-        } else {
-            append("std::nullopt");
-        }
+    void append(T&& val) {
+        handle_error([&] {
+            return append_to_string_builder(std::forward<T>(val), this);
+        });
     }
 
     template <typename... Args>
     void append_many(Args&&... args) {
         (append(std::forward<Args>(args)), ...);
     }
+
 
     PyPtr build() {
         if (error_) return {};
@@ -414,19 +375,6 @@ public:
 private:
     bool error_;
 
-    template <size_t BufSize, typename... Args>
-    void append_sprintf(const char* fmt, Args&&... args) {
-        handle_error([&] {
-            char buf[BufSize];
-            int r = PyOS_snprintf(buf, sizeof buf, fmt, std::forward<Args>(args)...);
-            if (r < 0 || r >= (int) sizeof buf) {
-                PyErr_SetString(PyExc_RuntimeError, "snprintf() failed");
-                return -1;
-            }
-            return write_ascii(buf, r);
-        });
-    }
-
     template <typename F>
     void handle_error(F&& func) {
         if (!error_) {
@@ -435,6 +383,113 @@ private:
         }
     }
 };
+
+static inline int append_to_string_builder(const char* s, StringBuilder* sb) {
+    sb->append_cstring(s);
+    return 0;
+}
+
+static inline int append_to_string_builder(char c, StringBuilder* sb) {
+    sb->append_char(c);
+    return 0;
+}
+
+static inline int append_to_string_builder(unsigned int x, StringBuilder* sb) {
+    sb->append_sprintf<30>("%u", x);
+    return 0;
+}
+
+static inline int append_to_string_builder(int x, StringBuilder* sb) {
+    sb->append_sprintf<30>("%d", x);
+    return 0;
+}
+
+static inline int append_to_string_builder(unsigned long x, StringBuilder* sb) {
+    sb->append_sprintf<30>("%lu", x);
+    return 0;
+}
+
+static inline int append_to_string_builder(long x, StringBuilder* sb) {
+    sb->append_sprintf<30>("%ld", x);
+    return 0;
+}
+
+static inline int append_to_string_builder(unsigned long long x, StringBuilder* sb) {
+    sb->append_sprintf<30>("%llu", x);
+    return 0;
+}
+
+static inline int append_to_string_builder(long long x, StringBuilder* sb) {
+    sb->append_sprintf<30>("%lld", x);
+    return 0;
+}
+
+static inline int append_to_string_builder(PyObject* obj, StringBuilder* sb) {
+    if (obj) sb->append_pyobject_str(obj);
+    else sb->append("(null)");
+    return 0;
+}
+
+static inline int append_to_string_builder(UseRepr u, StringBuilder* sb) {
+    if (u.obj) sb->append_pyobject_repr(u.obj);
+    else sb->append("(null)");
+    return 0;
+}
+
+static inline int append_to_string_builder(const PyPtr& obj, StringBuilder* sb) {
+    sb->append(obj.get());
+    return 0;
+}
+
+template <typename T>
+static inline int append_to_string_builder(const T* ptr, StringBuilder* sb) {
+    sb->append_sprintf<30>("%p", ptr);
+    return 0;
+}
+
+template <typename T>
+static inline int append_to_string_builder(const Vec<T>& vec, StringBuilder* sb) {
+    sb->append("[");
+    const char* comma = "";
+    for (const T& x : vec) {
+        sb->append(comma);
+        sb->append(x);
+        comma = ", ";
+    }
+    sb->append("]");
+    return 0;
+}
+
+template <typename T>
+static inline int append_to_string_builder(const Result<T>& res, StringBuilder* sb) {
+    if (res.is_ok()) {
+        sb->append("OK(");
+        sb->append(*res);
+        sb->append(")");
+    } else {
+        sb->append("ErrorRaised");
+    }
+    return 0;
+}
+
+template <typename T>
+static inline int append_to_string_builder(const std::optional<T>& opt, StringBuilder* sb) {
+    if (opt.has_value()) {
+        sb->append("std::optional{");
+        sb->append(*opt);
+        sb->append("}");
+    } else {
+        sb->append("std::nullopt");
+    }
+    return 0;
+}
+
+template <typename T, typename = std::enable_if_t<std::is_enum_v<T>>>
+static inline int append_to_string_builder(const T& value, StringBuilder* sb) {
+    sb->append(static_cast<std::underlying_type_t<T>>(value));
+    return 0;
+}
+
 
 template <typename... Args>
 ErrorRaised_t raise(PyObject* exctype, Args&&... message) {

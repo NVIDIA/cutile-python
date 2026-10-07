@@ -21,7 +21,7 @@ from cuda.tile._datatype import (
     uint64, uint32, uint16, uint8, bfloat16,
     tfloat32, float8_e4m3fn, float8_e5m2,
     is_boolean, is_integral, is_float, is_unrestricted_float, is_restricted_float, is_signed,
-    IntegerInfo, opaque_pointer_dtype, pointer_dtype, PointerInfo,
+    IntegerInfo, opaque_pointer_dtype, pointer_dtype, PointerInfo, foreign_pointer_dtype,
 )
 from cuda.tile._ir.ops_utils import promote_dtypes
 from cuda.tile._ir.typing_support import to_dtype
@@ -68,9 +68,20 @@ def test_builtin_types():
 
     # Pickle-unpickle roundtrip
     assert pickle.loads(pickle.dumps(float16)) is float16
+    assert pickle.loads(pickle.dumps(pointer_dtype(float16))) is pointer_dtype(float16)
+    assert (pickle.loads(pickle.dumps(pointer_dtype(float16, MemorySpace.SHARED)))
+            is pointer_dtype(float16, MemorySpace.SHARED))
+    assert (pickle.loads(pickle.dumps(pointer_dtype(opaque_pointer_dtype(), MemorySpace.SHARED)))
+            is pointer_dtype(opaque_pointer_dtype(), MemorySpace.SHARED))
+    assert (pickle.loads(pickle.dumps(opaque_pointer_dtype()))
+            is opaque_pointer_dtype())
+    assert (pickle.loads(pickle.dumps(foreign_pointer_dtype(float16)))
+            is foreign_pointer_dtype(float16))
 
     # Deep copy roundtrip
     assert copy.deepcopy(float16) is float16
+    assert (copy.deepcopy(pointer_dtype(float16, MemorySpace.SHARED))
+            is pointer_dtype(float16, MemorySpace.SHARED))
 
 
 def test_tuple_type():
@@ -358,3 +369,7 @@ def test_pointer_info_equality():
     for i, a in enumerate(dtypes):
         for j, b in enumerate(dtypes):
             assert (PointerInfo(a) == PointerInfo(b)) == (i == j)
+
+
+def test_dtype_callable():
+    assert callable(int8)

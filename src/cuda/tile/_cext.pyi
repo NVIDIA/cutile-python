@@ -5,9 +5,76 @@ import enum
 from typing import Any, Sequence, TypeAlias
 
 from cuda.tile._context import TileContextConfig
-
+from cuda.tile._memory_model import MemorySpace
 
 Dim3: TypeAlias = tuple[int] | tuple[int, int] | tuple[int, int, int]
+
+
+class DType:
+    """A *data type* (or *dtype*) describes the type of the objects of an |array|, |tile|, or
+    operation.
+
+    |Dtypes| determine how values are stored in memory and how operations on those values are
+    performed.
+    """
+
+    @property
+    def bitwidth(self):
+        """The number of bits in an element of the |data type|."""
+
+    @property
+    def name(self):
+        """The name of the |data type|."""
+
+    def __call__(self, value, /):
+        """Construct a Scalar of this |data type| from a value."""
+
+
+def is_numeric(t: DType, /) -> bool: ...
+def is_boolean(t: DType, /) -> bool: ...
+def is_integral(t: DType, /) -> bool: ...
+def is_signed(t: DType, /) -> bool: ...
+def is_float(t: DType, /) -> bool: ...
+def is_unrestricted_float(t: DType, /) -> bool: ...
+def is_restricted_float(t: DType, /) -> bool: ...
+def is_arithmetic(t: DType, /) -> bool: ...
+def _is_pointer_dtype(t: DType, /) -> bool: ...
+def _is_foreign_pointer_dtype(t: DType, /) -> bool: ...
+
+def _get_pointer_dtype(pointee_dtype: DType | None, memory_space: MemorySpace, /) -> DType: ...
+def _get_foreign_pointer_dtype(pointee_dtype: DType, /) -> DType: ...
+def _pointer_pointee_dtype(pointer_dtype: DType, /) -> DType: ...
+def _pointer_memory_space(pointer_dtype: DType, /) -> MemorySpace: ...
+def _foreign_pointer_pointee_dtype(foreign_pointer_dtype: DType, /) -> DType: ...
+
+def integer_dtype_min(dtype: DType) -> int: ...
+def integer_dtype_max(dtype: DType) -> int: ...
+
+
+bool_: DType
+uint8: DType
+uint16: DType
+uint32: DType
+uint64: DType
+int8: DType
+int16: DType
+int32: DType
+int64: DType
+float16: DType
+float32: DType
+float64: DType
+bfloat16: DType
+tfloat32: DType
+float8_e4m3fn: DType
+float8_e5m2: DType
+float8_e8m0fnu: DType
+float8_e5m3fnu: DType
+float4_e2m1fn: DType
+mbarrier: DType
+cluster_launch_control_token: DType
+tensor_map_descriptor: DType
+float6_e2m3fn: DType
+float6_e3m2fn: DType
 
 
 def launch(stream,

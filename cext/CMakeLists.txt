@@ -60,6 +60,7 @@ add_library(_cext_static STATIC
     coroutine_util.cpp
     cuda_loader.cpp
     cuda_helper.cpp
+    dtype.cpp
     ipc_util.cpp
     memory.cpp
     py.cpp

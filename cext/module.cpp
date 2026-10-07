@@ -5,6 +5,7 @@
 #include "py.h"
 
 #include "compiled_host.h"
+#include "dtype.h"
 #include "tile_kernel.h"
 #include "cuda_helper.h"
 #include "coroutine_util.h"
@@ -33,6 +34,9 @@ PyMODINIT_FUNC PyInit__cext() {
     if (PyUnstable_Module_SetGIL(m.get(), Py_MOD_GIL_NOT_USED) != 0 )
         return nullptr;
 #endif
+
+    if (!dtype_init(m.get()))
+        return nullptr;
 
     if (!tile_kernel_init(m.get()))
         return nullptr;
