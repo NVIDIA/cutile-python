@@ -3694,7 +3694,7 @@ def cdiv(x, y, /) -> TileOrScalar:
             3
             2
     """
-    return (x - 1) // y + 1
+    return -((-x) // y)
 
 
 # ======== Comparison ==============

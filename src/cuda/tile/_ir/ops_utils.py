@@ -44,7 +44,7 @@ BINOP_REGISTRY = {
     "sub": MathOpDef(lambda x, y: x - y, _RD_BASIC, support_flush_to_zero=True),
     "mul": MathOpDef(lambda x, y: x * y, _RD_BASIC, support_flush_to_zero=True),
     "floordiv": MathOpDef(lambda x, y: x // y),
-    "cdiv": MathOpDef(lambda x, y: (x + y - 1) // y),
+    "cdiv": MathOpDef(lambda x, y: -((-x) // y)),
     "truediv": MathOpDef(lambda x, y: x / y, _RD_TRUEDIV, support_flush_to_zero=True),
     "mod": MathOpDef(lambda x, y: x % y),
     "pow": MathOpDef(lambda x, y: x ** y),
