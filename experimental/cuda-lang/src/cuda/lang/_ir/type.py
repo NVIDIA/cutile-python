@@ -33,6 +33,8 @@ from cuda.tile._ir.type import (
     SymbolicClosure,
     SliceType,
     StreamTy,
+    SliceValue,
+    EllipsisType,
 )
 import cuda.lang._datatype as datatype
 from cuda.tile._datatype import DType, PointerInfo
@@ -322,4 +324,6 @@ __all__ = (
     "SymbolicScalar",
     "SymbolicPointer",
     "SliceType",
+    "SliceValue",
+    "EllipsisType",
 )

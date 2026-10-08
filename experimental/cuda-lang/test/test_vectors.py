@@ -923,7 +923,8 @@ class TestVectorSlice:
         compile_kernel(
             kernel,
             raises=pytest.raises(
-                TypeCheckingError, match="Non-constant slices are not supported"
+                TypeCheckingError,
+                match="Expected a slice constant, but given value is not constant"
             ),
         )
 
@@ -935,7 +936,8 @@ class TestVectorSlice:
         compile_kernel(
             kernel,
             raises=pytest.raises(
-                TypeCheckingError, match="Non-constant slices are not supported"
+                TypeCheckingError,
+                match="Expected a slice constant, but given value is not constant"
             ),
         )
 
@@ -947,7 +949,8 @@ class TestVectorSlice:
         compile_kernel(
             kernel,
             raises=pytest.raises(
-                TypeCheckingError, match="Non-constant slices are not supported"
+                TypeCheckingError,
+                match="Expected a slice constant, but given value is not constant"
             ),
         )
 

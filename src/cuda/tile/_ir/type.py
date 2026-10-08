@@ -140,22 +140,39 @@ _NOT_IMPLEMENTED = object.__new__(NotImplementedTy)
 
 # ============== Slice Type ===============
 
+@dataclass(frozen=True)
 class SliceType(Type):
-    _instance = None
+    item_types: tuple["Type", "Type", "Type"] | None = None
 
-    def __new__(cls):
-        if cls._instance is None:
-            cls._instance = super().__new__(cls)
-        return cls._instance
+    def is_aggregate(self) -> bool:
+        return self.item_types is not None
 
-    def __str__(self):
-        return "Slice"
+    def aggregate_item_types(self) -> tuple["Type", "Type", "Type"] | None:
+        return self.item_types
+
+    def make_aggregate_value(self, items: tuple["Type", "Type", "Type"]) -> "AggregateValue":
+        return SliceValue(*items)
 
     def __eq__(self, other: Type):
-        return isinstance(other, SliceType)
+        return isinstance(other, SliceType) and self.item_types == other.item_types
 
     def __hash__(self):
-        return hash("SliceType")
+        return hash(("SliceType", self.item_types))
+
+    def __str__(self):
+        if self.item_types is not None:
+            return 'Slice(' + ','.join(str(x) for x in self.item_types) + ')'
+        return 'Slice()'
+
+
+@dataclass
+class SliceValue(AggregateValue):
+    start: "Var"
+    stop: "Var"
+    step: "Var"
+
+    def as_tuple(self) -> tuple["Var", ...]:
+        return (self.start, self.stop, self.step)
 
 
 SLICE = SliceType()

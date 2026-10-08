@@ -35,7 +35,7 @@ from cuda.tile._ir.type import Type, DTypeSpec, TensorLikeTy, TupleTy, TupleValu
     RangeIterType, RangeValue, TypeTy, ModuleTy, NONE, SliceType, StringTy, FormattedStringTy, \
     StringFormat, FormattedStringValue, FormattedPiece, DictTy, DictValue, EnumTy, TokenTy, \
     FunctionTy, GeneratorContextManagerTy, ContextManagerState, GeneratorContextManagerValue, \
-    NotImplementedTy
+    NotImplementedTy, SliceValue
 from cuda.tile._ir.typing_support import type_of_constant_python_value, \
     loose_type_of_constant_python_value, get_dataclass_info, \
     create_dataclass_instance, find_method, dataclass_has_default_repr, dataclass_has_default_cmp
@@ -905,6 +905,14 @@ async def len_dataclass_impl(x: Var[DataclassTy]) -> Var:
 # ===========================================================================================
 
 
+def build_slice(items: Sequence[Var]) -> Var:
+    ty = SliceType(tuple(x.get_type() for x in items))
+    res = make_aggregate(SliceValue(*items), ty)
+    if all(i.is_constant() for i in items):
+        res.set_constant(slice(*(i.get_constant() for i in items)))
+    return res
+
+
 def bind_method(object: Var, func) -> Var:
     agg_value = BoundMethodValue(object)
     res_ty = BoundMethodTy(object.get_type(), func)
@@ -921,6 +929,10 @@ def sym2var(x: Any, constant_only: bool = False) -> Var:
 
     if isinstance(x, tuple):
         return build_tuple(tuple(sym2var(item, constant_only=constant_only) for item in x))
+
+    if isinstance(x, slice):
+        return build_slice(tuple(sym2var(i, constant_only=constant_only)
+                                 for i in (x.start, x.stop, x.step)))
 
     cls = type(x)
     if dataclasses.is_dataclass(cls):

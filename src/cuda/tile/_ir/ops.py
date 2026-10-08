@@ -32,7 +32,8 @@ from .arithmetic_ops import reshape, broadcast_to, astype, compare_tensorlike, \
 from .cast_ops import implicit_cast
 from .control_flow_ops import Loop, IfElse, control_flow_impl_registry, EndBranch
 from .core_ops import loosely_typed_const, strictly_typed_const, build_tuple, bind_method, \
-    sym2var, core_impl_registry, print_impl, TilePrintf, tuple_item, comparison_operator_impl
+    sym2var, core_impl_registry, print_impl, TilePrintf, tuple_item, comparison_operator_impl, \
+    build_slice
 from .static_eval_ops import static_eval_impl_registry
 from .type import (
     TupleValue, ArrayValue, ListValue, TiledViewValue, RawArrayMemoryValue,
@@ -225,8 +226,7 @@ def tile_divmod_function_impl(x: Var, y: Var):
 def slice_impl(start: Var, stop: Var, step: Var) -> Var:
     if not (start.is_constant() and stop.is_constant() and step.is_constant()):
         raise TileTypeError("Non-constant slices are not supported")
-    return loosely_typed_const(
-        slice(start.get_constant(), stop.get_constant(), step.get_constant()))
+    return build_slice((start, stop, step))
 
 
 # ===========================================================================================

@@ -16,7 +16,7 @@ from cuda.tile._ir.op_impl import (
 from cuda.tile._ir.arithmetic_ops import astype
 from cuda.tile._ir.cast_ops import implicit_cast
 from cuda.tile._ir.core_ops import bind_method, build_tuple, loosely_typed_const
-from cuda.tile._ir.ops import strictly_typed_const, slice_impl
+from cuda.tile._ir.ops import strictly_typed_const
 from cuda.tile._ir.ops_utils import promote_dtypes
 from cuda.tile._ir.type import LooselyTypedScalar
 from cuda.lang._exception import InternalError, TypeCheckingError, InvalidValueError
@@ -120,9 +120,6 @@ def vector_constructor_impl(elements: tuple[Var, ...], dtype: Var) -> Var[Vector
         for index, element in enumerate(elements)
     )
     return vector_construct(VectorTy(element_dtype, len(values)), values)
-
-
-impl(slice)(slice_impl)
 
 
 @impl(operator.getitem, overload=(VectorTy, SliceType))

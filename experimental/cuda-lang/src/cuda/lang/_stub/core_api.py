@@ -32,6 +32,30 @@ class LocalArrayContextManager(Generic[T]):
 class Array(TileArray, Generic[T]):
     """
     N-dimensional array type.
+
+    Indexing every dimension with an integer accesses one element.
+    Partial indexing or slices return an ``Array`` view.
+
+    Examples:
+
+    .. testcode::
+        :template: kernel_wrapper.py
+
+        array = cl.shared_array(4, cl.int32)
+
+        # Integer indexing.
+        array[1] = 7
+        print(array[1])
+
+        # Slice indexing returns a view.
+        array_view = array[1:3]
+        array_view[0] = 9
+        print(array[1])
+
+    .. testoutput::
+
+        7
+        9
     """
 
     @staticmethod
@@ -111,9 +135,11 @@ class Array(TileArray, Generic[T]):
         ...
 
     @stub
-    def __getitem__(self, indices: int | tuple[int, ...]) -> T:
-        """Retrieve the value given by ``indices``.
-        Equivalent to ``self.pointer(indices).load()``.
+    def __getitem__(self, indices: int | slice | tuple[int | slice, ...]) -> T | "Array[T]":
+        """Retrieve value or view given by ``indices``.
+        When every dimension is indexed by an integer, this is equivalent to
+        ``self.pointer(indices).load()``.
+        Partial indexing or slices return an ``Array`` view.
         """
         ...
 

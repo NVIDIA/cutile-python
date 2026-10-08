@@ -18,6 +18,9 @@ from cuda.lang._ir.type import (
     Type,
     VectorTy,
     make_rank0_ty,
+    SliceType,
+    TupleTy,
+    EllipsisType,
 )
 from cuda.lang._ir.atomics_support import (
     require_atomic_memory_order_and_scope,
@@ -44,9 +47,13 @@ from cuda.tile._datatype import (
     pointer_dtype,
     uint64,
 )
-from cuda.tile._ir.arithmetic_ops import astype, binary_arithmetic_tensorlike_raw
+from cuda.tile._ir.arithmetic_ops import (
+    astype, binary_arithmetic_tensorlike_raw, binary_arithmetic_tensorlike
+)
 from cuda.tile._ir.cast_ops import address_space_cast, implicit_cast
-from cuda.tile._ir.core_ops import bind_method, loosely_typed_const, strictly_typed_const
+from cuda.tile._ir.core_ops import (
+    bind_method, loosely_typed_const, strictly_typed_const, build_slice, build_tuple,
+)
 from cuda.tile._ir.ir import add_operation_variadic, make_aggregate
 from cuda.tile._ir.op_impl import (
     ImplRegistry,
@@ -257,19 +264,6 @@ def pointer_setitem(object: Var[PointerTy], key: Var[Type], value: Var[Type]):
     )
 
 
-@impl(operator.getitem, overload=(ArrayTy, WILDCARD))
-def array_getitem(object: Var, key: Var) -> Var:
-    array_ty = require_array_type(object)
-    indices = require_array_indices(object, key)
-    pointer = _array_element_pointer(object, indices)
-    return add_operation(
-        LoadPointer,
-        make_rank0_ty(array_ty.dtype),
-        pointer=pointer,
-        alignment=None,
-    )
-
-
 @impl(operator.setitem, overload=(ArrayTy, WILDCARD, WILDCARD))
 def array_setitem(object: Var, key: Var, value: Var):
     array_ty = require_array_type(object)
@@ -290,6 +284,133 @@ def array_setitem(object: Var, key: Var, value: Var):
         value=value,
         alignment=None,
     )
+
+
+def _require_nonnegative_constant(var: Var, message: str) -> None:
+    if var.is_constant() and var.get_constant() < 0:
+        raise TypeCheckingError(message)
+    return var
+
+
+def _require_valid_slice_constant(start: Var, stop: Var, step: Var, array_dim: Var) -> None:
+    start = _require_nonnegative_constant(start, "A non-negative slice start is required")
+    stop = _require_nonnegative_constant(stop, "A non-negative slice stop is required")
+    if step.is_constant() and step.get_constant() < 1:
+        raise TypeCheckingError("A positive slice step is required")
+    if stop.is_constant():
+        stop_c = stop.get_constant()
+        if start.is_constant():
+            if start.get_constant() >= stop_c:
+                raise TypeCheckingError("View cannot be empty")
+        if array_dim.is_constant():
+            array_dim_c = array_dim.get_constant()
+            if stop_c > array_dim_c:
+                raise TypeCheckingError(f"The provided slice stop ({stop_c}) is greater "
+                                        f"than the array dimension ({array_dim_c})")
+    return start, stop, step, array_dim
+
+
+@impl(operator.getitem, overload=(ArrayTy, WILDCARD))
+def array_getitem(object: Var, key: Var) -> Var:
+    original_array_ty = require_array_type(object)
+    original_array_val = object.get_aggregate()
+
+    original_array_shape = original_array_val.shape
+    original_array_strides = original_array_val.strides
+
+    new_shape = tuple()
+    new_strides = tuple()
+    offset = strictly_typed_const(0, ScalarTy(uint64))
+
+    key_ty = key.get_type()
+    if isinstance(key_ty, TupleTy):
+        tuple_value = key.get_aggregate()
+        indices = tuple_value.items
+    else:
+        # Normalize everything to tuples
+        indices = (key,)
+
+    num_slices = sum(isinstance(i.get_type(), SliceType) for i in indices)
+    num_ellipsis = sum(isinstance(i.get_type(), EllipsisType) for i in indices)
+
+    if (num_ellipsis + num_slices == 0) and len(indices) == original_array_ty.ndim:
+        indices = tuple(implicit_cast(var, original_array_ty.index_dtype,
+                                      "Invalid array index") for var in indices)
+        pointer = _array_element_pointer(object, indices)
+        return add_operation(
+            LoadPointer,
+            make_rank0_ty(original_array_ty.dtype),
+            pointer=pointer,
+            alignment=None,
+        )
+
+    if num_ellipsis > 1:
+        raise TypeCheckingError("An index can only have a single ellipsis ('...')")
+
+    if (len(indices) - num_ellipsis > original_array_ty.ndim):
+        raise TypeCheckingError(
+            "There were more indices used in slice than there are dimensions in the array"
+        )
+
+    new_indices = []
+    for index in indices:
+        if isinstance(index.get_type(), EllipsisType):
+            padding_size = original_array_ty.ndim - len(indices) + 1
+            new_indices += [None] * padding_size
+        elif isinstance(index.get_type(), SliceType):
+            array_dim = original_array_shape[len(new_indices)]
+            s = index.get_aggregate()
+            start, stop, step = s.start, s.stop, s.step
+
+            start = loosely_typed_const(0) if is_none(start) else start
+            stop = array_dim if is_none(stop) else stop
+            step = loosely_typed_const(1) if is_none(step) else step
+            start, stop, step, array_dim = _require_valid_slice_constant(
+                start, stop, step, array_dim
+            )
+            start, stop, step = (
+                implicit_cast(j, original_array_ty.index_dtype, "Invalid slice index dtype")
+                for j in (start, stop, step)
+            )
+            new_indices.append(build_slice((start, stop, step)))
+        elif isinstance(index.get_type(), ScalarTy):
+            new_indices.append(index)
+        else:
+            raise TypeCheckingError("The provided slice index is not valid")
+
+    indices = new_indices + [None for _ in range(original_array_ty.ndim - len(new_indices))]
+    for index, stride, array_dim in zip(indices, original_array_strides,
+                                        original_array_shape, strict=True):
+        if index is None:
+            new_shape += (array_dim,)
+            new_strides += (stride,)
+            index = loosely_typed_const(0)
+        elif isinstance(index.get_type(), SliceType):
+            s = index.get_aggregate()
+            start, stop, step = s.start, s.stop, s.step
+            delta = binary_arithmetic_tensorlike("sub", stop, start)
+            new_shape += (binary_arithmetic_tensorlike("cdiv", delta, step),)
+            new_strides += (binary_arithmetic_tensorlike("mul", stride, step),)
+            index = start
+        elif isinstance(index.get_type(), ScalarTy):
+            index = implicit_cast(index, original_array_ty.index_dtype, "Invalid array index")
+
+        scaled = binary_arithmetic_tensorlike(
+            "mul",
+            astype(index, datatype.uint64),
+            astype(stride, datatype.uint64)
+        )
+
+        offset = binary_arithmetic_tensorlike("add", offset, scaled)
+
+    original_array_base_ptr = _get_array_base_pointer(object)
+    pointer = add_operation(
+        PointerOffset,
+        original_array_base_ptr.get_type(),
+        pointer=original_array_base_ptr,
+        offset=offset,
+    )
+    return array_from_parts_impl(pointer, build_tuple(new_shape), build_tuple(new_strides))
 
 
 def load_pointer(pointer: Var[PointerTy], count: int | None = None, alignment: int | None = None):

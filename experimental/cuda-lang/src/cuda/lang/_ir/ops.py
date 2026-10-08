@@ -131,6 +131,8 @@ from .type import (
     PointerTy,
     VectorTy,
     DTypeSpec,
+    SliceValue,
+    SliceType,
 )
 
 from .ir import (
@@ -403,6 +405,17 @@ def vector_element_count_impl(object: Var[VectorTy], name: Var):
 @impl(getattr, overload=(VectorTy, "dtype"))
 def vector_dtype_impl(object: Var[VectorTy], name: Var):
     return loosely_typed_const(object.get_type().element_dtype)
+
+
+@impl(slice)
+def slice_impl(start: Var, stop: Var, step: Var) -> Var:
+    res = make_aggregate(
+        SliceValue(start, stop, step),
+        SliceType((start.get_type(), stop.get_type(), step.get_type()))
+    )
+    if (start.is_constant() and stop.is_constant() and step.is_constant()):
+        res.set_constant(slice(start.get_constant(), stop.get_constant(), step.get_constant()))
+    return res
 
 
 @dataclass(eq=False)
