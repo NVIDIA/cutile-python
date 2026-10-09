@@ -931,6 +931,30 @@ class TestIfCondtion:
         ref = self.chain_comparison_ref(ref, left, right, N, tile)
         assert_equal(x, ref)
 
+    @pytest.mark.parametrize("values, invoked", [
+        ((0, 1, 2, 3),  4),
+        ((1, 0, 2, 3),  2),
+        ((0, 2, 1, 3),  3),
+        ((0, 1, 3, 2),  4),
+    ])
+    def test_chain_comparison_side_effects(self, values, invoked):
+        def operand(arr, value):
+            count = ct.gather(arr, 0)
+            ct.store(arr, 0, count + 1)
+            return value
+
+        @ct.kernel
+        def kernel(arr, a, b, c, d):
+            result = (operand(arr, a) < operand(arr, b)
+                      < operand(arr, c) < operand(arr, d))
+            ct.store(arr, 1, result)
+
+        a, b, c, d = values
+        expected_result = (a < b < c < d)
+        arr = torch.zeros(2, dtype=torch.int32, device="cuda")
+        ct.launch(torch.cuda.current_stream(), (1,), kernel, (arr, *values))
+        assert arr.tolist() == [invoked, int(expected_result)]
+
     @staticmethod
     @ct.kernel
     def tuple_if_else(x):

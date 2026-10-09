@@ -1,0 +1,1 @@
+- Fix a bug where ``expr`` is evaluated twice in chained comparison such as ``a < expr < b``.

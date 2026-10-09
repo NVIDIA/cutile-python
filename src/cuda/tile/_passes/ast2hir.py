@@ -591,21 +591,23 @@ def _compare_expr(cmp: ast.Compare, ctx: _Context) -> hir.Value:
         else:
             yield c0 # False
     """
-    op_func0 = _cmp_map.get(type(cmp.ops[0]))
+    lhs = _expr(cmp.left, ctx)
+    return _compare_chain(cmp, 0, lhs, ctx)
+
+
+def _compare_chain(cmp: ast.Compare, index: int, lhs: hir.Value,
+                   ctx: _Context) -> hir.Value:
+    op_func0 = _cmp_map.get(type(cmp.ops[index]))
     if op_func0 is None:
         raise ctx.unsupported_syntax()
-    lhs = _expr(cmp.left, ctx)
-    rhs = _expr(cmp.comparators[0], ctx)
+    rhs = _expr(cmp.comparators[index], ctx)
 
     cond0 = ctx.call(op_func0, (lhs, rhs))
-    if len(cmp.ops) == 1:
+    if index == len(cmp.ops) - 1:
         return cond0
 
     with ctx.new_block() as then_block:
-        cmp.left = cmp.comparators[0]
-        cmp.comparators = cmp.comparators[1:]
-        cmp.ops = cmp.ops[1:]
-        cond_right = _expr(cmp, ctx)
+        cond_right = _compare_chain(cmp, index + 1, rhs, ctx)
         ctx.set_block_jump_with_result(hir.Jump.END_BRANCH, cond_right)
 
     with ctx.new_block() as else_block:
