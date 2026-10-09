@@ -719,12 +719,35 @@ class DeviceDomainLoop:
     yield_route_positions: tuple[int, ...] = ()
     result_indices: tuple[int, ...] = ()
     has_break: bool = False
+    unroll: int = 1
 
     def _resolve_task_bound(self, resolver, context):
         resolver_task = self.resolver_task
         if self.bind_task_inputs:
             resolver_task = resolver_task.bind_inputs(context.tasks_inputs)
         return resolver(resolver_task, context.work_tile.tile_idx)
+
+    def _run_iteration(self, context, carried, loop_offset, start, end, num_iterations):
+        iteration_context = replace(
+            context,
+            loop_offset=loop_offset,
+            iteration_index=(loop_offset - start) // self.step,
+            num_iterations=num_iterations,
+            loop_start=start,
+            loop_end=end,
+            loop_step=self.step,
+            in_domain_loop=True,
+            route_values=context.route_values + carried,
+        )
+        body_context = _run_device_nodes(self.body, iteration_context)
+        if self.has_break:
+            carried = body_context.loop_carried_values
+        else:
+            carried = tuple(
+                body_context.route(position)
+                for position in cl.static_iter(self.yield_route_positions)
+            )
+        return replace(body_context, route_values=context.route_values), carried
 
     def __call__(self, context: ExecutionContext) -> ExecutionContext:
         start = self.start
@@ -761,31 +784,30 @@ class DeviceDomainLoop:
         outer_carried_values = context.loop_carried_values
         if self.has_break:
             context = replace(context, break_requested=False, loop_carried_values=carried)
-        for loop_offset in range(start, end, self.step):
-            iteration_index = (loop_offset - start) // self.step
-            iteration_context = replace(
-                context,
-                loop_offset=loop_offset,
-                iteration_index=iteration_index,
-                num_iterations=num_iterations,
-                loop_start=start,
-                loop_end=end,
-                loop_step=self.step,
-                in_domain_loop=True,
-                route_values=context.route_values + carried,
-            )
-            body_context = _run_device_nodes(self.body, iteration_context)
-            if self.has_break:
-                carried = body_context.loop_carried_values
-            else:
-                carried = tuple(
-                    body_context.route(position)
-                    for position in cl.static_iter(self.yield_route_positions)
+        # Preserve immediate exits and branch-local carried results for
+        # breakable loops. The unroll hint applies to straight-line domains.
+        if self.unroll == 1 or self.has_break:
+            for loop_offset in range(start, end, self.step):
+                context, carried = self._run_iteration(
+                    context, carried, loop_offset, start, end, num_iterations
                 )
-            context = replace(body_context, route_values=context.route_values)
-            if self.has_break:
-                if context.break_requested:
-                    break
+                if self.has_break:
+                    if context.break_requested:
+                        break
+        else:
+            # Keep runtime bounds and iteration guards in the original domain.
+            # A separate tail avoids a bounds branch in every unrolled body.
+            main_end = start + num_iterations // self.unroll * self.step * self.unroll
+            for loop_base in range(start, main_end, self.step * self.unroll):
+                for inner in cl.static_iter(range(self.unroll)):
+                    loop_offset = loop_base + inner * self.step
+                    context, carried = self._run_iteration(
+                        context, carried, loop_offset, start, end, num_iterations
+                    )
+            for loop_offset in range(main_end, end, self.step):
+                context, carried = self._run_iteration(
+                    context, carried, loop_offset, start, end, num_iterations
+                )
         context = replace(
             context,
             loop_offset=outer_loop_offset,
@@ -2128,6 +2150,7 @@ class Task:
                     yield_route_positions=yield_positions,
                     result_indices=tuple(range(len(result_values))),
                     has_break=has_break,
+                    unroll=node.unroll or 1,
                 )
             if isinstance(node, WorkTileLoop):
                 config = node.work_queue.tile_scheduler_config

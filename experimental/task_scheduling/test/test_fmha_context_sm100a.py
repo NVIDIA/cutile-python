@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Kernel tests for the SM100a query/head-paired FlashInfer FMHA TS port."""
+"""Kernel tests for SM100a query/head-paired FMHA task scheduling."""
 
 import importlib
 

@@ -874,6 +874,10 @@ def domain_loop(
     work-call outputs form the loop backedge and are returned as the post-loop
     results. Device work reads the current offset from ``stage_info.loop_offset``.
     The context-manager form captures loops without loop-carried values.
+    ``unroll=N`` groups N device iterations in a main loop followed by a tail;
+    runtime bounds, carried values, and iteration guards retain their semantics.
+    Domains containing ``break_loop()`` retain an ordinary loop so exits are
+    immediate even when an unroll hint is supplied.
     """
     if len(args) >= 4:
         start, end, step, body, *initial_values = args

@@ -113,6 +113,12 @@ class LoopCarriedResource(ts.MemoryResource):
     def consume(stage_info, state):
         stage_info.context.tasks_inputs[0] = state
 
+    @ts.producer_work
+    @staticmethod
+    def record_iteration(stage_info, slot):
+        if cl.thread_index(0) == 0:
+            stage_info.context.tasks_inputs[slot] = stage_info.loop_offset
+
 
 class WorkTileDomainTask(ts.Task):
     def __init__(self, *args, domain_end=7, **kwargs):
@@ -660,7 +666,8 @@ def test_functional_domain_loop_captures_iteration_guards():
     or torch.cuda.get_device_capability() != (10, 0),
     reason="requires a Blackwell CC 10.0 GPU",
 )
-def test_functional_domain_loop_carried_route_executes_on_device():
+@pytest.mark.parametrize("unroll", [None, 2, 4])
+def test_functional_domain_loop_carried_route_executes_on_device(unroll):
     resource = LoopCarriedResource(name="state")
 
     @ts.schedule
@@ -672,7 +679,7 @@ def test_functional_domain_loop_carried_route_executes_on_device():
             state = data.advance(state)
             return state
 
-        state = ts.domain_loop(0, 3, 1, loop_body, state)
+        state = ts.domain_loop(0, 3, 1, loop_body, state, unroll=unroll)
         data.consume(state)
 
     device_task = ts.Task(0, 1, schedule=captured(resource)).to_device()
@@ -691,6 +698,68 @@ def test_functional_domain_loop_carried_route_executes_on_device():
     )
     torch.cuda.synchronize()
     assert output.item() == 6
+
+
+@pytest.mark.skipif(
+    not torch.cuda.is_available()
+    or torch.cuda.get_device_capability()[0] < 10,
+    reason="requires a Blackwell GPU",
+)
+@pytest.mark.parametrize("unroll", [2, 3, 4, 6])
+def test_unrolled_domain_loop_runtime_bounds_and_carried_state(unroll):
+    resource = LoopCarriedResource(name="state")
+
+    def runtime_start(values):
+        return values[1]
+
+    def runtime_end(values):
+        return values[2]
+
+    @ts.schedule
+    def captured(data):
+        state = data.initialize()
+
+        def loop_body(state):
+            with ts.first_iter():
+                data.record_iteration(3)
+            with ts.last_iter():
+                data.record_iteration(4)
+            with ts.every(2, start=1):
+                data.record_iteration(5)
+            return data.advance_by_offset(state)
+
+        state = ts.domain_loop(
+            ts.dynamic_domain_bound(runtime_start),
+            ts.dynamic_domain_bound(runtime_end),
+            2,
+            loop_body,
+            state,
+            unroll=unroll,
+        )
+        data.consume(state)
+
+    device_task = ts.Task(0, 1, schedule=captured(resource)).to_device()
+    assert device_task.body[1].unroll == unroll
+
+    @cl.kernel
+    def kernel(output):
+        device_task(device_task.make_context(output))
+
+    # Reuse one specialization for empty, tail-only, exact-group, and odd-tail
+    # loops, with a non-unit step and a non-zero dynamic start.
+    for start, end in [(5, 1), (1, 1), (1, 2), (1, 9), (3, 20)]:
+        output = torch.tensor(
+            [-1, start, end, -1, -1, -1], device="cuda", dtype=torch.int32
+        )
+        cl.launch(torch.cuda.current_stream(), (1,), (32,), kernel, (output,))
+        torch.cuda.synchronize()
+        offsets = list(range(start, end, 2))
+        assert output[0].item() == sum(offsets)
+        assert output[3:].tolist() == [
+            offsets[0] if offsets else -1,
+            offsets[-1] if offsets else -1,
+            offsets[1::2][-1] if len(offsets) > 1 else -1,
+        ]
 
 
 @pytest.mark.skipif(

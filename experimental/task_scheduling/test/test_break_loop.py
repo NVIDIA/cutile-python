@@ -377,7 +377,8 @@ def test_break_values_preserve_pipeline_provenance():
 @requires_hopper
 @pytest.mark.parametrize("end, stop, enabled", NESTED_LOOP_CASES)
 @pytest.mark.parametrize("explicit", [False, True], ids=["bare", "explicit"])
-def test_nested_break_carried_result(end, stop, enabled, explicit, resource):
+@pytest.mark.parametrize("unroll", [None, 2, 6])
+def test_nested_break_carried_result(end, stop, enabled, explicit, unroll, resource):
     @ts.schedule
     def captured(stage_info, data):
         initial = data.seed()
@@ -397,7 +398,9 @@ def test_nested_break_carried_result(end, stop, enabled, explicit, resource):
             data.record(0, updated)
             return updated
 
-        result = ts.domain_loop(0, stage_info.context.tasks_inputs.end, 1, body, initial)
+        result = ts.domain_loop(
+            0, stage_info.context.tasks_inputs.end, 1, body, initial, unroll=unroll
+        )
         data.finish(result)
 
     actual = _launch(captured(resource), end=end, stop=stop, enabled=enabled)
