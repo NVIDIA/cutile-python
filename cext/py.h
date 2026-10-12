@@ -73,19 +73,6 @@ T pylong_as(const PyPtr& ptr) {
 }
 
 template <typename T>
-T pylong_as_overflow_and(PyObject* obj, int* overflow) {
-    if constexpr (std::is_same_v<T, int>) {
-        return pylong_as_int(obj);
-    } else if constexpr (std::is_same_v<T, long>) {
-        return PyLong_AsLongAndOverflow(obj, overflow);
-    } else if constexpr (std::is_same_v<T, long long>) {
-        return PyLong_AsLongLongAndOverflow(obj, overflow);
-    } else {
-        static_assert(!sizeof(T*), "pylong_as_overflow_and<T> not implemented for given T");
-    }
-}
-
-template <typename T>
 struct PythonWrapper {
     PyObject_HEAD
     T object;
@@ -600,7 +587,52 @@ struct ErrorGuard {
     ~ErrorGuard() {
         exc.restore();
     }
+
+    void replace_with_raised_exception() {
+        SavedException raised = save_raised_exception();
+        if (exc && raised) {
+            exc.normalize();
+            raised.normalize();
+            if (exc.value.get() != raised.value.get())
+                PyException_SetContext(raised.value.get(), exc.value.release());
+        }
+        exc = std::move(raised);
+    }
 };
+
+template <typename T>
+T pylong_as_overflow_and(PyObject* obj, int* overflow) {
+    if constexpr (std::is_same_v<T, int>) {
+        return pylong_as_int(obj);
+    } else if constexpr (std::is_same_v<T, long>) {
+        return PyLong_AsLongAndOverflow(obj, overflow);
+    } else if constexpr (std::is_same_v<T, long long>) {
+        return PyLong_AsLongLongAndOverflow(obj, overflow);
+    } else if constexpr (std::is_same_v<T, unsigned long>
+                         || std::is_same_v<T, unsigned long long>) {
+        ErrorGuard guard;
+        T res = pylong_as<T>(obj);
+        if (PyErr_Occurred()) {
+            if (!PyErr_ExceptionMatches(PyExc_OverflowError)) {
+                guard.replace_with_raised_exception();
+                return res;
+            }
+            PyErr_Clear();
+            PyPtr zero = steal(PyLong_FromLong(0));
+            int negative = zero ? PyObject_RichCompareBool(obj, zero.get(), Py_LT) : -1;
+            if (negative < 0) {
+                guard.replace_with_raised_exception();
+                return T(-1);
+            }
+            *overflow = negative ? -1 : 1;
+        } else {
+            *overflow = 0;
+        }
+        return res;
+    } else {
+        static_assert(!sizeof(T*), "pylong_as_overflow_and<T> not implemented for given T");
+    }
+}
 
 static inline PyPtr try_getattr(PyObject* obj, const char* attrname,
                                 SavedException* exc = nullptr) {

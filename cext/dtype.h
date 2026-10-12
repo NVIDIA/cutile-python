@@ -72,6 +72,25 @@ struct Integer {
 int append_to_string_builder(Integer integer, StringBuilder* sb);
 
 
+// ----- FloatFormat -----
+
+struct FloatFormat {
+    enum NonFiniteBehavior : uint8_t {
+        IEEE,
+        NanOnlyAllOnes,
+        FiniteOnly,
+    };
+
+    int16_t emin;
+    int16_t emax;
+    uint8_t bitwidth;
+    uint8_t exp_bits;
+    uint8_t precision;
+    NonFiniteBehavior non_finite_behavior;
+    bool have_sign;
+    bool have_zero_and_subnormals;
+};
+
 // ----- DType -----
 
 struct DType {
@@ -233,6 +252,8 @@ Integer integer_dtype_min(DType dtype);
 
 Integer integer_dtype_max(DType dtype);
 
+const FloatFormat& float_dtype_format(DType dtype);
+
 static inline bool is_unrestricted_float_dtype(DType dtype) {
     return dtype.dtype_id >= _dtype_detail::unrestricted_float_first
         && dtype.dtype_id <= _dtype_detail::unrestricted_float_last;
@@ -271,6 +292,10 @@ static inline bool is_signed_numeric_dtype(DType dtype) {
 }
 
 std::optional<DType> promote_dtypes(DType a, DType b);
+
+Result<uint64_t> encode_float(double value, DType dtype);
+
+double decode_float(uint64_t bits, DType dtype);
 
 DType pointer_dtype_pointee(DType pointer_dtype, GlobalLock& lock);
 

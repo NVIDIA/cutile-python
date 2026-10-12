@@ -6,6 +6,10 @@
 #include "vec.h"
 #include "py.h"
 
+#if defined(_MSC_VER)
+#include <intrin.h>
+#endif
+
 static PyObject* g_module;
 static PyObject* g_pointee_dtype_pyunicode;
 static PyObject* g_memory_space_pyunicode;
@@ -75,6 +79,50 @@ static std::optional<MemorySpace> memory_space_from_pyobject(PyObject* space_obj
     }
     return std::nullopt;
 }
+
+
+// ----- FloatFormat constants -----
+
+#define IEEE_LIKE(emin, emax, bitwidth, exp_bits, precision) \
+    { emin, emax, bitwidth, exp_bits, precision, FloatFormat::IEEE, true, true }
+
+
+// The bitwidth of tfloat32 is that of its encoding (19 bits), not its 32-bit container.
+static constexpr FloatFormat
+    k_format_float16        = IEEE_LIKE(-14, 15, 16, 5, 10),
+    k_format_float32        = IEEE_LIKE(-126, 127, 32, 8, 23),
+    k_format_float64        = IEEE_LIKE(-1022, 1023, 64, 11, 52),
+    k_format_bfloat16       = IEEE_LIKE(-126, 127, 16, 8, 7),
+    k_format_tfloat32       = IEEE_LIKE(-126, 127, 19, 8, 10),
+    k_format_float8_e5m2    = IEEE_LIKE(-14, 15, 8, 5, 2),
+    k_format_float8_e4m3fn  = { -6, 8, 8, 4, 3, FloatFormat::NanOnlyAllOnes, true, true },
+    k_format_float8_e5m3fnu = { -14, 16, 8, 5, 3, FloatFormat::NanOnlyAllOnes, false, true },
+    k_format_float8_e8m0fnu = { -127, 127, 8, 8, 0, FloatFormat::NanOnlyAllOnes, false, false },
+    k_format_float4_e2m1fn  = { 0, 2, 4, 2, 1, FloatFormat::FiniteOnly, true, true },
+    k_format_float6_e2m3fn  = { 0, 2, 6, 2, 3, FloatFormat::FiniteOnly, true, true },
+    k_format_float6_e3m2fn  = { -2, 4, 6, 3, 2, FloatFormat::FiniteOnly, true, true };
+
+#undef IEEE_LIKE
+
+static constexpr FloatFormat float_formats[] = {
+    #define FLOAT_FORMAT_ENTRY(name, _bitwidth, _signed, _doc) k_format_##name,
+    FOREACH_UNRESTRICTED_FLOAT_DTYPE(FLOAT_FORMAT_ENTRY)
+    FOREACH_RESTRICTED_FLOAT_DTYPE(FLOAT_FORMAT_ENTRY)
+    #undef FLOAT_FORMAT_ENTRY
+};
+
+static_assert(std::extent_v<decltype(float_formats)>
+        == _dtype_detail::restricted_float_last - _dtype_detail::unrestricted_float_first + 1);
+
+static constexpr bool float_format_bitwidths_are_consistent() {
+    for (const FloatFormat& f : float_formats) {
+        if (f.have_sign + f.exp_bits + f.precision != f.bitwidth)
+            return false;
+    }
+    return true;
+}
+
+static_assert(float_format_bitwidths_are_consistent());
 
 
 // ----- DType implementation -----
@@ -152,6 +200,11 @@ Integer integer_dtype_max(DType dtype) {
         uint64_t bits = (static_cast<uint64_t>(-1)) >> (64 - width);
         return Integer::from_u64(bits);
     }
+}
+
+const FloatFormat& float_dtype_format(DType dtype) {
+    CHECK(is_float_dtype(dtype));
+    return float_formats[dtype.dtype_id - _dtype_detail::unrestricted_float_first];
 }
 
 DType pointer_dtype(DType pointee_dtype, MemorySpace memory_space, GlobalLock& lock) {
@@ -383,6 +436,218 @@ std::optional<DType> promote_dtypes(DType a, DType b) {
     uint8_t res = promotion_table::table[i][j];
     if (res == promotion_table::na) return std::nullopt;
     return DType{res};
+}
+
+
+// ----- Float encoding -----
+
+static int bit_length(uint64_t x) {
+#if defined(_MSC_VER)
+    unsigned long index;
+    return _BitScanReverse64(&index, x) ? int(index) + 1 : 0;
+#else
+    return x ? 64 - __builtin_clzll(x) : 0;
+#endif
+}
+
+static Result<uint64_t> double_nonfinite_to_bits(uint64_t f64_bits, DType dtype) {
+    const FloatFormat& fmt = float_dtype_format(dtype);
+    uint64_t f64_sign = f64_bits & 0x8000'0000'0000'0000;
+    uint64_t sign_bit = f64_sign >> (64 - fmt.bitwidth);
+    bool is_nan = f64_bits & 0x000f'ffff'ffff'ffff;
+    uint64_t all_ones_but_sign = (1ull << (fmt.bitwidth - 1)) - 1;
+
+    switch (fmt.non_finite_behavior) {
+    case FloatFormat::NanOnlyAllOnes:
+        // Infinity also becomes NaN
+        if (!fmt.have_sign) return (1ull << fmt.bitwidth) - 1;
+        return sign_bit | all_ones_but_sign;
+    case FloatFormat::FiniteOnly:
+        // Infinity saturates to the largest magnitude
+        if (is_nan)
+            return raise(PyExc_ValueError, "Cannot represent NaN as ", dtype,
+                         ", which has no NaN encoding");
+        return sign_bit | all_ones_but_sign;
+    case FloatFormat::IEEE: {
+        // Keep the sign and the all-ones exponent, and truncate the NaN payload.
+        // A signaling NaN could lose all of its payload bits and become an infinity,
+        // so it gets a nonzero payload instead.
+        uint64_t sign_and_exp = (f64_bits >> (63 - fmt.exp_bits)) << fmt.precision;
+        uint64_t payload;
+        if (is_nan && !(f64_bits & (1ull << 51)))
+            payload = 1;
+        else
+            payload = (f64_bits >> (52 - fmt.precision)) & ((1ull << fmt.precision) - 1);
+        return sign_and_exp | payload;
+    }
+    }
+    CHECK_UNREACHABLE;
+}
+
+static Result<uint64_t> raise_negative_unsigned(DType dtype) {
+    return raise(PyExc_ValueError, "Cannot represent a negative value as ", dtype,
+                 ", which is unsigned");
+}
+
+
+static uint64_t first_invalid_float_value(const FloatFormat& fmt) {
+    switch (fmt.non_finite_behavior) {
+    case FloatFormat::IEEE:
+        return ((1ull << fmt.exp_bits) - 1) << fmt.precision;
+    case FloatFormat::NanOnlyAllOnes:
+        return (1ull << (fmt.exp_bits + fmt.precision)) - 1;
+    case FloatFormat::FiniteOnly:
+        return 1ull << (fmt.exp_bits + fmt.precision);
+    }
+    CHECK_UNREACHABLE;
+}
+
+// The 64-bit significand is interpreted as a binary fraction in [1, 2):
+//     1.xxxxxxx xxxxxxxx xxxxxxxx xxxxxxxx xxxxxxxx xxxxxxxx xxxxxxxx xxxxxxxx
+//       `--------------------------- 63 bits --------------------------------'
+// The top bit of the significand must be explicitly set to 1.
+//
+// Rounding mode is "to nearest, ties to even".
+static Result<uint64_t> encode_float_parts(bool sign, int e, uint64_t significand, DType dtype) {
+    CHECK(significand >> 63);
+    const FloatFormat& fmt = float_dtype_format(dtype);
+    if (sign && !fmt.have_sign)
+        return raise_negative_unsigned(dtype);
+
+    uint64_t f64_inf = (uint64_t(sign) << 63) | 0x7ff0'0000'0000'0000;
+    if (e > fmt.emax)
+        return double_nonfinite_to_bits(f64_inf, dtype);
+
+    // Round the significand to `fmt.precision` (plus one leading 1) bits
+    int shift = 63 - fmt.precision;
+    if (e < fmt.emin) {
+        if (!fmt.have_zero_and_subnormals)
+            return 0;  // round up to the smallest value
+        // Subnormal
+        shift += fmt.emin - e;
+        e = fmt.emin;
+    }
+
+    if (shift > 64) {
+        significand = 0;  // less than half of the smallest subnormal
+    } else if (shift == 64) {
+        // At least half of the smallest subnormal: round up, unless it's a tie (to even zero)
+        significand = significand > (1ull << 63);
+    } else {
+        uint64_t rem = significand & ((1ull << shift) - 1);
+        uint64_t half = 1ull << (shift - 1);
+        significand >>= shift;
+        // Round to nearest, ties to even
+        if (rem > half || (rem == half && (significand & 1)))
+            ++significand;
+    }
+
+    // These two lines are doing a lot of work. We intentionally encode the biased exponent
+    // as one less the actual value, so that the explicit leading 1 in the `significand` will
+    // increment it by one. This automatically takes care of the subnormals, as well as the
+    // rounding to the next power of two.
+    uint64_t biased_exp_minus_one = e - fmt.emin - !fmt.have_zero_and_subnormals;
+    uint64_t enc = (biased_exp_minus_one << fmt.precision) + significand;
+
+    // Check that rounding didn't overflow into the non-finite encodings
+    if (enc >= first_invalid_float_value(fmt))
+        return double_nonfinite_to_bits(f64_inf, dtype);
+
+    return (uint64_t(sign) << (fmt.bitwidth - 1)) | enc;
+}
+
+static double bitcast_u64_to_double(uint64_t bits) {
+    union { uint64_t u64; double dbl; } u = {.u64 = bits};
+    return u.dbl;
+}
+
+static uint64_t bitcast_double_to_u64(double val) {
+    union { double dbl; uint64_t u64; } u = {.dbl = val};
+    return u.u64;
+}
+
+Result<uint64_t> encode_float(double value, DType dtype) {
+    uint64_t f64_bits = bitcast_double_to_u64(value);
+    if (dtype == k_float64)
+        return f64_bits;
+
+    const FloatFormat& fmt = float_dtype_format(dtype);
+
+    bool sign = f64_bits >> 63;
+    if (sign && !fmt.have_sign)
+        return raise_negative_unsigned(dtype);
+
+    int e = (f64_bits >> 52) & 0x7ff;
+    if (e == 0x7ff)
+        return double_nonfinite_to_bits(f64_bits, dtype);
+
+    // Calculate a 53-bit significand with the bit #52 set
+    uint64_t significand = f64_bits & 0x000f'ffff'ffff'ffff;
+    if (e) {
+        // Normal float64: add the implicit bit
+        significand |= 0x0010'0000'0000'0000;
+        e -= 1023;
+    } else {
+        if (!significand) {
+            // Zero or negative zero. Without a zero, round up to the smallest value.
+            return fmt.have_zero_and_subnormals ? uint64_t(sign) << (fmt.bitwidth - 1) : 0;
+        }
+        // Subnormal float64: there is no implicit one, so we need to "normalize" the significand.
+        int shift = 53 - bit_length(significand);
+        significand <<= shift;
+        e = -1022 - shift;
+    }
+    // Turn the significand into a 64-bit value with the top bit set,
+    // so that it's compatible with encode_float_parts().
+    significand <<= 11;
+    return encode_float_parts(sign, e, significand, dtype);
+}
+
+double decode_float(uint64_t bits, DType dtype) {
+    uint64_t enc = bits;
+    if (dtype == k_float64)
+        return bitcast_u64_to_double(enc);
+
+    const FloatFormat& fmt = float_dtype_format(dtype);
+    uint64_t exp_mask = (1ull << fmt.exp_bits) - 1;
+    uint64_t biased_exp = (enc >> fmt.precision) & exp_mask;
+    uint64_t mantissa_mask = (1ull << fmt.precision) - 1;
+    uint64_t mantissa = enc & mantissa_mask;
+
+    uint64_t f64_bits = fmt.have_sign ? (enc << (64 - fmt.bitwidth)) & 0x8000'0000'0000'0000 : 0;
+
+    bool nonfinite = biased_exp == exp_mask;
+    switch (fmt.non_finite_behavior) {
+    case FloatFormat::IEEE:
+        break;
+    case FloatFormat::NanOnlyAllOnes:
+        if (mantissa != mantissa_mask) nonfinite = false;
+        break;
+    case FloatFormat::FiniteOnly:
+        nonfinite = false;
+        break;
+    }
+
+    uint64_t f64_exp;
+    if (nonfinite) {
+        f64_exp = 0x7ff;
+        if (fmt.precision == 0)
+            f64_bits |= 0x0008'0000'0000'0000;
+    } else if (biased_exp == 0 && fmt.have_zero_and_subnormals) {
+        if (mantissa != 0) {
+            // Subnormal number becomes normal
+            int shift = fmt.precision - bit_length(mantissa) + 1;
+            mantissa = (mantissa << shift) & mantissa_mask;
+            f64_exp = fmt.emin + 1023 - shift;
+        } else {
+            f64_exp = 0;
+        }
+    } else {
+        f64_exp = (biased_exp - fmt.have_zero_and_subnormals) + fmt.emin + 1023;
+    }
+
+    f64_bits |= (f64_exp << 52) | (mantissa << (52 - fmt.precision));
+    return bitcast_u64_to_double(f64_bits);
 }
 
 
@@ -654,6 +919,56 @@ static PyObject* py_promote_dtypes(PyObject* module_self,
     return Py_NewRef(dtype_to_pyobject(*res, lock));
 }
 
+static Result<DType> parse_float_dtype(PyObject* dtype_obj) {
+    if (!PyObject_TypeCheck(dtype_obj, &DTypeObject::pytype))
+        return raise(PyExc_TypeError, "Expected a DType object, got ", use_repr(dtype_obj));
+    DType dtype = py_unwrap<DTypeObject>(dtype_obj).dtype;
+    if (!is_float_dtype(dtype))
+        return raise(PyExc_TypeError, "Expected a floating-point dtype, got ", dtype);
+    return dtype;
+}
+
+static PyObject* py_encode_float(PyObject* module_self,
+                                 PyObject* const* args, Py_ssize_t nargs) {
+    if (nargs != 2) {
+        raise(PyExc_TypeError, "Expected 2 positional arguments");
+        return nullptr;
+    }
+    PyObject *py_value = args[0], *py_dtype = args[1];
+    double value = PyFloat_AsDouble(py_value);
+    if (PyErr_Occurred()) return nullptr;
+    Result<DType> dtype = parse_float_dtype(py_dtype);
+    if (!dtype.is_ok()) return nullptr;
+    Result<uint64_t> bits = encode_float(value, *dtype);
+    if (!bits.is_ok()) return nullptr;
+    return PyLong_FromUnsignedLongLong(*bits);
+}
+
+static PyObject* py_decode_float(PyObject* module_self,
+                                 PyObject* const* args, Py_ssize_t nargs) {
+    if (nargs != 2) {
+        raise(PyExc_TypeError, "Expected 2 positional arguments");
+        return nullptr;
+    }
+    PyObject *py_bits = args[0], *py_dtype = args[1];
+    if (!PyLong_Check(py_bits)) {
+        raise(PyExc_TypeError, "Expected an int, got ", use_repr(py_bits));
+        return nullptr;
+    }
+    Result<DType> dtype = parse_float_dtype(py_dtype);
+    if (!dtype.is_ok()) return nullptr;
+    int overflow;
+    uint64_t bits = pylong_as_overflow_and<uint64_t>(py_bits, &overflow);
+    if (PyErr_Occurred()) return nullptr;
+    uint32_t bitwidth = float_dtype_format(*dtype).bitwidth;
+    if (overflow || (bitwidth < 64 && (bits >> bitwidth))) {
+        raise(PyExc_ValueError, "Bits ", use_repr(py_bits), " do not fit in ", bitwidth,
+              " bits of ", *dtype);
+        return nullptr;
+    }
+    return PyFloat_FromDouble(decode_float(bits, *dtype));
+}
+
 static Result<DType> parse_pointer_dtype(PyObject* py_pointer, GlobalLock& lock) {
     if (!PyObject_TypeCheck(py_pointer, &DTypeObject::pytype))
         return raise(PyExc_TypeError, "Expected a DType object for the first argument, got ",
@@ -726,6 +1041,8 @@ static PyMethodDef functions[] = {
     {"integer_dtype_max", py_integer_dtype_max, METH_O, nullptr},
     {"_promote_dtypes", reinterpret_cast<PyCFunction>(py_promote_dtypes),
      METH_FASTCALL, nullptr},
+    {"encode_float", reinterpret_cast<PyCFunction>(py_encode_float), METH_FASTCALL, nullptr},
+    {"decode_float", reinterpret_cast<PyCFunction>(py_decode_float), METH_FASTCALL, nullptr},
     {"_pointer_pointee_dtype", py_pointer_pointee_dtype, METH_O, nullptr},
     {"_pointer_memory_space", py_pointer_memory_space, METH_O, nullptr},
     {"_foreign_pointer_pointee_dtype", py_foreign_pointer_pointee_dtype, METH_O, nullptr},

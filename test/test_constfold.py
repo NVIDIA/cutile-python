@@ -377,7 +377,7 @@ def test_strictly_typed_unsigned_float_constant_from_negative():
         ct.float8_e8m0fnu(-0.2)
 
     with pytest.raises(ct.TileValueError,
-                       match="Negative values cannot be represented in an unsigned float format"):
+                       match="Cannot represent a negative value as float8_e8m0fnu"):
         ct.launch(torch.cuda.current_stream(), (1,), kernel, ())
 
 

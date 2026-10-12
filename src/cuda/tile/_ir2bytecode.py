@@ -12,6 +12,7 @@ import warnings
 from cuda.tile import _datatype as datatype
 from cuda.tile._bytecode.attribute import make_load_store_hints
 from cuda.tile._bytecode.version import BytecodeVersion
+from cuda.tile._cext import encode_float
 from cuda.tile._datatype import get_signedness, is_pointer_dtype, PointerInfo, \
     dtype_simple_bytecode_type, is_foreign_pointer_dtype, \
     foreign_pointer_pointee_dtype
@@ -116,7 +117,7 @@ def _constant_to_bytes(value: int | float, dtype: DType) -> bytes:
     elif datatype.is_float(dtype):
         # Note that TF32 is stored as 3 bytes despite the "32" in its name.
         # Its float_bit_size() is 19 bits, which is rounded up to 24 bits.
-        bits = bc.float_to_bits(value, dtype_simple_bytecode_type(dtype))
+        bits = encode_float(value, dtype)
         bit_size = bc.float_bit_size(dtype_simple_bytecode_type(dtype))
         return bits.to_bytes((bit_size + 7) // 8, "little")
     else:

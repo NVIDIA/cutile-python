@@ -13,8 +13,7 @@ from cuda.tile._exception import TileTypeError
 from cuda.tile._bytecode.version import BytecodeVersion
 from conftest import requires_tileiras
 from util import assert_close, require_blackwell_or_newer, require_rubin_cc107
-from cuda.tile._bytecode import SimpleType
-from cuda.tile._bytecode.float import float_from_bits
+from cuda.tile._cext import decode_float
 
 pytestmark = [require_blackwell_or_newer(), requires_tileiras(BytecodeVersion.V_13_3)]
 
@@ -203,11 +202,11 @@ def test_mma_e5m3fnu_scaled_f4(scaling_block_size):
     ref_Y = _unpack_f4e2m1fn_to_f32(Y_packed, (k, n))
 
     ref_X_scale = torch.repeat_interleave(X_scale, scaling_block_size, dim=1)
-    ref_X_scale = [float_from_bits(int(i), SimpleType.FNV8E5M3FNU) for i in ref_X_scale.view(-1)]
+    ref_X_scale = [decode_float(int(i), ct.float8_e5m3fnu) for i in ref_X_scale.view(-1)]
     ref_X_scale = torch.tensor(ref_X_scale, dtype=f32, device='cuda:0').reshape((m, k))
 
     ref_Y_scale = torch.repeat_interleave(Y_scale, scaling_block_size, dim=0)
-    ref_Y_scale = [float_from_bits(int(i), SimpleType.FNV8E5M3FNU) for i in ref_Y_scale.view(-1)]
+    ref_Y_scale = [decode_float(int(i), ct.float8_e5m3fnu) for i in ref_Y_scale.view(-1)]
     ref_Y_scale = torch.tensor(ref_Y_scale, dtype=f32, device='cuda:0').reshape((k, n))
 
     ref = (ref_X * ref_X_scale) @ (ref_Y * ref_Y_scale) + Z

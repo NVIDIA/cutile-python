@@ -12,8 +12,8 @@ from cuda.lang._target import TargetInfo
 from .. import _llvm_bitcode as llvm
 from .._llvm_bitcode import BitcodeBuilder, DATALAYOUT_PTX
 from cuda.lang import _datatype as datatype
-from cuda.tile._bytecode import float_to_bits
-from cuda.tile._datatype import dtype_simple_bytecode_type, is_integral, is_boolean
+from cuda.tile._cext import encode_float
+from cuda.tile._datatype import is_integral, is_boolean
 from cuda.tile._exception import InternalError, Loc
 from cuda.tile._ir.control_flow_ops import Return
 
@@ -121,8 +121,7 @@ class LLVMLoweringContext:
             return self.builder.constants.integer_constant(value, llvm_ty)
         elif datatype.is_float(dtype):
             value = float(value)
-            # TODO: make float_to_bits() etc. independent of the tile bytecode enums
-            bits = float_to_bits(value, dtype_simple_bytecode_type(dtype))
+            bits = encode_float(value, dtype)
             if dtype in DIRECTLY_SUPPORTED_FLOATS:
                 return self.builder.constants.float_constant(bits, llvm_ty)
             else:

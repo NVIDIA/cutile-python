@@ -74,6 +74,7 @@ from cuda.tile._ir2bytecode import (
 )
 import cuda.tile._bytecode as bc
 from cuda.tile._bytecode.version import BytecodeVersion
+from cuda.tile._cext import encode_float
 from .._debug import CUDA_TILE_TESTING_DISABLE_DIV
 
 tile_impl_registry = ImplRegistry()
@@ -2324,7 +2325,8 @@ class TileReduce(Operation, opcode="tile_reduce"):
             x_dtype_id = dtype_typeid(ctx.type_table, x_dtype)
             if datatype.is_float(x_dtype):
                 x_dtype_bc = datatype.dtype_simple_bytecode_type(x_dtype)
-                attr = bc.Float(float(id_val), x_dtype_bc, ctx.type_table)
+                attr = bc.Float(encode_float(float(id_val), x_dtype),
+                                x_dtype_bc, ctx.type_table)
             elif datatype.is_boolean(x_dtype):
                 attr = bc.Bool(bool(id_val))
             else:
@@ -2743,7 +2745,8 @@ class TileScan(Operation, opcode="tile_scan"):
             x_dtype_id = dtype_typeid(ctx.type_table, x_dtype)
             if datatype.is_float(x_dtype):
                 x_dtype_bc = datatype.dtype_simple_bytecode_type(x_dtype)
-                attr = bc.Float(float(id_val), x_dtype_bc, ctx.type_table)
+                attr = bc.Float(encode_float(float(id_val), x_dtype),
+                                x_dtype_bc, ctx.type_table)
             elif datatype.is_boolean(x_dtype):
                 attr = bc.Bool(bool(id_val))
             else:

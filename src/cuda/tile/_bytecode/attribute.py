@@ -7,8 +7,7 @@ from dataclasses import dataclass
 from typing import Optional, Sequence, Mapping
 
 from .basic import encode_varint, StringTable, encode_signed_varint
-from .type import TypeId, encode_typeid, I32_TYPE_ID, SimpleType, TypeTable
-from .float import float_to_bits, float_bit_size
+from .type import TypeId, encode_typeid, I32_TYPE_ID, SimpleType, TypeTable, float_bit_size
 
 
 class AttributeTag(enum.Enum):
@@ -151,9 +150,9 @@ class Bounded(AssumePredicate):
 
 
 class Float(TaggedAttribute):
-    def __init__(self, value: float, ty: SimpleType, tt: TypeTable):
+    def __init__(self, value_bits: int, ty: SimpleType, tt: TypeTable):
         self.type_id = tt.simple(ty)
-        self.value_bits = float_to_bits(value, ty)
+        self.value_bits = value_bits
         self.bit_size = float_bit_size(ty)
 
     def encode_tagged(self, string_table: StringTable, buf: bytearray):

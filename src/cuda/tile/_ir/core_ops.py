@@ -15,9 +15,7 @@ from typing_extensions import override
 import cuda.tile._bytecode as bc
 from cuda.tile import TileTypeError, ensure_constant
 import cuda.tile._datatype as datatype
-from cuda.tile._bytecode import float_to_bits
-from cuda.tile._bytecode.float import float_from_bits
-from cuda.tile._cext import foreign_dtype_object_to_native
+from cuda.tile._cext import foreign_dtype_object_to_native, encode_float, decode_float
 from cuda.tile._datatype import numeric_dtype_category, is_integral
 from cuda.tile._exception import Loc, TileSyntaxError, TileValueError, TypeCheckingError
 from cuda.tile._execution import is_static_def
@@ -436,15 +434,13 @@ def canonicalize_const_value_for_type(value: Any, ty: Type) -> Any:
 
             value = _map_nested_tuple(truncate, value)
         elif datatype.is_float(dtype):
-            bc_type = datatype.dtype_simple_bytecode_type(dtype)
-
             def round_float(x):
                 x = float(x)
                 try:
-                    bits = float_to_bits(x, bc_type)
+                    bits = encode_float(x, dtype)
                 except ValueError as e:
                     raise TileValueError(str(e))
-                return float_from_bits(bits, bc_type)
+                return decode_float(bits, dtype)
 
             value = _map_nested_tuple(round_float, value)
 

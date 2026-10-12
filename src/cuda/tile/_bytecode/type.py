@@ -31,6 +31,25 @@ class SimpleType(enum.Enum):
     FNV8E5M3FNU = b"\x82\x01"  # since 13.4
 
 
+# The bit size of TF32 is that of its encoding (19 bits), not its 32-bit container.
+_float_bit_sizes = {
+    SimpleType.F16: 16,
+    SimpleType.BF16: 16,
+    SimpleType.F32: 32,
+    SimpleType.TF32: 19,
+    SimpleType.F64: 64,
+    SimpleType.F8E4M3FN: 8,
+    SimpleType.F8E5M2: 8,
+    SimpleType.F8E8M0FNU: 8,
+    SimpleType.F4E2M1FN: 4,
+    SimpleType.FNV8E5M3FNU: 8,
+}
+
+
+def float_bit_size(ty: SimpleType) -> int:
+    return _float_bit_sizes[ty]
+
+
 class _CompositeType(enum.Enum):
     Pointer = b"\x0c"
     Tile = b"\x0d"
