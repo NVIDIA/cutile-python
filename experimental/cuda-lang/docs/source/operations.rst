@@ -78,6 +78,8 @@ Type Casts
    bitcast
 
 
+.. _operations-simt-model:
+
 SIMT Model
 ----------
 .. autosummary::
