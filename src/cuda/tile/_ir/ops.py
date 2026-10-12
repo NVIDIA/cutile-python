@@ -1326,7 +1326,8 @@ class LoadPointer(Operation, opcode="load_pointer", memory_effect=MemoryEffect.L
             result_token_type=ctx.type_table.Token,
             source=ctx.get_value(self.pointer),
             mask=None if self.mask is None else ctx.get_value(self.mask),
-            paddingValue=ctx.get_value(self.padding_value),
+            paddingValue=(None if self.mask is None or self.padding_value is None
+                          else ctx.get_value(self.padding_value)),
             token=None if self.token is None else ctx.get_value(self.token),
             memory_ordering_semantics=bc.MemoryOrderingSemantics.WEAK,
             memory_scope=None,
