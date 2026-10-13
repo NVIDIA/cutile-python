@@ -268,8 +268,8 @@ def cutile_fft(
     Raises:
         ValueError: If input tensor dimensions, device, or data type are incorrect,
                     if the provided factors do not multiply to N, if N*2 is not
-                    divisible by atom_packing_dim, or if Batch is not divisible
-                    by minibatch.
+                    divisible by atom_packing_dim, or if minibatch is not a positive
+                    integer or does not divide Batch.
     """
     # --- Input Validation ---
     if x.ndim != 2:
@@ -304,6 +304,8 @@ def cutile_fft(
     if (N * 2) % atom_packing_dim != 0:
         raise ValueError(f"Total real/imag elements (N*2 = {N*2}) must be divisible by "
                          f"atom_packing_dim ({atom_packing_dim}) for kernel packing.")
+    if not isinstance(minibatch, int) or minibatch <= 0:
+        raise ValueError(f"minibatch ({minibatch}) must be a positive integer.")
     if Batch % minibatch != 0:
         raise ValueError(f"Batch ({Batch}) must be divisible by minibatch ({minibatch}).")
     x_packed_in = x_ri.reshape(Batch, N * 2 // atom_packing_dim, atom_packing_dim).contiguous()
