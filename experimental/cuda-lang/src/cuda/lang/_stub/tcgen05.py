@@ -21,7 +21,7 @@ from typing import Any, Literal
 from .._datatype import (
     DType,
     bfloat16,
-    float4_e2m1fn,
+    float4_e2m1fn_x2,
     float6_e2m3fn,
     float6_e3m2fn,
     float8_e4m3fn,
@@ -331,16 +331,16 @@ _TCGEN05_DTYPE_FORMATS = {
         tfloat32: 2,
         float6_e2m3fn: 3,
         float6_e3m2fn: 4,
-        float4_e2m1fn: 5,
+        float4_e2m1fn_x2: 5,
     },
     _Tcgen05DTypeFormat.Mxf8f6f4Input: {
         float8_e4m3fn: 0,
         float8_e5m2: 1,
         float6_e2m3fn: 3,
         float6_e3m2fn: 4,
-        float4_e2m1fn: 5,
+        float4_e2m1fn_x2: 5,
     },
-    _Tcgen05DTypeFormat.Mxf4Input: {float4_e2m1fn: 1},
+    _Tcgen05DTypeFormat.Mxf4Input: {float4_e2m1fn_x2: 1},
 }
 
 
@@ -454,8 +454,8 @@ class Tcgen05Mxf4InstructionDescriptor:
 
     sparse: bool = False
     b_scale_id: Literal[0, 2] = 0
-    a_type: DType | int = float4_e2m1fn
-    b_type: DType | int = float4_e2m1fn
+    a_type: DType | int = float4_e2m1fn_x2
+    b_type: DType | int = float4_e2m1fn_x2
     negate_a: bool = False
     negate_b: bool = False
     transpose_a: bool = False

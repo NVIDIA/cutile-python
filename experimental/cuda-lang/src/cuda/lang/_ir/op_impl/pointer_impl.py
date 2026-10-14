@@ -42,6 +42,7 @@ from cuda.lang._ir.type_checking_helpers import (
     require_array_indices,
     require_pointer_type,
     require_signed_int_scalar_or_tuple,
+    require_scalar_or_opaque_type,
     require_scalar_type, ensure_pointer,
 )
 from cuda.tile._datatype import (
@@ -258,7 +259,7 @@ def pointer_setitem(object: Var[PointerTy], key: Var[Type], value: Var[Type]):
     elif ptr_ty.pointee_dtype is datatype.tensor_map_descriptor:
         _require_tensor_map_descriptor_value(value)
     else:
-        require_scalar_type(value)
+        require_scalar_or_opaque_type(value)
         value = astype(value, ptr_ty.pointee_dtype)
     add_operation_variadic(
         StorePointer,
@@ -278,7 +279,7 @@ def array_setitem(object: Var, key: Var, value: Var):
     elif array_ty.dtype is datatype.tensor_map_descriptor:
         _require_tensor_map_descriptor_value(value)
     else:
-        require_scalar_type(value)
+        require_scalar_or_opaque_type(value)
         value = astype(value, array_ty.dtype)
     indices = require_array_indices(object, key)
     pointer = _array_element_pointer(object, indices)

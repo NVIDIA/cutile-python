@@ -20,6 +20,7 @@ pytestmark = [
     ("torch_dtype", "tile_shape"),
     (
         pytest.param(torch.uint8, (16, 4), id="uint8"),
+        (torch.float4_e2m1fn_x2, (16, 4)),
         pytest.param(torch.int8, (16, 4), id="int8"),
         pytest.param(torch.int32, (4, 4), id="int32"),
         pytest.param(torch.int64, (2, 4), id="int64"),
@@ -424,14 +425,35 @@ def test_tensor_map_tiled_invalid_order(order, error, match, mode):
     "dtype, match",
     (
         pytest.param(torch.int16, r"is not supported by tensor map", id="int16"),
-        pytest.param(torch.float4_e2m1fn_x2, r"Array dtypes with multiple lanes are not supported",
-                     id="float4"),
     ),
 )
 def test_tensor_map_tiled_rejects_unsupported_data_type(dtype, match):
     source = torch.empty((8, 32), dtype=dtype, device="cuda")
     with pytest.raises(TypeError, match=match):
         cl.tensor_map_tiled(source, (8, 4), order=cl.AxisOrder.REVERSE)
+
+
+@pytest.mark.parametrize("host_mode", ("eager", "compiled"))
+def test_packed_float4_uses_byte_dimensions(host_mode):
+    @cl.kernel
+    def copy_descriptor(descriptor, output):
+        pointer = cl.bitcast(descriptor, cl.pointer_dtype(cl.uint8))
+        i = cl.thread_index(0)
+        output[i] = pointer[i]
+
+    def launcher(stream, source, output):
+        descriptor = cl.tensor_map_tiled(source, (16, 4), order=cl.AxisOrder.REVERSE)
+        cl.launch(stream, (1,), (128,), copy_descriptor, (descriptor, output))
+
+    if host_mode == "compiled":
+        launcher = cl.host_entry(launcher)
+    source = torch.empty((8, 64), dtype=torch.uint8).cuda(0)[:, :32]
+    packed = source.view(torch.float4_e2m1fn_x2)
+    output = torch.empty(128, dtype=torch.uint8).cuda(0)
+    launcher(torch.cuda.current_stream(), packed, output)
+    assert bytes(output.cpu().tolist()) == bytes(
+        cl.tensor_map_tiled(source, (16, 4), order=cl.AxisOrder.REVERSE)
+    )
 
 
 def test_tensor_map_tiled_rejects_misaligned_global_address():

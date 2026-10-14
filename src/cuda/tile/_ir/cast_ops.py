@@ -110,6 +110,8 @@ def implicit_cast(src: Var[TensorLikeTy], target_dtype: DType, error_context: st
 
 
 def _is_implicit_cast_ok(src_dtype: DType, target_dtype: DType) -> bool:
+    if src_dtype == target_dtype:
+        return True
     if is_numeric(src_dtype) and is_numeric(target_dtype):
         try:
             common_dtype = promote_dtypes(src_dtype, target_dtype)

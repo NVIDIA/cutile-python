@@ -14,9 +14,13 @@ from .util import (
 
 
 def make_inputs(shape, dtype, tile_shape, ctas_per_tile=1):
-    random_dtype = torch.float32 if dtype == torch.float8_e4m3fn else dtype
-    x = torch.randn(shape, dtype=random_dtype, device='cuda:0').to(dtype)
-    y = torch.zeros_like(x)
+    if dtype == torch.float4_e2m1fn_x2:
+        x = torch.randint(256, shape, dtype=torch.uint8).cuda(0).view(dtype)
+        y = torch.zeros(shape, dtype=torch.uint8).cuda(0).view(dtype)
+    else:
+        random_dtype = torch.float32 if dtype == torch.float8_e4m3fn else dtype
+        x = torch.randn(shape, dtype=random_dtype, device='cuda:0').to(dtype)
+        y = torch.zeros_like(x)
     M, N = shape
     tm, tn = tile_shape
     grid = (cl.cdiv(M, tm) * ctas_per_tile, cl.cdiv(N, tn))
@@ -344,6 +348,7 @@ def build_copy_tiled_roundtrip_kernel(tile_shape, swizzle_mode, smem_dtype):
     "dtype",
     (
         pytest.param(torch.float8_e4m3fn, id="float8"),
+        torch.float4_e2m1fn_x2,
         pytest.param(torch.float16, id="float16"),
         pytest.param(torch.float32, id="float32"),
     ),
@@ -357,6 +362,7 @@ def test_tiled_roundtrip_swizzle(swizzle_mode, dtype):
     y_map = cl.tensor_map_tiled(y, (tn, tm), order=(1, 0), swizzle=swizzle_mode)
     smem_dtype = {
         torch.float8_e4m3fn: cl.uint8,
+        torch.float4_e2m1fn_x2: cl.float4_e2m1fn_x2,
         torch.float16: cl.float16,
         torch.float32: cl.float32,
     }[dtype]

@@ -172,6 +172,7 @@ static Result<CUtensorMapDataType> tensor_map_data_type_from_dtype(DType dtype) 
     case k_float8_e4m3fn.dtype_id:
     case k_float8_e5m2.dtype_id:
     case k_float8_e8m0fnu.dtype_id:
+    case k_float4_e2m1fn_x2.dtype_id:
         return CU_TENSOR_MAP_DATA_TYPE_UINT8;
     case k_uint16.dtype_id:
         return CU_TENSOR_MAP_DATA_TYPE_UINT16;

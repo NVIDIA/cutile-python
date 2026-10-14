@@ -14,7 +14,9 @@ from ._signature import ArrayConstraint, ParameterConstraint, ListConstraint, Tu
 from cuda.tile._datatype import DType, bool_, uint8, uint16, uint32, uint64, int64, int32, int16, \
     int8, float16, float32, float64, bfloat16, float8_e4m3fn, float8_e5m2, float8_e8m0fnu, \
     tfloat32
-from .._cext import CallingConvention, classify_constant, ConstantKind, cconv_v3_enabled
+from .._cext import (
+    CallingConvention, classify_constant, ConstantKind, cconv_v3_enabled, float4_e2m1fn_x2,
+)
 
 
 def mangle_kernel_name(function_name: str,
@@ -585,6 +587,7 @@ def _demangle_dtype(cursor: _Cursor) -> DType:
 
 
 _mangled_dtype = {
+    float4_e2m1fn_x2: "f4e2m1fnx2",
     bool_: "b8",
     uint8: "u8",
     uint16: "u16",

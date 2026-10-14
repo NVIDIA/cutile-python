@@ -76,6 +76,7 @@ float8_e5m2: DType
 float8_e8m0fnu: DType
 float8_e5m3fnu: DType
 float4_e2m1fn: DType
+float4_e2m1fn_x2: DType
 mbarrier: DType
 cluster_launch_control_token: DType
 tensor_map_descriptor: DType

@@ -808,6 +808,7 @@ _dtype_to_tensor_map_type = {
     datatype.float8_e4m3fn: TensorMapDataType.UINT8,
     datatype.float8_e5m2: TensorMapDataType.UINT8,
     datatype.float8_e8m0fnu: TensorMapDataType.UINT8,
+    datatype.float4_e2m1fn_x2: TensorMapDataType.UINT8,
     datatype.uint16: TensorMapDataType.UINT16,
     datatype.uint32: TensorMapDataType.UINT32,
     datatype.int32: TensorMapDataType.INT32,

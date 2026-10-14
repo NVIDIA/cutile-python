@@ -287,7 +287,7 @@ from cuda.lang._stub.cluster_launch_control import (
 from ._datatype import (
     bfloat16,
     bool_,
-    float4_e2m1fn,
+    float4_e2m1fn_x2,
     float8_e4m3fn,
     float8_e5m2,
     float8_e8m0fnu,
@@ -348,7 +348,7 @@ __all__ = (
     "vote_ballot_sync",
     "bfloat16",
     "bool_",
-    "float4_e2m1fn",
+    "float4_e2m1fn_x2",
     "float8_e4m3fn",
     "float8_e5m2",
     "float8_e8m0fnu",
