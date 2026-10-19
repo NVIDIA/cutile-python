@@ -4,6 +4,7 @@
 
 from typing import TypeAlias
 
+from cuda.tile import _cext
 from cuda.tile._memory_model import MemorySpace
 from cuda.tile._datatype import (
     DType,
@@ -48,6 +49,9 @@ from cuda.tile._cext import (
     mbarrier, cluster_launch_control_token, float6_e2m3fn, float6_e3m2fn,
     tensor_map_descriptor,
 )
+
+
+_int128 = _cext._int128
 
 
 arithmetic_float_dtypes = (

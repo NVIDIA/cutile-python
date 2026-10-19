@@ -62,6 +62,7 @@ def dtype_to_mlir_type(dtype: datatype.DType) -> mlir.Type:
             | datatype.uint16
             | datatype.uint32
             | datatype.uint64
+            | datatype._int128
             | datatype.float8_e4m3fn
             | datatype.float8_e5m2
             | datatype.float8_e8m0fnu

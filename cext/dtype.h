@@ -161,7 +161,8 @@ struct DTypeObject {
     X(cluster_launch_control_token, 128, false, \
             "An opaque dtype representing a cluster launch control token value.") \
     X(tensor_map_descriptor, 8 * sizeof(CUtensorMap), false, \
-            "An opaque dtype representing a tensor map descriptor.")
+            "An opaque dtype representing a tensor map descriptor.") \
+    X(_int128, 128, false, "An internal, non-arithmetic 128-bit storage dtype.")
 
 
 namespace _dtype_detail {

@@ -4759,7 +4759,7 @@ static PyObject* pointer_get_memory_space(PyObject* self, void*) {
 
 static PyObject* pointer_method_load(PyObject*, PyObject* args, PyObject* kwargs) {
     static const char* keywords[] = {"count", "alignment", nullptr};
-    PyObject* count = Py_None;
+    PyObject* count = nullptr;
     PyObject* alignment = Py_None;
     if (!PyArg_ParseTupleAndKeywords(args, kwargs, "|$OO:load", const_cast<char**>(keywords),
                                      &count, &alignment))
@@ -4778,13 +4778,14 @@ static PyObject* pointer_method_store(PyObject*, PyObject* args, PyObject* kwarg
 }
 
 static PyObject* pointer_method_atomic_load(PyObject*, PyObject* args, PyObject* kwargs) {
-    static const char* keywords[] = {"memory_order", "memory_scope", "mmio", "alignment",
+    static const char* keywords[] = {"count", "memory_order", "memory_scope", "mmio", "alignment",
                                      nullptr};
+    PyObject* count = nullptr;
     PyObject *memory_order = nullptr, *memory_scope = nullptr;
     PyObject *mmio = Py_False, *alignment = Py_None;
-    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "|$OOOO:atomic_load",
+    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "|$OOOOO:atomic_load",
                                      const_cast<char**>(keywords),
-                                     &memory_order, &memory_scope, &mmio, &alignment))
+                                     &count, &memory_order, &memory_scope, &mmio, &alignment))
         return nullptr;
     return method_unsupported("Pointer.atomic_load()");
 }

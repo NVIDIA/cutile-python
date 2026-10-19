@@ -151,8 +151,8 @@ Vectors
 -------
 
 A :class:`Vector` is a fixed-size collection of elements used by low-level
-pointer operations. For example, :meth:`Pointer.load` returns a vector when a
-``count`` is provided.
+pointer operations. For example, :meth:`Pointer.load` returns a vector when
+``count`` is greater than ``1``. The default count of ``1`` returns one value.
 
 .. autosummary::
    :toctree: generated

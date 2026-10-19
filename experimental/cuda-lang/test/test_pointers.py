@@ -2,10 +2,11 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+from dataclasses import dataclass
 import pytest
 import cuda.lang as cl
 import torch
-from cuda.lang._compile import compile_simt
+from cuda.lang._compile import compile_simt, get_compute_capability
 from cuda.lang._exception import UnsupportedFeatureError, TypeCheckingError
 from cuda.lang._ir.ops import AtomicLoad, AtomicStore
 from cuda.lang.compilation import KernelSignature
@@ -315,6 +316,147 @@ def test_observe_atomic_load_store_free_functions():
     result = torch.zeros(2, dtype=torch.int32, device="cuda")
     cl.launch(torch.cuda.current_stream(), (1,), (1,), kernel, (result,))
     assert result.cpu().tolist() == [42, 43]
+
+
+def test_atomic_store_bad_type():
+    @dataclass(frozen=True)
+    class C:
+        a: object
+
+    @cl.kernel
+    def kernel():
+        sa = cl.shared_array(1, cl.int8)
+        c = C(5)
+        cl.atomic_store(sa.pointer(), c)
+
+    compile_kernel(
+        kernel,
+        raises=pytest.raises(
+            TypeCheckingError, match="Expected a vector or scalar but got C"
+        ),
+    )
+
+
+@pytest.mark.parametrize("use_methods", (False, True))
+@pytest.mark.parametrize("count", (1, 2, 4))
+@pytest.mark.parametrize("dtype", (torch.int32, torch.float32))
+def test_atomic_vector_load_store(use_methods, count, dtype):
+    if count > 2 and get_compute_capability() < (9, 0):
+        pytest.skip("Requires Hopper")
+
+    @cl.kernel
+    def kernel(source, result):
+        if use_methods:
+            value = source.pointer().atomic_load(count=count)
+            result.pointer().atomic_store(value)
+        else:
+            value = cl.atomic_load(source.pointer(), count=count)
+            cl.atomic_store(result.pointer(), value)
+
+    source = torch.tensor([-2147483648, 2143289345, -1, 42], dtype=torch.int32).cuda(0)
+    source = source[:count].view(dtype)
+    result = torch.zeros_like(source)
+    cl.launch(torch.cuda.current_stream(), (1,), (1,), kernel, (source, result))
+    assert torch.equal(result.view(torch.int32), source.view(torch.int32))
+
+
+@pytest.mark.parametrize(
+    "count", (
+        2,
+        pytest.param(4, marks=pytest.mark.xfail(
+            strict=True,
+            raises=AssertionError,
+            reason="Wide ld/st not used",
+        )),
+    ),
+)
+@pytest.mark.parametrize(
+    "load_order,store_order", (
+        (cl.MemoryOrder.RELAXED, cl.MemoryOrder.RELAXED),
+        (cl.MemoryOrder.ACQUIRE, cl.MemoryOrder.RELEASE),
+    ),
+)
+def test_atomic_vector_load_store_ptx(count, load_order, store_order):
+    dtype = cl.float32
+    bitwidth = dtype.bitwidth * count
+    if bitwidth > 64 and get_compute_capability() < (9, 0):
+        pytest.skip("Requires hopper")
+
+    def kernel(source, result):
+        value = source.pointer().atomic_load(count=count, memory_order=load_order)
+        result.pointer().atomic_store(value, memory_order=store_order)
+
+    sym = make_symbolic_tensor(count, dtype)
+    bits = count * 32
+    compile_kernel(
+        kernel,
+        signature=KernelSignature((sym, sym)),
+        assert_in_ptx=(
+            f"ld.{load_order.value}.gpu.global.b{bits}",
+            f"st.{store_order.value}.gpu.global.b{bits}",
+        ),
+    )
+
+
+@pytest.mark.parametrize("method", ("load", "store"))
+def test_atomic_vector_rejected(method):
+    dtype, count = cl.int8, 16
+
+    def kernel(source, result):
+        if method == "load":
+            value = source.pointer().atomic_load(count=count)
+            result.pointer().store(value)
+        else:
+            value = source.pointer().load(count=count)
+            result.pointer().atomic_store(value)
+
+    sym = make_symbolic_tensor(count, dtype)
+    compile_kernel(
+        kernel,
+        signature=KernelSignature((sym, sym)),
+        arch="compute_80",
+        gpu_name="sm_80",
+        raises=pytest.raises(UnsupportedFeatureError, match="greater than 8 bytes"),
+    )
+
+
+@pytest.mark.parametrize("method", ("load", "store"))
+@pytest.mark.parametrize("count", (0, -1, 3))
+def test_atomic_vector_rejects_invalid_count(method, count):
+    def kernel(data):
+        if method == "load":
+            data.pointer().atomic_load(count=count)
+        else:
+            values = data.pointer().load(count=count)
+            data.pointer().atomic_store(values)
+
+    match = "vector length to be positive" if count <= 0 else "total access size"
+    with pytest.raises(TypeCheckingError, match=match):
+        get_ir(kernel, (make_symbolic_tensor(4, cl.int32),))
+
+
+def test_atomic_vector_count_must_be_constant():
+    def kernel(source, count):
+        source.pointer().atomic_load(count=count)
+
+    with pytest.raises(TypeCheckingError, match="constant"):
+        get_ir(kernel, (
+            make_symbolic_tensor(1, cl.int32),
+            make_symbolic_scalar(cl.int32),
+        ))
+
+
+@pytest.mark.parametrize("method", ("load", "store"))
+def test_atomic_vector_rejects_unsupported_width(method):
+    def kernel(data):
+        if method == "load":
+            data.pointer().atomic_load(count=8)
+        else:
+            values = data.pointer().load(count=8)
+            data.pointer().atomic_store(values)
+
+    with pytest.raises(TypeCheckingError, match="at most 16 bytes"):
+        get_ir(kernel, (make_symbolic_tensor(8, cl.int32),))
 
 
 @pytest.mark.parametrize(

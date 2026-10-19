@@ -61,6 +61,7 @@ uint8: DType
 uint16: DType
 uint32: DType
 uint64: DType
+_int128: DType
 int8: DType
 int16: DType
 int32: DType
@@ -897,7 +898,7 @@ class Pointer:
     def load(
         self,
         *,
-        count: int | None = None,
+        count: int = 1,
         alignment: int | None = None,
     ) -> Scalar | Pointer | Vector:
         """Load one or more consecutive values from this address.
@@ -905,8 +906,8 @@ class Pointer:
         This operation is valid only for a typed pointer.
 
         Args:
-            count: Compile-time number of values to load. ``None`` and ``1``
-                return a scalar. A value greater than ``1`` returns a vector.
+            count: Compile-time number of values to load. ``1``
+                returns a scalar. A value greater than ``1`` returns a vector.
                 For best performance, align a vector load to the total size of
                 the vector in bytes.
             alignment: Minimum byte alignment that the compiler can assume.
@@ -938,17 +939,21 @@ class Pointer:
     def atomic_load(
         self,
         *,
+        count: int = 1,
         memory_order: MemoryOrder = MemoryOrder.ACQUIRE,
         memory_scope: MemoryScope = MemoryScope.DEVICE,
         mmio: bool = False,
         alignment: int | None = None,
-    ) -> Scalar | Pointer:
-        """Atomically load one value from this address.
+    ) -> Scalar | Pointer | Vector:
+        """Atomically load one or more consecutive values from this address.
 
-        This operation is valid only for a typed pointer. The pointee size must
-        be a power-of-two number of bytes.
+        This operation is valid only for a typed pointer. The total access size
+        must be a power-of-two number of bytes. A vector is loaded as one atomic
+        value instead of atomic loads for each vector element.
 
         Args:
+            count: Compile-time number of values to load. ``1``
+                returns a scalar. A value greater than ``1`` returns a vector.
             memory_order: Memory order for the load. Supported values are
                 ``MemoryOrder.RELAXED`` and ``MemoryOrder.ACQUIRE``.
             memory_scope: Scope of threads that participate in memory ordering.
@@ -958,26 +963,27 @@ class Pointer:
             alignment: Minimum byte alignment that the compiler can assume.
                 The value must be a positive power of two. The address must
                 have at least this alignment. If the value is ``None``, the
-                natural alignment of the pointee data type is used.
+                total access size is used as the alignment.
         """
 
     def atomic_store(
         self,
-        value: _ScalarLike,
+        value: _ScalarLike | Vector,
         *,
         memory_order: MemoryOrder = MemoryOrder.RELEASE,
         memory_scope: MemoryScope = MemoryScope.DEVICE,
         mmio: bool = False,
         alignment: int | None = None,
     ) -> None:
-        """Atomically store one value to this address.
+        """Atomically store one or more consecutive values to this address.
 
-        This operation is valid only for a typed pointer. The pointee size must
-        be a power-of-two number of bytes.
+        This operation is valid only for a typed pointer. The total access size
+        must be a power-of-two number of bytes. A vector is stored as one atomic
+        value instead of atomic stores for each vector element.
 
         Args:
-            value: Scalar value to store. The value must be compatible with the
-                pointee data type.
+            value: Scalar or vector to store. The element data type must be
+                compatible with the pointee data type.
             memory_order: Memory order for the store. Supported values are
                 ``MemoryOrder.RELAXED`` and ``MemoryOrder.RELEASE``.
             memory_scope: Scope of threads that participate in memory ordering.
@@ -987,7 +993,7 @@ class Pointer:
             alignment: Minimum byte alignment that the compiler can assume.
                 The value must be a positive power of two. The address must
                 have at least this alignment. If the value is ``None``, the
-                natural alignment of the pointee data type is used.
+                total access size is used as the alignment.
         """
 
     @property
