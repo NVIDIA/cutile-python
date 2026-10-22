@@ -5,4 +5,7 @@
 # Maintain a separate file for free-threading version. This can be removed when ABI environment markers are supported.(PEP 780)
 -r requirements-common.txt
 
-numba-cuda[cu13]==0.30.0
+# numba-cuda publishes no cp315 wheel. The tests skip the import.
+numba-cuda[cu13]==0.30.0; python_version < "3.15"
+# numba-cuda is what installs cuda-core before 3.15, and it requires cuda-core < 1.0.
+cuda-core[cu13]==1.2.2; python_version >= "3.15"

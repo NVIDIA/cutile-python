@@ -11,7 +11,7 @@ name = "task-scheduling"
 version = "0.0.1"
 description = "Experimental task scheduling for CUDA Lang"
 readme = "README.md"
-requires-python = ">=3.10, <3.15"
+requires-python = ">=3.11, <3.16"
 dependencies = ["cuda-lang"]
 
 [tool.setuptools]
