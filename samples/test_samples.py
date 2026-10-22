@@ -2,6 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+import importlib.util
 import sys
 import torch
 import subprocess
@@ -101,3 +102,32 @@ def test_sample_script_execution_correctness(sample_file):
     except Exception as e:
         # This block catches any other unexpected Python errors.
         pytest.fail(f"Test for {sample_file} failed with an unexpected error: {e}")
+
+
+@pytest.mark.parametrize("minibatch", [1, 2])
+def test_fft_minibatch_geometry_and_correctness(minibatch):
+    if importlib.util.find_spec("cuda.tile") is None:
+        pytest.skip("cuTile is not available.")
+
+    sys.path.insert(0, SCRIPT_DIR)
+    from FFT import cutile_fft
+
+    x = torch.randn(4, 8, dtype=torch.complex64, device="cuda")
+    result = cutile_fft(x, (2, 2, 2), atom_packing_dim=2, minibatch=minibatch)
+
+    assert result.shape == x.shape
+    assert result.dtype == x.dtype
+    torch.testing.assert_close(result, torch.fft.fft(x, dim=-1))
+
+
+@pytest.mark.parametrize("minibatch", [0, -1, 3])
+def test_fft_rejects_invalid_minibatch(minibatch):
+    if importlib.util.find_spec("cuda.tile") is None:
+        pytest.skip("cuTile is not available.")
+
+    sys.path.insert(0, SCRIPT_DIR)
+    from FFT import cutile_fft
+
+    x = torch.zeros(4, 8, dtype=torch.complex64, device="cuda")
+    with pytest.raises(ValueError, match="minibatch"):
+        cutile_fft(x, (2, 2, 2), atom_packing_dim=2, minibatch=minibatch)
