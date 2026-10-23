@@ -27,15 +27,32 @@ def compile_with(pyfunc, args, arch: str | None, version: str, output_format="cu
     torch.float8_e5m2,
     torch.float8_e8m0fnu
 ], ids=dtype_id)
-def test_fp8_not_supported_on_sm80(dtype):
+@pytest.mark.parametrize("arch,version", [
+    ("sm_80", "13.2"),
+    pytest.param("sm_80", "13.5", marks=requires_tileiras(BytecodeVersion.V_13_5)),
+    ("sm_89", "13.4"),
+])
+def test_fp8_not_supported_on_arch(dtype, arch, version):
     x = make_tensor((64,), dtype=torch.float32, device='cuda:0').to(dtype)
 
     def kernel(x):
         tx = ct.gather(x, 0)
         ct.scatter(x, 0, tx)
 
-    with pytest.raises(TileUnsupportedFeatureError, match="is not supported on sm_80"):
-        compile_with(kernel, (x,), "sm_80", "13.2")
+    with pytest.raises(TileUnsupportedFeatureError, match=f"is not supported on {arch}"):
+        compile_with(kernel, (x,), arch, version)
+
+
+@requires_tileiras(BytecodeVersion.V_13_5)
+@pytest.mark.parametrize("dtype", [torch.float8_e4m3fn, torch.float8_e5m2], ids=dtype_id)
+def test_fp8_supported_on_sm89(dtype):
+    x = make_tensor((64,), dtype=torch.float32, device='cuda:0').to(dtype)
+
+    def kernel(x):
+        tx = ct.gather(x, 0)
+        ct.scatter(x, 0, tx)
+
+    compile_with(kernel, (x,), "sm_89", "13.5")
 
 
 @requires_tileiras(BytecodeVersion.V_13_3)

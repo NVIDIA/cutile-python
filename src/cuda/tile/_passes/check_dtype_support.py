@@ -17,7 +17,7 @@ from cuda.tile._bytecode.version import BytecodeVersion
 from cuda.tile._exception import TileUnsupportedFeatureError, TileValueError
 
 # Minimum SM architecture number (e.g. 90 for sm_90) per dtype.
-# Technically sm_89 (Ada Lovelace) supports FP8, but tileiras doesn't have support for it yet.
+# FP8 support on sm_89 (Ada Lovelace) requires tileiras 13.5 or later.
 _DTYPE_MIN_SM: dict[DType, int] = {
     float8_e4m3fn: 90,
     float8_e5m2: 90,
@@ -119,6 +119,8 @@ def _check_atomic_rmw_dtype(op: TileAtomicRedView | TileAtomicRMW,
 def _check_dtype(dtype: DType, sm_arch: str | None, sm_number: int | None,
                  version: BytecodeVersion, loc):
     min_sm = _DTYPE_MIN_SM.get(dtype)
+    if dtype in (float8_e4m3fn, float8_e5m2) and version >= BytecodeVersion.V_13_5:
+        min_sm = 89
     if sm_number is not None and min_sm is not None and sm_number < min_sm:
         raise TileUnsupportedFeatureError(
             f"{dtype} is not supported on {sm_arch}",
