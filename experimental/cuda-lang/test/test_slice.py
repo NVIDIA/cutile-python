@@ -168,3 +168,49 @@ def test_array_slice_view_none_expand_reject():
     a = torch.arange(16, dtype=torch.int32).reshape(4, 4).cuda()
     with pytest.raises(TypeCheckingError, match="The provided slice index is not valid"):
         cl.launch(torch.cuda.current_stream(), (1,), (1,), kernel, (a,))
+
+
+def test_array_slice_method():
+    @cl.kernel
+    def kernel(a, b):
+        view = a.slice(axis=0, start=4, stop=8)
+        cl.static_assert(view.shape[0] == 4)
+        b[0] = view[0]
+        b[1] = view[1]
+        b[2] = view[2]
+        b[3] = view[3]
+
+    a = torch.arange(16, dtype=torch.int32).cuda()
+    b = torch.zeros(4, dtype=torch.int32).cuda()
+    cl.launch(torch.cuda.current_stream(), (1,), (1,), kernel, (a, b))
+    assert b.cpu().tolist() == [4, 5, 6, 7]
+
+
+def test_array_slice_method_runtime_bounds():
+    @cl.kernel
+    def kernel(a, b, i):
+        view = a.slice(axis=-1, start=i[0], stop=i[1])
+        b[0] = view[0, 0]
+        b[1] = view[0, 1]
+        b[2] = view[1, 0]
+        b[3] = view.shape[1]
+
+    a = torch.arange(16, dtype=torch.int32).reshape((2, 8)).cuda()
+    b = torch.zeros(4, dtype=torch.int32).cuda()
+    i = torch.tensor([2, 5], dtype=torch.int32).cuda()
+    cl.launch(torch.cuda.current_stream(), (1,), (1,), kernel, (a, b, i))
+    assert b.cpu().tolist() == [2, 3, 10, 3]
+
+
+@pytest.mark.parametrize("start, stop, message",
+                         [(-1, 4, "Slice start must be non-negative"),
+                          (0, -1, "Slice stop must be non-negative"),
+                          (4, 2, "Slice stop must be greater than or equal to start")])
+def test_array_slice_method_static_reject(start, stop, message):
+    @cl.kernel
+    def kernel(a):
+        a.slice(axis=0, start=start, stop=stop)
+
+    a = torch.arange(16, dtype=torch.int32).cuda()
+    with pytest.raises(TypeCheckingError, match=message):
+        cl.launch(torch.cuda.current_stream(), (1,), (1,), kernel, (a,))
