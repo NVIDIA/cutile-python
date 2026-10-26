@@ -812,17 +812,26 @@ public:
 Result<Vec<uint8_t>> pylong_as_unsigned_bytes(PyObject* pylong);
 
 class LazyImporter {
-    ProtectedByGlobalLock<PyObject*> obj_;
+    OncePointer<PyObject> obj_;  // Never released once set
 
 public:
-    PyObject* get(const char* module_name, const char* name, GlobalLock& lock) {
-        PyObject*& obj = obj_.get(lock);
-        if (!obj) {
-            PyPtr m = steal(PyImport_ImportModule(module_name));
-            if (!m) return nullptr;
-            obj = getattr(m, name).release();
+    // Gets "module_name.name[.subname]".
+    // Returns a borrowed reference, or nullptr with an exception set.
+    PyObject* get(const char* module_name, const char* name, const char* subname = nullptr) {
+        if (PyObject* obj = obj_.get()) return obj;
+
+        PyPtr m = steal(PyImport_ImportModule(module_name));
+        if (!m) return nullptr;
+        PyPtr new_obj = getattr(m, name);
+        if (!new_obj) return nullptr;
+        if (subname) {
+            new_obj = getattr(new_obj, subname);
+            if (!new_obj) return nullptr;
         }
-        return obj;
+
+        // Another thread may have set it while we were importing, even if GIL is enabled,
+        // since the import may release the GIL. In that case, ours is released.
+        return obj_.set(std::move(new_obj));
     }
 };
 

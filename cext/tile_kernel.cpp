@@ -68,8 +68,8 @@ static PyObject* get_signature_module(GlobalLock&) {
 }
 
 namespace { struct ImportedTypeChecker {
-    PyTypeObject* cached_super_type_;
-    bool is_cached_;
+    // Not set if not cached yet, or Py_None if the module doesn't define the type
+    OncePointer<PyObject> cached_super_type_;
 
     // Check whether `sub_ty` is a subtype of
     //     "super_module_name[.super_submodule_name].super_type_name"
@@ -78,53 +78,62 @@ namespace { struct ImportedTypeChecker {
                        PyObject* super_module_name,
                        const char* super_submodule_name,  // may be null
                        const char* super_type_name) {
-        if (!is_cached_) {
-            // Use PyImport_GetModule() rather than PyImport_Import() to avoid importing the module.
-            // If the module is not in sys.modules, then there is no way there can be a subtype
-            // of a type defined in that module.
-            ErrorGuard guard;
-            PyPtr mod = steal(PyImport_GetModule(super_module_name));
-            // Can't flip is_cached_ to true just yet -- the module may get imported later.
-            if (!mod) return false;
-
-            is_cached_ = true;
-
-            if (super_submodule_name) {
-                mod = try_getattr(mod, super_submodule_name);
-                if (!mod) return false;
-            }
-
-            PyPtr item = try_getattr(mod, super_type_name);
-            if (!item || !PyType_Check(item.get()))
-                return false;
-
-            cached_super_type_ = reinterpret_cast<PyTypeObject*>(item.get());
+        PyObject* super_type = cached_super_type_.get();
+        if (!super_type) {
+            super_type = lookup_super_type(super_module_name, super_submodule_name,
+                                           super_type_name);
+            // The module hasn't been imported yet
+            if (!super_type) return false;
         }
-        return cached_super_type_ && PyType_IsSubtype(sub_ty, cached_super_type_);
+        return super_type != Py_None
+            && PyType_IsSubtype(sub_ty, reinterpret_cast<PyTypeObject*>(super_type));
+    }
+
+    // Returns nullptr if the module hasn't been imported yet
+    PyObject* lookup_super_type(PyObject* super_module_name,
+                                const char* super_submodule_name,
+                                const char* super_type_name) {
+        // Use PyImport_GetModule() rather than PyImport_Import() to avoid importing the module.
+        // If the module is not in sys.modules, then there is no way there can be a subtype
+        // of a type defined in that module.
+        ErrorGuard guard;
+        PyPtr mod = steal(PyImport_GetModule(super_module_name));
+        // Can't cache anything just yet -- the module may get imported later.
+        if (!mod) return nullptr;
+
+        if (super_submodule_name)
+            mod = try_getattr(mod, super_submodule_name);
+        PyPtr item;
+        if (mod) item = try_getattr(mod, super_type_name);
+        if (!item || !PyType_Check(item.get())) item = newref(Py_None);
+
+        // Another thread may have set it while we were looking it up, even if GIL is enabled,
+        // since getattr() may release the GIL. In that case, ours is released.
+        return cached_super_type_.set(std::move(item));
     }
 }; }
 
-static bool is_torch_tensor_subtype(PyTypeObject* ty, GlobalLock&) {
+static bool is_torch_tensor_subtype(PyTypeObject* ty) {
     static ImportedTypeChecker checker;
     return checker.is_subtype_of(ty, g_torch_pyunicode, nullptr, "Tensor");
 }
 
-static bool is_torch_cuda_stream_subtype(PyTypeObject* ty, GlobalLock&) {
+static bool is_torch_cuda_stream_subtype(PyTypeObject* ty) {
     static ImportedTypeChecker checker;
     return checker.is_subtype_of(ty, g_torch_pyunicode, "cuda", "Stream");
 }
 
-static bool is_cupy_cuda_stream_subtype(PyTypeObject* ty, GlobalLock&) {
+static bool is_cupy_cuda_stream_subtype(PyTypeObject* ty) {
     static ImportedTypeChecker checker;
     return checker.is_subtype_of(ty, g_cupy_pyunicode, "cuda", "Stream");
 }
 
-static bool is_numba_cuda_driver_stream_subtype(PyTypeObject* ty, GlobalLock&) {
+static bool is_numba_cuda_driver_stream_subtype(PyTypeObject* ty) {
     static ImportedTypeChecker checker;
     return checker.is_subtype_of(ty, g_numba_cuda_pyunicode, "driver", "Stream");
 }
 
-static bool is_cuda_bindings_driver_custream_subtype(PyTypeObject* ty, GlobalLock&) {
+static bool is_cuda_bindings_driver_custream_subtype(PyTypeObject* ty) {
     static ImportedTypeChecker checker;
     return checker.is_subtype_of(ty, g_cuda_bindings_driver_pyunicode, nullptr, "CUstream");
 }
@@ -947,7 +956,7 @@ static PyObject* py_classify_constant(PyObject* self, PyObject* args) {
 
 
 enum class StreamKind;
-static std::optional<StreamKind> try_classify_stream_type(PyTypeObject* ty, GlobalLock& lock);
+static std::optional<StreamKind> try_classify_stream_type(PyTypeObject* ty);
 static Result<CUstream> parse_stream(PyObject* py_stream, GlobalLock& lock);
 
 
@@ -964,7 +973,7 @@ static std::optional<PythonArgKind> classify_nonconstant_arg(PyObject* arg, Glob
     if (PyList_Check(arg))
         return PythonArgKind::PyList;
 
-    if (is_torch_tensor_subtype(Py_TYPE(arg), lock)) {
+    if (is_torch_tensor_subtype(Py_TYPE(arg))) {
         // Calling torch._C._to_dlpack(arg) is much faster than calling arg.__dlpack__()
         // because it goes straight into C++ code, with no Python in between.
         // So we always prefer that.
@@ -976,7 +985,7 @@ static std::optional<PythonArgKind> classify_nonconstant_arg(PyObject* arg, Glob
         return PythonArgKind::TensorMap;
 
 #ifdef ENABLE_CCONV_V3
-    if (try_classify_stream_type(Py_TYPE(arg), lock).has_value())
+    if (try_classify_stream_type(Py_TYPE(arg)).has_value())
         return PythonArgKind::Stream;
 #endif
 
@@ -3186,19 +3195,19 @@ enum class StreamKind {
     RawInt,
 };
 
-static std::optional<StreamKind> try_classify_stream_type(PyTypeObject* ty, GlobalLock& lock) {
-    if (is_torch_cuda_stream_subtype(ty, lock)) {
+static std::optional<StreamKind> try_classify_stream_type(PyTypeObject* ty) {
+    if (is_torch_cuda_stream_subtype(ty)) {
         return StreamKind::Torch;
-    } else if (is_cupy_cuda_stream_subtype(ty, lock)) {
+    } else if (is_cupy_cuda_stream_subtype(ty)) {
         return StreamKind::Cupy;
-    } else if (is_numba_cuda_driver_stream_subtype(ty, lock)) {
+    } else if (is_numba_cuda_driver_stream_subtype(ty)) {
         return StreamKind::NumbaCuda;
     }
     return {};
 }
 
-static StreamKind do_classify_stream_type(PyTypeObject* ty, GlobalLock& lock) {
-    std::optional<StreamKind> kind = try_classify_stream_type(ty, lock);
+static StreamKind do_classify_stream_type(PyTypeObject* ty) {
+    std::optional<StreamKind> kind = try_classify_stream_type(ty);
     if (kind.has_value()) {
         return *kind;
     } else if (PyType_IsSubtype(ty, &PyLong_Type)) {
@@ -3213,7 +3222,8 @@ static StreamKind do_classify_stream_type(PyTypeObject* ty, GlobalLock& lock) {
     }
 }
 
-static StreamKind classify_stream(PyObject* py_stream, GlobalLock& lock) {
+// GlobalLock protects `last_ty` and `last_kind` below
+static StreamKind classify_stream(PyObject* py_stream, GlobalLock&) {
     // Cache the last stream type we were called with.
     // The hypothesis is that the user is probably using one host framework to make all the
     // launches, so we will nearly always get a cache hit here. And comparing a single pointer
@@ -3226,7 +3236,7 @@ static StreamKind classify_stream(PyObject* py_stream, GlobalLock& lock) {
     PyTypeObject* ty = Py_TYPE(py_stream);
     if (ty == last_ty) return last_kind;
 
-    StreamKind res = do_classify_stream_type(ty, lock);
+    StreamKind res = do_classify_stream_type(ty);
     if (res != StreamKind::Error) {
         Py_XDECREF(last_ty);
         last_ty = reinterpret_cast<PyTypeObject*>(Py_NewRef(ty));
@@ -3264,7 +3274,7 @@ static Result<CUstream> parse_stream(PyObject* py_stream, GlobalLock& lock) {
 
             // numba-cuda >= 0.30: handle is cuda.bindings.driver.CUstream
             // numba-cuda < 0.30: handle is ctypes c_void_p
-            if (is_cuda_bindings_driver_custream_subtype(Py_TYPE(py_stream_handle.get()), lock)) {
+            if (is_cuda_bindings_driver_custream_subtype(Py_TYPE(py_stream_handle.get()))) {
                 PyPtr pylong = steal(PyNumber_Long(py_stream_handle.get()));
                 return from_raw(pylong.get());
             } else {

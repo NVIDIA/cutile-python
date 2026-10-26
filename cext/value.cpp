@@ -959,16 +959,16 @@ static PyPtr pynumber_cdiv(PyObject* x, PyObject* y) {
     return steal(PyNumber_Negative(q.get()));
 }
 
-static PyPtr pynumber_atan2(PyObject* x, PyObject* y, GlobalLock& lock) {
+static PyPtr pynumber_atan2(PyObject* x, PyObject* y) {
     static LazyImporter atan2_func;
-    PyObject* func = atan2_func.get("math", "atan2", lock);
+    PyObject* func = atan2_func.get("math", "atan2");
     if (!func) return {};
     return steal(PyObject_CallFunctionObjArgs(func, x, y, nullptr));
 }
 
-static Expected<double> float_atan2(double x, double y, GlobalLock& lock) {
+static Expected<double> float_atan2(double x, double y) {
     return pyfloat_binary_op(x, y, [&] (PyObject* a, PyObject* b) {
-        return pynumber_atan2(a, b, lock).release();
+        return pynumber_atan2(a, b).release();
     });
 }
 
@@ -1319,13 +1319,13 @@ static PyObject* tensor_repr(PyObject* self) {
 }
 
 
-static PyPtr tensor_to_ir_var(TensorBase* tensor, GlobalLock& lock) {
+static PyPtr tensor_to_ir_var(TensorBase* tensor) {
     if (tensor->tag_ == TensorBase::kVar)
         return newref(tensor->data_.var);
 
     static LazyImporter const_func;
     PyObject* func = const_func.get(
-            "cuda.tile._ir.core_ops", "strictly_typed_const_tensorlike", lock);
+            "cuda.tile._ir.core_ops", "strictly_typed_const_tensorlike");
     if (!func) return {};
 
     PyObject* dtype = dtype_to_pyobject(tensor->dtype);
@@ -1351,8 +1351,7 @@ static PyObject* py_tensor_to_ir_var(PyObject*, PyObject* arg) {
               use_type(val));
         return nullptr;
     }
-    GlobalLock lock;
-    return tensor_to_ir_var(val.as_tensor(), lock).release();
+    return tensor_to_ir_var(val.as_tensor()).release();
 }
 
 
@@ -1441,8 +1440,7 @@ static Expected<RefPtr<TensorBase>> tensor_elementwise_apply(TensorBase* src, DT
 // Constants are only folded when rounding to nearest even. Otherwise, the conversion is emitted
 // even for a constant tensor.
 static Expected<RefPtr<TensorBase>> tensor_astype(
-        TensorBase* tensor, DType to, GlobalLock& lock,
-        std::optional<RoundingMode> rounding_mode = {}) {
+        TensorBase* tensor, DType to, std::optional<RoundingMode> rounding_mode = {}) {
     DType from = tensor->dtype;
     if (from == to)
         return newref(tensor);
@@ -1454,12 +1452,12 @@ static Expected<RefPtr<TensorBase>> tensor_astype(
 
     bool can_fold = !rounding_mode.has_value() || *rounding_mode == RoundingMode::RN;
     if (tensor->is_symbolic() || !can_fold) {
-        PyPtr var = tensor_to_ir_var(tensor, lock);
+        PyPtr var = tensor_to_ir_var(tensor);
         if (!var) return ErrorRaised;
 
         static LazyImporter astype_func;
         PyObject* func = astype_func.get(
-                "cuda.tile._ir.arithmetic_ops", "add_astype_operation", lock);
+                "cuda.tile._ir.arithmetic_ops", "add_astype_operation");
         if (!func) return ErrorRaised;
 
         PyObject* to_dtype = dtype_to_pyobject(to);
@@ -1608,7 +1606,7 @@ static Expected<RefPtr<TensorBase>> loosely_typed_scalar_to_default_dtype(
 // `use_tile` determines the kind of the result if `x` is loosely typed.
 static Expected<Value> tensorlike_astype(BorrowedValue x, DType to,
                                          std::optional<RoundingMode> rounding_mode,
-                                         bool use_tile, GlobalLock& lock) {
+                                         bool use_tile) {
     if (!is_numeric_dtype(to))
         return make_error(Error::kTypeError, "Cannot convert to non-numeric dtype ", to);
 
@@ -1632,7 +1630,7 @@ static Expected<Value> tensorlike_astype(BorrowedValue x, DType to,
         return make_error(Error::kTypeError, "Cannot convert ", use_type(x), " to ", to);
     }
 
-    Expected<RefPtr<TensorBase>> res = tensor_astype(tensor.get(), to, lock, rounding_mode);
+    Expected<RefPtr<TensorBase>> res = tensor_astype(tensor.get(), to, rounding_mode);
     if (!res.is_ok()) return std::move(res.error());
     return Value::from_tensor(std::move(*res));
 }
@@ -1654,8 +1652,7 @@ static PyObject* py_make_constant_0d_tensor(PyObject*, PyObject* args) {
         raise(PyExc_TypeError, "Value must be a Python number, not ", use_type(val));
         return nullptr;
     }
-    GlobalLock lock;
-    Result<Value> res = to_result(tensorlike_astype(val, *dtype, std::nullopt, use_tile, lock));
+    Result<Value> res = to_result(tensorlike_astype(val, *dtype, std::nullopt, use_tile));
     if (!res.is_ok()) return nullptr;
     return res->borrow().to_pyobject().release();
 }
@@ -1707,9 +1704,8 @@ static PyObject* py_tensorlike_astype(PyObject*, PyObject* args) {
         return nullptr;
 
     BorrowedValue x_val = borrowed_value_from_pyobject(x);
-    GlobalLock lock;
     return release_pyobject_or_raise(
-            tensorlike_astype(x_val, *dtype, rounding_mode, use_tile, lock), true);
+            tensorlike_astype(x_val, *dtype, rounding_mode, use_tile), true);
 }
 
 static Result<DType> parse_float_dtype(PyObject* dtype_obj) {
@@ -1767,8 +1763,7 @@ static PyObject* py_decode_float(PyObject* module_self,
 }
 
 // Like Python's int() and float(), also accepts a string, e.g. float32("-inf")
-static Expected<Value> dtype_constructor(BorrowedValue x, DType to, bool use_tile,
-                                         GlobalLock& lock) {
+static Expected<Value> dtype_constructor(BorrowedValue x, DType to, bool use_tile) {
     if (x.is_string()) {
         PyPtr number;
         switch (numeric_dtype_category(to)) {
@@ -1788,13 +1783,13 @@ static Expected<Value> dtype_constructor(BorrowedValue x, DType to, bool use_til
                               use_repr(x.as_string()), " to ", to);
         }
         BorrowedValue number_val = borrowed_value_from_pyobject(number.get());
-        return tensorlike_astype(number_val, to, std::nullopt, use_tile, lock);
+        return tensorlike_astype(number_val, to, std::nullopt, use_tile);
     }
 
     if (!x.is_0d_tensor_like())
         return make_error(Error::kTypeError, "Argument of ", to,
                           "() must be a scalar or a string, not ", use_type(x));
-    return tensorlike_astype(x, to, std::nullopt, use_tile, lock);
+    return tensorlike_astype(x, to, std::nullopt, use_tile);
 }
 
 static PyObject* py_dtype_constructor(PyObject*, PyObject* args) {
@@ -1810,8 +1805,7 @@ static PyObject* py_dtype_constructor(PyObject*, PyObject* args) {
     }
 
     BorrowedValue x_val = borrowed_value_from_pyobject(x);
-    GlobalLock lock;
-    return release_pyobject_or_raise(dtype_constructor(x_val, *dtype, use_tile, lock), true);
+    return release_pyobject_or_raise(dtype_constructor(x_val, *dtype, use_tile), true);
 }
 
 
@@ -1820,7 +1814,7 @@ static PyObject* py_dtype_constructor(PyObject*, PyObject* args) {
 // Returns the loose scalar converted to the common dtype, updates `tensor` in-place
 static Expected<RefPtr<TensorBase>> promote_tensor_and_loosely_typed_scalar(
         RefPtr<TensorBase>* tensor, BorrowedValue loose_scalar,
-        bool force_float, GlobalLock& lock) {
+        bool force_float) {
     DType tensor_dtype = (*tensor)->dtype;
     CHECK(is_numeric_dtype(tensor_dtype));
 
@@ -1850,7 +1844,7 @@ static Expected<RefPtr<TensorBase>> promote_tensor_and_loosely_typed_scalar(
                 *r, loose_scalar.as_loosely_typed_scalar(), common_dtype);
 
     if (common_dtype != tensor_dtype) {
-        Expected<RefPtr<TensorBase>> converted = tensor_astype(tensor->get(), common_dtype, lock);
+        Expected<RefPtr<TensorBase>> converted = tensor_astype(tensor->get(), common_dtype);
         if (!converted.is_ok()) return std::move(converted.error());
         *tensor = std::move(*converted);
     }
@@ -1859,7 +1853,7 @@ static Expected<RefPtr<TensorBase>> promote_tensor_and_loosely_typed_scalar(
 
 
 static Error promote_tensors(
-        RefPtr<TensorBase>* x, RefPtr<TensorBase>* y, bool force_float, GlobalLock& lock) {
+        RefPtr<TensorBase>* x, RefPtr<TensorBase>* y, bool force_float) {
     DType x_dtype = (*x)->dtype, y_dtype = (*y)->dtype;
     std::optional<DType> common_dtype_res = promote_dtypes(x_dtype, y_dtype);
     if (!common_dtype_res.has_value())
@@ -1871,13 +1865,13 @@ static Error promote_tensors(
         common_dtype = k_float32;
 
     if (x_dtype != common_dtype) {
-        Expected<RefPtr<TensorBase>> converted = tensor_astype(x->get(), common_dtype, lock);
+        Expected<RefPtr<TensorBase>> converted = tensor_astype(x->get(), common_dtype);
         if (!converted.is_ok()) return std::move(converted.error());
         *x = std::move(*converted);
     }
 
     if (y_dtype != common_dtype) {
-        Expected<RefPtr<TensorBase>> converted = tensor_astype(y->get(), common_dtype, lock);
+        Expected<RefPtr<TensorBase>> converted = tensor_astype(y->get(), common_dtype);
         if (!converted.is_ok()) return std::move(converted.error());
         *y = std::move(*converted);
     }
@@ -1903,8 +1897,7 @@ static bool is_implicit_pointer_cast_ok(DType from, DType to) {
 // Casts a Python number or a tensor to `dtype`, following the rules of implicit_cast() in
 // cast_ops.py. A Python number becomes a scalar, or a 0-d tile if `use_tile` is true.
 // Constant tensors are converted directly, symbolic ones emit a cast.
-static Expected<RefPtr<TensorBase>> implicit_cast(BorrowedValue val, DType dtype, bool use_tile,
-                                                  GlobalLock& lock) {
+static Expected<RefPtr<TensorBase>> implicit_cast(BorrowedValue val, DType dtype, bool use_tile) {
     if (val.is_loosely_typed_scalar()) {
         if (!is_numeric_dtype(dtype))
             return make_error(Error::kValueError, "Cannot implicitly cast ",
@@ -1942,16 +1935,16 @@ static Expected<RefPtr<TensorBase>> implicit_cast(BorrowedValue val, DType dtype
     if (is_numeric_dtype(from) && is_numeric_dtype(dtype)) {
         std::optional<DType> common_dtype = promote_dtypes(from, dtype);
         if (common_dtype.has_value() && *common_dtype == dtype)
-            return tensor_astype(tensor, dtype, lock);
+            return tensor_astype(tensor, dtype);
     } else if (is_pointer_dtype(from) && is_pointer_dtype(dtype)
                && is_implicit_pointer_cast_ok(from, dtype)) {
-        PyPtr var = tensor_to_ir_var(tensor, lock);
+        PyPtr var = tensor_to_ir_var(tensor);
         if (!var) return ErrorRaised;
         PyObject* dtype_obj = dtype_to_pyobject(dtype);
         if (!dtype_obj) return ErrorRaised;
 
         static LazyImporter cast_func;
-        PyObject* func = cast_func.get("cuda.tile._ir.cast_ops", "implicit_cast", lock);
+        PyObject* func = cast_func.get("cuda.tile._ir.cast_ops", "implicit_cast");
         if (!func) return ErrorRaised;
         PyPtr result_var = steal(PyObject_CallFunction(
                 func, "OOs", var.get(), dtype_obj, "Implicit pointer cast"));
@@ -1966,27 +1959,25 @@ static Expected<RefPtr<TensorBase>> implicit_cast(BorrowedValue val, DType dtype
 }
 
 static Error promote_operands(RefPtr<TensorBase>* x_tensor, RefPtr<TensorBase>* y_tensor,
-                              BorrowedValue x, BorrowedValue y, bool force_float,
-                              GlobalLock& lock) {
+                              BorrowedValue x, BorrowedValue y, bool force_float) {
     if (!*x_tensor) {
         CHECK(*y_tensor);
         Expected<RefPtr<TensorBase>> promoted =
-                promote_tensor_and_loosely_typed_scalar(y_tensor, x, force_float, lock);
+                promote_tensor_and_loosely_typed_scalar(y_tensor, x, force_float);
         if (!promoted.is_ok()) return std::move(promoted.error());
         *x_tensor = std::move(*promoted);
     } else if (!*y_tensor) {
         Expected<RefPtr<TensorBase>> promoted =
-                promote_tensor_and_loosely_typed_scalar(x_tensor, y, force_float, lock);
+                promote_tensor_and_loosely_typed_scalar(x_tensor, y, force_float);
         if (!promoted.is_ok()) return std::move(promoted.error());
         *y_tensor = std::move(*promoted);
     } else {
-        return promote_tensors(x_tensor, y_tensor, force_float, lock);
+        return promote_tensors(x_tensor, y_tensor, force_float);
     }
     return OK;
 }
 
-static Error broadcast_to_unchecked(RefPtr<TensorBase>* tensor, const UnpackedShape& shape,
-                                    GlobalLock& lock) {
+static Error broadcast_to_unchecked(RefPtr<TensorBase>* tensor, const UnpackedShape& shape) {
     TensorBase* src = tensor->get();
 
     if (src->kind == TensorBase::kPointer)
@@ -2038,7 +2029,7 @@ static Error broadcast_to_unchecked(RefPtr<TensorBase>* tensor, const UnpackedSh
         {
             static LazyImporter broadcast_func;
             PyObject* func = broadcast_func.get(
-                    "cuda.tile._ir.arithmetic_ops", "broadcast_to", lock);
+                    "cuda.tile._ir.arithmetic_ops", "broadcast_to");
             if (!func) return ErrorRaised;
 
             PyPtr py_shape = shape_to_pytuple(shape);
@@ -2058,19 +2049,18 @@ static Error broadcast_to_unchecked(RefPtr<TensorBase>* tensor, const UnpackedSh
     return OK;
 }
 
-static Error broadcast_operands(RefPtr<TensorBase>* x_tensor, RefPtr<TensorBase>* y_tensor,
-                                GlobalLock& lock) {
+static Error broadcast_operands(RefPtr<TensorBase>* x_tensor, RefPtr<TensorBase>* y_tensor) {
     UnpackedShape x_shape = (*x_tensor)->shape().unpack();
     UnpackedShape y_shape = (*y_tensor)->shape().unpack();
     Expected<UnpackedShape> common_shape = x_shape.broadcast(y_shape);
     if (!common_shape.is_ok()) return std::move(common_shape.error());
 
     if (x_shape != *common_shape) {
-        Error err = broadcast_to_unchecked(x_tensor, *common_shape, lock);
+        Error err = broadcast_to_unchecked(x_tensor, *common_shape);
         if (!err.is_ok()) return err;
     }
     if (y_shape != *common_shape) {
-        Error err = broadcast_to_unchecked(y_tensor, *common_shape, lock);
+        Error err = broadcast_to_unchecked(y_tensor, *common_shape);
         if (!err.is_ok()) return err;
     }
     return OK;
@@ -2258,26 +2248,26 @@ static const char* bitwise_shift_op_str(BitwiseShiftOp op) {
 
 
 static Result<Value> pointer_add_sub_offset(TensorBase* ptr, TensorBase* offset,
-                                            BinaryArithmeticOp op, GlobalLock& lock) {
+                                            BinaryArithmeticOp op) {
     static LazyImporter add_func;
     static LazyImporter sub_func;
     PyObject* func;
     switch (op) {
     case BinaryArithmeticOp::Add:
-        func = add_func.get("cuda.lang._ir.ops", "pointer_add", lock);
+        func = add_func.get("cuda.lang._ir.ops", "pointer_add");
         break;
     case BinaryArithmeticOp::Sub:
-        func = sub_func.get("cuda.lang._ir.ops", "pointer_sub", lock);
+        func = sub_func.get("cuda.lang._ir.ops", "pointer_sub");
         break;
     default:
         CHECK_UNREACHABLE;
     }
     if (!func) return ErrorRaised;
 
-    PyPtr ptr_var = tensor_to_ir_var(ptr, lock);
+    PyPtr ptr_var = tensor_to_ir_var(ptr);
     if (!ptr_var) return ErrorRaised;
 
-    PyPtr offset_var = tensor_to_ir_var(offset, lock);
+    PyPtr offset_var = tensor_to_ir_var(offset);
     if (!offset_var) return ErrorRaised;
 
     PyPtr result_var = steal(PyObject_CallFunctionObjArgs(
@@ -2292,8 +2282,7 @@ static Result<Value> pointer_add_sub_offset(TensorBase* ptr, TensorBase* offset,
 
 // Computes `x op y` elementwise. Both tensors must be constant, with the same dtype and shape.
 static Expected<RefPtr<TensorBase>> constant_tensor_arith(TensorBase* x, TensorBase* y,
-                                                          BinaryArithmeticOp op,
-                                                          GlobalLock& lock) {
+                                                          BinaryArithmeticOp op) {
     using B = BinaryArithmeticOp;
     DType dtype = x->dtype;
     CHECK(y->dtype == dtype);
@@ -2370,7 +2359,7 @@ static Expected<RefPtr<TensorBase>> constant_tensor_arith(TensorBase* x, TensorB
         case B::Max: return apply_float([] (double a, double b) -> Expected<double>
                                         { return b > a ? b : a; });
         case B::Atan2:
-            return apply_float([&] (double a, double b) { return float_atan2(a, b, lock); });
+            return apply_float([&] (double a, double b) { return float_atan2(a, b); });
         }
     }
 
@@ -2433,8 +2422,7 @@ static bool prepare_tensorlike_operands(BorrowedValue x, BorrowedValue y,
 
 static Expected<RefPtr<TensorBase>> fpowi_tensorlike(BorrowedValue x, BorrowedValue y,
                                                      const RefPtr<TensorBase>& x_tensor,
-                                                     const RefPtr<TensorBase>& y_tensor,
-                                                     GlobalLock& lock) {
+                                                     const RefPtr<TensorBase>& y_tensor) {
     bool use_tile = (x_tensor ? x_tensor : y_tensor)->kind == TensorBase::kTile;
     RefPtr<TensorBase> base = x_tensor, exponent = y_tensor;
     if (!base) {
@@ -2448,16 +2436,16 @@ static Expected<RefPtr<TensorBase>> fpowi_tensorlike(BorrowedValue x, BorrowedVa
         exponent = std::move(*r);
     }
 
-    Error err = broadcast_operands(&base, &exponent, lock);
+    Error err = broadcast_operands(&base, &exponent);
     if (!err.is_ok()) return std::move(err);
 
-    PyPtr base_var = tensor_to_ir_var(base.get(), lock);
+    PyPtr base_var = tensor_to_ir_var(base.get());
     if (!base_var) return ErrorRaised;
-    PyPtr exp_var = tensor_to_ir_var(exponent.get(), lock);
+    PyPtr exp_var = tensor_to_ir_var(exponent.get());
     if (!exp_var) return ErrorRaised;
 
     static LazyImporter fpowi_func;
-    PyObject* func = fpowi_func.get("cuda.tile._ir.arithmetic_ops", "fpowi", lock);
+    PyObject* func = fpowi_func.get("cuda.tile._ir.arithmetic_ops", "fpowi");
     if (!func) return ErrorRaised;
     PyPtr result_var = steal(PyObject_CallFunctionObjArgs(
             func, base_var.get(), exp_var.get(), nullptr));
@@ -2472,19 +2460,18 @@ static Expected<RefPtr<TensorBase>> fpowi_tensorlike(BorrowedValue x, BorrowedVa
 static RefPtr<TensorBase> symbolic_tensor_arith(TensorBase* x, TensorBase* y,
                                                 BinaryArithmeticOp op,
                                                 std::optional<RoundingMode> rounding_mode,
-                                                bool flush_to_zero, bool propagate_nan,
-                                                GlobalLock& lock) {
+                                                bool flush_to_zero, bool propagate_nan) {
     using B = BinaryArithmeticOp;
-    PyPtr x_var = tensor_to_ir_var(x, lock);
+    PyPtr x_var = tensor_to_ir_var(x);
     if (!x_var) return {};
-    PyPtr y_var = tensor_to_ir_var(y, lock);
+    PyPtr y_var = tensor_to_ir_var(y);
     if (!y_var) return {};
 
     PyPtr result_var;
     if (op == B::Mod) {
         // Python-style modulo needs a sign correction on top of the C-style remainder
         static LazyImporter mod_func;
-        PyObject* func = mod_func.get("cuda.tile._ir.arithmetic_ops", "mod_tensorlike_raw", lock);
+        PyObject* func = mod_func.get("cuda.tile._ir.arithmetic_ops", "mod_tensorlike_raw");
         if (!func) return {};
         result_var = steal(PyObject_CallFunctionObjArgs(func, x_var.get(), y_var.get(), nullptr));
     } else {
@@ -2505,7 +2492,7 @@ static RefPtr<TensorBase> symbolic_tensor_arith(TensorBase* x, TensorBase* y,
 
         static LazyImporter raw_func;
         PyObject* func = raw_func.get(
-                "cuda.tile._ir.arithmetic_ops", "binary_arithmetic_tensorlike_raw", lock);
+                "cuda.tile._ir.arithmetic_ops", "binary_arithmetic_tensorlike_raw");
         if (!func) return {};
 
         PyObject* py_rounding_mode = rounding_mode.has_value()
@@ -2523,7 +2510,6 @@ static RefPtr<TensorBase> symbolic_tensor_arith(TensorBase* x, TensorBase* y,
 
 static Expected<Value> binary_arithmetic_tensorlike(
         BorrowedValue x, BorrowedValue y, BinaryArithmeticOp op,
-        GlobalLock& lock,
         std::optional<RoundingMode> rounding_mode = {},
         bool flush_to_zero = false,
         bool propagate_nan = false) {
@@ -2547,7 +2533,7 @@ static Expected<Value> binary_arithmetic_tensorlike(
         case B::Pow: res = PyNumber_Power(x_obj, y_obj, Py_None); break;
         case B::Min: res = pynumber_min_max(x_obj, y_obj, false).release(); break;
         case B::Max: res = pynumber_min_max(x_obj, y_obj, true).release(); break;
-        case B::Atan2: res = pynumber_atan2(x_obj, y_obj, lock).release(); break;
+        case B::Atan2: res = pynumber_atan2(x_obj, y_obj).release(); break;
         }
         if (!res) return error_from_python_exception();
         PyPtr res_guard = steal(res);
@@ -2573,7 +2559,7 @@ static Expected<Value> binary_arithmetic_tensorlike(
                 if (!r.is_ok()) return std::move(r.error());
                 y_tensor = std::move(*r);
             }
-            return pointer_add_sub_offset(x_tensor.get(), y_tensor.get(), op, lock);
+            return pointer_add_sub_offset(x_tensor.get(), y_tensor.get(), op);
         } else if (y_pointer && x_numeric && op == B::Add) {
             if (!x_tensor) {
                 Expected<RefPtr<TensorBase>> r = loosely_typed_scalar_to_default_dtype(
@@ -2581,7 +2567,7 @@ static Expected<Value> binary_arithmetic_tensorlike(
                 if (!r.is_ok()) return std::move(r.error());
                 x_tensor = std::move(*r);
             }
-            return pointer_add_sub_offset(y_tensor.get(), x_tensor.get(), op, lock);
+            return pointer_add_sub_offset(y_tensor.get(), x_tensor.get(), op);
         } else {
             return Value::not_implemented();
         }
@@ -2600,13 +2586,13 @@ static Expected<Value> binary_arithmetic_tensorlike(
     if (op == B::Pow && !rounding_mode.has_value()
             && ((x_tensor && x_tensor->is_symbolic()) || (y_tensor && y_tensor->is_symbolic()))
             && x.is_unrestricted_float_tensor_like() && y.is_integer_tensor_like()) {
-        Expected<RefPtr<TensorBase>> res = fpowi_tensorlike(x, y, x_tensor, y_tensor, lock);
+        Expected<RefPtr<TensorBase>> res = fpowi_tensorlike(x, y, x_tensor, y_tensor);
         if (!res.is_ok()) return std::move(res.error());
         return Value::from_tensor(std::move(*res));
     }
 
     bool force_float = op == B::TrueDiv;
-    Error promoted = promote_operands(&x_tensor, &y_tensor, x, y, force_float, lock);
+    Error promoted = promote_operands(&x_tensor, &y_tensor, x, y, force_float);
     if (!promoted.is_ok()) return std::move(promoted);
 
     if (op == B::Atan2 && !is_float_dtype(x_tensor->dtype))
@@ -2623,19 +2609,19 @@ static Expected<Value> binary_arithmetic_tensorlike(
         return make_error(Error::kTypeError, "Exponentiation of non-constant integers is not"
                           " supported. Please cast the base to a float dtype.");
 
-    Error broadcasted = broadcast_operands(&x_tensor, &y_tensor, lock);
+    Error broadcasted = broadcast_operands(&x_tensor, &y_tensor);
     if (!broadcasted.is_ok()) return std::move(broadcasted);
 
     // At this point, both tensors have same dtype & shape
     if (!symbolic) {
         Expected<RefPtr<TensorBase>> res = constant_tensor_arith(
-                x_tensor.get(), y_tensor.get(), op, lock);
+                x_tensor.get(), y_tensor.get(), op);
         if (!res.is_ok()) return std::move(res.error());
         return Value::from_tensor(std::move(*res));
     }
 
     RefPtr<TensorBase> res = symbolic_tensor_arith(
-            x_tensor.get(), y_tensor.get(), op, rounding_mode, flush_to_zero, propagate_nan, lock);
+            x_tensor.get(), y_tensor.get(), op, rounding_mode, flush_to_zero, propagate_nan);
     if (!res) return ErrorRaised;
     return Value::from_tensor(std::move(res));
 }
@@ -2671,10 +2657,8 @@ static PyObject* py_binary_arithmetic_tensorlike(PyObject*, PyObject* args) {
 
     BorrowedValue x_val = borrowed_value_from_pyobject(x);
     BorrowedValue y_val = borrowed_value_from_pyobject(y);
-    GlobalLock lock;
     Expected<Value> res = binary_arithmetic_tensorlike(
-            x_val, y_val, *op, lock,
-            rounding_mode, flush_to_zero, propagate_nan);
+            x_val, y_val, *op, rounding_mode, flush_to_zero, propagate_nan);
 
     if (res.is_ok() && res->is_not_implemented()) {
         res = make_error(Error::kTypeError, "Unsupported operand types for ",
@@ -2699,7 +2683,7 @@ static RefPtr<TensorBase> truncate_pylong_to_tensor(PyObject* pylong, DType to, 
 // depends on the bit width. A loosely typed operand is converted to the other operand's dtype,
 // modulo 2**bitwidth.
 static Expected<Value> binary_wrapping_arithmetic_tensorlike(
-        BorrowedValue x, BorrowedValue y, BinaryWrappingOp op, GlobalLock& lock) {
+        BorrowedValue x, BorrowedValue y, BinaryWrappingOp op) {
     if (!x.is_integer_tensor_like())
         return make_error(Error::kTypeError, "Left-hand side of ", binary_wrapping_op_str(op),
                           " must be an integer, not ", use_type(x));
@@ -2730,7 +2714,7 @@ static Expected<Value> binary_wrapping_arithmetic_tensorlike(
                           y_tensor->dtype);
     }
 
-    Error broadcasted = broadcast_operands(&x_tensor, &y_tensor, lock);
+    Error broadcasted = broadcast_operands(&x_tensor, &y_tensor);
     if (!broadcasted.is_ok()) return std::move(broadcasted);
 
     if (!x_tensor->is_symbolic() && !y_tensor->is_symbolic()) {
@@ -2749,7 +2733,7 @@ static Expected<Value> binary_wrapping_arithmetic_tensorlike(
     }
 
     RefPtr<TensorBase> res = symbolic_tensor_arith(
-            x_tensor.get(), y_tensor.get(), arith_op, std::nullopt, false, false, lock);
+            x_tensor.get(), y_tensor.get(), arith_op, std::nullopt, false, false);
     if (!res) return ErrorRaised;
     return Value::from_tensor(std::move(res));
 }
@@ -2781,9 +2765,8 @@ static PyObject* py_binary_wrapping_arithmetic_tensorlike(PyObject*, PyObject* a
 
     BorrowedValue x_val = borrowed_value_from_pyobject(x);
     BorrowedValue y_val = borrowed_value_from_pyobject(y);
-    GlobalLock lock;
     return release_pyobject_or_raise(
-            binary_wrapping_arithmetic_tensorlike(x_val, y_val, *op, lock), compile_time_errors);
+            binary_wrapping_arithmetic_tensorlike(x_val, y_val, *op), compile_time_errors);
 }
 
 
@@ -2833,7 +2816,7 @@ static Expected<RefPtr<TensorBase>> constant_tensor_compare(TensorBase* x, Tenso
 }
 
 static Expected<Value> comparison_tensorlike(
-        BorrowedValue x, BorrowedValue y, ComparisonOp op, GlobalLock& lock) {
+        BorrowedValue x, BorrowedValue y, ComparisonOp op) {
     RefPtr<TensorBase> x_tensor, y_tensor;
     if (!prepare_tensorlike_operands(x, y, &x_tensor, &y_tensor))
         return Value::not_implemented();
@@ -2870,9 +2853,9 @@ static Expected<Value> comparison_tensorlike(
     }
 
     // Tensors of the same non-numeric dtype pass through promotion unchanged
-    Error promoted = promote_operands(&x_tensor, &y_tensor, x, y, false, lock);
+    Error promoted = promote_operands(&x_tensor, &y_tensor, x, y, false);
     if (!promoted.is_ok()) return std::move(promoted);
-    Error broadcasted = broadcast_operands(&x_tensor, &y_tensor, lock);
+    Error broadcasted = broadcast_operands(&x_tensor, &y_tensor);
     if (!broadcasted.is_ok()) return std::move(broadcasted);
 
     // At this point, both tensors have same dtype & shape
@@ -2883,9 +2866,9 @@ static Expected<Value> comparison_tensorlike(
         return Value::from_tensor(std::move(*res));
     }
 
-    PyPtr x_var = tensor_to_ir_var(x_tensor.get(), lock);
+    PyPtr x_var = tensor_to_ir_var(x_tensor.get());
     if (!x_var) return ErrorRaised;
-    PyPtr y_var = tensor_to_ir_var(y_tensor.get(), lock);
+    PyPtr y_var = tensor_to_ir_var(y_tensor.get());
     if (!y_var) return ErrorRaised;
 
     PyObject* fn = nullptr;
@@ -2898,7 +2881,7 @@ static Expected<Value> comparison_tensorlike(
 
     static LazyImporter compare_func;
     PyObject* func = compare_func.get(
-            "cuda.tile._ir.arithmetic_ops", "compare_tensorlike_raw", lock);
+            "cuda.tile._ir.arithmetic_ops", "compare_tensorlike_raw");
     if (!func) return ErrorRaised;
 
     PyPtr result_var = steal(PyObject_CallFunctionObjArgs(
@@ -2936,8 +2919,7 @@ static PyObject* py_comparison_tensorlike(PyObject*, PyObject* args) {
 
     BorrowedValue x_val = borrowed_value_from_pyobject(x);
     BorrowedValue y_val = borrowed_value_from_pyobject(y);
-    GlobalLock lock;
-    Expected<Value> res = comparison_tensorlike(x_val, y_val, *op, lock);
+    Expected<Value> res = comparison_tensorlike(x_val, y_val, *op);
 
     if (res.is_ok() && res->is_not_implemented()) {
         res = make_error(Error::kTypeError, "Unsupported operand types for ",
@@ -2953,8 +2935,7 @@ static PyObject* tensor_richcompare(PyObject* self, PyObject* other, int py_op) 
 
     BorrowedValue xval = borrowed_value_from_pyobject(self);
     BorrowedValue yval = borrowed_value_from_pyobject(other);
-    GlobalLock lock;
-    Result<Value> res = to_result(comparison_tensorlike(xval, yval, op, lock));
+    Result<Value> res = to_result(comparison_tensorlike(xval, yval, op));
     if (!res.is_ok()) return nullptr;
 
     return res->borrow().to_pyobject().release();
@@ -2982,7 +2963,7 @@ static Expected<RefPtr<TensorBase>> constant_tensor_binary_bitwise(
 }
 
 static Expected<Value> binary_bitwise_tensorlike(
-        BorrowedValue x, BorrowedValue y, BinaryBitwiseOp op, GlobalLock& lock) {
+        BorrowedValue x, BorrowedValue y, BinaryBitwiseOp op) {
     RefPtr<TensorBase> x_tensor, y_tensor;
     if (!prepare_tensorlike_operands(x, y, &x_tensor, &y_tensor))
         return Value::not_implemented();
@@ -3023,9 +3004,9 @@ static Expected<Value> binary_bitwise_tensorlike(
         return make_error(Error::kTypeError,
                           "Bitwise operations do not support bool and int8 operands");
 
-    Error promoted = promote_operands(&x_tensor, &y_tensor, x, y, false, lock);
+    Error promoted = promote_operands(&x_tensor, &y_tensor, x, y, false);
     if (!promoted.is_ok()) return std::move(promoted);
-    Error broadcasted = broadcast_operands(&x_tensor, &y_tensor, lock);
+    Error broadcasted = broadcast_operands(&x_tensor, &y_tensor);
     if (!broadcasted.is_ok()) return std::move(broadcasted);
 
     // At this point, both tensors have same dtype & shape
@@ -3037,9 +3018,9 @@ static Expected<Value> binary_bitwise_tensorlike(
         return Value::from_tensor(std::move(*res));
     }
 
-    PyPtr x_var = tensor_to_ir_var(x_tensor.get(), lock);
+    PyPtr x_var = tensor_to_ir_var(x_tensor.get());
     if (!x_var) return ErrorRaised;
-    PyPtr y_var = tensor_to_ir_var(y_tensor.get(), lock);
+    PyPtr y_var = tensor_to_ir_var(y_tensor.get());
     if (!y_var) return ErrorRaised;
 
     PyObject* fn = nullptr;
@@ -3052,7 +3033,7 @@ static Expected<Value> binary_bitwise_tensorlike(
 
     static LazyImporter bitwise_func;
     PyObject* func = bitwise_func.get(
-            "cuda.tile._ir.arithmetic_ops", "binary_bitwise_tensorlike_raw", lock);
+            "cuda.tile._ir.arithmetic_ops", "binary_bitwise_tensorlike_raw");
     if (!func) return ErrorRaised;
 
     PyPtr result_var = steal(PyObject_CallFunctionObjArgs(
@@ -3090,8 +3071,7 @@ static PyObject* py_binary_bitwise_tensorlike(PyObject*, PyObject* args) {
 
     BorrowedValue x_val = borrowed_value_from_pyobject(x);
     BorrowedValue y_val = borrowed_value_from_pyobject(y);
-    GlobalLock lock;
-    Expected<Value> res = binary_bitwise_tensorlike(x_val, y_val, *op, lock);
+    Expected<Value> res = binary_bitwise_tensorlike(x_val, y_val, *op);
 
     if (res.is_ok() && res->is_not_implemented()) {
         res = make_error(Error::kTypeError, "Unsupported operand types for ",
@@ -3155,7 +3135,7 @@ static Expected<RefPtr<TensorBase>> constant_tensor_bitwise_shift(
 }
 
 static Expected<Value> bitwise_shift_tensorlike(
-        BorrowedValue x, BorrowedValue y, BitwiseShiftOp op, GlobalLock& lock) {
+        BorrowedValue x, BorrowedValue y, BitwiseShiftOp op) {
     RefPtr<TensorBase> x_tensor, y_tensor;
     if (!prepare_tensorlike_operands(x, y, &x_tensor, &y_tensor))
         return Value::not_implemented();
@@ -3188,9 +3168,9 @@ static Expected<Value> bitwise_shift_tensorlike(
         return make_error(Error::kTypeError,
                           "Right-hand side of bitwise shift must be an integer, not ", use_type(y));
 
-    Error promoted = promote_operands(&x_tensor, &y_tensor, x, y, false, lock);
+    Error promoted = promote_operands(&x_tensor, &y_tensor, x, y, false);
     if (!promoted.is_ok()) return std::move(promoted);
-    Error broadcasted = broadcast_operands(&x_tensor, &y_tensor, lock);
+    Error broadcasted = broadcast_operands(&x_tensor, &y_tensor);
     if (!broadcasted.is_ok()) return std::move(broadcasted);
 
     // At this point, both tensors have same dtype & shape
@@ -3202,9 +3182,9 @@ static Expected<Value> bitwise_shift_tensorlike(
         return Value::from_tensor(std::move(*res));
     }
 
-    PyPtr x_var = tensor_to_ir_var(x_tensor.get(), lock);
+    PyPtr x_var = tensor_to_ir_var(x_tensor.get());
     if (!x_var) return ErrorRaised;
-    PyPtr y_var = tensor_to_ir_var(y_tensor.get(), lock);
+    PyPtr y_var = tensor_to_ir_var(y_tensor.get());
     if (!y_var) return ErrorRaised;
 
     PyObject* fn = nullptr;
@@ -3217,7 +3197,7 @@ static Expected<Value> bitwise_shift_tensorlike(
 
     static LazyImporter shift_func;
     PyObject* func = shift_func.get(
-            "cuda.tile._ir.arithmetic_ops", "bitwise_shift_tensorlike_raw", lock);
+            "cuda.tile._ir.arithmetic_ops", "bitwise_shift_tensorlike_raw");
     if (!func) return ErrorRaised;
 
     PyPtr result_var = steal(PyObject_CallFunctionObjArgs(
@@ -3255,8 +3235,7 @@ static PyObject* py_bitwise_shift_tensorlike(PyObject*, PyObject* args) {
 
     BorrowedValue x_val = borrowed_value_from_pyobject(x);
     BorrowedValue y_val = borrowed_value_from_pyobject(y);
-    GlobalLock lock;
-    Expected<Value> res = bitwise_shift_tensorlike(x_val, y_val, *op, lock);
+    Expected<Value> res = bitwise_shift_tensorlike(x_val, y_val, *op);
 
     if (res.is_ok() && res->is_not_implemented()) {
         res = make_error(Error::kTypeError, "Unsupported operand types for ",
@@ -3270,15 +3249,14 @@ template <BinaryArithmeticOp Op>
 static PyObject* tensor_arith_binop(PyObject* x, PyObject* y) {
     BorrowedValue xval = borrowed_value_from_pyobject(x);
     BorrowedValue yval = borrowed_value_from_pyobject(y);
-    GlobalLock lock;
-    Result<Value> res = to_result(binary_arithmetic_tensorlike(xval, yval, Op, lock));
+    Result<Value> res = to_result(binary_arithmetic_tensorlike(xval, yval, Op));
     if (!res.is_ok()) return nullptr;
 
     return res->borrow().to_pyobject().release();
 }
 
 // Returns a tuple (x // y, x % y), or NotImplemented
-static Expected<Value> divmod_tensorlike(BorrowedValue x, BorrowedValue y, GlobalLock& lock) {
+static Expected<Value> divmod_tensorlike(BorrowedValue x, BorrowedValue y) {
     if (x.is_boolean_tensor_like() && y.is_boolean_tensor_like())
         return make_error(Error::kTypeError, "divmod() does not support booleans");
 
@@ -3300,11 +3278,11 @@ static Expected<Value> divmod_tensorlike(BorrowedValue x, BorrowedValue y, Globa
                           "divmod() is not implemented for floating point values");
 
     Expected<Value> quotient = binary_arithmetic_tensorlike(
-            x, y, BinaryArithmeticOp::FloorDiv, lock);
+            x, y, BinaryArithmeticOp::FloorDiv);
     if (!quotient.is_ok()) return std::move(quotient.error());
     if (quotient->is_not_implemented()) return BorrowedValue::not_implemented().to_owned();
 
-    Expected<Value> remainder = binary_arithmetic_tensorlike(x, y, BinaryArithmeticOp::Mod, lock);
+    Expected<Value> remainder = binary_arithmetic_tensorlike(x, y, BinaryArithmeticOp::Mod);
     if (!remainder.is_ok()) return std::move(remainder.error());
     if (remainder->is_not_implemented()) return BorrowedValue::not_implemented().to_owned();
 
@@ -3314,8 +3292,7 @@ static Expected<Value> divmod_tensorlike(BorrowedValue x, BorrowedValue y, Globa
 static PyObject* tensor_nb_divmod(PyObject* x, PyObject* y) {
     BorrowedValue xval = borrowed_value_from_pyobject(x);
     BorrowedValue yval = borrowed_value_from_pyobject(y);
-    GlobalLock lock;
-    Expected<Value> res = divmod_tensorlike(xval, yval, lock);
+    Expected<Value> res = divmod_tensorlike(xval, yval);
     return release_pyobject_or_raise(std::move(res), false);
 }
 
@@ -3326,8 +3303,7 @@ static PyObject* py_divmod_tensorlike(PyObject*, PyObject* args) {
 
     BorrowedValue x_val = borrowed_value_from_pyobject(x);
     BorrowedValue y_val = borrowed_value_from_pyobject(y);
-    GlobalLock lock;
-    Expected<Value> res = divmod_tensorlike(x_val, y_val, lock);
+    Expected<Value> res = divmod_tensorlike(x_val, y_val);
 
     if (res.is_ok() && res->is_not_implemented()) {
         res = make_error(Error::kTypeError, "Unsupported operand types for divmod(): '",
@@ -3345,8 +3321,7 @@ template <BinaryBitwiseOp Op>
 static PyObject* tensor_bitwise_binop(PyObject* x, PyObject* y) {
     BorrowedValue xval = borrowed_value_from_pyobject(x);
     BorrowedValue yval = borrowed_value_from_pyobject(y);
-    GlobalLock lock;
-    Result<Value> res = to_result(binary_bitwise_tensorlike(xval, yval, Op, lock));
+    Result<Value> res = to_result(binary_bitwise_tensorlike(xval, yval, Op));
     if (!res.is_ok()) return nullptr;
     return res->borrow().to_pyobject().release();
 }
@@ -3355,8 +3330,7 @@ template <BitwiseShiftOp Op>
 static PyObject* tensor_bitwise_shift_binop(PyObject* x, PyObject* y) {
     BorrowedValue xval = borrowed_value_from_pyobject(x);
     BorrowedValue yval = borrowed_value_from_pyobject(y);
-    GlobalLock lock;
-    Result<Value> res = to_result(bitwise_shift_tensorlike(xval, yval, Op, lock));
+    Result<Value> res = to_result(bitwise_shift_tensorlike(xval, yval, Op));
     if (!res.is_ok()) return nullptr;
     return res->borrow().to_pyobject().release();
 }
@@ -3460,9 +3434,9 @@ static int tensor_bool(PyObject* self) {
 
 // ----- Tensors: unary elementwise -----
 
-static PyObject* get_unary_raw_func(GlobalLock& lock) {
+static PyObject* get_unary_raw_func() {
     static LazyImporter func;
-    return func.get("cuda.tile._ir.arithmetic_ops", "unary_raw", lock);
+    return func.get("cuda.tile._ir.arithmetic_ops", "unary_raw");
 }
 
 // Negates a constant integer or float tensor elementwise. Like subtraction, integer negation
@@ -3494,9 +3468,9 @@ static Expected<RefPtr<TensorBase>> constant_tensor_negative(TensorBase* x) {
     }
 }
 
-static Expected<RefPtr<TensorBase>> tensor_negative(RefPtr<TensorBase> x, GlobalLock& lock) {
+static Expected<RefPtr<TensorBase>> tensor_negative(RefPtr<TensorBase> x) {
     if (x->dtype == k_bool_) {
-        Expected<RefPtr<TensorBase>> converted = tensor_astype(x.get(), k_int32, lock);
+        Expected<RefPtr<TensorBase>> converted = tensor_astype(x.get(), k_int32);
         if (!converted.is_ok()) return std::move(converted.error());
         x = std::move(*converted);
     } else if (!is_arithmetic_numeric_dtype(x->dtype)) {
@@ -3507,7 +3481,7 @@ static Expected<RefPtr<TensorBase>> tensor_negative(RefPtr<TensorBase> x, Global
     if (!x->is_symbolic())
         return constant_tensor_negative(x.get());
 
-    PyObject* func = get_unary_raw_func(lock);
+    PyObject* func = get_unary_raw_func();
     if (!func) return ErrorRaised;
 
     PyPtr result_var = steal(PyObject_CallFunctionObjArgs(
@@ -3520,16 +3494,15 @@ static Expected<RefPtr<TensorBase>> tensor_negative(RefPtr<TensorBase> x, Global
 }
 
 static PyObject* tensor_nb_negative(PyObject* self) {
-    GlobalLock lock;
     Result<RefPtr<TensorBase>> res = to_result(tensor_negative(
-            newref(reinterpret_cast<TensorBase*>(self)), lock));
+            newref(reinterpret_cast<TensorBase*>(self))));
     if (!res.is_ok()) return nullptr;
     return reinterpret_cast<PyObject*>(res->release());
 }
 
-static Expected<RefPtr<TensorBase>> tensor_positive(RefPtr<TensorBase> x, GlobalLock& lock) {
+static Expected<RefPtr<TensorBase>> tensor_positive(RefPtr<TensorBase> x) {
     if (x->dtype == k_bool_)
-        return tensor_astype(x.get(), k_int32, lock);
+        return tensor_astype(x.get(), k_int32);
     if (!is_arithmetic_numeric_dtype(x->dtype))
         return make_error(Error::kTypeError,
                           "Operand of unary `+` must have an arithmetic dtype, not ", x->dtype);
@@ -3537,9 +3510,8 @@ static Expected<RefPtr<TensorBase>> tensor_positive(RefPtr<TensorBase> x, Global
 }
 
 static PyObject* tensor_nb_positive(PyObject* self) {
-    GlobalLock lock;
     Result<RefPtr<TensorBase>> res = to_result(tensor_positive(
-            newref(reinterpret_cast<TensorBase*>(self)), lock));
+            newref(reinterpret_cast<TensorBase*>(self))));
     if (!res.is_ok()) return nullptr;
     return reinterpret_cast<PyObject*>(res->release());
 }
@@ -3557,7 +3529,7 @@ static Expected<RefPtr<TensorBase>> constant_tensor_invert(TensorBase* x) {
     }
 }
 
-static Expected<RefPtr<TensorBase>> tensor_invert(TensorBase* x, GlobalLock& lock) {
+static Expected<RefPtr<TensorBase>> tensor_invert(TensorBase* x) {
     if (x->dtype == k_bool_) {
         if (!x->is_symbolic())
             return make_error(Error::kTypeError, "`~` is not supported for boolean constants;"
@@ -3570,7 +3542,7 @@ static Expected<RefPtr<TensorBase>> tensor_invert(TensorBase* x, GlobalLock& loc
     if (!x->is_symbolic())
         return constant_tensor_invert(x);
 
-    PyObject* func = get_unary_raw_func(lock);
+    PyObject* func = get_unary_raw_func();
     if (!func) return ErrorRaised;
 
     PyPtr result_var = steal(PyObject_CallFunctionObjArgs(
@@ -3583,9 +3555,8 @@ static Expected<RefPtr<TensorBase>> tensor_invert(TensorBase* x, GlobalLock& loc
 }
 
 static PyObject* tensor_nb_invert(PyObject* self) {
-    GlobalLock lock;
     Result<RefPtr<TensorBase>> res = to_result(tensor_invert(
-            reinterpret_cast<TensorBase*>(self), lock));
+            reinterpret_cast<TensorBase*>(self)));
     if (!res.is_ok()) return nullptr;
     return reinterpret_cast<PyObject*>(res->release());
 }
@@ -3603,13 +3574,13 @@ static Expected<Value> loosely_typed_unary_result(PyObject* res) {
     return val;
 }
 
-static Expected<Value> tensorlike_negative(BorrowedValue x, GlobalLock& lock) {
+static Expected<Value> tensorlike_negative(BorrowedValue x) {
     if (x.is_loosely_typed_scalar())
         return loosely_typed_unary_result(PyNumber_Negative(x.as_loosely_typed_scalar()));
     if (!x.is_tensor())
         return make_error(Error::kTypeError,
                           "Operand of unary `-` must be a tensor or a number, not ", use_type(x));
-    Expected<RefPtr<TensorBase>> res = tensor_negative(newref(x.as_tensor()), lock);
+    Expected<RefPtr<TensorBase>> res = tensor_negative(newref(x.as_tensor()));
     if (!res.is_ok()) return std::move(res.error());
     return Value::from_tensor(std::move(*res));
 }
@@ -3621,17 +3592,16 @@ static PyObject* py_tensorlike_negative(PyObject*, PyObject* args) {
         return nullptr;
 
     BorrowedValue x_val = borrowed_value_from_pyobject(x);
-    GlobalLock lock;
-    return release_pyobject_or_raise(tensorlike_negative(x_val, lock), compile_time_errors);
+    return release_pyobject_or_raise(tensorlike_negative(x_val), compile_time_errors);
 }
 
-static Expected<Value> tensorlike_positive(BorrowedValue x, GlobalLock& lock) {
+static Expected<Value> tensorlike_positive(BorrowedValue x) {
     if (x.is_loosely_typed_scalar())
         return loosely_typed_unary_result(PyNumber_Positive(x.as_loosely_typed_scalar()));
     if (!x.is_tensor())
         return make_error(Error::kTypeError,
                           "Operand of unary `+` must be a tensor or a number, not ", use_type(x));
-    Expected<RefPtr<TensorBase>> res = tensor_positive(newref(x.as_tensor()), lock);
+    Expected<RefPtr<TensorBase>> res = tensor_positive(newref(x.as_tensor()));
     if (!res.is_ok()) return std::move(res.error());
     return Value::from_tensor(std::move(*res));
 }
@@ -3643,11 +3613,10 @@ static PyObject* py_tensorlike_positive(PyObject*, PyObject* args) {
         return nullptr;
 
     BorrowedValue x_val = borrowed_value_from_pyobject(x);
-    GlobalLock lock;
-    return release_pyobject_or_raise(tensorlike_positive(x_val, lock), compile_time_errors);
+    return release_pyobject_or_raise(tensorlike_positive(x_val), compile_time_errors);
 }
 
-static Expected<Value> tensorlike_invert(BorrowedValue x, GlobalLock& lock) {
+static Expected<Value> tensorlike_invert(BorrowedValue x) {
     if (x.is_loosely_typed_scalar()) {
         PyObject* x_obj = x.as_loosely_typed_scalar();
         if (PyBool_Check(x_obj))
@@ -3661,7 +3630,7 @@ static Expected<Value> tensorlike_invert(BorrowedValue x, GlobalLock& lock) {
     if (!x.is_tensor())
         return make_error(Error::kTypeError,
                           "Operand of `~` must be an integer or boolean, not ", use_type(x));
-    Expected<RefPtr<TensorBase>> res = tensor_invert(x.as_tensor(), lock);
+    Expected<RefPtr<TensorBase>> res = tensor_invert(x.as_tensor());
     if (!res.is_ok()) return std::move(res.error());
     return Value::from_tensor(std::move(*res));
 }
@@ -3673,24 +3642,22 @@ static PyObject* py_tensorlike_invert(PyObject*, PyObject* args) {
         return nullptr;
 
     BorrowedValue x_val = borrowed_value_from_pyobject(x);
-    GlobalLock lock;
-    return release_pyobject_or_raise(tensorlike_invert(x_val, lock), compile_time_errors);
+    return release_pyobject_or_raise(tensorlike_invert(x_val), compile_time_errors);
 }
 
 
 // ----- Vector implementation -----
 
 // Emits a getitem operation. The index is cast to int32 on the Python side.
-static RefPtr<TensorBase> vector_getitem_symbolic(Vector* vector, TensorBase* index,
-                                                  GlobalLock& lock) {
-    PyPtr vector_var = tensor_to_ir_var(vector, lock);
+static RefPtr<TensorBase> vector_getitem_symbolic(Vector* vector, TensorBase* index) {
+    PyPtr vector_var = tensor_to_ir_var(vector);
     if (!vector_var) return {};
-    PyPtr index_var = tensor_to_ir_var(index, lock);
+    PyPtr index_var = tensor_to_ir_var(index);
     if (!index_var) return {};
 
     static LazyImporter getitem_func;
     PyObject* func = getitem_func.get(
-            "cuda.lang._ir.op_impl.vector_impl", "vector_getitem_raw", lock);
+            "cuda.lang._ir.op_impl.vector_impl", "vector_getitem_raw");
     if (!func) return {};
     PyPtr result_var = steal(PyObject_CallFunctionObjArgs(
             func, vector_var.get(), index_var.get(), nullptr));
@@ -3704,8 +3671,7 @@ static RefPtr<TensorBase> vector_getitem_symbolic(Vector* vector, TensorBase* in
 }
 
 // `index` must be in range
-static RefPtr<TensorBase> vector_getitem_constant_index(Vector* vector, size_t index,
-                                                        GlobalLock& lock) {
+static RefPtr<TensorBase> vector_getitem_constant_index(Vector* vector, size_t index) {
     switch (vector->tag_) {
     case TensorBase::kBits:
     case TensorBase::kBitsArray:
@@ -3721,7 +3687,7 @@ static RefPtr<TensorBase> vector_getitem_constant_index(Vector* vector, size_t i
             RefPtr<TensorBase> index_tensor = tensor_new_scalar_or_0d_tile(
                     k_int32, static_cast<Bits>(index), false);
             if (!index_tensor) return {};
-            return vector_getitem_symbolic(vector, index_tensor.get(), lock);
+            return vector_getitem_symbolic(vector, index_tensor.get());
         }
     }
     CHECK_UNREACHABLE;
@@ -3804,8 +3770,7 @@ static Expected<Py_ssize_t> slice_index_value(const Value& index, const Subject&
 }
 
 // Like cuda.lang's vector slicing, which doesn't allow an empty result
-static Expected<RefPtr<TensorBase>> vector_slice(Vector* vector, const SliceValue& slice,
-                                                 GlobalLock& lock) {
+static Expected<RefPtr<TensorBase>> vector_slice(Vector* vector, const SliceValue& slice) {
     Expected<Py_ssize_t> step = slice_index_value(slice.step, Subject{"Slice step"}, 1);
     if (!step.is_ok()) return std::move(step.error());
     if (*step == 0)
@@ -3851,7 +3816,7 @@ static Expected<RefPtr<TensorBase>> vector_slice(Vector* vector, const SliceValu
 
         static LazyImporter select_func;
         PyObject* func = select_func.get(
-                "cuda.lang._ir.op_impl.vector_impl", "vector_select_elements", lock);
+                "cuda.lang._ir.op_impl.vector_impl", "vector_select_elements");
         if (!func) return ErrorRaised;
         PyPtr result_var = steal(PyObject_CallFunctionObjArgs(
                 func, vector->var(), indices.get(), nullptr));
@@ -3865,19 +3830,19 @@ static Expected<RefPtr<TensorBase>> vector_slice(Vector* vector, const SliceValu
     return RefPtr<TensorBase>(std::move(res));
 }
 
-static Expected<Value> vector_getitem(BorrowedValue self, BorrowedValue key, GlobalLock& lock) {
+static Expected<Value> vector_getitem(BorrowedValue self, BorrowedValue key) {
     CHECK(self.is_tensor() && self.as_tensor()->kind == TensorBase::kVector);
     Vector* vector = static_cast<Vector*>(self.as_tensor());
 
     RefPtr<TensorBase> res;
     if (key.is_slice()) {
         RefPtr<SliceValue> slice = key.as_slice();
-        Expected<RefPtr<TensorBase>> sliced = vector_slice(vector, *slice, lock);
+        Expected<RefPtr<TensorBase>> sliced = vector_slice(vector, *slice);
         if (!sliced.is_ok()) return std::move(sliced.error());
         res = std::move(*sliced);
     } else if (key.is_tensor() && key.as_tensor()->is_symbolic()
                && is_integer_dtype(key.tensor_dtype()) && key.as_tensor()->shape().ndim() == 0) {
-        res = vector_getitem_symbolic(vector, key.as_tensor(), lock);
+        res = vector_getitem_symbolic(vector, key.as_tensor());
     } else if (key.is_loosely_typed_int() || key.is_tensor()) {
         int overflow;
         Expected<int64_t> index = require_constant_int(key, Subject{"Vector index"}, &overflow);
@@ -3886,7 +3851,7 @@ static Expected<Value> vector_getitem(BorrowedValue self, BorrowedValue key, Glo
         if (overflow || *index < 0 || *index >= vector->length)
             return make_error(Error::kIndexError, "Vector index ", key,
                               " is out of range for a vector of length ", vector->length);
-        res = vector_getitem_constant_index(vector, static_cast<size_t>(*index), lock);
+        res = vector_getitem_constant_index(vector, static_cast<size_t>(*index));
     } else {
         return make_error(Error::kTypeError, "Vector index must be an integer or a slice, not ",
                           use_type(key));
@@ -3899,8 +3864,7 @@ static Expected<Value> vector_getitem(BorrowedValue self, BorrowedValue key, Glo
 static PyObject* vector_mp_subscript(PyObject* self, PyObject* key) {
     BorrowedValue key_val = borrowed_value_from_pyobject(key);
     BorrowedValue self_val = BorrowedValue::from_tensor(reinterpret_cast<TensorBase*>(self));
-    GlobalLock lock;
-    Result<Value> res = to_result(vector_getitem(self_val, key_val, lock));
+    Result<Value> res = to_result(vector_getitem(self_val, key_val));
     if (!res.is_ok()) return nullptr;
     return res->borrow().to_pyobject().release();
 }
@@ -3932,9 +3896,8 @@ static PyObject* vector_sq_item(PyObject* self, Py_ssize_t index) {
               " is out of range for a vector of length ", vector->length);
         return nullptr;
     }
-    GlobalLock lock;
     RefPtr<TensorBase> res = vector_getitem_constant_index(
-            vector, static_cast<size_t>(index), lock);
+            vector, static_cast<size_t>(index));
     return reinterpret_cast<PyObject*>(res.release());
 }
 
@@ -3968,17 +3931,17 @@ static Expected<Value> constant_vector_with_item(Vector* vector, size_t index, B
 
 // Emits a VectorInsert. `index` must be an int32 scalar, and `item` must have the vector's dtype.
 static Expected<Value> symbolic_vector_with_item(Vector* vector, TensorBase* index,
-                                                 TensorBase* item, GlobalLock& lock) {
-    PyPtr vector_var = tensor_to_ir_var(vector, lock);
+                                                 TensorBase* item) {
+    PyPtr vector_var = tensor_to_ir_var(vector);
     if (!vector_var) return ErrorRaised;
-    PyPtr index_var = tensor_to_ir_var(index, lock);
+    PyPtr index_var = tensor_to_ir_var(index);
     if (!index_var) return ErrorRaised;
-    PyPtr item_var = tensor_to_ir_var(item, lock);
+    PyPtr item_var = tensor_to_ir_var(item);
     if (!item_var) return ErrorRaised;
 
     static LazyImporter with_item_func;
     PyObject* func = with_item_func.get(
-            "cuda.lang._ir.op_impl.vector_impl", "vector_with_item_raw", lock);
+            "cuda.lang._ir.op_impl.vector_impl", "vector_with_item_raw");
     if (!func) return ErrorRaised;
     PyPtr result_var = steal(PyObject_CallFunctionObjArgs(
             func, vector_var.get(), index_var.get(), item_var.get(), nullptr));
@@ -3994,7 +3957,7 @@ static Expected<Value> symbolic_vector_with_item(Vector* vector, TensorBase* ind
 // vector_with_item_raw() in vector_impl.py, the index is implicitly cast to int32, and the value
 // to the vector's dtype.
 static Expected<Value> vector_with_item(Vector* vector, BorrowedValue index,
-                                        BorrowedValue value, GlobalLock& lock) {
+                                        BorrowedValue value) {
     // Booleans are accepted, as in implicit_cast()
     if (!(index.is_integer_tensor_like() || index.is_boolean_tensor_like())
             || !index.is_0d_tensor_like())
@@ -4004,9 +3967,9 @@ static Expected<Value> vector_with_item(Vector* vector, BorrowedValue index,
         return make_error(Error::kTypeError, "Vector item must be a scalar, not ",
                           use_type(value));
 
-    Expected<RefPtr<TensorBase>> index_tensor = implicit_cast(index, k_int32, false, lock);
+    Expected<RefPtr<TensorBase>> index_tensor = implicit_cast(index, k_int32, false);
     if (!index_tensor.is_ok()) return std::move(index_tensor.error());
-    Expected<RefPtr<TensorBase>> item = implicit_cast(value, vector->dtype, false, lock);
+    Expected<RefPtr<TensorBase>> item = implicit_cast(value, vector->dtype, false);
     if (!item.is_ok()) return std::move(item.error());
 
     if (!(*index_tensor)->is_symbolic()) {
@@ -4019,7 +3982,7 @@ static Expected<Value> vector_with_item(Vector* vector, BorrowedValue index,
             return constant_vector_with_item(vector, static_cast<size_t>(i),
                                              zero_dim_constant_bits_unchecked(item->get()));
     }
-    return symbolic_vector_with_item(vector, index_tensor->get(), item->get(), lock);
+    return symbolic_vector_with_item(vector, index_tensor->get(), item->get());
 }
 
 static PyObject* vector_method_with_item(PyObject* self, PyObject* args, PyObject* kwargs) {
@@ -4031,26 +3994,19 @@ static PyObject* vector_method_with_item(PyObject* self, PyObject* args, PyObjec
 
     BorrowedValue index_val = borrowed_value_from_pyobject(index);
     BorrowedValue value_val = borrowed_value_from_pyobject(value);
-    GlobalLock lock;
     return release_pyobject_or_raise(
-            vector_with_item(reinterpret_cast<Vector*>(self), index_val, value_val, lock),
+            vector_with_item(reinterpret_cast<Vector*>(self), index_val, value_val),
             false);
 }
 
 // Raises NotImplementedError for operations that can't be evaluated outside of device code,
 // e.g. on the host or inside static_eval(). `what` names the operation, e.g. "Tile.extract()";
 // the message depends on the current DispatchMode.
-static ErrorRaised_t unsupported_call_error(const char* what, GlobalLock& lock) {
-    static ProtectedByGlobalLock<PyObject*> get_current_func;
-    PyObject*& func = get_current_func.get(lock);
-    if (!func) {
-        PyPtr mode_mod = steal(PyImport_ImportModule("cuda.tile._dispatch_mode"));
-        if (!mode_mod) return ErrorRaised;
-        PyPtr mode_cls = getattr(mode_mod, "DispatchMode");
-        if (!mode_cls) return ErrorRaised;
-        func = getattr(mode_cls, "get_current").release();
-        if (!func) return ErrorRaised;
-    }
+static ErrorRaised_t unsupported_call_error(const char* what) {
+    static LazyImporter get_current_func;
+    PyObject* func = get_current_func.get("cuda.tile._dispatch_mode", "DispatchMode",
+                                          "get_current");
+    if (!func) return ErrorRaised;
 
     PyPtr mode = steal(PyObject_CallNoArgs(func));
     if (!mode) return ErrorRaised;
@@ -4064,8 +4020,7 @@ static ErrorRaised_t unsupported_call_error(const char* what, GlobalLock& lock) 
 }
 
 static PyObject* method_unsupported(const char* what) {
-    GlobalLock lock;
-    unsupported_call_error(what, lock);
+    unsupported_call_error(what);
     return nullptr;
 }
 
@@ -4141,8 +4096,7 @@ static PyObject* py_vector_getitem(PyObject*, PyObject* args) {
 
     BorrowedValue x_val = borrowed_value_from_pyobject(x);
     BorrowedValue key_val = borrowed_value_from_pyobject(key);
-    GlobalLock lock;
-    return release_pyobject_or_raise(vector_getitem(x_val, key_val, lock), true);
+    return release_pyobject_or_raise(vector_getitem(x_val, key_val), true);
 }
 
 static PyObject* py_vector_with_item(PyObject*, PyObject* args) {
@@ -4152,9 +4106,8 @@ static PyObject* py_vector_with_item(PyObject*, PyObject* args) {
 
     BorrowedValue index_val = borrowed_value_from_pyobject(index);
     BorrowedValue value_val = borrowed_value_from_pyobject(value);
-    GlobalLock lock;
     return release_pyobject_or_raise(
-            vector_with_item(reinterpret_cast<Vector*>(x), index_val, value_val, lock), true);
+            vector_with_item(reinterpret_cast<Vector*>(x), index_val, value_val), true);
 }
 
 static PyObject* vector_get_element_count(PyObject* self, void*) {
@@ -4239,8 +4192,7 @@ static Expected<MatmulShapes> matmul_shapes(const UnpackedShape& x, const Unpack
     return MatmulShapes{*x_shape, *y_shape, *product_shape, *result_shape};
 }
 
-static RefPtr<TensorBase> tile_reshape_unchecked(Tile* tile, const UnpackedShape& new_shape,
-                                                 GlobalLock& lock) {
+static RefPtr<TensorBase> tile_reshape_unchecked(Tile* tile, const UnpackedShape& new_shape) {
     RefPtr<TensorBase> ret = tensor_zeros_with_shape(tile->dtype, new_shape, true);
     if (!ret) return {};
     switch (tile->tag_) {
@@ -4260,7 +4212,7 @@ static RefPtr<TensorBase> tile_reshape_unchecked(Tile* tile, const UnpackedShape
         {
             static LazyImporter reshape_func;
             PyObject* func = reshape_func.get(
-                    "cuda.tile._ir.arithmetic_ops", "reshape_raw", lock);
+                    "cuda.tile._ir.arithmetic_ops", "reshape_raw");
             if (!func) return {};
             PyPtr py_shape = shape_to_pytuple(new_shape);
             if (!py_shape) return {};
@@ -4276,17 +4228,10 @@ static RefPtr<TensorBase> tile_reshape_unchecked(Tile* tile, const UnpackedShape
 }
 
 
-static Error require_symbolic_evaluation(const char* message, GlobalLock& lock) {
-    static ProtectedByGlobalLock<PyObject*> have_current_func;
-    PyObject*& func = have_current_func.get(lock);
-    if (!func) {
-        PyPtr ir_mod = steal(PyImport_ImportModule("cuda.tile._ir.ir"));
-        if (!ir_mod) return ErrorRaised;
-        PyPtr builder_cls = getattr(ir_mod, "Builder");
-        if (!builder_cls) return ErrorRaised;
-        func = getattr(builder_cls, "have_current").release();
-        if (!func) return ErrorRaised;
-    }
+static Error require_symbolic_evaluation(const char* message) {
+    static LazyImporter have_current_func;
+    PyObject* func = have_current_func.get("cuda.tile._ir.ir", "Builder", "have_current");
+    if (!func) return ErrorRaised;
 
     PyPtr have_current = steal(PyObject_CallNoArgs(func));
     if (!have_current) return ErrorRaised;
@@ -4297,12 +4242,12 @@ static Error require_symbolic_evaluation(const char* message, GlobalLock& lock) 
 
 
 // The operation is emitted even for constant tiles
-static Expected<Value> tile_matmul(BorrowedValue x, BorrowedValue y, GlobalLock& lock) {
+static Expected<Value> tile_matmul(BorrowedValue x, BorrowedValue y) {
     RefPtr<TensorBase> x_tensor, y_tensor;
     if (!prepare_tensorlike_operands(x, y, &x_tensor, &y_tensor))
         return Value::not_implemented();
     Error err = require_symbolic_evaluation(
-            "Matrix multiplication is only supported inside a kernel", lock);
+            "Matrix multiplication is only supported inside a kernel");
     if (!err.is_ok()) return std::move(err);
     if (!x_tensor || x_tensor->kind != TensorBase::kTile || x_tensor->shape().ndim() == 0)
         return make_error(Error::kTypeError, "Left-hand side of matrix multiplication must"
@@ -4322,7 +4267,7 @@ static Expected<Value> tile_matmul(BorrowedValue x, BorrowedValue y, GlobalLock&
     Expected<MatmulShapes> shapes = matmul_shapes(x_shape, y_shape);
     if (!shapes.is_ok()) return std::move(shapes.error());
 
-    Error promoted = promote_tensors(&x_tensor, &y_tensor, false, lock);
+    Error promoted = promote_tensors(&x_tensor, &y_tensor, false);
     if (!promoted.is_ok()) return std::move(promoted);
 
     // A 1-D `y` becomes a column, which can't be done by broadcasting
@@ -4330,25 +4275,25 @@ static Expected<Value> tile_matmul(BorrowedValue x, BorrowedValue y, GlobalLock&
         int64_t column_dims[2] = {y_shape[0], 1};
         Expected<UnpackedShape> column_shape = UnpackedShape::create(2, column_dims);
         if (!column_shape.is_ok()) return std::move(column_shape.error());
-        y_tensor = tile_reshape_unchecked(static_cast<Tile*>(y_tensor.get()), *column_shape, lock);
+        y_tensor = tile_reshape_unchecked(static_cast<Tile*>(y_tensor.get()), *column_shape);
         if (!y_tensor) return ErrorRaised;
     }
     if (x_tensor->shape().unpack() != shapes->x) {
-        Error err = broadcast_to_unchecked(&x_tensor, shapes->x, lock);
+        Error err = broadcast_to_unchecked(&x_tensor, shapes->x);
         if (!err.is_ok()) return std::move(err);
     }
     if (y_tensor->shape().unpack() != shapes->y) {
-        Error err = broadcast_to_unchecked(&y_tensor, shapes->y, lock);
+        Error err = broadcast_to_unchecked(&y_tensor, shapes->y);
         if (!err.is_ok()) return std::move(err);
     }
 
-    PyPtr x_var = tensor_to_ir_var(x_tensor.get(), lock);
+    PyPtr x_var = tensor_to_ir_var(x_tensor.get());
     if (!x_var) return ErrorRaised;
-    PyPtr y_var = tensor_to_ir_var(y_tensor.get(), lock);
+    PyPtr y_var = tensor_to_ir_var(y_tensor.get());
     if (!y_var) return ErrorRaised;
 
     static LazyImporter matmul_func;
-    PyObject* func = matmul_func.get("cuda.tile._ir.ops", "matmul_raw", lock);
+    PyObject* func = matmul_func.get("cuda.tile._ir.ops", "matmul_raw");
     if (!func) return ErrorRaised;
     PyPtr product_var = steal(PyObject_CallFunctionObjArgs(
             func, x_var.get(), y_var.get(), nullptr));
@@ -4363,7 +4308,7 @@ static Expected<Value> tile_matmul(BorrowedValue x, BorrowedValue y, GlobalLock&
         return Value::from_tensor(std::move(product));
 
     RefPtr<TensorBase> res = tile_reshape_unchecked(
-            static_cast<Tile*>(product.get()), shapes->result, lock);
+            static_cast<Tile*>(product.get()), shapes->result);
     if (!res) return ErrorRaised;
     return Value::from_tensor(std::move(res));
 }
@@ -4371,8 +4316,7 @@ static Expected<Value> tile_matmul(BorrowedValue x, BorrowedValue y, GlobalLock&
 static PyObject* tile_nb_matrix_multiply(PyObject* x, PyObject* y) {
     BorrowedValue xval = borrowed_value_from_pyobject(x);
     BorrowedValue yval = borrowed_value_from_pyobject(y);
-    GlobalLock lock;
-    Result<Value> res = to_result(tile_matmul(xval, yval, lock));
+    Result<Value> res = to_result(tile_matmul(xval, yval));
     if (!res.is_ok()) return nullptr;
     return res->borrow().to_pyobject().release();
 }
@@ -4384,8 +4328,7 @@ static PyObject* py_tile_matmul(PyObject*, PyObject* args) {
 
     BorrowedValue x_val = borrowed_value_from_pyobject(x);
     BorrowedValue y_val = borrowed_value_from_pyobject(y);
-    GlobalLock lock;
-    Expected<Value> res = tile_matmul(x_val, y_val, lock);
+    Expected<Value> res = tile_matmul(x_val, y_val);
 
     if (res.is_ok() && res->is_not_implemented()) {
         res = make_error(Error::kTypeError, "Unsupported operand types for @: '",
@@ -4402,7 +4345,7 @@ static bool is_full_slice(BorrowedValue val) {
         && slice->step.borrow().is_none();
 }
 
-static Expected<Value> tile_getitem(BorrowedValue self, BorrowedValue key, GlobalLock& lock) {
+static Expected<Value> tile_getitem(BorrowedValue self, BorrowedValue key) {
     CHECK(self.is_tensor() && self.as_tensor()->kind == TensorBase::kTile);
     Tile* tile = static_cast<Tile*>(self.as_tensor());
     UnpackedShape shape = tile->shape_.unpack();
@@ -4473,12 +4416,12 @@ static Expected<Value> tile_getitem(BorrowedValue self, BorrowedValue key, Globa
     // Reshape to the new shape
     Expected<UnpackedShape> new_shape = UnpackedShape::create(new_ndim, new_dims);
     if (!new_shape.is_ok()) return std::move(new_shape.error());
-    RefPtr<TensorBase> res = tile_reshape_unchecked(tile, *new_shape, lock);
+    RefPtr<TensorBase> res = tile_reshape_unchecked(tile, *new_shape);
     if (!res) return ErrorRaised;
     return Value::from_tensor(std::move(res));
 }
 
-static Expected<Value> tile_reshape(Tile* tile, BorrowedValue shape_arg, GlobalLock& lock) {
+static Expected<Value> tile_reshape(Tile* tile, BorrowedValue shape_arg) {
     if (!shape_arg.is_tuple())
         return make_error(Error::kTypeError, "Shape must be a tuple, not ",
                           use_type(shape_arg));
@@ -4529,26 +4472,25 @@ static Expected<Value> tile_reshape(Tile* tile, BorrowedValue shape_arg, GlobalL
     if (*new_shape == shape)
         return Value::from_tensor(newref(static_cast<TensorBase*>(tile)));
 
-    RefPtr<TensorBase> res = tile_reshape_unchecked(tile, *new_shape, lock);
+    RefPtr<TensorBase> res = tile_reshape_unchecked(tile, *new_shape);
     if (!res) return ErrorRaised;
     return Value::from_tensor(std::move(res));
 }
 
 // Equivalent to tile.reshape(())
-static Expected<RefPtr<Tile>> tile_item(Tile* tile, GlobalLock& lock) {
+static Expected<RefPtr<Tile>> tile_item(Tile* tile) {
     if (tile->shape_.ndim() == 0)
         return newref(tile);
     if (tile->numel() != 1)
         return make_error(Error::kTypeError, "Cannot reshape ", tile->shape_, " to ()");
 
-    RefPtr<TensorBase> res = tile_reshape_unchecked(tile, UnpackedShape(), lock);
+    RefPtr<TensorBase> res = tile_reshape_unchecked(tile, UnpackedShape());
     if (!res) return ErrorRaised;
     return steal(static_cast<Tile*>(res.release()));
 }
 
 static PyObject* tile_method_item(PyObject* self, PyObject*) {
-    GlobalLock lock;
-    Result<RefPtr<Tile>> res = to_result(tile_item(reinterpret_cast<Tile*>(self), lock));
+    Result<RefPtr<Tile>> res = to_result(tile_item(reinterpret_cast<Tile*>(self)));
     if (!res.is_ok()) return nullptr;
     return reinterpret_cast<PyObject*>(res->release());
 }
@@ -4561,8 +4503,7 @@ static PyObject* tile_method_reshape(PyObject* self, PyObject* args, PyObject* k
         return nullptr;
 
     BorrowedValue shape_val = borrowed_value_from_pyobject(shape);
-    GlobalLock lock;
-    Result<Value> res = to_result(tile_reshape(reinterpret_cast<Tile*>(self), shape_val, lock));
+    Result<Value> res = to_result(tile_reshape(reinterpret_cast<Tile*>(self), shape_val));
     if (!res.is_ok()) return nullptr;
     return res->borrow().to_pyobject().release();
 }
@@ -4634,8 +4575,7 @@ static PyMethodDef tile_methods[] = {
 static PyObject* tile_mp_subscript(PyObject* self, PyObject* key) {
     BorrowedValue key_val = borrowed_value_from_pyobject(key);
     BorrowedValue self_val = BorrowedValue::from_tensor(reinterpret_cast<TensorBase*>(self));
-    GlobalLock lock;
-    Result<Value> res = to_result(tile_getitem(self_val, key_val, lock));
+    Result<Value> res = to_result(tile_getitem(self_val, key_val));
     if (!res.is_ok()) return nullptr;
     return res->borrow().to_pyobject().release();
 }
@@ -4665,23 +4605,22 @@ static Expected<RefPtr<Tile>> tilelike_to_tile(BorrowedValue x, const char* oper
     return make_error(Error::kTypeError, operand, " must be a tile, not ", use_type(x));
 }
 
-static Expected<Value> tilelike_reshape(BorrowedValue x, BorrowedValue shape,
-                                        GlobalLock& lock) {
+static Expected<Value> tilelike_reshape(BorrowedValue x, BorrowedValue shape) {
     Expected<RefPtr<Tile>> tile = tilelike_to_tile(x, "Reshape operand");
     if (!tile.is_ok()) return std::move(tile.error());
-    return tile_reshape(tile->get(), shape, lock);
+    return tile_reshape(tile->get(), shape);
 }
 
-static Expected<Value> tilelike_getitem(BorrowedValue x, BorrowedValue key, GlobalLock& lock) {
+static Expected<Value> tilelike_getitem(BorrowedValue x, BorrowedValue key) {
     Expected<RefPtr<Tile>> tile = tilelike_to_tile(x, "Indexed object");
     if (!tile.is_ok()) return std::move(tile.error());
-    return tile_getitem(BorrowedValue::from_tensor(tile->get()), key, lock);
+    return tile_getitem(BorrowedValue::from_tensor(tile->get()), key);
 }
 
-static Expected<RefPtr<Tile>> tilelike_item(BorrowedValue x, GlobalLock& lock) {
+static Expected<RefPtr<Tile>> tilelike_item(BorrowedValue x) {
     Expected<RefPtr<Tile>> tile = tilelike_to_tile(x, "Operand of item()");
     if (!tile.is_ok()) return std::move(tile.error());
-    return tile_item(tile->get(), lock);
+    return tile_item(tile->get());
 }
 
 static PyObject* py_tile_reshape(PyObject*, PyObject* args) {
@@ -4691,8 +4630,7 @@ static PyObject* py_tile_reshape(PyObject*, PyObject* args) {
 
     BorrowedValue x_val = borrowed_value_from_pyobject(x);
     BorrowedValue shape_val = borrowed_value_from_pyobject(shape);
-    GlobalLock lock;
-    return release_pyobject_or_raise(tilelike_reshape(x_val, shape_val, lock), true);
+    return release_pyobject_or_raise(tilelike_reshape(x_val, shape_val), true);
 }
 
 static PyObject* py_tile_getitem(PyObject*, PyObject* args) {
@@ -4702,8 +4640,7 @@ static PyObject* py_tile_getitem(PyObject*, PyObject* args) {
 
     BorrowedValue x_val = borrowed_value_from_pyobject(x);
     BorrowedValue key_val = borrowed_value_from_pyobject(key);
-    GlobalLock lock;
-    return release_pyobject_or_raise(tilelike_getitem(x_val, key_val, lock), true);
+    return release_pyobject_or_raise(tilelike_getitem(x_val, key_val), true);
 }
 
 static PyObject* py_tile_item(PyObject*, PyObject* args) {
@@ -4712,8 +4649,7 @@ static PyObject* py_tile_item(PyObject*, PyObject* args) {
         return nullptr;
 
     BorrowedValue x_val = borrowed_value_from_pyobject(x);
-    GlobalLock lock;
-    return release_pyobject_or_raise(tilelike_item(x_val, lock), true);
+    return release_pyobject_or_raise(tilelike_item(x_val), true);
 }
 
 static PyObject* tile_get_shape(PyObject* self, void*) {
