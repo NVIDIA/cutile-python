@@ -617,7 +617,7 @@ public:
     }
 
     // Parses a Python slice object on demand
-    RefPtr<SliceValue> as_slice(GlobalLock& lock) const;
+    RefPtr<SliceValue> as_slice() const;
 
     // A tuple may be stored either as a Python tuple object or as a TupleValue
     inline bool is_tuple() const {
@@ -625,7 +625,7 @@ public:
     }
 
     // Parses a Python tuple object on demand
-    RefPtr<TupleValue> as_tuple(GlobalLock& lock) const;
+    RefPtr<TupleValue> as_tuple() const;
 
     PyPtr to_pyobject() const;
 

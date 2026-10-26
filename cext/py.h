@@ -826,3 +826,30 @@ public:
     }
 };
 
+
+#ifdef Py_GIL_DISABLED
+using MaybeMutex = PyMutex;
+#else
+struct MaybeMutex { char dummy; };
+#endif
+
+
+class MaybeLock {
+    MaybeMutex* mutex;
+public:
+    MaybeLock(MaybeMutex* mutex) : mutex(mutex) {
+#ifdef Py_GIL_DISABLED
+        PyMutex_Lock(mutex);
+#endif
+    }
+
+    ~MaybeLock() {
+#ifdef Py_GIL_DISABLED
+        PyMutex_Unlock(mutex);
+#endif
+    }
+
+    MaybeLock(const MaybeLock&) = delete;
+    void operator=(const MaybeLock&) = delete;
+};
+

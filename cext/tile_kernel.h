@@ -54,7 +54,7 @@ enum class ConstantKind : uint8_t {
     FOREACH_CONSTANT_KIND(CONSTANT_KIND_ENTRY)
 };
 
-std::optional<ConstantKind> classify_constant(PyObject* obj, bool kernel_arg, GlobalLock& lock);
+std::optional<ConstantKind> classify_constant(PyObject* obj, bool kernel_arg);
 
 
 Status tile_kernel_init(PyObject* m);

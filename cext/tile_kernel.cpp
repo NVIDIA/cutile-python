@@ -43,6 +43,8 @@ static PyObject* g_programmatic_dependent_launch_pyunicode;
 static PyObject* g___dataclass_fields___pyunicode;
 static PyObject* g_torch_pyunicode;
 static PyObject* g_cupy_pyunicode;
+static PyObject* g_numpy_pyunicode;
+static PyObject* g_ml_dtypes_pyunicode;
 static PyObject* g_cuda_stream_pyunicode;
 static PyObject* g_ptr_pyunicode;
 static PyObject* g_numba_cuda_pyunicode;
@@ -236,7 +238,7 @@ static PyPtr get_cconv(CallConvVersion version) {
     return steal(ret);
 }
 
-static PyObject* get_cached_cconv(CallConvVersion version, PyObject** cache) {
+static PyObject* get_cached_cconv(CallConvVersion version, PyObject** cache, GlobalLock&) {
     if (!*cache) {
         PyPtr cconv = get_cconv(version);
         if (!cconv) return nullptr;
@@ -248,20 +250,20 @@ static PyObject* get_cached_cconv(CallConvVersion version, PyObject** cache) {
 static PyObject* CallingConvention_cutile_python_v1(PyObject*, PyObject*) {
     static PyObject* c;
     GlobalLock lock;
-    return get_cached_cconv(CallConvVersion::CutilePython_V1, &c);
+    return get_cached_cconv(CallConvVersion::CutilePython_V1, &c, lock);
 }
 
 static PyObject* CallingConvention_cutile_python_v2(PyObject*, PyObject*) {
     static PyObject* c;
     GlobalLock lock;
-    return get_cached_cconv(CallConvVersion::CutilePython_V2, &c);
+    return get_cached_cconv(CallConvVersion::CutilePython_V2, &c, lock);
 }
 
 #ifdef ENABLE_CCONV_V3
 static PyObject* CallingConvention_cutile_python_v3(PyObject*, PyObject*) {
     static PyObject* c;
     GlobalLock lock;
-    return get_cached_cconv(CallConvVersion::CutilePython_V3, &c);
+    return get_cached_cconv(CallConvVersion::CutilePython_V3, &c, lock);
 }
 #endif
 
@@ -748,62 +750,118 @@ struct { char name[16]; DType dtype; int lib_mask; } foreign_dtype_table[] = {
     {"float8_e8m0fnu", k_float8_e8m0fnu, kTorch | kMlDTypes}
 };
 
-static void register_foreign_dtypes_common(PyObject* foreign_module,
-                                           PyObject* numpy_dtype_class,
-                                           ForeignDtypeKind bit,
-                                           HashMap<PyPtr, DType>* registry,
-                                           GlobalLock& lock) {
+
+class ForeignDTypeRegistry {
+public:
+    // Returns the registered dtype, if any, and stores the mask of imported libraries in `imported`
+    static std::optional<DType> lookup(PyObject* obj, unsigned* imported) {
+        MaybeLock lock(&mutex_);
+        ForeignDTypeRegistry* reg = get_instance(lock);
+        *imported = reg->imported_;
+        HashMap<PyPtr, DType>::Item* item = reg->map_.find(obj);
+        if (item) return item->value;
+        return std::nullopt;
+    }
+
+    static void update(Vec<std::pair<PyPtr, DType>>&& items, unsigned imported_bits) {
+        MaybeLock lock(&mutex_);
+        ForeignDTypeRegistry* reg = get_instance(lock);
+        // If the key is already present, the moved-in duplicate reference is dropped.
+        // This can't deallocate the object, since the map holds another reference to it.
+        for (std::pair<PyPtr, DType>& x : items)
+            reg->map_.insert(std::move(x.first), x.second);
+        reg->imported_ |= imported_bits;
+    }
+
+private:
+    HashMap<PyPtr, DType> map_;
+    unsigned imported_ = 0;
+
+    // Don't run any Python code while holding the mutex, so that we can't accidentally deadlock.
+    // Note that HashMap<PyPtr, ...> hashes and compares keys by identity, without calling Python.
+    static MaybeMutex mutex_;
+    static ForeignDTypeRegistry* instance_;
+
+    static ForeignDTypeRegistry* get_instance(MaybeLock&) {
+        if (!instance_) instance_ = new ForeignDTypeRegistry();
+        return instance_;
+    }
+};
+
+MaybeMutex ForeignDTypeRegistry::mutex_;
+ForeignDTypeRegistry* ForeignDTypeRegistry::instance_;
+
+
+static void register_foreign_dtypes(PyObject* foreign_module, ForeignDtypeKind bit) {
+    PyPtr numpy_dtype_class;
+
+    if (bit & (kNumpy | kMlDTypes)) {
+        PyPtr numpy = try_import("numpy");
+        if (numpy) numpy_dtype_class = try_getattr(numpy, "dtype");
+    }
+
+    // 1. Without holding a lock, put all dtype objects into a temporary vector
+    Vec<std::pair<PyPtr, DType>> items;
     for (const auto& entry : foreign_dtype_table) {
         if (!(entry.lib_mask & bit)) continue;
 
         PyPtr foreign_pyobj = try_getattr(foreign_module, entry.name);
         if (!foreign_pyobj) continue;
 
-        registry->insert(foreign_pyobj, entry.dtype);
+        items.push_back({foreign_pyobj, entry.dtype});
 
         if (numpy_dtype_class) {
             ErrorGuard guard;
             PyPtr numpy_dtype_desc = steal(
-                    PyObject_CallOneArg(numpy_dtype_class, foreign_pyobj.get()));
+                    PyObject_CallOneArg(numpy_dtype_class.get(), foreign_pyobj.get()));
             if (numpy_dtype_desc)
-                registry->insert(std::move(numpy_dtype_desc), entry.dtype);
+                items.push_back({std::move(numpy_dtype_desc), entry.dtype});
         }
     }
+
+    // 2. Now grab a lock and update the registry
+    ForeignDTypeRegistry::update(std::move(items), bit);
 }
 
 
-static void register_torch_dtypes(HashMap<PyPtr, DType>* registry,
-                                  GlobalLock& lock) {
-    PyPtr torch = try_import("torch");
-    if (torch)
-        register_foreign_dtypes_common(torch.get(), nullptr, kTorch, registry, lock);
-}
+static std::optional<DType> map_foreign_dtype_object(PyObject* obj) {
+    unsigned imported;
+    std::optional<DType> dtype = ForeignDTypeRegistry::lookup(obj, &imported);
+    if (dtype) return dtype;
 
+    ErrorGuard guard;
+    bool updated = false;
 
-static void register_numpy_and_ml_dtypes(HashMap<PyPtr, DType>* registry,
-                                         GlobalLock& lock) {
-    PyPtr numpy = try_import("numpy");
-    if (!numpy) return;
-    PyPtr numpy_dtype_class = try_getattr(numpy, "dtype");
-
-    register_foreign_dtypes_common(numpy.get(), numpy_dtype_class.get(), kNumpy, registry, lock);
-
-    PyPtr ml_dtypes = try_import("ml_dtypes");
-    if (ml_dtypes)
-        register_foreign_dtypes_common(ml_dtypes.get(), numpy_dtype_class.get(), kMlDTypes,
-                                       registry, lock);
-}
-
-
-static HashMap<PyPtr, DType>* get_foreign_dtype_registry(GlobalLock& lock) {
-    static HashMap<PyPtr, DType>* registry;
-    if (!registry) {
-        auto reg = std::make_unique<HashMap<PyPtr, DType>>();
-        register_torch_dtypes(reg.get(), lock);
-        register_numpy_and_ml_dtypes(reg.get(), lock);
-        registry = reg.release();
+    // See if `torch` is there
+    if (!(imported & kTorch)) {
+        PyPtr mod = steal(PyImport_GetModule(g_torch_pyunicode));
+        if (mod) {
+            register_foreign_dtypes(mod.get(), kTorch);
+            updated = true;
+        }
     }
-    return registry;
+
+    // See if `numpy` is there
+    if (!(imported & kNumpy)) {
+        PyPtr mod = steal(PyImport_GetModule(g_numpy_pyunicode));
+        if (mod) {
+            register_foreign_dtypes(mod.get(), kNumpy);
+            updated = true;
+        }
+    }
+
+    // See if `ml_dtypes` is there
+    if (!(imported & kMlDTypes)) {
+        PyPtr mod = steal(PyImport_GetModule(g_ml_dtypes_pyunicode));
+        if (mod) {
+            register_foreign_dtypes(mod.get(), kMlDTypes);
+            updated = true;
+        }
+    }
+
+    // If we haven't updated the registry above, then this is not a supported foreign dtype
+    if (!updated) return std::nullopt;
+    return ForeignDTypeRegistry::lookup(obj, &imported);
 }
 
 
@@ -820,21 +878,25 @@ static PyObject* foreign_dtype_object_register(PyObject* self, PyObject* args) {
         return nullptr;
     }
 
-    GlobalLock lock;
-    get_foreign_dtype_registry(lock)->insert(newref(foreign_dtype), *dtype);
+    Vec<std::pair<PyPtr, DType>> items;
+    items.push_back({newref(foreign_dtype), *dtype});
+    ForeignDTypeRegistry::update(std::move(items), 0);
     return Py_NewRef(Py_None);
 }
 
 
 static PyObject* foreign_dtype_object_to_native(PyObject* self, PyObject* object) {
-    GlobalLock lock;
-    HashMap<PyPtr, DType>::Item* item = get_foreign_dtype_registry(lock)->find(object);
-    if (!item) return Py_NewRef(Py_None);
-    return Py_XNewRef(dtype_to_pyobject(item->value, lock));
+    std::optional<DType> dtype = map_foreign_dtype_object(object);
+    if (dtype.has_value()) {
+        GlobalLock lock;
+        return Py_XNewRef(dtype_to_pyobject(*dtype, lock));
+    } else {
+        return Py_NewRef(Py_None);
+    }
 }
 
 
-std::optional<ConstantKind> classify_constant(PyObject* obj, bool kernel_arg, GlobalLock& lock) {
+std::optional<ConstantKind> classify_constant(PyObject* obj, bool kernel_arg) {
     if (PyBool_Check(obj))
         return ConstantKind::Bool;
 
@@ -860,7 +922,7 @@ std::optional<ConstantKind> classify_constant(PyObject* obj, bool kernel_arg, Gl
     if (Py_IS_TYPE(obj, &DTypeObject::pytype))
         return ConstantKind::NativeDType;
 
-    if (get_foreign_dtype_registry(lock)->find(obj))
+    if (map_foreign_dtype_object(obj).has_value())
         return ConstantKind::ForeignDType;
 
 #ifndef ENABLE_CCONV_V3
@@ -876,8 +938,7 @@ static PyObject* py_classify_constant(PyObject* self, PyObject* args) {
     if (!PyArg_ParseTuple(args, "Op", &obj, &kernel_arg))
         return nullptr;
 
-    GlobalLock lock;
-    std::optional<ConstantKind> res = classify_constant(obj, kernel_arg, lock);
+    std::optional<ConstantKind> res = classify_constant(obj, kernel_arg);
     if (!res.has_value())
         return Py_NewRef(Py_None);
 
@@ -1839,16 +1900,15 @@ static Result<ArrayRepr> arrayrepr_dlpack_common(PyObject* dlpack_capsule, unsig
 }
 
 
-static Result<DType> dtype_from_torch_dtype(PyObject* torch_dtype, GlobalLock& lock) {
-    HashMap<PyPtr, DType>::Item* item
-            = get_foreign_dtype_registry(lock)->find(torch_dtype);
-    if (!item || !is_array_dtype(item->value))
+static Result<DType> dtype_from_torch_dtype(PyObject* torch_dtype) {
+    std::optional<DType> dtype = map_foreign_dtype_object(torch_dtype);
+    if (!dtype.has_value() || !is_array_dtype(*dtype))
         return raise(PyExc_TypeError, "dtype is not supported");
-    return item->value;
+    return *dtype;
 }
 
 static Result<ArrayRepr> arrayrepr_torch_tensor_pymethod(PyObject* tensor, unsigned index_bitwidth,
-                                                         Arena& arena, GlobalLock& lock) {
+                                                         Arena& arena) {
     PyPtr data_ptr = steal(PyObject_CallMethod(tensor, "data_ptr", nullptr));
     if (!data_ptr) return ErrorRaised;
 
@@ -1913,7 +1973,7 @@ static Result<ArrayRepr> arrayrepr_torch_tensor_pymethod(PyObject* tensor, unsig
     }
 
 
-    Result<DType> dtype_res = dtype_from_torch_dtype(dtype_ptr.get(), lock);
+    Result<DType> dtype_res = dtype_from_torch_dtype(dtype_ptr.get());
     if (!dtype_res.is_ok())
         return ErrorRaised;
 
@@ -1936,7 +1996,7 @@ static Result<ArrayRepr> arrayrepr_torch_tensor_dlpack(PyObject* pyobj, unsigned
     if (!dlpack_capsule) {
         SavedException exc = save_raised_exception();
         LOG_PYTHON_ERROR("debug", exc, "Fail to convert to dlpack, use fallback path");
-        return arrayrepr_torch_tensor_pymethod(pyobj, index_bitwidth, arena, lock);
+        return arrayrepr_torch_tensor_pymethod(pyobj, index_bitwidth, arena);
     }
 
     return arrayrepr_dlpack_common(dlpack_capsule.get(), index_bitwidth, arena);
@@ -2255,10 +2315,10 @@ static PyPtr parse_identity_constant_constraint(ConstantCursor& cursor,
 static Status extract_foreign_dtype_constant(PyObject* object, Vec<int64_t>* constants,
                                              Vec<PyObject*>* identity_constants,
                                              GlobalLock& lock) {
-    HashMap<PyPtr, DType>::Item* item = get_foreign_dtype_registry(lock)->find(object);
-    if (!item)
+    std::optional<DType> dtype = map_foreign_dtype_object(object);
+    if (!dtype.has_value())
         return raise(PyExc_ValueError, "Received an unregistered foreign dtype object");
-    PyObject* native_dtype = dtype_to_pyobject(item->value, lock);
+    PyObject* native_dtype = dtype_to_pyobject(*dtype, lock);
     if (!native_dtype) return ErrorRaised;
     extract_identity_constant(native_dtype, constants, identity_constants);
     return OK;
@@ -2991,7 +3051,6 @@ static Result<HostProgram> host_program_parse(PyObject* prog_pyobj, int expected
 }
 
 static PyObject* py_tensor_map_tiled(PyObject*, PyObject* args) {
-    GlobalLock lock;
     PyObject* array;
     PyObject* py_tile_shape;
     PyObject* py_order;
@@ -3003,6 +3062,7 @@ static PyObject* py_tensor_map_tiled(PyObject*, PyObject* args) {
                 &array, &py_tile_shape, &py_order,
                 &interleave, &swizzle, &l2_promotion, &oob_fill))
         return nullptr;
+    GlobalLock lock;
     std::optional<PythonArgKind> kind = classify_nonconstant_arg(array, lock);
     if (!kind.has_value()
             || (*kind != PythonArgKind::TorchTensorDlpack
@@ -3481,7 +3541,7 @@ get_pyarg_kinds(const Vec<PyTypeObject*>& pyarg_types_depth_first,
     for (size_t i = 0; i < n; ++i) {
         PyObject* obj = leaf_pyarg_objs[i];
         if (flat_param_annotations[i]->constant) {
-            std::optional<ConstantKind> kind = classify_constant(obj, true, lock);
+            std::optional<ConstantKind> kind = classify_constant(obj, true);
             if (!kind.has_value()) {
                 return raise_invalid_kernel_arg_type(
                         pyarg_types_depth_first, agg_types, i,
@@ -3498,7 +3558,7 @@ get_pyarg_kinds(const Vec<PyTypeObject*>& pyarg_types_depth_first,
                             "'", Py_TYPE(obj)->tp_name, "' is a subclass of 'tuple'."
                             " Only plain tuples are accepted.");
                 }
-                if (classify_constant(obj, true, lock).has_value()) {
+                if (classify_constant(obj, true).has_value()) {
                     return raise_invalid_kernel_arg_type(
                             pyarg_types_depth_first, agg_types, i,
                             "Objects of type '", Py_TYPE(obj)->tp_name, "' are only accepted"
@@ -4211,8 +4271,6 @@ Result<NativeLaunchSite*> native_launch_site_create(
         PyObject* const* pyargs,
         Py_ssize_t num_pyargs,
         PyObject* py_host_constant_args) {
-    GlobalLock lock;
-
     if (!PyTuple_Check(py_host_constant_args))
         return raise(PyExc_TypeError,
                      "host kernel argument constness must be a tuple");
@@ -4227,6 +4285,7 @@ Result<NativeLaunchSite*> native_launch_site_create(
         host_constant_args.push_back(value == Py_True);
     }
 
+    GlobalLock lock;
     LaunchHelperPtr helper = launch_helper_get(lock);
     Dispatcher& dispatcher = py_unwrap<Dispatcher>(dispatcher_object);
 
@@ -4514,9 +4573,9 @@ int32_t native_launch_site_launch(
         NativeLaunchSite* site,
         const NativeLaunchConfig& config,
         void** argument_addresses) {
-    GlobalLock lock;
     if (!validate_native_launch_config(config)) return -1;
 
+    GlobalLock lock;
     Result<const DriverApi*> driver_result = get_driver_api(lock);
     if (!driver_result.is_ok()) return -1;
     const DriverApi* driver = *driver_result;
@@ -5034,7 +5093,6 @@ static PyObject* HostDispatcher_call(
         PyObject* self,
         PyObject* args,
         PyObject* kwargs) {
-    GlobalLock lock;
     if (kwargs && PyDict_Size(kwargs)) {
         raise(
                 PyExc_TypeError,
@@ -5053,6 +5111,7 @@ static PyObject* HostDispatcher_call(
         pyargs.push_back(PyTuple_GET_ITEM(args, i));
 
     Dispatcher& dispatcher = py_unwrap<Dispatcher>(self);
+    GlobalLock lock;
     LaunchHelperPtr helper = launch_helper_get(lock);
     PythonArgProfile* profile = python_arg_profile_lookup(
             pyargs.empty() ? nullptr : pyargs.data(), num_args, dispatcher, *helper, lock);
@@ -5126,7 +5185,6 @@ PyTypeObject Dispatcher::host_pytype = {
 
 
 static PyObject* get_parameter_constraints_from_pyargs(PyObject* self, PyObject* args) {
-    GlobalLock lock;
     PyObject* dispatcher_pyobj = nullptr;
     PyObject* pyargs = nullptr;
     PyObject* cconv = nullptr;
@@ -5142,6 +5200,7 @@ static PyObject* get_parameter_constraints_from_pyargs(PyObject* self, PyObject*
     PyObject** kernel_args = reinterpret_cast<PyTupleObject*>(pyargs)->ob_item;
     Py_ssize_t num_kernel_args = PyTuple_GET_SIZE(pyargs);
 
+    GlobalLock lock;
     LaunchHelperPtr helper = launch_helper_get(lock);
 
     PythonArgProfile* profile = python_arg_profile_lookup(
@@ -5365,8 +5424,8 @@ static Status parse_launch_args(PyObject* const* args, Py_ssize_t nargs, const c
 static PyObject* launch_impl(PyObject* const* args, Py_ssize_t nargs,
                              PyObject* kwargs, const char* signature, bool with_block
                              ) {
-    GlobalLock lock;
     LaunchArgs launch_args;
+    GlobalLock lock;
     if (!parse_launch_args(args, nargs, signature, with_block, &launch_args, lock))
         return nullptr;
 
@@ -5414,7 +5473,6 @@ static PyObject *launch_extended(PyObject *, PyObject *const *args,
 #define BENCHMARK_SIGNATURE "_benchmark(stream, grid, kernel, pyargs_tuples, flush_l2=True, /)"
 
 static PyObject* cuda_tile_benchmark(PyObject* mod, PyObject* const* args, Py_ssize_t nargs) {
-    GlobalLock lock;
     bool flush_l2;
     if (nargs == 5) {
         if (!PyBool_Check(args[4])) {
@@ -5430,6 +5488,7 @@ static PyObject* cuda_tile_benchmark(PyObject* mod, PyObject* const* args, Py_ss
     }
 
     LaunchArgs launch_args;
+    GlobalLock lock;
     if (!parse_launch_args(args, 4, BENCHMARK_SIGNATURE, false, &launch_args, lock))
         return nullptr;
 
@@ -5458,7 +5517,6 @@ static PyObject* cuda_tile_benchmark(PyObject* mod, PyObject* const* args, Py_ss
 
 static PyObject* cuda_tile_export_ipc_benchmark_payload(PyObject*, PyObject* const* args,
                                                         Py_ssize_t nargs) {
-    GlobalLock lock;
     bool flush_l2;
     if (nargs == 5) {
         if (!PyBool_Check(args[4])) {
@@ -5475,6 +5533,7 @@ static PyObject* cuda_tile_export_ipc_benchmark_payload(PyObject*, PyObject* con
     }
 
     LaunchArgs launch_args;
+    GlobalLock lock;
     if (!parse_launch_args(args, 4, EXPORT_IPC_BENCHMARK_PAYLOAD_SIGNATURE, false,
                            &launch_args, lock))
         return nullptr;
@@ -5585,7 +5644,6 @@ static PyObject* cuda_tile_export_ipc_benchmark_payload(PyObject*, PyObject* con
 
 static PyObject* cuda_tile_benchmark_with_ipc_payload(PyObject*, PyObject* const* args,
                                                       Py_ssize_t nargs) {
-    GlobalLock lock;
     if (nargs != 1) {
         raise(PyExc_TypeError, "Wrong number of arguments to ",
               BENCHMARK_WITH_IPC_PAYLOAD_SIGNATURE);
@@ -5603,6 +5661,7 @@ static PyObject* cuda_tile_benchmark_with_ipc_payload(PyObject*, PyObject* const
     if (PyBytes_AsStringAndSize(py_payload, &payload_data, &payload_nbytes) < 0)
         return nullptr;
 
+    GlobalLock lock;
     LaunchHelperPtr helper = launch_helper_get(lock);
     Result<IpcBenchmarkPayload> payload_res = deserialize_ipc_benchmark_payload(
             payload_data, static_cast<size_t>(payload_nbytes), *helper);
@@ -5788,8 +5847,6 @@ static Status add_launch_extended_func(PyObject* m) {
 }
 
 Status tile_kernel_init(PyObject* m) {
-    GlobalLock lock;
-
     INIT_STRING_IDENT(__cuda_array_interface__);
     INIT_STRING_IDENT(typestr);
     INIT_STRING_IDENT(shape);
@@ -5805,6 +5862,8 @@ Status tile_kernel_init(PyObject* m) {
     INIT_STRING_IDENT(__dataclass_fields__);
     INIT_STRING_IDENT(torch);
     INIT_STRING_IDENT(cupy);
+    INIT_STRING_IDENT(numpy);
+    INIT_STRING_IDENT(ml_dtypes);
     INIT_STRING_IDENT(cuda_stream);
     INIT_STRING_IDENT(ptr);
     INIT_STRING_CONSTANT(g_numba_cuda_pyunicode, "numba.cuda");
@@ -5818,6 +5877,7 @@ Status tile_kernel_init(PyObject* m) {
     if (PyModule_AddObjectRef(m, "ConstantKind", g_constant_kind_enum) < 0)
         return ErrorRaised;
 
+    GlobalLock lock;
     g_stream_buffer_pool_by_ctx_id.get(lock) = new StreamBufferPoolMap();
 
     if (PyType_Ready(&CallingConvention::pytype) < 0)

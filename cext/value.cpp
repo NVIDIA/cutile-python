@@ -534,19 +534,7 @@ static BorrowedValue borrowed_value_from_pyenum(PyObject* pyobj) {
     return BorrowedValue::from_user_defined_enum(pyobj);
 }
 
-static BorrowedValue borrowed_value_from_pyobject(PyObject* pyobj, GlobalLock& lock) {
-    std::optional<ConstantKind> ck = classify_constant(pyobj, false, lock);
-    if (ck.has_value()) {
-        switch (*ck) {
-        case ConstantKind::None_: return BorrowedValue::none();
-        case ConstantKind::Bool: return BorrowedValue::from_pybool(pyobj);
-        case ConstantKind::Int: return BorrowedValue::from_pylong(pyobj);
-        case ConstantKind::Float: return BorrowedValue::from_pyfloat(pyobj);
-        case ConstantKind::Enum: return borrowed_value_from_pyenum(pyobj);
-        case ConstantKind::String: return BorrowedValue::from_string(pyobj);
-        default: break;
-        }
-    }
+static BorrowedValue borrowed_value_from_pyobject(PyObject* pyobj) {
     PyTypeObject* ty = Py_TYPE(pyobj);
     if (ty == &Tile::pytype || ty == &Scalar::pytype || ty == &Vector::pytype
             || ty == &Pointer::pytype || ty == &OpaqueValue::pytype)
@@ -564,24 +552,37 @@ static BorrowedValue borrowed_value_from_pyobject(PyObject* pyobj, GlobalLock& l
     if (PyTuple_CheckExact(pyobj))
         return BorrowedValue::from_pytuple(pyobj);
 
+    std::optional<ConstantKind> ck = classify_constant(pyobj, false);
+    if (ck.has_value()) {
+        switch (*ck) {
+        case ConstantKind::None_: return BorrowedValue::none();
+        case ConstantKind::Bool: return BorrowedValue::from_pybool(pyobj);
+        case ConstantKind::Int: return BorrowedValue::from_pylong(pyobj);
+        case ConstantKind::Float: return BorrowedValue::from_pyfloat(pyobj);
+        case ConstantKind::Enum: return borrowed_value_from_pyenum(pyobj);
+        case ConstantKind::String: return BorrowedValue::from_string(pyobj);
+        default: break;
+        }
+    }
+
     return BorrowedValue::from_unsupported_pyobject(pyobj);
 }
 
-RefPtr<SliceValue> BorrowedValue::as_slice(GlobalLock& lock) const {
+RefPtr<SliceValue> BorrowedValue::as_slice() const {
     if (tag_ == kSliceValue)
         return newref(pointer<SliceValue>());
     CHECK(tag_ == kPySlice);
 
     PySliceObject* pyslice = reinterpret_cast<PySliceObject*>(pyobject());
     RefPtr<SliceValue> ret = ::steal(new SliceValue());
-    ret->start = borrowed_value_from_pyobject(pyslice->start, lock).to_owned();
-    ret->stop = borrowed_value_from_pyobject(pyslice->stop, lock).to_owned();
-    ret->step = borrowed_value_from_pyobject(pyslice->step, lock).to_owned();
+    ret->start = borrowed_value_from_pyobject(pyslice->start).to_owned();
+    ret->stop = borrowed_value_from_pyobject(pyslice->stop).to_owned();
+    ret->step = borrowed_value_from_pyobject(pyslice->step).to_owned();
     ret->cached_pyobject_ = newref(pyobject());
     return ret;
 }
 
-RefPtr<TupleValue> BorrowedValue::as_tuple(GlobalLock& lock) const {
+RefPtr<TupleValue> BorrowedValue::as_tuple() const {
     if (tag_ == kTupleValue)
         return newref(pointer<TupleValue>());
     CHECK(tag_ == kPyTuple);
@@ -589,7 +590,7 @@ RefPtr<TupleValue> BorrowedValue::as_tuple(GlobalLock& lock) const {
     size_t size = static_cast<size_t>(PyTuple_GET_SIZE(pyobject()));
     RefPtr<TupleValue> ret = TupleValue::create(size);
     for (size_t i = 0; i < size; ++i)
-        (*ret)[i] = borrowed_value_from_pyobject(PyTuple_GET_ITEM(pyobject(), i), lock).to_owned();
+        (*ret)[i] = borrowed_value_from_pyobject(PyTuple_GET_ITEM(pyobject(), i)).to_owned();
     ret->cached_pyobject_ = newref(pyobject());
     return ret;
 }
@@ -1304,10 +1305,10 @@ static void append_tensor_value(const TensorBase* tensor, StringBuilder* sb) {
 // Symbolic tensors are printed like the corresponding IR types, e.g. "<tile[float32, (2, 3)]>".
 // Constant tensors also include their value, e.g. "<scalar[int32] = 5>".
 static PyObject* tensor_repr(PyObject* self) {
-    GlobalLock lock;
     TensorBase* tensor = reinterpret_cast<TensorBase*>(self);
     StringBuilder sb;
     sb.append("<");
+    GlobalLock lock;
     append_tensor_type(tensor, false, &sb, lock);
 
     if (!tensor->is_symbolic()) {
@@ -1349,13 +1350,13 @@ static PyPtr tensor_to_ir_var(TensorBase* tensor, GlobalLock& lock) {
 }
 
 static PyObject* py_tensor_to_ir_var(PyObject*, PyObject* arg) {
-    GlobalLock lock;
-    BorrowedValue val = borrowed_value_from_pyobject(arg, lock);
+    BorrowedValue val = borrowed_value_from_pyobject(arg);
     if (!val.is_tensor()) {
         raise(PyExc_TypeError, "Argument must be a Tile, Scalar, Vector or Pointer, not ",
               use_type(val));
         return nullptr;
     }
+    GlobalLock lock;
     return tensor_to_ir_var(val.as_tensor(), lock).release();
 }
 
@@ -1653,12 +1654,12 @@ static PyObject* py_make_constant_0d_tensor(PyObject*, PyObject* args) {
         return nullptr;
     }
 
-    GlobalLock lock;
-    BorrowedValue val = borrowed_value_from_pyobject(value, lock);
+    BorrowedValue val = borrowed_value_from_pyobject(value);
     if (!val.is_loosely_typed_scalar()) {
         raise(PyExc_TypeError, "Value must be a Python number, not ", use_type(val));
         return nullptr;
     }
+    GlobalLock lock;
     Result<Value> res = to_result(tensorlike_astype(val, *dtype, std::nullopt, use_tile, lock));
     if (!res.is_ok()) return nullptr;
     return res->borrow().to_pyobject().release();
@@ -1710,8 +1711,8 @@ static PyObject* py_tensorlike_astype(PyObject*, PyObject* args) {
     if (!optional_rounding_mode_from_pyobject(py_rounding_mode, &rounding_mode))
         return nullptr;
 
+    BorrowedValue x_val = borrowed_value_from_pyobject(x);
     GlobalLock lock;
-    BorrowedValue x_val = borrowed_value_from_pyobject(x, lock);
     return release_pyobject_or_raise(
             tensorlike_astype(x_val, *dtype, rounding_mode, use_tile, lock), true);
 }
@@ -1791,7 +1792,7 @@ static Expected<Value> dtype_constructor(BorrowedValue x, DType to, bool use_til
             return make_error(Error::kTypeError, "Cannot convert string ",
                               use_repr(x.as_string()), " to ", to);
         }
-        BorrowedValue number_val = borrowed_value_from_pyobject(number.get(), lock);
+        BorrowedValue number_val = borrowed_value_from_pyobject(number.get());
         return tensorlike_astype(number_val, to, std::nullopt, use_tile, lock);
     }
 
@@ -1813,8 +1814,8 @@ static PyObject* py_dtype_constructor(PyObject*, PyObject* args) {
         return nullptr;
     }
 
+    BorrowedValue x_val = borrowed_value_from_pyobject(x);
     GlobalLock lock;
-    BorrowedValue x_val = borrowed_value_from_pyobject(x, lock);
     return release_pyobject_or_raise(dtype_constructor(x_val, *dtype, use_tile, lock), true);
 }
 
@@ -2556,7 +2557,7 @@ static Expected<Value> binary_arithmetic_tensorlike(
         }
         if (!res) return error_from_python_exception();
         PyPtr res_guard = steal(res);
-        BorrowedValue bv = borrowed_value_from_pyobject(res, lock);
+        BorrowedValue bv = borrowed_value_from_pyobject(res);
         if (bv.is_unsupported_pyobject())
             return raise(PyExc_AssertionError, "Arithmetic operation on Python numbers"
                          " returned an object of unexpected type ", Py_TYPE(res)->tp_name);
@@ -2674,9 +2675,9 @@ static PyObject* py_binary_arithmetic_tensorlike(PyObject*, PyObject* args) {
     if (!optional_rounding_mode_from_pyobject(py_rounding_mode, &rounding_mode))
         return nullptr;
 
+    BorrowedValue x_val = borrowed_value_from_pyobject(x);
+    BorrowedValue y_val = borrowed_value_from_pyobject(y);
     GlobalLock lock;
-    BorrowedValue x_val = borrowed_value_from_pyobject(x, lock);
-    BorrowedValue y_val = borrowed_value_from_pyobject(y, lock);
     Expected<Value> res = binary_arithmetic_tensorlike(
             x_val, y_val, *op, lock,
             rounding_mode, flush_to_zero, propagate_nan);
@@ -2784,9 +2785,9 @@ static PyObject* py_binary_wrapping_arithmetic_tensorlike(PyObject*, PyObject* a
         return nullptr;
     }
 
+    BorrowedValue x_val = borrowed_value_from_pyobject(x);
+    BorrowedValue y_val = borrowed_value_from_pyobject(y);
     GlobalLock lock;
-    BorrowedValue x_val = borrowed_value_from_pyobject(x, lock);
-    BorrowedValue y_val = borrowed_value_from_pyobject(y, lock);
     return release_pyobject_or_raise(
             binary_wrapping_arithmetic_tensorlike(x_val, y_val, *op, lock), compile_time_errors);
 }
@@ -2849,7 +2850,7 @@ static Expected<Value> comparison_tensorlike(
                 x.as_loosely_typed_scalar(), y.as_loosely_typed_scalar(), static_cast<int>(op));
         if (!res) return error_from_python_exception();
         PyPtr res_guard = steal(res);
-        BorrowedValue bv = borrowed_value_from_pyobject(res, lock);
+        BorrowedValue bv = borrowed_value_from_pyobject(res);
         if (bv.is_unsupported_pyobject())
             return raise(PyExc_AssertionError, "Comparison of Python numbers"
                          " returned an object of unexpected type ", Py_TYPE(res)->tp_name);
@@ -2939,9 +2940,9 @@ static PyObject* py_comparison_tensorlike(PyObject*, PyObject* args) {
         return nullptr;
     }
 
+    BorrowedValue x_val = borrowed_value_from_pyobject(x);
+    BorrowedValue y_val = borrowed_value_from_pyobject(y);
     GlobalLock lock;
-    BorrowedValue x_val = borrowed_value_from_pyobject(x, lock);
-    BorrowedValue y_val = borrowed_value_from_pyobject(y, lock);
     Expected<Value> res = comparison_tensorlike(x_val, y_val, *op, lock);
 
     if (res.is_ok() && res->is_not_implemented()) {
@@ -2956,9 +2957,9 @@ static PyObject* tensor_richcompare(PyObject* self, PyObject* other, int py_op) 
     CHECK(py_op >= Py_LT && py_op <= Py_GE);
     ComparisonOp op = static_cast<ComparisonOp>(py_op);
 
+    BorrowedValue xval = borrowed_value_from_pyobject(self);
+    BorrowedValue yval = borrowed_value_from_pyobject(other);
     GlobalLock lock;
-    BorrowedValue xval = borrowed_value_from_pyobject(self, lock);
-    BorrowedValue yval = borrowed_value_from_pyobject(other, lock);
     Result<Value> res = to_result(comparison_tensorlike(xval, yval, op, lock));
     if (!res.is_ok()) return nullptr;
 
@@ -3004,7 +3005,7 @@ static Expected<Value> binary_bitwise_tensorlike(
         }
         if (!res) return error_from_python_exception();
         PyPtr res_guard = steal(res);
-        BorrowedValue bv = borrowed_value_from_pyobject(res, lock);
+        BorrowedValue bv = borrowed_value_from_pyobject(res);
         if (bv.is_unsupported_pyobject())
             return raise(PyExc_AssertionError, "Bitwise operation on Python numbers"
                          " returned an object of unexpected type ", Py_TYPE(res)->tp_name);
@@ -3093,9 +3094,9 @@ static PyObject* py_binary_bitwise_tensorlike(PyObject*, PyObject* args) {
         return nullptr;
     }
 
+    BorrowedValue x_val = borrowed_value_from_pyobject(x);
+    BorrowedValue y_val = borrowed_value_from_pyobject(y);
     GlobalLock lock;
-    BorrowedValue x_val = borrowed_value_from_pyobject(x, lock);
-    BorrowedValue y_val = borrowed_value_from_pyobject(y, lock);
     Expected<Value> res = binary_bitwise_tensorlike(x_val, y_val, *op, lock);
 
     if (res.is_ok() && res->is_not_implemented()) {
@@ -3176,7 +3177,7 @@ static Expected<Value> bitwise_shift_tensorlike(
         }
         if (!res) return error_from_python_exception();
         PyPtr res_guard = steal(res);
-        BorrowedValue bv = borrowed_value_from_pyobject(res, lock);
+        BorrowedValue bv = borrowed_value_from_pyobject(res);
         if (bv.is_unsupported_pyobject())
             return raise(PyExc_AssertionError, "Bitwise shift on Python numbers"
                          " returned an object of unexpected type ", Py_TYPE(res)->tp_name);
@@ -3258,9 +3259,9 @@ static PyObject* py_bitwise_shift_tensorlike(PyObject*, PyObject* args) {
         return nullptr;
     }
 
+    BorrowedValue x_val = borrowed_value_from_pyobject(x);
+    BorrowedValue y_val = borrowed_value_from_pyobject(y);
     GlobalLock lock;
-    BorrowedValue x_val = borrowed_value_from_pyobject(x, lock);
-    BorrowedValue y_val = borrowed_value_from_pyobject(y, lock);
     Expected<Value> res = bitwise_shift_tensorlike(x_val, y_val, *op, lock);
 
     if (res.is_ok() && res->is_not_implemented()) {
@@ -3273,9 +3274,9 @@ static PyObject* py_bitwise_shift_tensorlike(PyObject*, PyObject* args) {
 
 template <BinaryArithmeticOp Op>
 static PyObject* tensor_arith_binop(PyObject* x, PyObject* y) {
+    BorrowedValue xval = borrowed_value_from_pyobject(x);
+    BorrowedValue yval = borrowed_value_from_pyobject(y);
     GlobalLock lock;
-    BorrowedValue xval = borrowed_value_from_pyobject(x, lock);
-    BorrowedValue yval = borrowed_value_from_pyobject(y, lock);
     Result<Value> res = to_result(binary_arithmetic_tensorlike(xval, yval, Op, lock));
     if (!res.is_ok()) return nullptr;
 
@@ -3317,9 +3318,9 @@ static Expected<Value> divmod_tensorlike(BorrowedValue x, BorrowedValue y, Globa
 }
 
 static PyObject* tensor_nb_divmod(PyObject* x, PyObject* y) {
+    BorrowedValue xval = borrowed_value_from_pyobject(x);
+    BorrowedValue yval = borrowed_value_from_pyobject(y);
     GlobalLock lock;
-    BorrowedValue xval = borrowed_value_from_pyobject(x, lock);
-    BorrowedValue yval = borrowed_value_from_pyobject(y, lock);
     Expected<Value> res = divmod_tensorlike(xval, yval, lock);
     return release_pyobject_or_raise(std::move(res), false);
 }
@@ -3329,9 +3330,9 @@ static PyObject* py_divmod_tensorlike(PyObject*, PyObject* args) {
     if (!PyArg_ParseTuple(args, "OO:_divmod_tensorlike", &x, &y))
         return nullptr;
 
+    BorrowedValue x_val = borrowed_value_from_pyobject(x);
+    BorrowedValue y_val = borrowed_value_from_pyobject(y);
     GlobalLock lock;
-    BorrowedValue x_val = borrowed_value_from_pyobject(x, lock);
-    BorrowedValue y_val = borrowed_value_from_pyobject(y, lock);
     Expected<Value> res = divmod_tensorlike(x_val, y_val, lock);
 
     if (res.is_ok() && res->is_not_implemented()) {
@@ -3348,9 +3349,9 @@ static PyObject* tensor_nb_power(PyObject* x, PyObject* y, PyObject* mod) {
 
 template <BinaryBitwiseOp Op>
 static PyObject* tensor_bitwise_binop(PyObject* x, PyObject* y) {
+    BorrowedValue xval = borrowed_value_from_pyobject(x);
+    BorrowedValue yval = borrowed_value_from_pyobject(y);
     GlobalLock lock;
-    BorrowedValue xval = borrowed_value_from_pyobject(x, lock);
-    BorrowedValue yval = borrowed_value_from_pyobject(y, lock);
     Result<Value> res = to_result(binary_bitwise_tensorlike(xval, yval, Op, lock));
     if (!res.is_ok()) return nullptr;
     return res->borrow().to_pyobject().release();
@@ -3358,9 +3359,9 @@ static PyObject* tensor_bitwise_binop(PyObject* x, PyObject* y) {
 
 template <BitwiseShiftOp Op>
 static PyObject* tensor_bitwise_shift_binop(PyObject* x, PyObject* y) {
+    BorrowedValue xval = borrowed_value_from_pyobject(x);
+    BorrowedValue yval = borrowed_value_from_pyobject(y);
     GlobalLock lock;
-    BorrowedValue xval = borrowed_value_from_pyobject(x, lock);
-    BorrowedValue yval = borrowed_value_from_pyobject(y, lock);
     Result<Value> res = to_result(bitwise_shift_tensorlike(xval, yval, Op, lock));
     if (!res.is_ok()) return nullptr;
     return res->borrow().to_pyobject().release();
@@ -3596,10 +3597,10 @@ static PyObject* tensor_nb_invert(PyObject* self) {
 }
 
 // Takes ownership of `res`, which is the result of a unary operation on a loosely typed scalar
-static Expected<Value> loosely_typed_unary_result(PyObject* res, GlobalLock& lock) {
+static Expected<Value> loosely_typed_unary_result(PyObject* res) {
     if (!res) return error_from_python_exception();
     PyPtr res_guard = steal(res);
-    BorrowedValue bv = borrowed_value_from_pyobject(res, lock);
+    BorrowedValue bv = borrowed_value_from_pyobject(res);
     if (bv.is_unsupported_pyobject())
         return raise(PyExc_AssertionError, "Unary operation on a loosely typed scalar"
                      " returned an object of unexpected type ", Py_TYPE(res)->tp_name);
@@ -3610,7 +3611,7 @@ static Expected<Value> loosely_typed_unary_result(PyObject* res, GlobalLock& loc
 
 static Expected<Value> tensorlike_negative(BorrowedValue x, GlobalLock& lock) {
     if (x.is_loosely_typed_scalar())
-        return loosely_typed_unary_result(PyNumber_Negative(x.as_loosely_typed_scalar()), lock);
+        return loosely_typed_unary_result(PyNumber_Negative(x.as_loosely_typed_scalar()));
     if (!x.is_tensor())
         return make_error(Error::kTypeError,
                           "Operand of unary `-` must be a tensor or a number, not ", use_type(x));
@@ -3625,14 +3626,14 @@ static PyObject* py_tensorlike_negative(PyObject*, PyObject* args) {
     if (!PyArg_ParseTuple(args, "Op:_tensorlike_negative", &x, &compile_time_errors))
         return nullptr;
 
+    BorrowedValue x_val = borrowed_value_from_pyobject(x);
     GlobalLock lock;
-    BorrowedValue x_val = borrowed_value_from_pyobject(x, lock);
     return release_pyobject_or_raise(tensorlike_negative(x_val, lock), compile_time_errors);
 }
 
 static Expected<Value> tensorlike_positive(BorrowedValue x, GlobalLock& lock) {
     if (x.is_loosely_typed_scalar())
-        return loosely_typed_unary_result(PyNumber_Positive(x.as_loosely_typed_scalar()), lock);
+        return loosely_typed_unary_result(PyNumber_Positive(x.as_loosely_typed_scalar()));
     if (!x.is_tensor())
         return make_error(Error::kTypeError,
                           "Operand of unary `+` must be a tensor or a number, not ", use_type(x));
@@ -3647,8 +3648,8 @@ static PyObject* py_tensorlike_positive(PyObject*, PyObject* args) {
     if (!PyArg_ParseTuple(args, "Op:_tensorlike_positive", &x, &compile_time_errors))
         return nullptr;
 
+    BorrowedValue x_val = borrowed_value_from_pyobject(x);
     GlobalLock lock;
-    BorrowedValue x_val = borrowed_value_from_pyobject(x, lock);
     return release_pyobject_or_raise(tensorlike_positive(x_val, lock), compile_time_errors);
 }
 
@@ -3661,7 +3662,7 @@ static Expected<Value> tensorlike_invert(BorrowedValue x, GlobalLock& lock) {
         if (!PyLong_Check(x_obj))
             return make_error(Error::kTypeError,
                               "Operand of `~` must be an integer or boolean, not ", use_type(x));
-        return loosely_typed_unary_result(PyNumber_Invert(x_obj), lock);
+        return loosely_typed_unary_result(PyNumber_Invert(x_obj));
     }
     if (!x.is_tensor())
         return make_error(Error::kTypeError,
@@ -3677,8 +3678,8 @@ static PyObject* py_tensorlike_invert(PyObject*, PyObject* args) {
     if (!PyArg_ParseTuple(args, "Op:_tensorlike_invert", &x, &compile_time_errors))
         return nullptr;
 
+    BorrowedValue x_val = borrowed_value_from_pyobject(x);
     GlobalLock lock;
-    BorrowedValue x_val = borrowed_value_from_pyobject(x, lock);
     return release_pyobject_or_raise(tensorlike_invert(x_val, lock), compile_time_errors);
 }
 
@@ -3876,7 +3877,7 @@ static Expected<Value> vector_getitem(BorrowedValue self, BorrowedValue key, Glo
 
     RefPtr<TensorBase> res;
     if (key.is_slice()) {
-        RefPtr<SliceValue> slice = key.as_slice(lock);
+        RefPtr<SliceValue> slice = key.as_slice();
         Expected<RefPtr<TensorBase>> sliced = vector_slice(vector, *slice, lock);
         if (!sliced.is_ok()) return std::move(sliced.error());
         res = std::move(*sliced);
@@ -3902,9 +3903,9 @@ static Expected<Value> vector_getitem(BorrowedValue self, BorrowedValue key, Glo
 }
 
 static PyObject* vector_mp_subscript(PyObject* self, PyObject* key) {
-    GlobalLock lock;
-    BorrowedValue key_val = borrowed_value_from_pyobject(key, lock);
+    BorrowedValue key_val = borrowed_value_from_pyobject(key);
     BorrowedValue self_val = BorrowedValue::from_tensor(reinterpret_cast<TensorBase*>(self));
+    GlobalLock lock;
     Result<Value> res = to_result(vector_getitem(self_val, key_val, lock));
     if (!res.is_ok()) return nullptr;
     return res->borrow().to_pyobject().release();
@@ -3931,13 +3932,13 @@ static PyMappingMethods vector_mapping_methods = {
 
 // Used for iteration, e.g. `for x in vector` or `tuple(vector)`
 static PyObject* vector_sq_item(PyObject* self, Py_ssize_t index) {
-    GlobalLock lock;
     Vector* vector = reinterpret_cast<Vector*>(self);
     if (index < 0 || index >= vector->length) {
         raise(PyExc_IndexError, "Vector index ", index,
               " is out of range for a vector of length ", vector->length);
         return nullptr;
     }
+    GlobalLock lock;
     RefPtr<TensorBase> res = vector_getitem_constant_index(
             vector, static_cast<size_t>(index), lock);
     return reinterpret_cast<PyObject*>(res.release());
@@ -4034,9 +4035,9 @@ static PyObject* vector_method_with_item(PyObject* self, PyObject* args, PyObjec
                                      &index, &value))
         return nullptr;
 
+    BorrowedValue index_val = borrowed_value_from_pyobject(index);
+    BorrowedValue value_val = borrowed_value_from_pyobject(value);
     GlobalLock lock;
-    BorrowedValue index_val = borrowed_value_from_pyobject(index, lock);
-    BorrowedValue value_val = borrowed_value_from_pyobject(value, lock);
     return release_pyobject_or_raise(
             vector_with_item(reinterpret_cast<Vector*>(self), index_val, value_val, lock),
             false);
@@ -4144,9 +4145,9 @@ static PyObject* py_vector_getitem(PyObject*, PyObject* args) {
     if (!PyArg_ParseTuple(args, "O!O:_vector_getitem", &Vector::pytype, &x, &key))
         return nullptr;
 
+    BorrowedValue x_val = borrowed_value_from_pyobject(x);
+    BorrowedValue key_val = borrowed_value_from_pyobject(key);
     GlobalLock lock;
-    BorrowedValue x_val = borrowed_value_from_pyobject(x, lock);
-    BorrowedValue key_val = borrowed_value_from_pyobject(key, lock);
     return release_pyobject_or_raise(vector_getitem(x_val, key_val, lock), true);
 }
 
@@ -4155,9 +4156,9 @@ static PyObject* py_vector_with_item(PyObject*, PyObject* args) {
     if (!PyArg_ParseTuple(args, "O!OO:_vector_with_item", &Vector::pytype, &x, &index, &value))
         return nullptr;
 
+    BorrowedValue index_val = borrowed_value_from_pyobject(index);
+    BorrowedValue value_val = borrowed_value_from_pyobject(value);
     GlobalLock lock;
-    BorrowedValue index_val = borrowed_value_from_pyobject(index, lock);
-    BorrowedValue value_val = borrowed_value_from_pyobject(value, lock);
     return release_pyobject_or_raise(
             vector_with_item(reinterpret_cast<Vector*>(x), index_val, value_val, lock), true);
 }
@@ -4168,8 +4169,8 @@ static PyObject* vector_get_element_count(PyObject* self, void*) {
 }
 
 static PyObject* tensor_get_dtype(PyObject* self, void*) {
-    GlobalLock lock;
     TensorBase* tensor = reinterpret_cast<TensorBase*>(self);
+    GlobalLock lock;
     return Py_XNewRef(dtype_to_pyobject(tensor->dtype, lock));
 }
 
@@ -4375,9 +4376,9 @@ static Expected<Value> tile_matmul(BorrowedValue x, BorrowedValue y, GlobalLock&
 }
 
 static PyObject* tile_nb_matrix_multiply(PyObject* x, PyObject* y) {
+    BorrowedValue xval = borrowed_value_from_pyobject(x);
+    BorrowedValue yval = borrowed_value_from_pyobject(y);
     GlobalLock lock;
-    BorrowedValue xval = borrowed_value_from_pyobject(x, lock);
-    BorrowedValue yval = borrowed_value_from_pyobject(y, lock);
     Result<Value> res = to_result(tile_matmul(xval, yval, lock));
     if (!res.is_ok()) return nullptr;
     return res->borrow().to_pyobject().release();
@@ -4388,9 +4389,9 @@ static PyObject* py_tile_matmul(PyObject*, PyObject* args) {
     if (!PyArg_ParseTuple(args, "OO:_tile_matmul", &x, &y))
         return nullptr;
 
+    BorrowedValue x_val = borrowed_value_from_pyobject(x);
+    BorrowedValue y_val = borrowed_value_from_pyobject(y);
     GlobalLock lock;
-    BorrowedValue x_val = borrowed_value_from_pyobject(x, lock);
-    BorrowedValue y_val = borrowed_value_from_pyobject(y, lock);
     Expected<Value> res = tile_matmul(x_val, y_val, lock);
 
     if (res.is_ok() && res->is_not_implemented()) {
@@ -4401,9 +4402,9 @@ static PyObject* py_tile_matmul(PyObject*, PyObject* args) {
 }
 
 
-static bool is_full_slice(BorrowedValue val, GlobalLock& lock) {
+static bool is_full_slice(BorrowedValue val) {
     if (!val.is_slice()) return false;
-    RefPtr<SliceValue> slice = val.as_slice(lock);
+    RefPtr<SliceValue> slice = val.as_slice();
     return slice->start.borrow().is_none() && slice->stop.borrow().is_none()
         && slice->step.borrow().is_none();
 }
@@ -4419,7 +4420,7 @@ static Expected<Value> tile_getitem(BorrowedValue self, BorrowedValue key, Globa
     const Value* index;
     size_t index_size;
     if (key.is_tuple()) {
-        tuple = key.as_tuple(lock);
+        tuple = key.as_tuple();
         index = tuple->items();
         index_size = tuple->size();
     } else {
@@ -4441,7 +4442,7 @@ static Expected<Value> tile_getitem(BorrowedValue self, BorrowedValue key, Globa
             ++num_ellipses;
             continue;
         }
-        if (is_full_slice(item, lock)) {
+        if (is_full_slice(item)) {
             ++num_slices;
             continue;
         }
@@ -4488,7 +4489,7 @@ static Expected<Value> tile_reshape(Tile* tile, BorrowedValue shape_arg, GlobalL
     if (!shape_arg.is_tuple())
         return make_error(Error::kTypeError, "Shape must be a tuple, not ",
                           use_type(shape_arg));
-    RefPtr<TupleValue> tuple = shape_arg.as_tuple(lock);
+    RefPtr<TupleValue> tuple = shape_arg.as_tuple();
 
     UnpackedShape shape = tile->shape_.unpack();
     auto cannot_reshape = [&] () {
@@ -4566,8 +4567,8 @@ static PyObject* tile_method_reshape(PyObject* self, PyObject* args, PyObject* k
                                      &shape))
         return nullptr;
 
+    BorrowedValue shape_val = borrowed_value_from_pyobject(shape);
     GlobalLock lock;
-    BorrowedValue shape_val = borrowed_value_from_pyobject(shape, lock);
     Result<Value> res = to_result(tile_reshape(reinterpret_cast<Tile*>(self), shape_val, lock));
     if (!res.is_ok()) return nullptr;
     return res->borrow().to_pyobject().release();
@@ -4638,9 +4639,9 @@ static PyMethodDef tile_methods[] = {
 };
 
 static PyObject* tile_mp_subscript(PyObject* self, PyObject* key) {
-    GlobalLock lock;
-    BorrowedValue key_val = borrowed_value_from_pyobject(key, lock);
+    BorrowedValue key_val = borrowed_value_from_pyobject(key);
     BorrowedValue self_val = BorrowedValue::from_tensor(reinterpret_cast<TensorBase*>(self));
+    GlobalLock lock;
     Result<Value> res = to_result(tile_getitem(self_val, key_val, lock));
     if (!res.is_ok()) return nullptr;
     return res->borrow().to_pyobject().release();
@@ -4695,9 +4696,9 @@ static PyObject* py_tile_reshape(PyObject*, PyObject* args) {
     if (!PyArg_ParseTuple(args, "OO:_tile_reshape", &x, &shape))
         return nullptr;
 
+    BorrowedValue x_val = borrowed_value_from_pyobject(x);
+    BorrowedValue shape_val = borrowed_value_from_pyobject(shape);
     GlobalLock lock;
-    BorrowedValue x_val = borrowed_value_from_pyobject(x, lock);
-    BorrowedValue shape_val = borrowed_value_from_pyobject(shape, lock);
     return release_pyobject_or_raise(tilelike_reshape(x_val, shape_val, lock), true);
 }
 
@@ -4706,9 +4707,9 @@ static PyObject* py_tile_getitem(PyObject*, PyObject* args) {
     if (!PyArg_ParseTuple(args, "OO:_tile_getitem", &x, &key))
         return nullptr;
 
+    BorrowedValue x_val = borrowed_value_from_pyobject(x);
+    BorrowedValue key_val = borrowed_value_from_pyobject(key);
     GlobalLock lock;
-    BorrowedValue x_val = borrowed_value_from_pyobject(x, lock);
-    BorrowedValue key_val = borrowed_value_from_pyobject(key, lock);
     return release_pyobject_or_raise(tilelike_getitem(x_val, key_val, lock), true);
 }
 
@@ -4717,8 +4718,8 @@ static PyObject* py_tile_item(PyObject*, PyObject* args) {
     if (!PyArg_ParseTuple(args, "O:_tile_item", &x))
         return nullptr;
 
+    BorrowedValue x_val = borrowed_value_from_pyobject(x);
     GlobalLock lock;
-    BorrowedValue x_val = borrowed_value_from_pyobject(x, lock);
     return release_pyobject_or_raise(tilelike_item(x_val, lock), true);
 }
 
@@ -4743,14 +4744,14 @@ static PyGetSetDef tile_getset[] = {
 // ----- Pointer implementation -----
 
 static PyObject* pointer_get_opaque(PyObject* self, void*) {
-    GlobalLock lock;
     TensorBase* pointer = reinterpret_cast<TensorBase*>(self);
+    GlobalLock lock;
     return PyBool_FromLong(!pointer_dtype_pointee(pointer->dtype, lock));
 }
 
 static PyObject* pointer_get_pointee_dtype(PyObject* self, void*) {
-    GlobalLock lock;
     TensorBase* pointer = reinterpret_cast<TensorBase*>(self);
+    GlobalLock lock;
     DType pointee = pointer_dtype_pointee(pointer->dtype, lock);
     if (!pointee) {
         raise(PyExc_TypeError, "Opaque pointer has no pointee_dtype");
@@ -4760,8 +4761,8 @@ static PyObject* pointer_get_pointee_dtype(PyObject* self, void*) {
 }
 
 static PyObject* pointer_get_memory_space(PyObject* self, void*) {
-    GlobalLock lock;
     TensorBase* pointer = reinterpret_cast<TensorBase*>(self);
+    GlobalLock lock;
     MemorySpace space = pointer_dtype_memory_space(pointer->dtype, lock);
     return Py_XNewRef(enum_to_pyobject(space));
 }
