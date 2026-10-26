@@ -29,7 +29,7 @@ classifiers = [
     "Programming Language :: Python :: Implementation :: CPython",
     "Topic :: Software Development :: Compilers",
 ]
-dependencies = ["cuda-tile>=1.7.0"]
+dependencies = ["cuda-tile>=1.8.0"]
 
 [project.urls]
 Homepage = "https://github.com/nvidia/cutile-python"
