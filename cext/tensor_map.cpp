@@ -165,48 +165,34 @@ Status tensor_map_encode_global_strides(
 }
 
 
-static constexpr uint32_t dlpack_dtype_key(
-        uint8_t code,
-        uint8_t bits,
-        uint16_t lanes) {
-    return static_cast<uint32_t>(code)
-        | (static_cast<uint32_t>(bits) << 8)
-        | (static_cast<uint32_t>(lanes) << 16);
-}
-
-
-static Result<CUtensorMapDataType> from_dldatatype(DLDataType dtype) {
-    switch (dlpack_dtype_key(dtype.code, dtype.bits, dtype.lanes)) {
-    case dlpack_dtype_key(kDLUInt, 8, 1):
-    case dlpack_dtype_key(kDLInt, 8, 1):
-    case dlpack_dtype_key(kDLFloat8_e4m3fn, 8, 1):
-    case dlpack_dtype_key(kDLFloat8_e5m2, 8, 1):
-    case dlpack_dtype_key(kDLFloat8_e8m0fnu, 8, 1):
+static Result<CUtensorMapDataType> tensor_map_data_type_from_dtype(DType dtype) {
+    switch (dtype.dtype_id) {
+    case k_uint8.dtype_id:
+    case k_int8.dtype_id:
+    case k_float8_e4m3fn.dtype_id:
+    case k_float8_e5m2.dtype_id:
+    case k_float8_e8m0fnu.dtype_id:
         return CU_TENSOR_MAP_DATA_TYPE_UINT8;
-    case dlpack_dtype_key(kDLUInt, 16, 1):
+    case k_uint16.dtype_id:
         return CU_TENSOR_MAP_DATA_TYPE_UINT16;
-    case dlpack_dtype_key(kDLUInt, 32, 1):
+    case k_uint32.dtype_id:
         return CU_TENSOR_MAP_DATA_TYPE_UINT32;
-    case dlpack_dtype_key(kDLInt, 32, 1):
+    case k_int32.dtype_id:
         return CU_TENSOR_MAP_DATA_TYPE_INT32;
-    case dlpack_dtype_key(kDLUInt, 64, 1):
+    case k_uint64.dtype_id:
         return CU_TENSOR_MAP_DATA_TYPE_UINT64;
-    case dlpack_dtype_key(kDLInt, 64, 1):
+    case k_int64.dtype_id:
         return CU_TENSOR_MAP_DATA_TYPE_INT64;
-    case dlpack_dtype_key(kDLFloat, 16, 1):
+    case k_float16.dtype_id:
         return CU_TENSOR_MAP_DATA_TYPE_FLOAT16;
-    case dlpack_dtype_key(kDLFloat, 32, 1):
+    case k_float32.dtype_id:
         return CU_TENSOR_MAP_DATA_TYPE_FLOAT32;
-    case dlpack_dtype_key(kDLFloat, 64, 1):
+    case k_float64.dtype_id:
         return CU_TENSOR_MAP_DATA_TYPE_FLOAT64;
-    case dlpack_dtype_key(kDLBfloat, 16, 1):
+    case k_bfloat16.dtype_id:
         return CU_TENSOR_MAP_DATA_TYPE_BFLOAT16;
     default:
-        return raise(PyExc_TypeError,
-                     "Data type with DLPack code ", dtype.code,
-                     ", bit width ", dtype.bits,
-                     ", and lane count ", dtype.lanes,
-                     " is not supported by tensor map");
+        return raise(PyExc_TypeError, "Data type ", dtype, " is not supported by tensor map");
     }
 }
 
@@ -567,7 +553,7 @@ static Status add_tensor_map_enums(PyObject* module) {
 
 
 PyPtr tensor_map_tiled(
-        DLDataType array_dtype,
+        DType array_dtype,
         void* array_address,
         size_t rank,
         const int64_t* array_dimensions,
@@ -580,7 +566,7 @@ PyPtr tensor_map_tiled(
         int oob_fill,
         GlobalLock& lock) {
 
-    Result<CUtensorMapDataType> data_type = from_dldatatype(array_dtype);
+    Result<CUtensorMapDataType> data_type = tensor_map_data_type_from_dtype(array_dtype);
     if (!data_type.is_ok()) return {};
 
     if (rank < 1 || rank > kTensorMapMaxRank) {

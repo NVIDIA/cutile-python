@@ -8,6 +8,7 @@
 #include "compiled_host.h"
 #include "cuda_loader.h"
 #include "cuda_helper.h"
+#include "dtype.h"
 #include "hash_map.h"
 #include "ipc_util.h"
 #include "launch_helper.h"
@@ -56,29 +57,6 @@ static constexpr const char* kFakeArrayNdimAttr = "_cuda_lang_fake_array_ndim";
 static constexpr const char* kFakePointerDTypeAttr = "_cuda_lang_fake_pointer_dtype";
 static constexpr const char* kTensorMapBytesAttr = "_cuda_lang_tensor_map_bytes";
 static constexpr const char* kNativeSourceDTypeAttr = "_native_source_dtype";
-
-
-static PyObject* get_datatype_module(GlobalLock&) {
-    static PyObject* m;
-    if (!m) m = PyImport_ImportModule("cuda.tile._datatype");
-    return m;
-}
-
-
-static PyTypeObject* get_dtype_class(GlobalLock& lock) {
-    static PyTypeObject* c;
-    static bool cached;
-    if (!cached) {
-        cached = true;
-        PyObject* datatype_mod = get_datatype_module(lock);
-        if (!datatype_mod) return nullptr;
-        PyPtr dtype_class = getattr(datatype_mod, "DType");
-        if (!dtype_class) return nullptr;
-        if (!PyType_Check(dtype_class.get())) return nullptr;
-        c = reinterpret_cast<PyTypeObject*>(dtype_class.release());
-    }
-    return c;
-}
 
 
 static PyObject* get_signature_module(GlobalLock&) {
@@ -706,79 +684,41 @@ static constexpr int u8_pair(uint8_t x, uint8_t y) {
     return x | (y << 8);
 }
 
-#define FOREACH_DLPACK_DTYPE(X) \
-    X(kDLBool, 8, "bool_") \
-    \
-    X(kDLInt, 8, "int8") \
-    X(kDLInt, 16, "int16") \
-    X(kDLInt, 32, "int32") \
-    X(kDLInt, 64, "int64") \
-    \
-    X(kDLUInt, 8, "uint8") \
-    X(kDLUInt, 16, "uint16") \
-    X(kDLUInt, 32, "uint32") \
-    X(kDLUInt, 64, "uint64") \
-    \
-    X(kDLFloat, 16, "float16") \
-    X(kDLFloat, 32, "float32") \
-    X(kDLFloat, 64, "float64") \
-    \
-    X(kDLBfloat, 16, "bfloat16") \
-    \
-    X(kDLFloat8_e4m3fn, 8, "float8_e4m3fn") \
-    X(kDLFloat8_e5m2, 8, "float8_e5m2") \
-    X(kDLFloat8_e8m0fnu, 8, "float8_e8m0fnu")
-
-
-#define DLPACK_DTYPE_NAME_CASE(code, bits, name) \
-    case u8_pair(code, bits): return name;
-
-static Result<const char*> dtype_name(DLDataType dtype) {
+static Result<DType> dtype_from_dlpack(DLDataType dtype) {
     if (dtype.lanes != 1)
         return raise(PyExc_TypeError, "Array dtypes with multiple lanes are not supported");
 
     switch (u8_pair(dtype.code, dtype.bits)) {
-        FOREACH_DLPACK_DTYPE(DLPACK_DTYPE_NAME_CASE)
+    case u8_pair(kDLBool, 8): return k_bool_;
+
+    case u8_pair(kDLInt, 8): return k_int8;
+    case u8_pair(kDLInt, 16): return k_int16;
+    case u8_pair(kDLInt, 32): return k_int32;
+    case u8_pair(kDLInt, 64): return k_int64;
+
+    case u8_pair(kDLUInt, 8): return k_uint8;
+    case u8_pair(kDLUInt, 16): return k_uint16;
+    case u8_pair(kDLUInt, 32): return k_uint32;
+    case u8_pair(kDLUInt, 64): return k_uint64;
+
+    case u8_pair(kDLFloat, 16): return k_float16;
+    case u8_pair(kDLFloat, 32): return k_float32;
+    case u8_pair(kDLFloat, 64): return k_float64;
+
+    case u8_pair(kDLBfloat, 16): return k_bfloat16;
+
+    case u8_pair(kDLFloat8_e4m3fn, 8): return k_float8_e4m3fn;
+    case u8_pair(kDLFloat8_e5m2, 8): return k_float8_e5m2;
+    case u8_pair(kDLFloat8_e8m0fnu, 8): return k_float8_e8m0fnu;
+
     default:
         return raise(PyExc_TypeError, "Unsupported array dtype");
     }
 }
 
-static PyPtr dtype_to_python(DLDataType dtype, GlobalLock& lock) {
-    PyObject* dtype_module = get_datatype_module(lock);
-    if (!dtype_module) return {};
-
-    Result<const char*> name = dtype_name(dtype);
-    if (!name.is_ok()) return {};
-
-    return getattr(dtype_module, *name);
+static bool is_array_dtype(DType dtype) {
+    return is_numeric_dtype(dtype) && basic_dtype_bitwidth(dtype) % BYTE_BITWIDTH == 0;
 }
-
-
-#define DLPACK_DTYPE_NAME(_code, _bits, name) name,
-#define DLPACK_DTYPE_TYPE(code, bits, _name) {code, bits, 1},
-
-static constexpr char dlpack_dtype_names[][16] = { FOREACH_DLPACK_DTYPE(DLPACK_DTYPE_NAME) };
-static constexpr DLDataType dlpack_dtypes[] = { FOREACH_DLPACK_DTYPE(DLPACK_DTYPE_TYPE) };
-
-static Result<std::optional<DLDataType>> dtype_from_python(PyObject* dtype) {
-    PyPtr py_name = getattr(dtype, "name");
-    if (!py_name) return ErrorRaised;
-
-    constexpr size_t n = std::extent_v<decltype(dlpack_dtype_names)>;
-    static_assert(n == std::extent_v<decltype(dlpack_dtypes)>);
-
-    for (size_t i = 0; i < n; ++i) {
-        if (!PyUnicode_CompareWithASCIIString(py_name.get(), dlpack_dtype_names[i]))
-            return {dlpack_dtypes[i]};
-    }
-    return {std::nullopt};
-}
-
-struct ForeignDTypeInfo {
-    std::optional<DLDataType> dlpack_dtype;
-    PyPtr native_dtype;
-};
 
 
 enum ForeignDtypeKind {
@@ -788,30 +728,30 @@ enum ForeignDtypeKind {
 };
 
 static constexpr
-struct { char name[16]; DLDataType type; int lib_mask; } foreign_dtype_table[] = {
-    {"bool", {kDLBool, 8, 1}, kTorch },
-    {"bool_", {kDLBool, 8, 1}, kNumpy },
-    {"uint8", {kDLUInt, 8, 1}, kTorch | kNumpy },
-    {"uint16", {kDLUInt, 16, 1}, kTorch | kNumpy },
-    {"uint32", {kDLUInt, 32, 1}, kTorch | kNumpy},
-    {"uint64", {kDLUInt, 64, 1}, kTorch | kNumpy},
-    {"int8", {kDLInt, 8, 1}, kTorch | kNumpy},
-    {"int16", {kDLInt, 16, 1}, kTorch | kNumpy},
-    {"int32", {kDLInt, 32, 1}, kTorch | kNumpy},
-    {"int64", {kDLInt, 64, 1}, kTorch | kNumpy},
-    {"float16", {kDLFloat, 16, 1}, kTorch | kNumpy},
-    {"float32", {kDLFloat, 32, 1}, kTorch | kNumpy},
-    {"float64", {kDLFloat, 64, 1}, kTorch | kNumpy},
-    {"bfloat16", {kDLBfloat, 16, 1}, kTorch | kMlDTypes},
-    {"float8_e4m3fn", {kDLFloat8_e4m3fn, 8, 1}, kTorch | kMlDTypes},
-    {"float8_e5m2", {kDLFloat8_e5m2, 8, 1}, kTorch | kMlDTypes},
-    {"float8_e8m0fnu", {kDLFloat8_e8m0fnu, 8, 1}, kTorch | kMlDTypes}
+struct { char name[16]; DType dtype; int lib_mask; } foreign_dtype_table[] = {
+    {"bool", k_bool_, kTorch },
+    {"bool_", k_bool_, kNumpy },
+    {"uint8", k_uint8, kTorch | kNumpy },
+    {"uint16", k_uint16, kTorch | kNumpy },
+    {"uint32", k_uint32, kTorch | kNumpy},
+    {"uint64", k_uint64, kTorch | kNumpy},
+    {"int8", k_int8, kTorch | kNumpy},
+    {"int16", k_int16, kTorch | kNumpy},
+    {"int32", k_int32, kTorch | kNumpy},
+    {"int64", k_int64, kTorch | kNumpy},
+    {"float16", k_float16, kTorch | kNumpy},
+    {"float32", k_float32, kTorch | kNumpy},
+    {"float64", k_float64, kTorch | kNumpy},
+    {"bfloat16", k_bfloat16, kTorch | kMlDTypes},
+    {"float8_e4m3fn", k_float8_e4m3fn, kTorch | kMlDTypes},
+    {"float8_e5m2", k_float8_e5m2, kTorch | kMlDTypes},
+    {"float8_e8m0fnu", k_float8_e8m0fnu, kTorch | kMlDTypes}
 };
 
 static void register_foreign_dtypes_common(PyObject* foreign_module,
                                            PyObject* numpy_dtype_class,
                                            ForeignDtypeKind bit,
-                                           HashMap<PyPtr, ForeignDTypeInfo>* registry,
+                                           HashMap<PyPtr, DType>* registry,
                                            GlobalLock& lock) {
     for (const auto& entry : foreign_dtype_table) {
         if (!(entry.lib_mask & bit)) continue;
@@ -819,24 +759,20 @@ static void register_foreign_dtypes_common(PyObject* foreign_module,
         PyPtr foreign_pyobj = try_getattr(foreign_module, entry.name);
         if (!foreign_pyobj) continue;
 
-        ErrorGuard guard;
-        PyPtr native_pyobj = dtype_to_python(entry.type, lock);
-        if (!native_pyobj) continue;
-
-        registry->insert(foreign_pyobj, ForeignDTypeInfo{entry.type, native_pyobj});
+        registry->insert(foreign_pyobj, entry.dtype);
 
         if (numpy_dtype_class) {
+            ErrorGuard guard;
             PyPtr numpy_dtype_desc = steal(
                     PyObject_CallOneArg(numpy_dtype_class, foreign_pyobj.get()));
             if (numpy_dtype_desc)
-                registry->insert(std::move(numpy_dtype_desc),
-                                 ForeignDTypeInfo{entry.type, std::move(native_pyobj)});
+                registry->insert(std::move(numpy_dtype_desc), entry.dtype);
         }
     }
 }
 
 
-static void register_torch_dtypes(HashMap<PyPtr, ForeignDTypeInfo>* registry,
+static void register_torch_dtypes(HashMap<PyPtr, DType>* registry,
                                   GlobalLock& lock) {
     PyPtr torch = try_import("torch");
     if (torch)
@@ -844,7 +780,7 @@ static void register_torch_dtypes(HashMap<PyPtr, ForeignDTypeInfo>* registry,
 }
 
 
-static void register_numpy_and_ml_dtypes(HashMap<PyPtr, ForeignDTypeInfo>* registry,
+static void register_numpy_and_ml_dtypes(HashMap<PyPtr, DType>* registry,
                                          GlobalLock& lock) {
     PyPtr numpy = try_import("numpy");
     if (!numpy) return;
@@ -859,10 +795,10 @@ static void register_numpy_and_ml_dtypes(HashMap<PyPtr, ForeignDTypeInfo>* regis
 }
 
 
-static HashMap<PyPtr, ForeignDTypeInfo>* get_foreign_dtype_registry(GlobalLock& lock) {
-    static HashMap<PyPtr, ForeignDTypeInfo>* registry;
+static HashMap<PyPtr, DType>* get_foreign_dtype_registry(GlobalLock& lock) {
+    static HashMap<PyPtr, DType>* registry;
     if (!registry) {
-        auto reg = std::make_unique<HashMap<PyPtr, ForeignDTypeInfo>>();
+        auto reg = std::make_unique<HashMap<PyPtr, DType>>();
         register_torch_dtypes(reg.get(), lock);
         register_numpy_and_ml_dtypes(reg.get(), lock);
         registry = reg.release();
@@ -877,20 +813,24 @@ static PyObject* foreign_dtype_object_register(PyObject* self, PyObject* args) {
     if (!PyArg_ParseTuple(args, "OO", &foreign_dtype, &native_dtype))
         return nullptr;
 
-    Result<std::optional<DLDataType>> dtype_res = dtype_from_python(native_dtype);
-    if (!dtype_res.is_ok()) return nullptr;
+    std::optional<DType> dtype = dtype_from_pyobject(native_dtype);
+    if (!dtype) {
+        raise(PyExc_TypeError, "Native dtype must be a DType, not ",
+              Py_TYPE(native_dtype)->tp_name);
+        return nullptr;
+    }
 
     GlobalLock lock;
-    get_foreign_dtype_registry(lock)->insert(newref(foreign_dtype),
-                                         ForeignDTypeInfo{*dtype_res, newref(native_dtype)});
+    get_foreign_dtype_registry(lock)->insert(newref(foreign_dtype), *dtype);
     return Py_NewRef(Py_None);
 }
 
 
 static PyObject* foreign_dtype_object_to_native(PyObject* self, PyObject* object) {
     GlobalLock lock;
-    HashMap<PyPtr, ForeignDTypeInfo>::Item* item = get_foreign_dtype_registry(lock)->find(object);
-    return Py_NewRef(item ? item->value.native_dtype.get() : Py_None);
+    HashMap<PyPtr, DType>::Item* item = get_foreign_dtype_registry(lock)->find(object);
+    if (!item) return Py_NewRef(Py_None);
+    return Py_XNewRef(dtype_to_pyobject(item->value, lock));
 }
 
 
@@ -917,7 +857,7 @@ std::optional<ConstantKind> classify_constant(PyObject* obj, bool kernel_arg, Gl
     if (PyObject_TypeCheck(obj, reinterpret_cast<PyTypeObject*>(g_enum_Enum_type)))
         return ConstantKind::Enum;
 
-    if (Py_IS_TYPE(obj, get_dtype_class(lock)))
+    if (Py_IS_TYPE(obj, &DTypeObject::pytype))
         return ConstantKind::NativeDType;
 
     if (get_foreign_dtype_registry(lock)->find(obj))
@@ -1290,7 +1230,7 @@ static Result<DLDataType> parse_typestr(PyObject* typestr) {
 }
 
 struct ArrayType {
-    DLDataType dtype;
+    DType dtype;
     size_t ndim;
 };
 
@@ -1299,26 +1239,11 @@ struct ArrayRepr {
     ArenaOffset repr;
 };
 
-// This should compile to a no-op
-static inline uint32_t dtype_as_uint(DLDataType dtype) {
-    return static_cast<uint32_t>(dtype.code)
-        | (static_cast<uint32_t>(dtype.bits) << 8)
-        | (static_cast<uint32_t>(dtype.lanes) << 16);
-}
-
-static inline DLDataType dtype_from_uint(uint32_t u) {
-    return DLDataType{
-        .code = static_cast<uint8_t>(u & 0xff),
-        .bits = static_cast<uint8_t>((u >> 8) & 0xff),
-        .lanes = static_cast<uint16_t>((u >> 16) & 0xffff),
-    };
-}
-
 // Pack data type and array rank in a single int64_t so they can be used as a
 // single constant for looking up the kernel in a family.
 // Layout: [63..32: ndim] [31..0: dtype]
 static int64_t pack_array_type(const ArrayType& a) {
-    uint64_t dtype_u = static_cast<uint64_t>(dtype_as_uint(a.dtype));
+    uint64_t dtype_u = static_cast<uint64_t>(a.dtype.dtype_id);
     uint64_t ndim_u = static_cast<uint64_t>(a.ndim);
     return static_cast<int64_t>(dtype_u | (ndim_u << 32));
 }
@@ -1327,7 +1252,7 @@ static ArrayType unpack_array_type(int64_t c) {
     uint64_t u = c;
     uint32_t dtype = u & 0xffffffff;
     uint32_t ndim = u >> 32;
-    return {dtype_from_uint(dtype), ndim};
+    return {DType{dtype}, ndim};
 }
 
 static inline Status validate_array_index_value(
@@ -1505,7 +1430,7 @@ struct ArrayTypeConstantBuilder {
         // An explicit annotation defines the complete set of shape/stride constants;
         // only infer singleton shapes and unit strides when no corresponding annotation exists.
         bits &= compute_array_specialization_bits(
-                    repr, ar.arrty.ndim, ar.arrty.dtype.bits * ar.arrty.dtype.lanes,
+                    repr, ar.arrty.ndim, basic_dtype_bitwidth(ar.arrty.dtype),
                     /*infer_shape_one=*/static_shape_dims.empty() && can_specialize_for_shape,
                     /*infer_stride_one=*/static_stride_dims.empty()).u64;
 
@@ -1636,11 +1561,10 @@ static PyPtr parse_array_constraint(ConstantCursor& cursor,
     PyPtr args = steal(PyTuple_New(0));
     if (!args) return {};
 
-    PyPtr dtype = dtype_to_python(arrty.dtype, lock);
+    PyObject* dtype = dtype_to_pyobject(arrty.dtype, lock);
     if (!dtype) return {};
 
-    PyPtr index_dtype = dtype_to_python(
-            DLDataType{kDLInt, static_cast<uint8_t>(index_bitwidth), 1}, lock);
+    PyObject* index_dtype = dtype_to_pyobject(index_bitwidth == 64 ? k_int64 : k_int32, lock);
     if (!index_dtype) return {};
 
     PyPtr constant_strides = steal(PyList_New(arrty.ndim));
@@ -1666,8 +1590,9 @@ static PyPtr parse_array_constraint(ConstantCursor& cursor,
 
     PyPtr stride_divisor = one;
     constexpr unsigned divisor16_bits = DIVISOR_16 * BYTE_BITWIDTH;
-    if (divisor16_bits % arrty.dtype.bits == 0) {
-        stride_divisor = steal(PyLong_FromLong(divisor16_bits / arrty.dtype.bits));
+    unsigned dtype_bits = basic_dtype_bitwidth(arrty.dtype);
+    if (divisor16_bits % dtype_bits == 0) {
+        stride_divisor = steal(PyLong_FromLong(divisor16_bits / dtype_bits));
         if (!stride_divisor) return {};
     }
 
@@ -1706,9 +1631,9 @@ static PyPtr parse_array_constraint(ConstantCursor& cursor,
 
     PyPtr kwargs = steal(Py_BuildValue(
             "{sO sI sO sO sO sO s() sO sO sO sO}",
-            "dtype", dtype.get(),
+            "dtype", dtype,
             "ndim", static_cast<unsigned>(arrty.ndim),
-            "index_dtype", index_dtype.get(),
+            "index_dtype", index_dtype,
             "stride_constant", constant_strides.get(),
             "shape_constant", constant_shape.get(),
             "stride_lower_bound_incl", zero.get(),
@@ -1743,9 +1668,8 @@ static Result<ArrayRepr> arrayrepr_fake_array(PyObject* pyobj, unsigned, Arena& 
     PyPtr py_dtype = getattr(pyobj, kFakeArrayDTypeAttr);
     if (!py_dtype) return ErrorRaised;
 
-    Result<std::optional<DLDataType>> dtype = dtype_from_python(py_dtype.get());
-    if (!dtype.is_ok()) return ErrorRaised;
-    if (!*dtype)
+    std::optional<DType> dtype = dtype_from_pyobject(py_dtype.get());
+    if (!dtype || !is_array_dtype(*dtype))
         return raise(PyExc_TypeError, "unsupported fake array dtype ", use_repr(py_dtype.get()));
 
     PyPtr py_ndim = getattr(pyobj, kFakeArrayNdimAttr);
@@ -1764,7 +1688,7 @@ static Result<ArrayRepr> arrayrepr_fake_array(PyObject* pyobj, unsigned, Arena& 
 
     return ArrayRepr{
         .arrty = {
-            .dtype = **dtype,
+            .dtype = *dtype,
             .ndim = static_cast<size_t>(ndim),
         },
         .repr = repr_offset,
@@ -1785,7 +1709,9 @@ static Result<ArrayRepr> arrayrepr_cuda_array_iface(PyObject* pyobj, unsigned in
     UNPACK_ARRAY_INTERFACE(dict, data);
 
     // Parse the dtype
-    Result<DLDataType> dtype = parse_typestr(typestr);
+    Result<DLDataType> dlpack_dtype = parse_typestr(typestr);
+    if (!dlpack_dtype.is_ok()) return ErrorRaised;
+    Result<DType> dtype = dtype_from_dlpack(*dlpack_dtype);
     if (!dtype.is_ok()) return ErrorRaised;
 
     // Parse the data pointer
@@ -1828,7 +1754,7 @@ static Result<ArrayRepr> arrayrepr_cuda_array_iface(PyObject* pyobj, unsigned in
             return ErrorRaised;
     } else if (PyTuple_Check(strides)) {
         // Only byte-aligned types should be supported by __cuda_array_interface__
-        uint8_t dtype_bytewidth = dtype->bits / BYTE_BITWIDTH;
+        uint8_t dtype_bytewidth = dlpack_dtype->bits / BYTE_BITWIDTH;
         for (Py_ssize_t i = 0; i < ndim; ++i) {
             int64_t stride = pylong_as<int64_t>(PyTuple_GET_ITEM(strides, i));
             if (PyErr_Occurred()) return ErrorRaised;
@@ -1887,9 +1813,12 @@ static Result<ArrayRepr> arrayrepr_dlpack_common(PyObject* dlpack_capsule, unsig
         }
     }
 
+    Result<DType> dtype = dtype_from_dlpack(tensor->dl_tensor.dtype);
+    if (!dtype.is_ok()) return ErrorRaised;
+
     ArrayRepr ret = {
         .arrty = {
-            .dtype = tensor->dl_tensor.dtype,
+            .dtype = *dtype,
             .ndim = ndim,
         },
         .repr = repr_offset
@@ -1910,12 +1839,12 @@ static Result<ArrayRepr> arrayrepr_dlpack_common(PyObject* dlpack_capsule, unsig
 }
 
 
-static Result<DLDataType> dtype_from_torch_dtype(PyObject* torch_dtype, GlobalLock& lock) {
-    HashMap<PyPtr, ForeignDTypeInfo>::Item* item
+static Result<DType> dtype_from_torch_dtype(PyObject* torch_dtype, GlobalLock& lock) {
+    HashMap<PyPtr, DType>::Item* item
             = get_foreign_dtype_registry(lock)->find(torch_dtype);
-    if (!item || !item->value.dlpack_dtype)
+    if (!item || !is_array_dtype(item->value))
         return raise(PyExc_TypeError, "dtype is not supported");
-    return *item->value.dlpack_dtype;
+    return item->value;
 }
 
 static Result<ArrayRepr> arrayrepr_torch_tensor_pymethod(PyObject* tensor, unsigned index_bitwidth,
@@ -1984,7 +1913,7 @@ static Result<ArrayRepr> arrayrepr_torch_tensor_pymethod(PyObject* tensor, unsig
     }
 
 
-    Result<DLDataType> dtype_res = dtype_from_torch_dtype(dtype_ptr.get(), lock);
+    Result<DType> dtype_res = dtype_from_torch_dtype(dtype_ptr.get(), lock);
     if (!dtype_res.is_ok())
         return ErrorRaised;
 
@@ -2135,15 +2064,15 @@ static inline Status extract_py_bool(PyObject* pyobj, LaunchHelper& helper) {
     return OK;
 }
 
-static PyPtr make_scalar_constraint(DLDataType dtype, GlobalLock& lock) {
+static PyPtr make_scalar_constraint(DType dtype, GlobalLock& lock) {
     PyObject* signature_module = get_signature_module(lock);
     if (!signature_module) return {};
 
-    PyPtr py_dtype = dtype_to_python(dtype, lock);
+    PyObject* py_dtype = dtype_to_pyobject(dtype, lock);
     if (!py_dtype) return {};
 
     return steal(PyObject_CallMethod(
-                signature_module, "ScalarConstraint", "(O)", py_dtype.get()));
+                signature_module, "ScalarConstraint", "(O)", py_dtype));
 }
 
 static PyPtr make_constant_constraint(PyObject* value, GlobalLock& lock) {
@@ -2326,10 +2255,12 @@ static PyPtr parse_identity_constant_constraint(ConstantCursor& cursor,
 static Status extract_foreign_dtype_constant(PyObject* object, Vec<int64_t>* constants,
                                              Vec<PyObject*>* identity_constants,
                                              GlobalLock& lock) {
-    HashMap<PyPtr, ForeignDTypeInfo>::Item* item = get_foreign_dtype_registry(lock)->find(object);
+    HashMap<PyPtr, DType>::Item* item = get_foreign_dtype_registry(lock)->find(object);
     if (!item)
         return raise(PyExc_ValueError, "Received an unregistered foreign dtype object");
-    extract_identity_constant(item->value.native_dtype.get(), constants, identity_constants);
+    PyObject* native_dtype = dtype_to_pyobject(item->value, lock);
+    if (!native_dtype) return ErrorRaised;
+    extract_identity_constant(native_dtype, constants, identity_constants);
     return OK;
 }
 
@@ -2432,7 +2363,7 @@ static Status extract_py_list(const DriverApi* driver, PyObject* pyobj,
         helper.arena[item_offsets + i].arena_offset = repr_res->repr;
 
         // TODO: nicer error messages
-        if (dtype_as_uint(first_repr_res->arrty.dtype) != dtype_as_uint(repr_res->arrty.dtype))
+        if (first_repr_res->arrty.dtype != repr_res->arrty.dtype)
             return raise(PyExc_TypeError, "Arrays in list vary in data type");
         if (first_repr_res->arrty.ndim != repr_res->arrty.ndim)
             return raise(PyExc_TypeError, "Arrays in list vary in rank");
@@ -2640,14 +2571,13 @@ static Status extract_fake_pointer(PyObject* pyobj, LaunchHelper& helper) {
     PyPtr py_dtype = getattr(pyobj, kFakePointerDTypeAttr);
     if (!py_dtype) return ErrorRaised;
 
-    Result<std::optional<DLDataType>> dtype = dtype_from_python(py_dtype.get());
-    if (!dtype.is_ok()) return ErrorRaised;
-    if (!*dtype)
+    std::optional<DType> dtype = dtype_from_pyobject(py_dtype.get());
+    if (!dtype)
         return raise(
                 PyExc_TypeError,
                 "unsupported fake pointer dtype ", use_repr(py_dtype.get()));
 
-    helper.constants.push_back(dtype_as_uint(**dtype));
+    helper.constants.push_back(dtype->dtype_id);
     push_single_word_cuarg(helper, {.device_ptr = nullptr});
     return OK;
 }
@@ -2764,12 +2694,12 @@ static PyPtr parse_pointer_constraint(
         ConstantCursor& cursor, CallConvVersion* minimum_cconv, GlobalLock& lock) {
 #ifdef ENABLE_CCONV_V3
     require_min_cconv(minimum_cconv, CallConvVersion::CutilePython_V3);
-    PyPtr dtype = dtype_to_python(dtype_from_uint(cursor.next()), lock);
+    PyObject* dtype = dtype_to_pyobject(DType{static_cast<uint32_t>(cursor.next())}, lock);
     if (!dtype) return {};
     PyObject* signature_module = get_signature_module(lock);
     if (!signature_module) return {};
     return steal(PyObject_CallMethod(
-            signature_module, "PointerConstraint", "(O)", dtype.get()));
+            signature_module, "PointerConstraint", "(O)", dtype));
 #else
     (void)cursor;
     (void)minimum_cconv;
@@ -2829,12 +2759,12 @@ static PyPtr parse_element_constraint(
     case ParameterKind::TensorMap:
         return parse_tensor_map_constraint(cursor, minimum_cconv, lock);
     case ParameterKind::Boolean:
-        return make_scalar_constraint(DLDataType{kDLBool, 8, 1}, lock);
+        return make_scalar_constraint(k_bool_, lock);
     case ParameterKind::Integer:
-        return make_scalar_constraint(
-                DLDataType{kDLInt, static_cast<uint8_t>(annotation.scalar.bitwidth), 1}, lock);
+        CHECK(annotation.scalar.bitwidth == 32 || annotation.scalar.bitwidth == 64);
+        return make_scalar_constraint(annotation.scalar.bitwidth == 64 ? k_int64 : k_int32, lock);
     case ParameterKind::Float:
-        return make_scalar_constraint(DLDataType{kDLFloat, 32, 1}, lock);
+        return make_scalar_constraint(k_float32, lock);
     case ParameterKind::List:
         return parse_list_constraint(cursor,
                                      annotation.list.element.index_bitwidth,
@@ -3087,7 +3017,7 @@ static PyObject* py_tensor_map_tiled(PyObject*, PyObject* args) {
     Result<ArrayRepr> repr = get_array_repr(*kind, array, 64, arena, lock);
     if (!repr.is_ok()) return nullptr;
     size_t rank = repr->arrty.ndim;
-    DLDataType dtype = repr->arrty.dtype;
+    DType dtype = repr->arrty.dtype;
     void* global_address = arena[repr->repr].device_ptr;
 
     Vec<int64_t> shape(rank), strides(rank);
@@ -4093,7 +4023,7 @@ static Result<PreparedLaunch> prepare_launch(
 struct NativeArgument {
     ParameterKind::Category parameter_category = ParameterKind::AggregateEnd;
     ArrayType arrty{};
-    DLDataType pointer_pointee_dtype{};
+    DType pointer_pointee_dtype{};
     bool host_integer_is_unsigned = false;
     PyPtr identity_constant;
 };
@@ -4110,19 +4040,12 @@ static Result<bool> native_integer_is_unsigned(PyObject* fake_scalar) {
             PyObject_GetAttrString(fake_scalar, kNativeSourceDTypeAttr));
     if (!py_dtype) return ErrorRaised;
 
-    Result<std::optional<DLDataType>> dtype = dtype_from_python(py_dtype.get());
-    if (!dtype.is_ok()) return ErrorRaised;
-    if (!*dtype)
+    std::optional<DType> dtype = dtype_from_pyobject(py_dtype.get());
+    if (!dtype || !is_integer_dtype(*dtype))
         return raise(PyExc_TypeError,
                 "unsupported native integer launch-source dtype ",
                 use_repr(py_dtype.get()));
-    DLDataType dt = **dtype;
-    if (dt.lanes != 1 || (dt.code != kDLInt && dt.code != kDLUInt)) {
-        return raise(PyExc_TypeError,
-                "unsupported native integer launch-source dtype ",
-                use_repr(py_dtype.get()));
-    }
-    return dt.code == kDLUInt;
+    return is_unsigned_integer_dtype(*dtype);
 }
 
 static Result<NativeArgument> parse_native_identity_constant_argument(
@@ -4156,7 +4079,7 @@ static Result<NativeArgument> parse_native_pointer_argument(
         ConstantCursor& cursor) {
     NativeArgument argument;
     argument.parameter_category = ParameterKind::Pointer;
-    argument.pointer_pointee_dtype = dtype_from_uint(cursor.next());
+    argument.pointer_pointee_dtype = DType{static_cast<uint32_t>(cursor.next())};
     return argument;
 }
 
@@ -4464,7 +4387,7 @@ static Status extract_native_pointer(
         void** argument_addresses,
         size_t* index,
         LaunchHelper& helper) {
-    helper.constants.push_back(dtype_as_uint(argument.pointer_pointee_dtype));
+    helper.constants.push_back(argument.pointer_pointee_dtype.dtype_id);
     void* pointer = *reinterpret_cast<void**>(argument_addresses[(*index)++]);
     push_single_word_cuarg(helper, {.device_ptr = pointer});
     if (!helper.cuda_context) {
@@ -4844,15 +4767,13 @@ static Result<double> benchmark(const DriverApi* driver,
 }
 
 static Result<unsigned> parse_int32_or_int64_dtype_as_bitwidth(PyObject* py_dtype) {
-    PyPtr dtype_name = getattr(py_dtype, "name");
-    if (!dtype_name) return ErrorRaised;
+    std::optional<DType> dtype = dtype_from_pyobject(py_dtype);
+    if (!dtype)
+        return raise(PyExc_TypeError, "dtype must be a DType, not ", Py_TYPE(py_dtype)->tp_name);
 
-    if (!PyUnicode_Check(dtype_name.get()))
-        return raise(PyExc_TypeError, "DType.name must be a string");
-
-    if (!PyUnicode_CompareWithASCIIString(dtype_name.get(), "int32"))
+    if (*dtype == k_int32)
         return 32;
-    if (!PyUnicode_CompareWithASCIIString(dtype_name.get(), "int64"))
+    if (*dtype == k_int64)
         return 64;
     return raise(PyExc_ValueError, "Expected int32 or int64 dtype");
 }

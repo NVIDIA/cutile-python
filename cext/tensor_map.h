@@ -6,10 +6,10 @@
 
 #pragma once
 
+#include "dtype.h"
 #include "py.h"
 
 #include <cuda.h>
-#include <dlpack.h>
 
 #include <cstdint>
 
@@ -17,7 +17,7 @@
 inline constexpr uint32_t kTensorMapMaxRank = 5;
 
 PyPtr tensor_map_tiled(
-        DLDataType dtype,
+        DType dtype,
         void* global_address,
         size_t rank,
         const int64_t* array_dimensions,
