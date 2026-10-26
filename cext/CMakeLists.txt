@@ -155,4 +155,6 @@ add_test_executable(test_hash_map test/test_hash_map.cpp memory.cpp)
 
 add_test_executable(test_vec test/test_vec.cpp memory.cpp)
 
+add_test_executable(test_paged_table test/test_paged_table.cpp memory.cpp)
+
 add_test_executable(test_string_builder test/test_string_builder.cpp memory.cpp py.cpp)

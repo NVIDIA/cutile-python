@@ -634,7 +634,7 @@ public:
 
     // Appends a description of the value's type, e.g. "int" or "Tile[float32, (2, 3)]".
     // To include it in a message, use use_type(), e.g. raise(..., use_type(val)).
-    void append_type_name_to_builder(StringBuilder* sb, GlobalLock& lock) const;
+    void append_type_name_to_builder(StringBuilder* sb) const;
 
     inline Value steal() const;
 
@@ -995,7 +995,6 @@ static inline UseType use_type(const Value& value) {
 }
 
 static inline int append_to_string_builder(UseType u, StringBuilder* sb) {
-    GlobalLock lock;
-    u.value.append_type_name_to_builder(sb, lock);
+    u.value.append_type_name_to_builder(sb);
     return 0;
 }

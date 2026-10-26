@@ -2,7 +2,9 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
+#include "atomics.h"
 #include "dtype.h"
+#include "paged_table.h"
 #include "vec.h"
 #include "py.h"
 
@@ -89,26 +91,42 @@ struct DerivedDType {
     DType pointee_dtype;  // when kind is `Pointer` or `ForeignPointer`
 };
 
-struct DTypeRegistry {
-    Vec<DType> pointer_dtypes[enum_max_value<MemorySpace> + 1];
-    Vec<DType> foreign_pointer_dtypes;
-    Vec<DerivedDType> derived_dtypes;
-    Vec<PyObject*> names;
-    Vec<PyObject*> pyobjects;
-
-    static DTypeRegistry& get(GlobalLock& lock) {
-        DTypeRegistry*& ptr = instance_.get(lock);
-        if (!ptr) ptr = new DTypeRegistry;
-        return *ptr;
-    }
-
-    static ProtectedByGlobalLock<DTypeRegistry*> instance_;
-private:
-    DTypeRegistry() = default;
-    ~DTypeRegistry();  // DTypeRegistry is an immortal singleton
+struct DTypePyObjects {
+    OncePointer<PyObject> name;
+    OncePointer<PyObject> pyobject;
 };
 
-ProtectedByGlobalLock<DTypeRegistry*> DTypeRegistry::instance_;
+static PagedTable<DTypePyObjects> g_dtype_pyobjects;
+static uint32_t g_num_named_dtypes;  // All dtypes with lower IDs have their names set. Atomic.
+
+static PagedTable<DerivedDType> g_derived_dtypes;  // Indexed by (dtype ID - kFirstDerivedDTypeId)
+static PagedTable<uint32_t> g_pointer_dtype_ids[enum_max_value<MemorySpace> + 1];
+static PagedTable<uint32_t> g_foreign_pointer_dtype_ids;
+
+
+static const DerivedDType& get_derived_dtype(DType dtype) {
+    return g_derived_dtypes.expect(dtype.dtype_id - kFirstDerivedDTypeId);
+}
+
+static DType get_or_create_derived_dtype(PagedTable<uint32_t>* ids, DerivedDTypeKind kind,
+                                         MemorySpace memory_space, DType pointee_dtype) {
+    uint32_t* slot = &(*ids)[pointee_dtype.dtype_id];
+    if (uint32_t id = atomic_load_acquire(slot)) return DType{id};
+
+    static MaybeMutex mutex;
+    MaybeLock lock(&mutex);
+
+    // Another thread may have created it while we were waiting for the lock.
+    if (uint32_t id = atomic_load_acquire(slot)) return DType{id};
+
+    static uint32_t num_derived_dtypes;  // protected by mutex
+    uint32_t index = num_derived_dtypes++;
+    CHECK(index <= UINT32_MAX - kFirstDerivedDTypeId);
+    g_derived_dtypes[index] = DerivedDType{kind, memory_space, pointee_dtype};
+    uint32_t id = index + kFirstDerivedDTypeId;
+    atomic_store_release(slot, id);
+    return DType{id};
+}
 
 
 Integer integer_dtype_min(DType dtype) {
@@ -141,77 +159,47 @@ const FloatFormat& float_dtype_format(DType dtype) {
     return float_formats[dtype.dtype_id - _dtype_detail::unrestricted_float_first];
 }
 
-DType pointer_dtype(DType pointee_dtype, MemorySpace memory_space, GlobalLock& lock) {
+DType pointer_dtype(DType pointee_dtype, MemorySpace memory_space) {
     uint32_t space_idx = static_cast<uint32_t>(memory_space);
     CHECK(space_idx <= enum_max_value<MemorySpace>);
-    DTypeRegistry& reg = DTypeRegistry::get(lock);
-    Vec<DType>& pointer_dtypes = reg.pointer_dtypes[space_idx];
-
-    if (pointee_dtype.dtype_id >= pointer_dtypes.size())
-        pointer_dtypes.resize(pointee_dtype.dtype_id + 1);
-
-    DType& ret = pointer_dtypes[pointee_dtype.dtype_id];
-    if (!ret) {
-        uint64_t dtype_id = static_cast<uint64_t>(reg.derived_dtypes.size()) + kFirstDerivedDTypeId;
-        CHECK(dtype_id <= UINT32_MAX);
-        reg.derived_dtypes.push_back(DerivedDType{
-                DerivedDTypeKind::Pointer, memory_space, pointee_dtype});
-        ret.dtype_id = static_cast<uint32_t>(dtype_id);
-    }
-    return ret;
+    return get_or_create_derived_dtype(&g_pointer_dtype_ids[space_idx],
+                                       DerivedDTypeKind::Pointer, memory_space, pointee_dtype);
 }
 
-DType foreign_pointer_dtype(DType pointee_dtype, GlobalLock& lock) {
-    DTypeRegistry& reg = DTypeRegistry::get(lock);
-    if (pointee_dtype.dtype_id >= reg.foreign_pointer_dtypes.size())
-        reg.foreign_pointer_dtypes.resize(pointee_dtype.dtype_id + 1);
-
-    DType& ret = reg.foreign_pointer_dtypes[pointee_dtype.dtype_id];
-    if (!ret) {
-        uint64_t dtype_id = static_cast<uint64_t>(reg.derived_dtypes.size()) + kFirstDerivedDTypeId;
-        CHECK(dtype_id <= UINT32_MAX);
-        reg.derived_dtypes.push_back(DerivedDType{
-                DerivedDTypeKind::ForeignPointer, MemorySpace::GENERIC, pointee_dtype});
-        ret.dtype_id = static_cast<uint32_t>(dtype_id);
-    }
-    return ret;
+DType foreign_pointer_dtype(DType pointee_dtype) {
+    return get_or_create_derived_dtype(&g_foreign_pointer_dtype_ids,
+                                       DerivedDTypeKind::ForeignPointer, MemorySpace::GENERIC,
+                                       pointee_dtype);
 }
 
-static const DerivedDType& get_derived_dtype(DType dtype, GlobalLock& lock) {
-    DTypeRegistry& reg = DTypeRegistry::get(lock);
-    uint32_t derived_idx = dtype.dtype_id - kFirstDerivedDTypeId;
-    CHECK(derived_idx < reg.derived_dtypes.size());
-    return reg.derived_dtypes[derived_idx];
+bool _dtype_detail::is_derived_dtype_pointer(DType dtype) {
+    return get_derived_dtype(dtype).kind == DerivedDTypeKind::Pointer;
 }
 
-bool _dtype_detail::is_derived_dtype_pointer(DType dtype, GlobalLock& lock) {
-    return get_derived_dtype(dtype, lock).kind == DerivedDTypeKind::Pointer;
+bool _dtype_detail::is_derived_dtype_foreign_pointer(DType dtype) {
+    return get_derived_dtype(dtype).kind == DerivedDTypeKind::ForeignPointer;
 }
 
-bool _dtype_detail::is_derived_dtype_foreign_pointer(DType dtype, GlobalLock& lock) {
-    return get_derived_dtype(dtype, lock).kind == DerivedDTypeKind::ForeignPointer;
-}
-
-DType pointer_dtype_pointee(DType pointer_dtype, GlobalLock& lock) {
-    const DerivedDType& derived = get_derived_dtype(pointer_dtype, lock);
+DType pointer_dtype_pointee(DType pointer_dtype) {
+    const DerivedDType& derived = get_derived_dtype(pointer_dtype);
     CHECK(derived.kind == DerivedDTypeKind::Pointer);
     return derived.pointee_dtype;
 }
 
-MemorySpace pointer_dtype_memory_space(DType pointer_dtype, GlobalLock& lock) {
-    const DerivedDType& derived = get_derived_dtype(pointer_dtype, lock);
+MemorySpace pointer_dtype_memory_space(DType pointer_dtype) {
+    const DerivedDType& derived = get_derived_dtype(pointer_dtype);
     CHECK(derived.kind == DerivedDTypeKind::Pointer);
     return derived.memory_space;
 }
 
-DType foreign_pointer_dtype_pointee(DType foreign_pointer_dtype, GlobalLock& lock) {
-    const DerivedDType& derived = get_derived_dtype(foreign_pointer_dtype, lock);
+DType foreign_pointer_dtype_pointee(DType foreign_pointer_dtype) {
+    const DerivedDType& derived = get_derived_dtype(foreign_pointer_dtype);
     CHECK(derived.kind == DerivedDTypeKind::ForeignPointer);
     return derived.pointee_dtype;
 }
 
-uint32_t _dtype_detail::derived_dtype_bitwidth(DType dtype, GlobalLock& lock) {
-    const DerivedDType& derived = get_derived_dtype(dtype, lock);
+uint32_t _dtype_detail::derived_dtype_bitwidth(DType dtype) {
+    const DerivedDType& derived = get_derived_dtype(dtype);
     switch (derived.kind) {
     case DerivedDTypeKind::Pointer:
         return memory_space_pointer_bitwidth(derived.memory_space);
@@ -245,18 +233,18 @@ static const char* basic_dtype_doc(_dtype_detail::BasicDTypeEnum basic) {
     CHECK_UNREACHABLE;
 }
 
-static PyPtr make_dtype_name(DType dtype, GlobalLock& lock) {
+static PyPtr make_dtype_name(DType dtype) {
     if (dtype.dtype_id < kFirstDerivedDTypeId) {
         return steal(PyUnicode_FromString(basic_dtype_name(
                 static_cast<_dtype_detail::BasicDTypeEnum>(dtype.dtype_id))));
     }
 
-    const DerivedDType& derived = get_derived_dtype(dtype, lock);
+    const DerivedDType& derived = get_derived_dtype(dtype);
     switch (derived.kind) {
     case DerivedDTypeKind::Pointer:
         {
             StringBuilder builder;
-            DType pointee = pointer_dtype_pointee(dtype, lock);
+            DType pointee = pointer_dtype_pointee(dtype);
             int num_params = 0;
             if (pointee) {
                 CHECK(pointee.dtype_id < dtype.dtype_id);
@@ -267,7 +255,7 @@ static PyPtr make_dtype_name(DType dtype, GlobalLock& lock) {
                 builder.append("opaque_pointer");
             }
 
-            MemorySpace space = pointer_dtype_memory_space(dtype, lock);
+            MemorySpace space = pointer_dtype_memory_space(dtype);
             if (space != MemorySpace::GENERIC) {
                 builder.append(++num_params == 1 ? "[" : ", ");
                 builder.append("MemorySpace.");
@@ -279,29 +267,42 @@ static PyPtr make_dtype_name(DType dtype, GlobalLock& lock) {
         }
     case DerivedDTypeKind::ForeignPointer:
         {
-            DType pointee = foreign_pointer_dtype_pointee(dtype, lock);
+            DType pointee = foreign_pointer_dtype_pointee(dtype);
             return to_pyunicode("foreign_pointer[", pointee, "]");
         }
     }
     CHECK_UNREACHABLE;
 }
 
-PyObject* dtype_name(DType dtype, GlobalLock& lock) {
-    DTypeRegistry& reg = DTypeRegistry::get(lock);
+// Returns a borrowed reference to an immortal string
+PyObject* dtype_name(DType dtype) {
+    OncePointer<PyObject>& cached = g_dtype_pyobjects[dtype.dtype_id].name;
+    if (PyObject* name = cached.get()) return name;
+
     // Just fill all the names sequentially up to our type ID,
     // so that we don't need to deal with recursion.
-    while (dtype.dtype_id >= reg.names.size()) {
-        uint32_t next_id = reg.names.size();
-        PyPtr name = make_dtype_name(DType{next_id}, lock);
-        if (!name) return nullptr;
-        reg.names.push_back(name.release());
+    uint32_t next_id = atomic_load_acquire(&g_num_named_dtypes);
+    while (next_id <= dtype.dtype_id) {
+        OncePointer<PyObject>& next = g_dtype_pyobjects[next_id].name;
+        if (!next.get()) {
+            PyPtr name = make_dtype_name(DType{next_id});
+            if (!name) return nullptr;
+            // If another thread has set the name first, ours is released
+            next.set(std::move(name));
+        }
+        // On failure, another thread has advanced the counter first, and `next_id`
+        // is updated to the counter's current value, which is greater
+        uint32_t expected = next_id;
+        if (atomic_compare_exchange_acq_rel(&g_num_named_dtypes, &expected, next_id + 1))
+            ++next_id;
+        else
+            next_id = expected;
     }
-    return reg.names[dtype.dtype_id];
+    return cached.get();
 }
 
 int append_to_string_builder(DType dtype, StringBuilder* sb) {
-    GlobalLock lock;
-    PyObject* name = dtype_name(dtype, lock);
+    PyObject* name = dtype_name(dtype);
     if (!name) return -1;
     sb->append(name);
     return 0;
@@ -728,17 +729,19 @@ static PyPtr dtype_pyobject_create(DType dtype) {
 }
 
 
-PyObject* dtype_to_pyobject(DType dtype, GlobalLock& lock) {
+PyObject* dtype_to_pyobject(DType dtype) {
     if (!dtype) {
         raise(PyExc_ValueError, "Invalid dtype");
         return nullptr;
     }
-    DTypeRegistry& reg = DTypeRegistry::get(lock);
-    if (dtype.dtype_id >= reg.pyobjects.size())
-        reg.pyobjects.resize(dtype.dtype_id + 1);
-    PyObject*& obj = reg.pyobjects[dtype.dtype_id];
-    if (!obj) obj = dtype_pyobject_create(dtype).release();
-    return obj;
+
+    OncePointer<PyObject>& cached = g_dtype_pyobjects[dtype.dtype_id].pyobject;
+    if (PyObject* obj = cached.get()) return obj;
+
+    PyPtr new_obj = dtype_pyobject_create(dtype);
+    if (!new_obj) return nullptr;
+    // If another thread has created the object first, ours is released
+    return cached.set(std::move(new_obj));
 }
 
 
@@ -750,23 +753,22 @@ std::optional<DType> dtype_from_pyobject(PyObject* obj) {
 
 
 static PyObject* DType_reduce(PyObject* self, PyObject*) {
-    GlobalLock lock;
     DType dtype = py_unwrap<DTypeObject>(self).dtype;
     if (dtype.dtype_id < kFirstDerivedDTypeId) {
         PyPtr func = getattr(g_module, "_unpickle_basic_dtype");
         if (!func) return nullptr;
-        PyObject* name = dtype_name(dtype, lock);
+        PyObject* name = dtype_name(dtype);
         if (!name) return nullptr;
         return Py_BuildValue("(O(O))", func.get(), name);
     } else {
-        const DerivedDType& derived = get_derived_dtype(dtype, lock);
+        const DerivedDType& derived = get_derived_dtype(dtype);
         switch (derived.kind) {
         case DerivedDTypeKind::Pointer:
             {
                 PyPtr func = getattr(g_module, "_get_pointer_dtype");
                 if (!func) return nullptr;
                 PyObject* pointee = derived.pointee_dtype
-                    ? dtype_to_pyobject(derived.pointee_dtype, lock) : Py_None;
+                    ? dtype_to_pyobject(derived.pointee_dtype) : Py_None;
                 if (!pointee) return nullptr;
                 PyObject* space = enum_to_pyobject(derived.memory_space);
                 if (!space) return nullptr;
@@ -776,7 +778,7 @@ static PyObject* DType_reduce(PyObject* self, PyObject*) {
             {
                 PyPtr func = getattr(g_module, "_get_foreign_pointer_dtype");
                 if (!func) return nullptr;
-                PyObject* pointee = dtype_to_pyobject(derived.pointee_dtype, lock);
+                PyObject* pointee = dtype_to_pyobject(derived.pointee_dtype);
                 if (!pointee) return nullptr;
                 return Py_BuildValue("(O(O))", func.get(), pointee);
             }
@@ -791,8 +793,7 @@ static PyMethodDef DType_methods[] = {
 };
 
 static PyObject* DType_get_name(PyObject* self, void* closure) {
-    GlobalLock lock;
-    return Py_XNewRef(dtype_name(py_unwrap<DTypeObject>(self).dtype, lock));
+    return Py_XNewRef(dtype_name(py_unwrap<DTypeObject>(self).dtype));
 }
 
 static PyObject* DType_get_module(PyObject* self, void* closure) {
@@ -800,9 +801,8 @@ static PyObject* DType_get_module(PyObject* self, void* closure) {
 }
 
 static PyObject* DType_get_bitwidth(PyObject* self, void* closure) {
-    GlobalLock lock;
     DType dtype = py_unwrap<DTypeObject>(self).dtype;
-    return PyLong_FromUnsignedLong(dtype_bitwidth(dtype, lock));
+    return PyLong_FromUnsignedLong(dtype_bitwidth(dtype));
 }
 
 static PyObject* DType_repr(PyObject* self) {
@@ -810,19 +810,17 @@ static PyObject* DType_repr(PyObject* self) {
 }
 
 static PyObject* DType_str(PyObject* self) {
-    GlobalLock lock;
-    return Py_XNewRef(dtype_name(py_unwrap<DTypeObject>(self).dtype, lock));
+    return Py_XNewRef(dtype_name(py_unwrap<DTypeObject>(self).dtype));
 }
 
 static PyObject* DType_get_doc(PyObject* self, void* closure) {
-    GlobalLock lock;
     DType dtype = py_unwrap<DTypeObject>(self).dtype;
     if (is_integer_dtype(dtype)) {
         StringBuilder sb;
         const char* signedness = is_signed_integer_dtype(dtype) ? "signed" : "unsigned";
 
         bool is_signed = is_signed_integer_dtype(dtype);
-        sb.append_many(dtype_bitwidth(dtype, lock), "-bit ", signedness,
+        sb.append_many(dtype_bitwidth(dtype), "-bit ", signedness,
                        " |arithmetic dtype| with values on the interval [");
         integer_dtype_min(dtype).append_to(&sb, is_signed);
         sb.append(", +");
@@ -879,7 +877,6 @@ PyTypeObject DTypeObject::pytype = {
 // ----- Python wrappers for is_xxx(dtype) predicates -----
 
 using DTypePredicate = bool(DType);
-using DTypePredicateWithLock = bool(DType, GlobalLock&);
 
 template <typename P>
 static PyObject* is_whatever_impl(PyObject* dtype_obj, P&& pred) {
@@ -894,12 +891,6 @@ static PyObject* is_whatever_impl(PyObject* dtype_obj, P&& pred) {
 template <DTypePredicate P>
 static PyObject* is_whatever(PyObject* module_self, PyObject* dtype_obj) {
     return is_whatever_impl(dtype_obj, P);
-}
-
-template <DTypePredicateWithLock P>
-static PyObject* is_whatever(PyObject* module_self, PyObject* dtype_obj) {
-    GlobalLock lock;
-    return is_whatever_impl(dtype_obj, [&lock](DType x){return P(x, lock);});
 }
 
 static bool is_boolean_dtype(DType dtype) {
@@ -935,9 +926,8 @@ static PyObject* py_get_pointer_dtype(PyObject* module_self,
         return nullptr;
     }
 
-    GlobalLock lock;
-    DType res = pointer_dtype(pointee_dtype, *space, lock);
-    return Py_XNewRef(dtype_to_pyobject(res, lock));
+    DType res = pointer_dtype(pointee_dtype, *space);
+    return Py_XNewRef(dtype_to_pyobject(res));
 }
 
 static PyObject* py_get_foreign_pointer_dtype(PyObject* module_self, PyObject* py_pointee) {
@@ -947,9 +937,8 @@ static PyObject* py_get_foreign_pointer_dtype(PyObject* module_self, PyObject* p
         return nullptr;
     }
     DType pointee_dtype = py_unwrap<DTypeObject>(py_pointee).dtype;
-    GlobalLock lock;
-    DType res = foreign_pointer_dtype(pointee_dtype, lock);
-    return Py_XNewRef(dtype_to_pyobject(res, lock));
+    DType res = foreign_pointer_dtype(pointee_dtype);
+    return Py_XNewRef(dtype_to_pyobject(res));
 }
 
 
@@ -998,52 +987,48 @@ static PyObject* py_promote_dtypes(PyObject* module_self,
     std::optional<DType> res = promote_dtypes(py_unwrap<DTypeObject>(args[0]).dtype,
                                               py_unwrap<DTypeObject>(args[1]).dtype);
     if (!res.has_value()) return Py_NewRef(Py_None);
-    GlobalLock lock;
-    return Py_XNewRef(dtype_to_pyobject(*res, lock));
+    return Py_XNewRef(dtype_to_pyobject(*res));
 }
 
-static Result<DType> parse_pointer_dtype(PyObject* py_pointer, GlobalLock& lock) {
+static Result<DType> parse_pointer_dtype(PyObject* py_pointer) {
     if (!PyObject_TypeCheck(py_pointer, &DTypeObject::pytype))
         return raise(PyExc_TypeError, "Expected a DType object for the first argument, got ",
                      use_repr(py_pointer));
     DType pointer_dtype = py_unwrap<DTypeObject>(py_pointer).dtype;
-    if (!is_pointer_dtype(pointer_dtype, lock))
+    if (!is_pointer_dtype(pointer_dtype))
         return raise(PyExc_ValueError, pointer_dtype, " is not a pointer dtype");
     return pointer_dtype;
 }
 
 static PyObject* py_pointer_pointee_dtype(PyObject* module_self, PyObject* py_pointer) {
-    GlobalLock lock;
-    Result<DType> pointer_dtype = parse_pointer_dtype(py_pointer, lock);
+    Result<DType> pointer_dtype = parse_pointer_dtype(py_pointer);
     if (!pointer_dtype.is_ok()) return nullptr;
-    DType pointee_dtype = pointer_dtype_pointee(*pointer_dtype, lock);
+    DType pointee_dtype = pointer_dtype_pointee(*pointer_dtype);
     if (!pointee_dtype)
         return Py_NewRef(Py_None);
-    return Py_XNewRef(dtype_to_pyobject(pointee_dtype, lock));
+    return Py_XNewRef(dtype_to_pyobject(pointee_dtype));
 }
 
 static PyObject* py_pointer_memory_space(PyObject* module_self, PyObject* py_pointer) {
-    GlobalLock lock;
-    Result<DType> pointer_dtype = parse_pointer_dtype(py_pointer, lock);
+    Result<DType> pointer_dtype = parse_pointer_dtype(py_pointer);
     if (!pointer_dtype.is_ok()) return nullptr;
-    MemorySpace space = pointer_dtype_memory_space(*pointer_dtype, lock);
+    MemorySpace space = pointer_dtype_memory_space(*pointer_dtype);
     return Py_NewRef(enum_to_pyobject(space));
 }
 
 static PyObject* py_foreign_pointer_pointee_dtype(PyObject* module_self, PyObject* py_pointer) {
-    GlobalLock lock;
     if (!PyObject_TypeCheck(py_pointer, &DTypeObject::pytype)) {
         raise(PyExc_TypeError, "Expected a DType object for the first argument, got ",
                 use_repr(py_pointer));
         return nullptr;
     }
     DType foreign_pointer_dtype = py_unwrap<DTypeObject>(py_pointer).dtype;
-    if (!is_foreign_pointer_dtype(foreign_pointer_dtype, lock)) {
+    if (!is_foreign_pointer_dtype(foreign_pointer_dtype)) {
         raise(PyExc_ValueError, foreign_pointer_dtype, " is not a pointer dtype");
         return nullptr;
     }
-    DType pointee_dtype = foreign_pointer_dtype_pointee(foreign_pointer_dtype, lock);
-    return Py_XNewRef(dtype_to_pyobject(pointee_dtype, lock));
+    DType pointee_dtype = foreign_pointer_dtype_pointee(foreign_pointer_dtype);
+    return Py_XNewRef(dtype_to_pyobject(pointee_dtype));
 }
 
 
@@ -1082,8 +1067,6 @@ static PyMethodDef functions[] = {
 };
 
 Status dtype_init(PyObject* m) {
-    GlobalLock lock;
-
     g_module = Py_NewRef(m);
 
     INIT_STRING_IDENT(pointee_dtype);
@@ -1104,9 +1087,9 @@ Status dtype_init(PyObject* m) {
     // Add dtypes by name
     for (_dtype_detail::BasicDTypeEnum basic_dtype : _dtype_detail::all_basic_dtypes) {
         DType dtype = {static_cast<uint32_t>(basic_dtype)};
-        PyObject* name = dtype_name(dtype, lock);
+        PyObject* name = dtype_name(dtype);
         if (!name) return ErrorRaised;
-        PyObject* obj = dtype_to_pyobject(dtype, lock);
+        PyObject* obj = dtype_to_pyobject(dtype);
         if (!obj) return ErrorRaised;
         if (PyDict_SetItem(mod_dict, name, obj) < 0)
             return ErrorRaised;

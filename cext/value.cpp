@@ -441,8 +441,7 @@ int BorrowedValue::append_repr_to_builder(StringBuilder* sb) const {
 
 // Appends the tensor's type, e.g. "tile[float32, (2, 3)]" or "pointer[float32]",
 // or "Tile[float32, (2, 3)]" / "Pointer[float32]" if `capitalize` is true
-static void append_tensor_type(const TensorBase* tensor, bool capitalize, StringBuilder* sb,
-                               GlobalLock& lock) {
+static void append_tensor_type(const TensorBase* tensor, bool capitalize, StringBuilder* sb) {
     switch (tensor->kind) {
     case TensorBase::kTile:
         sb->append_many(capitalize ? "Tile[" : "tile[", tensor->dtype, ", ",
@@ -457,8 +456,8 @@ static void append_tensor_type(const TensorBase* tensor, bool capitalize, String
         break;
     case TensorBase::kPointer:
         {
-            DType pointee = pointer_dtype_pointee(tensor->dtype, lock);
-            MemorySpace space = pointer_dtype_memory_space(tensor->dtype, lock);
+            DType pointee = pointer_dtype_pointee(tensor->dtype);
+            MemorySpace space = pointer_dtype_memory_space(tensor->dtype);
             bool has_params = false;
             if (pointee) {
                 sb->append_many(capitalize ? "Pointer[" : "pointer[", pointee);
@@ -480,7 +479,7 @@ static void append_tensor_type(const TensorBase* tensor, bool capitalize, String
     }
 }
 
-void BorrowedValue::append_type_name_to_builder(StringBuilder* sb, GlobalLock& lock) const {
+void BorrowedValue::append_type_name_to_builder(StringBuilder* sb) const {
     switch (tag_) {
     case kUndefined:
         sb->append("<undefined>");
@@ -494,7 +493,7 @@ void BorrowedValue::append_type_name_to_builder(StringBuilder* sb, GlobalLock& l
     #undef APPEND_ENUM_NAME
 
     case kTensor:
-        append_tensor_type(as_tensor(), true, sb, lock);
+        append_tensor_type(as_tensor(), true, sb);
         break;
     case kNone:
     case kEllipsis:
@@ -1051,11 +1050,11 @@ static RefPtr<Vector> vector_zeros(DType dtype, int64_t length) {
 
 // Returns a Scalar, a Pointer or an OpaqueValue, depending on the dtype. The caller must set
 // the data.
-static RefPtr<TensorBase> new_0d_tensor(DType dtype, GlobalLock& lock) {
+static RefPtr<TensorBase> new_0d_tensor(DType dtype) {
     RefPtr<TensorBase> ret;
     if (is_numeric_dtype(dtype)) {
         ret = tensor_new<Scalar>();
-    } else if (is_pointer_dtype(dtype, lock)) {
+    } else if (is_pointer_dtype(dtype)) {
         ret = tensor_new<Pointer>();
     } else if (is_opaque_dtype(dtype)) {
         ret = tensor_new<OpaqueValue>();
@@ -1068,7 +1067,7 @@ static RefPtr<TensorBase> new_0d_tensor(DType dtype, GlobalLock& lock) {
     return ret;
 }
 
-static RefPtr<TensorBase> tensor_zeros_like(TensorBase* src, DType dtype, GlobalLock& lock) {
+static RefPtr<TensorBase> tensor_zeros_like(TensorBase* src, DType dtype) {
     RefPtr<TensorBase> ret;
     switch (src->kind) {
     case TensorBase::kTile:
@@ -1085,7 +1084,7 @@ static RefPtr<TensorBase> tensor_zeros_like(TensorBase* src, DType dtype, Global
     case TensorBase::kPointer:
     case TensorBase::kOpaque:
         // The kind follows the dtype, e.g. comparing two pointers yields a bool_ scalar
-        if (!(ret = new_0d_tensor(dtype, lock)))
+        if (!(ret = new_0d_tensor(dtype)))
             return {};
         break;
     }
@@ -1094,9 +1093,8 @@ static RefPtr<TensorBase> tensor_zeros_like(TensorBase* src, DType dtype, Global
     return ret;
 }
 
-static RefPtr<TensorBase> tensor_symbolic_like(TensorBase* src, DType dtype, PyPtr&& var,
-                                               GlobalLock& lock) {
-    RefPtr<TensorBase> ret = tensor_zeros_like(src, dtype, lock);
+static RefPtr<TensorBase> tensor_symbolic_like(TensorBase* src, DType dtype, PyPtr&& var) {
+    RefPtr<TensorBase> ret = tensor_zeros_like(src, dtype);
     if (!ret) return {};
     ret->data_.var = var.release();
     ret->tag_ = TensorBase::kVar;
@@ -1104,7 +1102,7 @@ static RefPtr<TensorBase> tensor_symbolic_like(TensorBase* src, DType dtype, PyP
 }
 
 static RefPtr<TensorBase> tensor_zeros_with_shape(DType dtype, const UnpackedShape& shape,
-                                                  bool use_tile, GlobalLock& lock) {
+                                                  bool use_tile) {
     RefPtr<TensorBase> ret;
     if (use_tile) {
         RefPtr<Tile> tile = tensor_new<Tile>();
@@ -1112,7 +1110,7 @@ static RefPtr<TensorBase> tensor_zeros_with_shape(DType dtype, const UnpackedSha
         tile->shape_ = shape.pack();
         ret = std::move(tile);
     } else if (shape.ndim() == 0) {
-        if (!(ret = new_0d_tensor(dtype, lock)))
+        if (!(ret = new_0d_tensor(dtype)))
             return {};
     } else if (shape.ndim() == 1) {
         return vector_zeros(dtype, shape[0]);
@@ -1126,8 +1124,7 @@ static RefPtr<TensorBase> tensor_zeros_with_shape(DType dtype, const UnpackedSha
 }
 
 // `var` must have a tensor-like type, e.g. TileTy
-static Expected<RefPtr<TensorBase>> make_symbolic_tensor(PyObject* var, bool use_tile,
-                                                         GlobalLock& lock) {
+static Expected<RefPtr<TensorBase>> make_symbolic_tensor(PyObject* var, bool use_tile) {
     PyPtr ty = steal(PyObject_CallMethod(var, "get_type", nullptr));
     if (!ty) return ErrorRaised;
 
@@ -1153,7 +1150,7 @@ static Expected<RefPtr<TensorBase>> make_symbolic_tensor(PyObject* var, bool use
     Expected<UnpackedShape> shape = UnpackedShape::create(ndim, dims);
     if (!shape.is_ok()) return std::move(shape.error());
 
-    RefPtr<TensorBase> res = tensor_zeros_with_shape(*dtype, *shape, use_tile, lock);
+    RefPtr<TensorBase> res = tensor_zeros_with_shape(*dtype, *shape, use_tile);
     if (!res) return ErrorRaised;
     res->data_.var = Py_NewRef(var);
     res->tag_ = TensorBase::kVar;
@@ -1166,8 +1163,7 @@ static PyObject* py_make_symbolic_tensor(PyObject*, PyObject* args) {
     if (!PyArg_ParseTuple(args, "Op:_make_symbolic_tensor", &var, &use_tile))
         return nullptr;
 
-    GlobalLock lock;
-    Result<RefPtr<TensorBase>> res = to_result(make_symbolic_tensor(var, use_tile, lock));
+    Result<RefPtr<TensorBase>> res = to_result(make_symbolic_tensor(var, use_tile));
     if (!res.is_ok()) return nullptr;
     return reinterpret_cast<PyObject*>(res->release());
 }
@@ -1308,8 +1304,7 @@ static PyObject* tensor_repr(PyObject* self) {
     TensorBase* tensor = reinterpret_cast<TensorBase*>(self);
     StringBuilder sb;
     sb.append("<");
-    GlobalLock lock;
-    append_tensor_type(tensor, false, &sb, lock);
+    append_tensor_type(tensor, false, &sb);
 
     if (!tensor->is_symbolic()) {
         if (is_numeric_dtype(tensor->dtype)) {
@@ -1333,7 +1328,7 @@ static PyPtr tensor_to_ir_var(TensorBase* tensor, GlobalLock& lock) {
             "cuda.tile._ir.core_ops", "strictly_typed_const_tensorlike", lock);
     if (!func) return {};
 
-    PyObject* dtype = dtype_to_pyobject(tensor->dtype, lock);
+    PyObject* dtype = dtype_to_pyobject(tensor->dtype);
     if (!dtype) return {};
 
     // A splat is passed as a single value, which is all that the lowering of constant vectors
@@ -1412,8 +1407,8 @@ static inline Error dtype_conversion_status_to_error(
 // `func` may return either Expected<Bits> (if it can fail) or plain Bits
 template <typename F>
 static Expected<RefPtr<TensorBase>> tensor_elementwise_apply(TensorBase* src, DType res_dtype,
-                                                             GlobalLock& lock, F&& func) {
-    RefPtr<TensorBase> ret = tensor_zeros_like(src, res_dtype, lock);
+                                                             F&& func) {
+    RefPtr<TensorBase> ret = tensor_zeros_like(src, res_dtype);
     if (!ret) return ErrorRaised;
 
     if (src->tag_ == TensorBase::kBits) {
@@ -1467,7 +1462,7 @@ static Expected<RefPtr<TensorBase>> tensor_astype(
                 "cuda.tile._ir.arithmetic_ops", "add_astype_operation", lock);
         if (!func) return ErrorRaised;
 
-        PyObject* to_dtype = dtype_to_pyobject(to, lock);
+        PyObject* to_dtype = dtype_to_pyobject(to);
         if (!to_dtype) return ErrorRaised;
         PyObject* py_rounding_mode = rounding_mode.has_value()
                 ? enum_to_pyobject(*rounding_mode) : Py_None;
@@ -1477,11 +1472,11 @@ static Expected<RefPtr<TensorBase>> tensor_astype(
                 func, var.get(), to_dtype, py_rounding_mode, nullptr));
         if (!result_var) return ErrorRaised;
 
-        RefPtr<TensorBase> res = tensor_symbolic_like(tensor, to, std::move(result_var), lock);
+        RefPtr<TensorBase> res = tensor_symbolic_like(tensor, to, std::move(result_var));
         if (!res) return ErrorRaised;
         return res;
     }
-    return tensor_elementwise_apply(tensor, to, lock,
+    return tensor_elementwise_apply(tensor, to,
             [from, to] (Bits x) -> Expected<Bits> {
                 Bits res;
                 DTypeConversionStatus s = convert_dtype(x, from, to, &res);
@@ -1892,14 +1887,14 @@ static Error promote_tensors(
 
 // A pointer can only be cast implicitly to the generic memory space, and to an opaque pointer
 // or a pointer with the same pointee dtype. An opaque pointer can't become a concrete one.
-static bool is_implicit_pointer_cast_ok(DType from, DType to, GlobalLock& lock) {
-    MemorySpace from_space = pointer_dtype_memory_space(from, lock);
-    MemorySpace to_space = pointer_dtype_memory_space(to, lock);
+static bool is_implicit_pointer_cast_ok(DType from, DType to) {
+    MemorySpace from_space = pointer_dtype_memory_space(from);
+    MemorySpace to_space = pointer_dtype_memory_space(to);
     if (from_space != to_space && to_space != MemorySpace::GENERIC)
         return false;
 
-    DType from_pointee = pointer_dtype_pointee(from, lock);
-    DType to_pointee = pointer_dtype_pointee(to, lock);
+    DType from_pointee = pointer_dtype_pointee(from);
+    DType to_pointee = pointer_dtype_pointee(to);
     if (!from_pointee)
         return !to_pointee;
     return !to_pointee || from_pointee == to_pointee;
@@ -1948,11 +1943,11 @@ static Expected<RefPtr<TensorBase>> implicit_cast(BorrowedValue val, DType dtype
         std::optional<DType> common_dtype = promote_dtypes(from, dtype);
         if (common_dtype.has_value() && *common_dtype == dtype)
             return tensor_astype(tensor, dtype, lock);
-    } else if (is_pointer_dtype(from, lock) && is_pointer_dtype(dtype, lock)
-               && is_implicit_pointer_cast_ok(from, dtype, lock)) {
+    } else if (is_pointer_dtype(from) && is_pointer_dtype(dtype)
+               && is_implicit_pointer_cast_ok(from, dtype)) {
         PyPtr var = tensor_to_ir_var(tensor, lock);
         if (!var) return ErrorRaised;
-        PyObject* dtype_obj = dtype_to_pyobject(dtype, lock);
+        PyObject* dtype_obj = dtype_to_pyobject(dtype);
         if (!dtype_obj) return ErrorRaised;
 
         static LazyImporter cast_func;
@@ -1962,7 +1957,7 @@ static Expected<RefPtr<TensorBase>> implicit_cast(BorrowedValue val, DType dtype
                 func, "OOs", var.get(), dtype_obj, "Implicit pointer cast"));
         if (!result_var) return ErrorRaised;
 
-        RefPtr<TensorBase> res = tensor_symbolic_like(tensor, dtype, std::move(result_var), lock);
+        RefPtr<TensorBase> res = tensor_symbolic_like(tensor, dtype, std::move(result_var));
         if (!res) return ErrorRaised;
         return res;
     }
@@ -2000,7 +1995,7 @@ static Error broadcast_to_unchecked(RefPtr<TensorBase>* tensor, const UnpackedSh
         return make_error(Error::kTypeError, "OpaqueValue cannot be broadcast to shape ", shape);
 
     RefPtr<TensorBase> ret = tensor_zeros_with_shape(
-            src->dtype, shape, src->kind == TensorBase::kTile, lock);
+            src->dtype, shape, src->kind == TensorBase::kTile);
     if (!ret) return ErrorRaised;
 
     switch (src->tag_) {
@@ -2102,8 +2097,8 @@ static Error elementwise_binary_loop(Bits* out, size_t numel, F&& func, X&& x, Y
 // `func` may return either Expected<Bits> (if it can fail) or plain Bits
 template <typename F>
 static Expected<RefPtr<TensorBase>> tensor_elementwise_apply_binary(
-        TensorBase* x, TensorBase* y, DType res_dtype, GlobalLock& lock, F&& func) {
-    RefPtr<TensorBase> ret = tensor_zeros_like(x, res_dtype, lock);
+        TensorBase* x, TensorBase* y, DType res_dtype, F&& func) {
+    RefPtr<TensorBase> ret = tensor_zeros_like(x, res_dtype);
     if (!ret) return ErrorRaised;
 
     if (x->tag_ == TensorBase::kBits && y->tag_ == TensorBase::kBits) {
@@ -2289,7 +2284,7 @@ static Result<Value> pointer_add_sub_offset(TensorBase* ptr, TensorBase* offset,
             func, ptr_var.get(), offset_var.get(), nullptr));
     if (!result_var) return ErrorRaised;
 
-    RefPtr<TensorBase> ret = tensor_symbolic_like(ptr, ptr->dtype, std::move(result_var), lock);
+    RefPtr<TensorBase> ret = tensor_symbolic_like(ptr, ptr->dtype, std::move(result_var));
     if (!ret) return ErrorRaised;
     return Value::from_tensor(std::move(ret));
 }
@@ -2304,7 +2299,7 @@ static Expected<RefPtr<TensorBase>> constant_tensor_arith(TensorBase* x, TensorB
     CHECK(y->dtype == dtype);
 
     auto apply = [&] (auto&& func) {
-        return tensor_elementwise_apply_binary(x, y, dtype, lock, func);
+        return tensor_elementwise_apply_binary(x, y, dtype, func);
     };
 
     if (is_signed_integer_dtype(dtype)) {
@@ -2386,15 +2381,14 @@ static Expected<RefPtr<TensorBase>> constant_tensor_arith(TensorBase* x, TensorB
 // Computes `x op y` elementwise modulo 2**bitwidth. Both tensors must be constant,
 // with the same integer dtype and shape.
 static Expected<RefPtr<TensorBase>> constant_tensor_wrapping_arith(TensorBase* x, TensorBase* y,
-                                                                   BinaryWrappingOp op,
-                                                                   GlobalLock& lock) {
+                                                                   BinaryWrappingOp op) {
     using W = BinaryWrappingOp;
     DType dtype = x->dtype;
     CHECK(y->dtype == dtype);
     uint32_t width = basic_dtype_bitwidth(dtype);
 
     auto apply = [&] (auto&& func) {
-        return tensor_elementwise_apply_binary(x, y, dtype, lock, func);
+        return tensor_elementwise_apply_binary(x, y, dtype, func);
     };
 
     if (is_signed_integer_dtype(dtype)) {
@@ -2470,7 +2464,7 @@ static Expected<RefPtr<TensorBase>> fpowi_tensorlike(BorrowedValue x, BorrowedVa
     if (!result_var) return ErrorRaised;
 
     RefPtr<TensorBase> res = tensor_symbolic_like(base.get(), base->dtype,
-                                                  std::move(result_var), lock);
+                                                  std::move(result_var));
     if (!res) return ErrorRaised;
     return res;
 }
@@ -2524,7 +2518,7 @@ static RefPtr<TensorBase> symbolic_tensor_arith(TensorBase* x, TensorBase* y,
     }
     if (!result_var) return {};
 
-    return tensor_symbolic_like(x, x->dtype, std::move(result_var), lock);
+    return tensor_symbolic_like(x, x->dtype, std::move(result_var));
 }
 
 static Expected<Value> binary_arithmetic_tensorlike(
@@ -2570,8 +2564,8 @@ static Expected<Value> binary_arithmetic_tensorlike(
     bool x_numeric = !x_tensor || is_numeric_dtype(x_tensor->dtype);
     bool y_numeric = !y_tensor || is_numeric_dtype(y_tensor->dtype);
     if (!x_numeric || !y_numeric) {
-        bool x_pointer = x_tensor && is_pointer_dtype(x_tensor->dtype, lock);
-        bool y_pointer = y_tensor && is_pointer_dtype(y_tensor->dtype, lock);
+        bool x_pointer = x_tensor && is_pointer_dtype(x_tensor->dtype);
+        bool y_pointer = y_tensor && is_pointer_dtype(y_tensor->dtype);
         if (x_pointer && y_numeric && (op == B::Add || op == B::Sub)) {
             if (!y_tensor) {
                 Expected<RefPtr<TensorBase>> r = loosely_typed_scalar_to_default_dtype(
@@ -2741,7 +2735,7 @@ static Expected<Value> binary_wrapping_arithmetic_tensorlike(
 
     if (!x_tensor->is_symbolic() && !y_tensor->is_symbolic()) {
         Expected<RefPtr<TensorBase>> res = constant_tensor_wrapping_arith(
-                x_tensor.get(), y_tensor.get(), op, lock);
+                x_tensor.get(), y_tensor.get(), op);
         if (!res.is_ok()) return std::move(res.error());
         return Value::from_tensor(std::move(*res));
     }
@@ -2794,13 +2788,13 @@ static PyObject* py_binary_wrapping_arithmetic_tensorlike(PyObject*, PyObject* a
 
 
 static Expected<RefPtr<TensorBase>> constant_tensor_compare(TensorBase* x, TensorBase* y,
-                                                            ComparisonOp op, GlobalLock& lock) {
+                                                            ComparisonOp op) {
     using C = ComparisonOp;
     DType dtype = x->dtype;
     CHECK(y->dtype == dtype);
 
     auto apply = [&] (auto&& func) {
-        return tensor_elementwise_apply_binary(x, y, k_bool_, lock, func);
+        return tensor_elementwise_apply_binary(x, y, k_bool_, func);
     };
 
     if (is_signed_integer_dtype(dtype)) {
@@ -2884,7 +2878,7 @@ static Expected<Value> comparison_tensorlike(
     // At this point, both tensors have same dtype & shape
     if (!x_tensor->is_symbolic() && !y_tensor->is_symbolic()) {
         Expected<RefPtr<TensorBase>> res = constant_tensor_compare(
-                x_tensor.get(), y_tensor.get(), op, lock);
+                x_tensor.get(), y_tensor.get(), op);
         if (!res.is_ok()) return std::move(res.error());
         return Value::from_tensor(std::move(*res));
     }
@@ -2912,7 +2906,7 @@ static Expected<Value> comparison_tensorlike(
     if (!result_var) return ErrorRaised;
 
     RefPtr<TensorBase> res = tensor_symbolic_like(x_tensor.get(), k_bool_,
-                                                  std::move(result_var), lock);
+                                                  std::move(result_var));
     if (!res) return ErrorRaised;
     return Value::from_tensor(std::move(res));
 }
@@ -2968,13 +2962,13 @@ static PyObject* tensor_richcompare(PyObject* self, PyObject* other, int py_op) 
 
 // Computes `x op y` elementwise. Both tensors must be constant, with the same dtype and shape.
 static Expected<RefPtr<TensorBase>> constant_tensor_binary_bitwise(
-        TensorBase* x, TensorBase* y, BinaryBitwiseOp op, GlobalLock& lock) {
+        TensorBase* x, TensorBase* y, BinaryBitwiseOp op) {
     using B = BinaryBitwiseOp;
     DType dtype = x->dtype;
     CHECK(y->dtype == dtype);
 
     auto apply = [&] (auto&& func) {
-        return tensor_elementwise_apply_binary(x, y, dtype, lock, func);
+        return tensor_elementwise_apply_binary(x, y, dtype, func);
     };
 
     // Signed integers are stored sign-extended and unsigned ones zero-extended,
@@ -3038,7 +3032,7 @@ static Expected<Value> binary_bitwise_tensorlike(
     DType dtype = x_tensor->dtype;
     if (!x_tensor->is_symbolic() && !y_tensor->is_symbolic()) {
         Expected<RefPtr<TensorBase>> res = constant_tensor_binary_bitwise(
-                x_tensor.get(), y_tensor.get(), op, lock);
+                x_tensor.get(), y_tensor.get(), op);
         if (!res.is_ok()) return std::move(res.error());
         return Value::from_tensor(std::move(*res));
     }
@@ -3066,7 +3060,7 @@ static Expected<Value> binary_bitwise_tensorlike(
     if (!result_var) return ErrorRaised;
 
     RefPtr<TensorBase> res = tensor_symbolic_like(x_tensor.get(), dtype,
-                                                  std::move(result_var), lock);
+                                                  std::move(result_var));
     if (!res) return ErrorRaised;
     return Value::from_tensor(std::move(res));
 }
@@ -3115,7 +3109,7 @@ static Error shift_count_out_of_range_error(Bits count, DType dtype) {
 // shape. The shift count must be non-negative and less than the dtype's width.
 // For left shifts, the bits shifted out of the dtype's width are discarded.
 static Expected<RefPtr<TensorBase>> constant_tensor_bitwise_shift(
-        TensorBase* x, TensorBase* y, BitwiseShiftOp op, GlobalLock& lock) {
+        TensorBase* x, TensorBase* y, BitwiseShiftOp op) {
     using S = BitwiseShiftOp;
     DType dtype = x->dtype;
     CHECK(y->dtype == dtype);
@@ -3123,7 +3117,7 @@ static Expected<RefPtr<TensorBase>> constant_tensor_bitwise_shift(
     uint32_t width = basic_dtype_bitwidth(dtype);
 
     auto apply = [&] (auto&& func) {
-        return tensor_elementwise_apply_binary(x, y, dtype, lock, func);
+        return tensor_elementwise_apply_binary(x, y, dtype, func);
     };
 
     if (is_signed_integer_dtype(dtype)) {
@@ -3203,7 +3197,7 @@ static Expected<Value> bitwise_shift_tensorlike(
     DType dtype = x_tensor->dtype;
     if (!x_tensor->is_symbolic() && !y_tensor->is_symbolic()) {
         Expected<RefPtr<TensorBase>> res = constant_tensor_bitwise_shift(
-                x_tensor.get(), y_tensor.get(), op, lock);
+                x_tensor.get(), y_tensor.get(), op);
         if (!res.is_ok()) return std::move(res.error());
         return Value::from_tensor(std::move(*res));
     }
@@ -3231,7 +3225,7 @@ static Expected<Value> bitwise_shift_tensorlike(
     if (!result_var) return ErrorRaised;
 
     RefPtr<TensorBase> res = tensor_symbolic_like(x_tensor.get(), dtype,
-                                                  std::move(result_var), lock);
+                                                  std::move(result_var));
     if (!res) return ErrorRaised;
     return Value::from_tensor(std::move(res));
 }
@@ -3473,25 +3467,25 @@ static PyObject* get_unary_raw_func(GlobalLock& lock) {
 
 // Negates a constant integer or float tensor elementwise. Like subtraction, integer negation
 // raises OverflowError if the result doesn't fit the dtype.
-static Expected<RefPtr<TensorBase>> constant_tensor_negative(TensorBase* x, GlobalLock& lock) {
+static Expected<RefPtr<TensorBase>> constant_tensor_negative(TensorBase* x) {
     DType dtype = x->dtype;
     if (is_signed_integer_dtype(dtype)) {
         uint32_t width = basic_dtype_bitwidth(dtype);
         SignedBits min_value = kSignedBitsMin >> (MaxWidth - width);
-        return tensor_elementwise_apply(x, dtype, lock,
+        return tensor_elementwise_apply(x, dtype,
                 [width, min_value] (Bits a) -> Expected<Bits> {
             if (SignedBits(a) == min_value) return int_overflow_error("negation", true, width);
             return 0 - a;
         });
     } else if (is_unsigned_integer_dtype(dtype)) {
         uint32_t width = basic_dtype_bitwidth(dtype);
-        return tensor_elementwise_apply(x, dtype, lock, [width] (Bits a) -> Expected<Bits> {
+        return tensor_elementwise_apply(x, dtype, [width] (Bits a) -> Expected<Bits> {
             if (a != 0) return int_overflow_error("negation", false, width);
             return 0;
         });
     } else {
         CHECK(is_unrestricted_float_dtype(dtype));
-        return tensor_elementwise_apply(x, dtype, lock, [dtype] (Bits a) -> Expected<Bits> {
+        return tensor_elementwise_apply(x, dtype, [dtype] (Bits a) -> Expected<Bits> {
             Bits ret;
             DTypeConversionStatus s = encode_float(-decode_float(a, dtype), dtype, &ret);
             if (s == DTypeConversionStatus::OK) return ret;
@@ -3511,7 +3505,7 @@ static Expected<RefPtr<TensorBase>> tensor_negative(RefPtr<TensorBase> x, Global
     }
 
     if (!x->is_symbolic())
-        return constant_tensor_negative(x.get(), lock);
+        return constant_tensor_negative(x.get());
 
     PyObject* func = get_unary_raw_func(lock);
     if (!func) return ErrorRaised;
@@ -3520,7 +3514,7 @@ static Expected<RefPtr<TensorBase>> tensor_negative(RefPtr<TensorBase> x, Global
             func, g_neg_pyunicode, x->var(), nullptr));
     if (!result_var) return ErrorRaised;
 
-    RefPtr<TensorBase> res = tensor_symbolic_like(x.get(), x->dtype, std::move(result_var), lock);
+    RefPtr<TensorBase> res = tensor_symbolic_like(x.get(), x->dtype, std::move(result_var));
     if (!res) return ErrorRaised;
     return res;
 }
@@ -3550,15 +3544,15 @@ static PyObject* tensor_nb_positive(PyObject* self) {
     return reinterpret_cast<PyObject*>(res->release());
 }
 
-static Expected<RefPtr<TensorBase>> constant_tensor_invert(TensorBase* x, GlobalLock& lock) {
+static Expected<RefPtr<TensorBase>> constant_tensor_invert(TensorBase* x) {
     DType dtype = x->dtype;
     if (is_signed_integer_dtype(dtype)) {
         // Stays sign-extended
-        return tensor_elementwise_apply(x, dtype, lock, [] (Bits a) { return ~a; });
+        return tensor_elementwise_apply(x, dtype, [] (Bits a) { return ~a; });
     } else {
         CHECK(is_unsigned_integer_dtype(dtype));
         uint32_t width = basic_dtype_bitwidth(dtype);
-        return tensor_elementwise_apply(x, dtype, lock,
+        return tensor_elementwise_apply(x, dtype,
                 [width] (Bits a) { return truncate_int_to_unsigned(~a, width); });
     }
 }
@@ -3574,7 +3568,7 @@ static Expected<RefPtr<TensorBase>> tensor_invert(TensorBase* x, GlobalLock& loc
     }
 
     if (!x->is_symbolic())
-        return constant_tensor_invert(x, lock);
+        return constant_tensor_invert(x);
 
     PyObject* func = get_unary_raw_func(lock);
     if (!func) return ErrorRaised;
@@ -3583,7 +3577,7 @@ static Expected<RefPtr<TensorBase>> tensor_invert(TensorBase* x, GlobalLock& loc
             func, g_invert_pyunicode, x->var(), nullptr));
     if (!result_var) return ErrorRaised;
 
-    RefPtr<TensorBase> res = tensor_symbolic_like(x, x->dtype, std::move(result_var), lock);
+    RefPtr<TensorBase> res = tensor_symbolic_like(x, x->dtype, std::move(result_var));
     if (!res) return ErrorRaised;
     return res;
 }
@@ -3702,7 +3696,7 @@ static RefPtr<TensorBase> vector_getitem_symbolic(Vector* vector, TensorBase* in
             func, vector_var.get(), index_var.get(), nullptr));
     if (!result_var) return {};
 
-    RefPtr<TensorBase> elem = new_0d_tensor(vector->dtype, lock);
+    RefPtr<TensorBase> elem = new_0d_tensor(vector->dtype);
     if (!elem) return {};
     elem->data_.var = result_var.release();
     elem->tag_ = TensorBase::kVar;
@@ -3716,7 +3710,7 @@ static RefPtr<TensorBase> vector_getitem_constant_index(Vector* vector, size_t i
     case TensorBase::kBits:
     case TensorBase::kBitsArray:
         {
-            RefPtr<TensorBase> elem = new_0d_tensor(vector->dtype, lock);
+            RefPtr<TensorBase> elem = new_0d_tensor(vector->dtype);
             if (!elem) return {};
             elem->data_.bits = vector->tag_ == TensorBase::kBits
                     ? vector->data_.bits : vector->data_.bits_array[index];
@@ -3991,7 +3985,7 @@ static Expected<Value> symbolic_vector_with_item(Vector* vector, TensorBase* ind
     if (!result_var) return ErrorRaised;
 
     RefPtr<TensorBase> res = tensor_symbolic_like(vector, vector->dtype,
-                                                  std::move(result_var), lock);
+                                                  std::move(result_var));
     if (!res) return ErrorRaised;
     return Value::from_tensor(std::move(res));
 }
@@ -4170,8 +4164,7 @@ static PyObject* vector_get_element_count(PyObject* self, void*) {
 
 static PyObject* tensor_get_dtype(PyObject* self, void*) {
     TensorBase* tensor = reinterpret_cast<TensorBase*>(self);
-    GlobalLock lock;
-    return Py_XNewRef(dtype_to_pyobject(tensor->dtype, lock));
+    return Py_XNewRef(dtype_to_pyobject(tensor->dtype));
 }
 
 static PyGetSetDef vector_getset[] = {
@@ -4248,7 +4241,7 @@ static Expected<MatmulShapes> matmul_shapes(const UnpackedShape& x, const Unpack
 
 static RefPtr<TensorBase> tile_reshape_unchecked(Tile* tile, const UnpackedShape& new_shape,
                                                  GlobalLock& lock) {
-    RefPtr<TensorBase> ret = tensor_zeros_with_shape(tile->dtype, new_shape, true, lock);
+    RefPtr<TensorBase> ret = tensor_zeros_with_shape(tile->dtype, new_shape, true);
     if (!ret) return {};
     switch (tile->tag_) {
     case TensorBase::kBits:
@@ -4362,7 +4355,7 @@ static Expected<Value> tile_matmul(BorrowedValue x, BorrowedValue y, GlobalLock&
     if (!product_var) return ErrorRaised;
 
     RefPtr<TensorBase> product = tensor_zeros_with_shape(
-            x_tensor->dtype, shapes->product, true, lock);
+            x_tensor->dtype, shapes->product, true);
     if (!product) return ErrorRaised;
     product->data_.var = product_var.release();
     product->tag_ = TensorBase::kVar;
@@ -4745,25 +4738,22 @@ static PyGetSetDef tile_getset[] = {
 
 static PyObject* pointer_get_opaque(PyObject* self, void*) {
     TensorBase* pointer = reinterpret_cast<TensorBase*>(self);
-    GlobalLock lock;
-    return PyBool_FromLong(!pointer_dtype_pointee(pointer->dtype, lock));
+    return PyBool_FromLong(!pointer_dtype_pointee(pointer->dtype));
 }
 
 static PyObject* pointer_get_pointee_dtype(PyObject* self, void*) {
     TensorBase* pointer = reinterpret_cast<TensorBase*>(self);
-    GlobalLock lock;
-    DType pointee = pointer_dtype_pointee(pointer->dtype, lock);
+    DType pointee = pointer_dtype_pointee(pointer->dtype);
     if (!pointee) {
         raise(PyExc_TypeError, "Opaque pointer has no pointee_dtype");
         return nullptr;
     }
-    return Py_XNewRef(dtype_to_pyobject(pointee, lock));
+    return Py_XNewRef(dtype_to_pyobject(pointee));
 }
 
 static PyObject* pointer_get_memory_space(PyObject* self, void*) {
     TensorBase* pointer = reinterpret_cast<TensorBase*>(self);
-    GlobalLock lock;
-    MemorySpace space = pointer_dtype_memory_space(pointer->dtype, lock);
+    MemorySpace space = pointer_dtype_memory_space(pointer->dtype);
     return Py_XNewRef(enum_to_pyobject(space));
 }
 

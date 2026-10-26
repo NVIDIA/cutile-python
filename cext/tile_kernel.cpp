@@ -888,8 +888,7 @@ static PyObject* foreign_dtype_object_register(PyObject* self, PyObject* args) {
 static PyObject* foreign_dtype_object_to_native(PyObject* self, PyObject* object) {
     std::optional<DType> dtype = map_foreign_dtype_object(object);
     if (dtype.has_value()) {
-        GlobalLock lock;
-        return Py_XNewRef(dtype_to_pyobject(*dtype, lock));
+        return Py_XNewRef(dtype_to_pyobject(*dtype));
     } else {
         return Py_NewRef(Py_None);
     }
@@ -1622,10 +1621,10 @@ static PyPtr parse_array_constraint(ConstantCursor& cursor,
     PyPtr args = steal(PyTuple_New(0));
     if (!args) return {};
 
-    PyObject* dtype = dtype_to_pyobject(arrty.dtype, lock);
+    PyObject* dtype = dtype_to_pyobject(arrty.dtype);
     if (!dtype) return {};
 
-    PyObject* index_dtype = dtype_to_pyobject(index_bitwidth == 64 ? k_int64 : k_int32, lock);
+    PyObject* index_dtype = dtype_to_pyobject(index_bitwidth == 64 ? k_int64 : k_int32);
     if (!index_dtype) return {};
 
     PyPtr constant_strides = steal(PyList_New(arrty.ndim));
@@ -2128,7 +2127,7 @@ static PyPtr make_scalar_constraint(DType dtype, GlobalLock& lock) {
     PyObject* signature_module = get_signature_module(lock);
     if (!signature_module) return {};
 
-    PyObject* py_dtype = dtype_to_pyobject(dtype, lock);
+    PyObject* py_dtype = dtype_to_pyobject(dtype);
     if (!py_dtype) return {};
 
     return steal(PyObject_CallMethod(
@@ -2313,12 +2312,11 @@ static PyPtr parse_identity_constant_constraint(ConstantCursor& cursor,
 }
 
 static Status extract_foreign_dtype_constant(PyObject* object, Vec<int64_t>* constants,
-                                             Vec<PyObject*>* identity_constants,
-                                             GlobalLock& lock) {
+                                             Vec<PyObject*>* identity_constants) {
     std::optional<DType> dtype = map_foreign_dtype_object(object);
     if (!dtype.has_value())
         return raise(PyExc_ValueError, "Received an unregistered foreign dtype object");
-    PyObject* native_dtype = dtype_to_pyobject(*dtype, lock);
+    PyObject* native_dtype = dtype_to_pyobject(*dtype);
     if (!native_dtype) return ErrorRaised;
     extract_identity_constant(native_dtype, constants, identity_constants);
     return OK;
@@ -2691,8 +2689,7 @@ static Status extract_arg(const DriverApi* driver, PyObject* obj, PythonArgKind 
         extract_identity_constant(obj, &helper.constants, &helper.identity_constants);
         return OK;
     case PythonArgKind::ForeignDTypeConstant:
-        return extract_foreign_dtype_constant(obj, &helper.constants, &helper.identity_constants,
-                                              lock);
+        return extract_foreign_dtype_constant(obj, &helper.constants, &helper.identity_constants);
     case PythonArgKind::TorchTensorDlpack:
         return extract_array<arrayrepr_torch_tensor_dlpack>(
                 driver, obj, annotation->array, helper, lock);
@@ -2754,7 +2751,7 @@ static PyPtr parse_pointer_constraint(
         ConstantCursor& cursor, CallConvVersion* minimum_cconv, GlobalLock& lock) {
 #ifdef ENABLE_CCONV_V3
     require_min_cconv(minimum_cconv, CallConvVersion::CutilePython_V3);
-    PyObject* dtype = dtype_to_pyobject(DType{static_cast<uint32_t>(cursor.next())}, lock);
+    PyObject* dtype = dtype_to_pyobject(DType{static_cast<uint32_t>(cursor.next())});
     if (!dtype) return {};
     PyObject* signature_module = get_signature_module(lock);
     if (!signature_module) return {};

@@ -200,9 +200,9 @@ namespace _dtype_detail {
     extern const uint32_t basic_dtype_bitwidth[basic_last + 1];
     extern const bool basic_dtype_is_signed[basic_last + 1];
 
-    bool is_derived_dtype_pointer(DType dtype, GlobalLock& lock);
-    bool is_derived_dtype_foreign_pointer(DType dtype, GlobalLock& lock);
-    uint32_t derived_dtype_bitwidth(DType dtype, GlobalLock& lock);
+    bool is_derived_dtype_pointer(DType dtype);
+    bool is_derived_dtype_foreign_pointer(DType dtype);
+    uint32_t derived_dtype_bitwidth(DType dtype);
 } // namespace _dtype_detail
 
 // Define constants like
@@ -252,14 +252,14 @@ static inline bool is_arithmetic_numeric_dtype(DType dtype) {
     return dtype == k_bool_ || is_integer_dtype(dtype) || is_unrestricted_float_dtype(dtype);
 }
 
-static inline bool is_pointer_dtype(DType dtype, GlobalLock& lock) {
+static inline bool is_pointer_dtype(DType dtype) {
     return dtype.dtype_id >= kFirstDerivedDTypeId
-        && _dtype_detail::is_derived_dtype_pointer(dtype, lock);
+        && _dtype_detail::is_derived_dtype_pointer(dtype);
 }
 
-static inline bool is_foreign_pointer_dtype(DType dtype, GlobalLock& lock) {
+static inline bool is_foreign_pointer_dtype(DType dtype) {
     return dtype.dtype_id >= kFirstDerivedDTypeId
-        && _dtype_detail::is_derived_dtype_foreign_pointer(dtype, lock);
+        && _dtype_detail::is_derived_dtype_foreign_pointer(dtype);
 }
 
 static inline bool is_numeric_dtype(DType dtype) {
@@ -314,28 +314,28 @@ Result<DTypeConversionStatus> encode_pylong_as_float(PyObject* pylong, DType dty
 
 double decode_float(uint64_t bits, DType dtype);
 
-DType pointer_dtype_pointee(DType pointer_dtype, GlobalLock& lock);
+DType pointer_dtype_pointee(DType pointer_dtype);
 
-DType foreign_pointer_dtype_pointee(DType foreign_pointer_dtype, GlobalLock& lock);
+DType foreign_pointer_dtype_pointee(DType foreign_pointer_dtype);
 
-MemorySpace pointer_dtype_memory_space(DType pointer_dtype, GlobalLock& lock);
+MemorySpace pointer_dtype_memory_space(DType pointer_dtype);
 
 static inline uint32_t basic_dtype_bitwidth(DType dtype) {
     CHECK(dtype && dtype.dtype_id < kFirstDerivedDTypeId);
     return _dtype_detail::basic_dtype_bitwidth[dtype.dtype_id];
 }
 
-static inline uint32_t dtype_bitwidth(DType dtype, GlobalLock& lock) {
+static inline uint32_t dtype_bitwidth(DType dtype) {
     CHECK(dtype);
     if (dtype.dtype_id < kFirstDerivedDTypeId)
         return _dtype_detail::basic_dtype_bitwidth[dtype.dtype_id];
 
-    return _dtype_detail::derived_dtype_bitwidth(dtype, lock);
+    return _dtype_detail::derived_dtype_bitwidth(dtype);
 }
 
 int append_to_string_builder(DType dtype, StringBuilder* sb);
 
-PyObject* dtype_to_pyobject(DType dtype, GlobalLock& lock);
+PyObject* dtype_to_pyobject(DType dtype);
 
 // Returns std::nullopt if `obj` is not a DType object
 std::optional<DType> dtype_from_pyobject(PyObject* obj);
