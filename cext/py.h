@@ -816,15 +816,18 @@ class LazyImporter {
     OncePointer<PyObject> obj_;  // Never released once set
 
 public:
-    // Gets "module_name.name[.subname]".
+    // Gets "module_name[.name[.subname]]".
     // Returns a borrowed reference, or nullptr with an exception set.
-    PyObject* get(const char* module_name, const char* name, const char* subname = nullptr) {
+    PyObject* get(const char* module_name, const char* name = nullptr,
+                  const char* subname = nullptr) {
         if (PyObject* obj = obj_.get()) return obj;
 
-        PyPtr m = steal(PyImport_ImportModule(module_name));
-        if (!m) return nullptr;
-        PyPtr new_obj = getattr(m, name);
+        PyPtr new_obj = steal(PyImport_ImportModule(module_name));
         if (!new_obj) return nullptr;
+        if (name) {
+            new_obj = getattr(new_obj, name);
+            if (!new_obj) return nullptr;
+        }
         if (subname) {
             new_obj = getattr(new_obj, subname);
             if (!new_obj) return nullptr;

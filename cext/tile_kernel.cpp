@@ -62,10 +62,10 @@ static constexpr const char* kTensorMapBytesAttr = "_cuda_lang_tensor_map_bytes"
 static constexpr const char* kNativeSourceDTypeAttr = "_native_source_dtype";
 
 
-static PyObject* get_signature_module(GlobalLock&) {
-    static PyObject* m;
-    if (!m) m = PyImport_ImportModule("cuda.tile.compilation._signature");
-    return m;
+// Returns a borrowed reference, or nullptr with an exception set
+static PyObject* get_signature_module() {
+    static LazyImporter importer;
+    return importer.get("cuda.tile.compilation._signature");
 }
 
 namespace { struct ImportedTypeChecker {
@@ -139,15 +139,18 @@ static bool is_cuda_bindings_driver_custream_subtype(PyTypeObject* ty) {
     return checker.is_subtype_of(ty, g_cuda_bindings_driver_pyunicode, nullptr, "CUstream");
 }
 
-static PyObject* try_get_torch_to_dlpack_func(GlobalLock&) {
-    static PyObject* func;
-    static bool cached;
-    if (!cached) {
-        cached = true;
+// Returns a borrowed reference, or nullptr without an exception set
+static PyObject* try_get_torch_to_dlpack_func() {
+    static OncePointer<PyObject> cached;  // Py_None if not available
+    PyObject* func = cached.get();
+    if (!func) {
+        PyPtr new_func;
         if (PyPtr torch_C = try_import("torch._C"))
-            func = try_getattr(torch_C, "_to_dlpack").release();
+            new_func = try_getattr(torch_C, "_to_dlpack");
+        if (!new_func) new_func = newref(Py_None);
+        func = cached.set(std::move(new_func));
     }
-    return func;
+    return func == Py_None ? nullptr : func;
 }
 
 
@@ -248,32 +251,30 @@ static PyPtr get_cconv(CallConvVersion version) {
     return steal(ret);
 }
 
-static PyObject* get_cached_cconv(CallConvVersion version, PyObject** cache, GlobalLock&) {
-    if (!*cache) {
-        PyPtr cconv = get_cconv(version);
-        if (!cconv) return nullptr;
-        *cache = cconv.release();
+static PyObject* get_cached_cconv(CallConvVersion version, OncePointer<PyObject>* cache) {
+    PyObject* cconv = cache->get();
+    if (!cconv) {
+        PyPtr new_cconv = get_cconv(version);
+        if (!new_cconv) return nullptr;
+        cconv = cache->set(std::move(new_cconv));
     }
-    return Py_NewRef(*cache);
+    return Py_NewRef(cconv);
 }
 
 static PyObject* CallingConvention_cutile_python_v1(PyObject*, PyObject*) {
-    static PyObject* c;
-    GlobalLock lock;
-    return get_cached_cconv(CallConvVersion::CutilePython_V1, &c, lock);
+    static OncePointer<PyObject> c;
+    return get_cached_cconv(CallConvVersion::CutilePython_V1, &c);
 }
 
 static PyObject* CallingConvention_cutile_python_v2(PyObject*, PyObject*) {
-    static PyObject* c;
-    GlobalLock lock;
-    return get_cached_cconv(CallConvVersion::CutilePython_V2, &c, lock);
+    static OncePointer<PyObject> c;
+    return get_cached_cconv(CallConvVersion::CutilePython_V2, &c);
 }
 
 #ifdef ENABLE_CCONV_V3
 static PyObject* CallingConvention_cutile_python_v3(PyObject*, PyObject*) {
-    static PyObject* c;
-    GlobalLock lock;
-    return get_cached_cconv(CallConvVersion::CutilePython_V3, &c, lock);
+    static OncePointer<PyObject> c;
+    return get_cached_cconv(CallConvVersion::CutilePython_V3, &c);
 }
 #endif
 
@@ -961,7 +962,7 @@ static std::optional<StreamKind> try_classify_stream_type(PyTypeObject* ty);
 static Result<CUstream> parse_stream(PyObject* py_stream, GlobalLock& lock);
 
 
-static std::optional<PythonArgKind> classify_nonconstant_arg(PyObject* arg, GlobalLock& lock) {
+static std::optional<PythonArgKind> classify_nonconstant_arg(PyObject* arg) {
     if (PyBool_Check(arg))
         return PythonArgKind::PyBool;
 
@@ -978,7 +979,7 @@ static std::optional<PythonArgKind> classify_nonconstant_arg(PyObject* arg, Glob
         // Calling torch._C._to_dlpack(arg) is much faster than calling arg.__dlpack__()
         // because it goes straight into C++ code, with no Python in between.
         // So we always prefer that.
-        if (try_get_torch_to_dlpack_func(lock))
+        if (try_get_torch_to_dlpack_func())
             return PythonArgKind::TorchTensorDlpack;
     }
 
@@ -1614,15 +1615,14 @@ static PyPtr parse_array_constraint(ConstantCursor& cursor,
                                     unsigned index_bitwidth,
                                     const Vec<int64_t>& static_shape_dims,
                                     const Vec<int64_t>& static_stride_dims,
-                                    CallConvVersion* minimum_cconv,
-                                    GlobalLock& lock) {
+                                    CallConvVersion* minimum_cconv) {
     ParsedArrayTypeConstants parsed = parse_array_type_constants(cursor);
     ArrayType arrty = parsed.arrty;
     ArraySpecializationBits special_bits = parsed.special_bits;
     // Only int32 or int64 are supported now.
     CHECK(index_bitwidth == 32 || index_bitwidth == 64);
 
-    PyObject* signature_module = get_signature_module(lock);
+    PyObject* signature_module = get_signature_module();
     if (!signature_module) return {};
 
     PyPtr constraint_class = getattr(signature_module, "ArrayConstraint");
@@ -1996,11 +1996,11 @@ static Result<ArrayRepr> arrayrepr_torch_tensor_pymethod(PyObject* tensor, unsig
 }
 
 static Result<ArrayRepr> arrayrepr_torch_tensor_dlpack(PyObject* pyobj, unsigned index_bitwidth,
-                                                       Arena& arena, GlobalLock& lock) {
+                                                       Arena& arena) {
     // Safe to assume try_get_torch_to_dlpack_func() is not null because we wouldn't have produced
     // a PythonArgKind::TorchTensorDlpack value otherwise.
     PyPtr dlpack_capsule = steal(PyObject_CallFunctionObjArgs(
-                try_get_torch_to_dlpack_func(lock), pyobj, nullptr));
+                try_get_torch_to_dlpack_func(), pyobj, nullptr));
 
     if (!dlpack_capsule) {
         SavedException exc = save_raised_exception();
@@ -2051,7 +2051,6 @@ struct ListAnnotation {
 
 
 typedef Result<ArrayRepr> (*ArrayReprFunc)(PyObject*, unsigned, Arena&);
-typedef Result<ArrayRepr> (*LockedArrayReprFunc)(PyObject*, unsigned, Arena&, GlobalLock& lock);
 
 
 static Status extract_array_repr(const DriverApi* driver,
@@ -2079,16 +2078,6 @@ static Status extract_array(const DriverApi* driver, PyObject* pyobj,
                             const ArrayAnnotation& array_ann,
                             LaunchHelper& helper) {
     Result<ArrayRepr> ar = F(pyobj, array_ann.index_bitwidth, helper.arena);
-    if (!ar.is_ok()) return ErrorRaised;
-    return extract_array_repr(driver, *ar, array_ann, helper);
-}
-
-template <LockedArrayReprFunc F>
-static Status extract_array(const DriverApi* driver, PyObject* pyobj,
-                            const ArrayAnnotation& array_ann,
-                            LaunchHelper& helper,
-                            GlobalLock& lock) {
-    Result<ArrayRepr> ar = F(pyobj, array_ann.index_bitwidth, helper.arena, lock);
     if (!ar.is_ok()) return ErrorRaised;
     return extract_array_repr(driver, *ar, array_ann, helper);
 }
@@ -2133,8 +2122,8 @@ static inline Status extract_py_bool(PyObject* pyobj, LaunchHelper& helper) {
     return OK;
 }
 
-static PyPtr make_scalar_constraint(DType dtype, GlobalLock& lock) {
-    PyObject* signature_module = get_signature_module(lock);
+static PyPtr make_scalar_constraint(DType dtype) {
+    PyObject* signature_module = get_signature_module();
     if (!signature_module) return {};
 
     PyObject* py_dtype = dtype_to_pyobject(dtype);
@@ -2144,8 +2133,8 @@ static PyPtr make_scalar_constraint(DType dtype, GlobalLock& lock) {
                 signature_module, "ScalarConstraint", "(O)", py_dtype));
 }
 
-static PyPtr make_constant_constraint(PyObject* value, GlobalLock& lock) {
-    PyObject* signature_module = get_signature_module(lock);
+static PyPtr make_constant_constraint(PyObject* value) {
+    PyObject* signature_module = get_signature_module();
 
     if (!signature_module) return {};
 
@@ -2153,7 +2142,7 @@ static PyPtr make_constant_constraint(PyObject* value, GlobalLock& lock) {
 }
 
 static PyPtr parse_tensor_map_constraint(ConstantCursor&,
-        CallConvVersion* minimum_cconv, GlobalLock& lock) {
+        CallConvVersion* minimum_cconv) {
 #ifdef ENABLE_CCONV_V3
     require_min_cconv(minimum_cconv, CallConvVersion::CutilePython_V3);
 #else
@@ -2163,7 +2152,7 @@ static PyPtr parse_tensor_map_constraint(ConstantCursor&,
     return {};
 #endif
 
-    PyObject* signature_module = get_signature_module(lock);
+    PyObject* signature_module = get_signature_module();
     if (!signature_module) return {};
     return steal(PyObject_CallMethod(
             signature_module, "TensorMapConstraint", "()"));
@@ -2175,10 +2164,10 @@ static PyPtr parse_bool_constant_value(ConstantCursor& cursor) {
 }
 
 
-static PyPtr parse_bool_constant_constraint(ConstantCursor& cursor, GlobalLock& lock) {
+static PyPtr parse_bool_constant_constraint(ConstantCursor& cursor) {
     PyPtr value = parse_bool_constant_value(cursor);
     if (!value) return {};
-    return make_constant_constraint(value.get(), lock);
+    return make_constant_constraint(value.get());
 }
 
 static inline Status extract_int_constant(PyObject* pyobj, Vec<int64_t>* constants) {
@@ -2211,10 +2200,10 @@ static PyPtr parse_int_constant_value(ConstantCursor& cursor) {
     return value;
 }
 
-static PyPtr parse_int_constant_constraint(ConstantCursor& cursor, GlobalLock& lock) {
+static PyPtr parse_int_constant_constraint(ConstantCursor& cursor) {
     PyPtr value = parse_int_constant_value(cursor);
     if (!value) return {};
-    return make_constant_constraint(value.get(), lock);
+    return make_constant_constraint(value.get());
 }
 
 static inline ErrorRaised_t raise_signed_kernel_integer_overflow(unsigned bitwidth) {
@@ -2277,10 +2266,10 @@ static PyPtr parse_float_constant_value(ConstantCursor& cursor) {
     return steal(PyFloat_FromDouble(u.f64));
 }
 
-static PyPtr parse_float_constant_constraint(ConstantCursor& cursor, GlobalLock& lock) {
+static PyPtr parse_float_constant_constraint(ConstantCursor& cursor) {
     PyPtr value = parse_float_constant_value(cursor);
     if (!value) return {};
-    return make_constant_constraint(value.get(), lock);
+    return make_constant_constraint(value.get());
 }
 
 static void extract_identity_constant(PyObject* object, Vec<int64_t>* constants,
@@ -2315,10 +2304,9 @@ static Status extract_string_constant(PyObject* pyobj, Vec<int64_t>* constants,
 }
 
 static PyPtr parse_identity_constant_constraint(ConstantCursor& cursor,
-                                                const Vec<PyObject*>& identity_constants,
-                                                GlobalLock& lock) {
+                                                const Vec<PyObject*>& identity_constants) {
     return make_constant_constraint(
-            parse_identity_constant_value(cursor, identity_constants), lock);
+            parse_identity_constant_value(cursor, identity_constants));
 }
 
 static Status extract_foreign_dtype_constant(PyObject* object, Vec<int64_t>* constants,
@@ -2333,11 +2321,10 @@ static Status extract_foreign_dtype_constant(PyObject* object, Vec<int64_t>* con
 }
 
 static Result<ArrayRepr> get_array_repr(PythonArgKind kind, PyObject* pyobj,
-                                        unsigned index_bitwidth, Arena& arena,
-                                        GlobalLock& lock) {
+                                        unsigned index_bitwidth, Arena& arena) {
     switch (kind) {
         case PythonArgKind::TorchTensorDlpack:
-            return arrayrepr_torch_tensor_dlpack(pyobj, index_bitwidth, arena, lock);
+            return arrayrepr_torch_tensor_dlpack(pyobj, index_bitwidth, arena);
         case PythonArgKind::DlpackArray:
             return arrayrepr_dlpack(pyobj, index_bitwidth, arena);
         case PythonArgKind::CudaArray:
@@ -2349,8 +2336,8 @@ static Result<ArrayRepr> get_array_repr(PythonArgKind kind, PyObject* pyobj,
     }
 }
 
-static Result<PythonArgKind> classify_list_item(PyObject* item, size_t index, GlobalLock& lock) {
-    std::optional<PythonArgKind> res = classify_nonconstant_arg(item, lock);
+static Result<PythonArgKind> classify_list_item(PyObject* item, size_t index) {
+    std::optional<PythonArgKind> res = classify_nonconstant_arg(item);
     if (!res.has_value()) {
         return raise(PyExc_TypeError, "Invalid list item #", index, ": unsupported object type '",
                       Py_TYPE(item)->tp_name, "'");
@@ -2360,8 +2347,7 @@ static Result<PythonArgKind> classify_list_item(PyObject* item, size_t index, Gl
 
 static Status extract_py_list(const DriverApi* driver, PyObject* pyobj,
                               const ListAnnotation& list_ann,
-                              LaunchHelper& helper,
-                              GlobalLock& lock) {
+                              LaunchHelper& helper) {
     size_t len = PyList_GET_SIZE(pyobj);
     if (len > INT32_MAX)
         return raise(PyExc_TypeError, "List is too long");
@@ -2373,7 +2359,7 @@ static Status extract_py_list(const DriverApi* driver, PyObject* pyobj,
     // Handle the first item separately in order to determine the item type
 
     PyObject* first_item = PyList_GET_ITEM(pyobj, 0);
-    Result<PythonArgKind> first_item_res = classify_list_item(first_item, 0, lock);
+    Result<PythonArgKind> first_item_res = classify_list_item(first_item, 0);
     if (!first_item_res.is_ok()) return ErrorRaised;
 
     if (param_category_from_pyarg_kind(*first_item_res) != ParameterKind::Array) {
@@ -2386,8 +2372,7 @@ static Status extract_py_list(const DriverApi* driver, PyObject* pyobj,
 
     Result<ArrayRepr> first_repr_res = get_array_repr(first_arg_kind, first_item,
                                                       list_ann.element.index_bitwidth,
-                                                      helper.arena,
-                                                      lock);
+                                                      helper.arena);
     if (!first_repr_res.is_ok()) return ErrorRaised;
 
     helper.array_ptr_arena_offsets.push_back(first_repr_res->repr);
@@ -2419,13 +2404,13 @@ static Status extract_py_list(const DriverApi* driver, PyObject* pyobj,
 
         // Avoid calling classify_list_item() if the object type is the same
         if (first_item_type != item->ob_type) {
-             Result<PythonArgKind> res = classify_list_item(item, i, lock);
+             Result<PythonArgKind> res = classify_list_item(item, i);
              if (!res.is_ok()) return ErrorRaised;
              kind = *res;
         }
 
         Result<ArrayRepr> repr_res = get_array_repr(kind, item, list_ann.element.index_bitwidth,
-                                                    helper.arena, lock);
+                                                    helper.arena);
         if (!repr_res.is_ok()) return ErrorRaised;
         helper.array_ptr_arena_offsets.push_back(repr_res->repr);
         helper.arena[item_offsets + i].arena_offset = repr_res->repr;
@@ -2453,13 +2438,12 @@ static PyPtr parse_list_constraint(ConstantCursor& cursor,
                                    unsigned index_bitwidth,
                                    const Vec<int64_t>& static_shape_dims,
                                    const Vec<int64_t>& static_stride_dims,
-                                   CallConvVersion* minimum_cconv,
-                                   GlobalLock& lock) {
+                                   CallConvVersion* minimum_cconv) {
     PyPtr element = parse_array_constraint(
-            cursor, index_bitwidth, static_shape_dims, static_stride_dims, minimum_cconv, lock);
+            cursor, index_bitwidth, static_shape_dims, static_stride_dims, minimum_cconv);
     if (!element) return {};
 
-    PyObject* signature_module = get_signature_module(lock);
+    PyObject* signature_module = get_signature_module();
     if (!signature_module) return {};
 
     PyPtr constraint_class = getattr(signature_module, "ListConstraint");
@@ -2702,7 +2686,7 @@ static Status extract_arg(const DriverApi* driver, PyObject* obj, PythonArgKind 
         return extract_foreign_dtype_constant(obj, &helper.constants, &helper.identity_constants);
     case PythonArgKind::TorchTensorDlpack:
         return extract_array<arrayrepr_torch_tensor_dlpack>(
-                driver, obj, annotation->array, helper, lock);
+                driver, obj, annotation->array, helper);
     case PythonArgKind::DlpackArray:
         return extract_array<arrayrepr_dlpack>(driver, obj, annotation->array, helper);
     case PythonArgKind::CudaArray:
@@ -2723,7 +2707,7 @@ static Status extract_arg(const DriverApi* driver, PyObject* obj, PythonArgKind 
         extract_py_float(obj, helper);
         return OK;
     case PythonArgKind::PyList:
-        return extract_py_list(driver, obj, annotation->list, helper, lock);
+        return extract_py_list(driver, obj, annotation->list, helper);
     }
     CHECK_UNREACHABLE;
 }
@@ -2758,12 +2742,12 @@ static Status extract_cuda_args(const DriverApi* driver,
 }
 
 static PyPtr parse_pointer_constraint(
-        ConstantCursor& cursor, CallConvVersion* minimum_cconv, GlobalLock& lock) {
+        ConstantCursor& cursor, CallConvVersion* minimum_cconv) {
 #ifdef ENABLE_CCONV_V3
     require_min_cconv(minimum_cconv, CallConvVersion::CutilePython_V3);
     PyObject* dtype = dtype_to_pyobject(DType{static_cast<uint32_t>(cursor.next())});
     if (!dtype) return {};
-    PyObject* signature_module = get_signature_module(lock);
+    PyObject* signature_module = get_signature_module();
     if (!signature_module) return {};
     return steal(PyObject_CallMethod(
             signature_module, "PointerConstraint", "(O)", dtype));
@@ -2777,10 +2761,10 @@ static PyPtr parse_pointer_constraint(
 }
 
 
-static PyPtr parse_stream_constraint(CallConvVersion* minimum_cconv, GlobalLock& lock) {
+static PyPtr parse_stream_constraint(CallConvVersion* minimum_cconv) {
 #ifdef ENABLE_CCONV_V3
     require_min_cconv(minimum_cconv, CallConvVersion::CutilePython_V3);
-    PyObject* signature_module = get_signature_module(lock);
+    PyObject* signature_module = get_signature_module();
     if (!signature_module) return {};
     PyPtr constraint_class = getattr(signature_module, "StreamConstraint");
     if (!constraint_class) return {};
@@ -2799,46 +2783,43 @@ static PyPtr parse_element_constraint(
         ParameterKind::Category category,
         const LeafAnnotationNode& annotation,
         const Vec<PyObject*>& identity_constants,
-        CallConvVersion* minimum_cconv,
-        GlobalLock& lock) {
+        CallConvVersion* minimum_cconv) {
     switch (category) {
     case ParameterKind::ConstantBool:
-        return parse_bool_constant_constraint(cursor, lock);
+        return parse_bool_constant_constraint(cursor);
     case ParameterKind::ConstantInt:
-        return parse_int_constant_constraint(cursor, lock);
+        return parse_int_constant_constraint(cursor);
     case ParameterKind::ConstantFloat:
-        return parse_float_constant_constraint(cursor, lock);
+        return parse_float_constant_constraint(cursor);
     case ParameterKind::ConstantNone:
-        return make_constant_constraint(Py_None, lock);
+        return make_constant_constraint(Py_None);
     case ParameterKind::IdentityConstant:
-        return parse_identity_constant_constraint(cursor, identity_constants, lock);
+        return parse_identity_constant_constraint(cursor, identity_constants);
     case ParameterKind::Array:
         return parse_array_constraint(cursor,
                                       annotation.array.index_bitwidth,
                                       annotation.array.static_shape_dims,
                                       annotation.array.static_stride_dims,
-                                      minimum_cconv,
-                                      lock);
+                                      minimum_cconv);
     case ParameterKind::Pointer:
-        return parse_pointer_constraint(cursor, minimum_cconv, lock);
+        return parse_pointer_constraint(cursor, minimum_cconv);
     case ParameterKind::Stream:
-        return parse_stream_constraint(minimum_cconv, lock);
+        return parse_stream_constraint(minimum_cconv);
     case ParameterKind::TensorMap:
-        return parse_tensor_map_constraint(cursor, minimum_cconv, lock);
+        return parse_tensor_map_constraint(cursor, minimum_cconv);
     case ParameterKind::Boolean:
-        return make_scalar_constraint(k_bool_, lock);
+        return make_scalar_constraint(k_bool_);
     case ParameterKind::Integer:
         CHECK(annotation.scalar.bitwidth == 32 || annotation.scalar.bitwidth == 64);
-        return make_scalar_constraint(annotation.scalar.bitwidth == 64 ? k_int64 : k_int32, lock);
+        return make_scalar_constraint(annotation.scalar.bitwidth == 64 ? k_int64 : k_int32);
     case ParameterKind::Float:
-        return make_scalar_constraint(k_float32, lock);
+        return make_scalar_constraint(k_float32);
     case ParameterKind::List:
         return parse_list_constraint(cursor,
                                      annotation.list.element.index_bitwidth,
                                      annotation.list.element.static_shape_dims,
                                      annotation.list.element.static_stride_dims,
-                                     minimum_cconv,
-                                     lock);
+                                     minimum_cconv);
     case ParameterKind::AggregateBegin:
     case ParameterKind::AggregateEnd:
         CHECK_UNREACHABLE;  // Should be handled before parse_element_constraint
@@ -2846,8 +2827,8 @@ static PyPtr parse_element_constraint(
     CHECK_UNREACHABLE;
 }
 
-static PyPtr create_tuple_constraint(PyObject* items_list, GlobalLock& lock) {
-    PyObject* signature_module = get_signature_module(lock);
+static PyPtr create_tuple_constraint(PyObject* items_list) {
+    PyObject* signature_module = get_signature_module();
     if (!signature_module) return {};
     PyPtr constraint_class = getattr(signature_module, "TupleConstraint");
     if (!constraint_class) return {};
@@ -2855,9 +2836,8 @@ static PyPtr create_tuple_constraint(PyObject* items_list, GlobalLock& lock) {
 }
 
 #ifdef ENABLE_CCONV_V3
-static PyPtr create_dataclass_constraint(PyObject* dataclass, PyObject* items_list,
-                                         GlobalLock& lock) {
-    PyObject* signature_module = get_signature_module(lock);
+static PyPtr create_dataclass_constraint(PyObject* dataclass, PyObject* items_list) {
+    PyObject* signature_module = get_signature_module();
     if (!signature_module) return {};
     PyPtr constraint_class = getattr(signature_module, "DataclassConstraint");
     if (!constraint_class) return {};
@@ -2871,8 +2851,7 @@ static PyPtr parse_param_constraint(
         Cursor<ParameterKind>* param_cursor,
         Cursor<RefPtr<LeafAnnotationNode>>* annotation_cursor,
         const Vec<PyObject*>& identity_constants,
-        CallConvVersion* minimum_cconv,
-        GlobalLock& lock) {
+        CallConvVersion* minimum_cconv) {
     ParameterKind pk = param_cursor->next();
     if (pk.category == ParameterKind::AggregateBegin) {
         PyPtr items_list = steal(PyList_New(0));
@@ -2880,7 +2859,7 @@ static PyPtr parse_param_constraint(
         while (param_cursor->peek().category != ParameterKind::AggregateEnd) {
             PyPtr item = parse_param_constraint(
                     cursor, param_cursor, annotation_cursor, identity_constants,
-                    minimum_cconv, lock);
+                    minimum_cconv);
             if (!item) return {};
             if (PyList_Append(items_list.get(), item.get()) < 0) return {};
         }
@@ -2890,19 +2869,19 @@ static PyPtr parse_param_constraint(
         switch (pk.agg_type.kind) {
         case AggregateArgType::Tuple:
             require_min_cconv(minimum_cconv, CallConvVersion::CutilePython_V2);
-            return create_tuple_constraint(items_list.get(), lock);
+            return create_tuple_constraint(items_list.get());
 #ifdef ENABLE_CCONV_V3
         case AggregateArgType::Dataclass:
             require_min_cconv(minimum_cconv, CallConvVersion::CutilePython_V3);
             return create_dataclass_constraint(pk.agg_type.dataclass_info->dataclass.get(),
-                                               items_list.get(), lock);
+                                               items_list.get());
 #endif
         }
         CHECK(false);
     }
     LeafAnnotationNode* annotation = annotation_cursor->next().get();
     return parse_element_constraint(
-            cursor, pk.category, *annotation, identity_constants, minimum_cconv, lock);
+            cursor, pk.category, *annotation, identity_constants, minimum_cconv);
 }
 
 static PyPtr parse_parameter_constraints(
@@ -2910,8 +2889,7 @@ static PyPtr parse_parameter_constraints(
         const Vec<PyObject*>& identity_constants,
         const Vec<ParameterKind>& param_kinds,
         const Vec<RefPtr<LeafAnnotationNode>>& flat_param_annotations,
-        CallConvVersion* minimum_cconv,
-        GlobalLock& lock) {
+        CallConvVersion* minimum_cconv) {
     PyPtr param_constraints = steal(PyList_New(0));
     if (!param_constraints) return {};
 
@@ -2920,7 +2898,7 @@ static PyPtr parse_parameter_constraints(
     while (param_cursor.peek().category != ParameterKind::AggregateEnd) {
         PyPtr constraint = parse_param_constraint(
                 cursor, &param_cursor, &annotation_cursor, identity_constants,
-                minimum_cconv, lock);
+                minimum_cconv);
         if (!constraint) return {};
         if (PyList_Append(param_constraints.get(), constraint.get())) return {};
     }
@@ -2933,18 +2911,17 @@ static PyPtr parse_parameter_constraints(
 static PyPtr make_signature(ConstantCursor constants,
                             const Vec<PyObject*>& identity_constants,
                             const Vec<ParameterKind>& param_kinds,
-                            const Vec<RefPtr<LeafAnnotationNode>>& flat_param_annotations,
-                            GlobalLock& lock) {
+                            const Vec<RefPtr<LeafAnnotationNode>>& flat_param_annotations) {
     CallConvVersion minimum_cconv = CallConvVersion::CutilePython_V1;
     PyPtr parameters = parse_parameter_constraints(
             constants, identity_constants, param_kinds, flat_param_annotations,
-            &minimum_cconv, lock);
+            &minimum_cconv);
     if (!parameters) return {};
 
     PyPtr calling_convention = get_cconv(minimum_cconv);
     if (!calling_convention) return {};
 
-    PyObject* signature_module = get_signature_module(lock);
+    PyObject* signature_module = get_signature_module();
     if (!signature_module) return {};
 
     PyPtr signature_class = getattr(signature_module, "KernelSignature");
@@ -3069,8 +3046,7 @@ static PyObject* py_tensor_map_tiled(PyObject*, PyObject* args) {
                 &array, &py_tile_shape, &py_order,
                 &interleave, &swizzle, &l2_promotion, &oob_fill))
         return nullptr;
-    GlobalLock lock;
-    std::optional<PythonArgKind> kind = classify_nonconstant_arg(array, lock);
+    std::optional<PythonArgKind> kind = classify_nonconstant_arg(array);
     if (!kind.has_value()
             || (*kind != PythonArgKind::TorchTensorDlpack
                 && *kind != PythonArgKind::DlpackArray
@@ -3081,7 +3057,7 @@ static PyObject* py_tensor_map_tiled(PyObject*, PyObject* args) {
         return nullptr;
     }
     Arena arena;
-    Result<ArrayRepr> repr = get_array_repr(*kind, array, 64, arena, lock);
+    Result<ArrayRepr> repr = get_array_repr(*kind, array, 64, arena);
     if (!repr.is_ok()) return nullptr;
     size_t rank = repr->arrty.ndim;
     DType dtype = repr->arrty.dtype;
@@ -3540,8 +3516,7 @@ static Result<Vec<PythonArgKind>>
 get_pyarg_kinds(const Vec<PyTypeObject*>& pyarg_types_depth_first,
                 const Vec<std::optional<AggregateArgType>>& agg_types,
                 const Vec<PyObject*>& leaf_pyarg_objs,
-                const Vec<RefPtr<LeafAnnotationNode>>& flat_param_annotations,
-                GlobalLock& lock) {
+                const Vec<RefPtr<LeafAnnotationNode>>& flat_param_annotations) {
     size_t n = leaf_pyarg_objs.size();
     CHECK(flat_param_annotations.size() == n);
     Vec<PythonArgKind> ret;
@@ -3558,7 +3533,7 @@ get_pyarg_kinds(const Vec<PyTypeObject*>& pyarg_types_depth_first,
             }
             ret.push_back(constant_kind_as_arg_kind(*kind));
         } else {
-            std::optional<PythonArgKind> kind = classify_nonconstant_arg(obj, lock);
+            std::optional<PythonArgKind> kind = classify_nonconstant_arg(obj);
             if (!kind.has_value()) {
                 if (PyType_IsSubtype(Py_TYPE(obj), &PyTuple_Type)) {
                     return raise_invalid_kernel_arg_type(
@@ -3907,7 +3882,7 @@ static PythonArgProfile* python_arg_profile_lookup_impl(
                 // Classify the arguments and get the matching ArgumentFamily.
                 Result<Vec<PythonArgKind>> arg_kinds = get_pyarg_kinds(
                         pyarg_types_depth_first, aggregate_types,
-                        *leaf_pyarg_objs, *flat_param_annotations, lock);
+                        *leaf_pyarg_objs, *flat_param_annotations);
                 if (!arg_kinds.is_ok()) return nullptr;
 
                 Vec<ParameterKind> param_kinds = get_parameter_kinds(
@@ -4007,8 +3982,7 @@ static Result<PreparedLaunch> prepare_launch_with_extracted_args(
                 constants_cursor,
                 helper->identity_constants,
                 family->param_kinds,
-                flat_param_annotations,
-                lock);
+                flat_param_annotations);
         if (!signature) return ErrorRaised;
 
         PyPtr py_compute_capability = steal(Py_BuildValue(
@@ -5153,8 +5127,7 @@ static PyObject* HostDispatcher_call(
                 helper->constants,
                 helper->identity_constants,
                 profile->family->param_kinds,
-                profile->flat_param_annotations,
-                lock);
+                profile->flat_param_annotations);
         if (!signature) return nullptr;
 
         PyPtr program = steal(PyObject_CallMethod(
@@ -5231,7 +5204,7 @@ static PyObject* get_parameter_constraints_from_pyargs(PyObject* self, PyObject*
     PyPtr parameters = parse_parameter_constraints(
             helper->constants, helper->identity_constants,
             profile->family->param_kinds, profile->flat_param_annotations,
-            &minimum_cconv, lock);
+            &minimum_cconv);
     return parameters.release();
 }
 
