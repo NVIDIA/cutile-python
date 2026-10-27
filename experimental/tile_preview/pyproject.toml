@@ -8,7 +8,7 @@ requires = ["setuptools==84.0.0", "wheel"]
 
 [project]
 name = "cuda-tile-preview"
-dynamic = ["version"]
+dynamic = ["version", "dependencies"]
 description = "Preview APIs for cuda-tile"
 readme = { file = "README.md", content-type = "text/markdown" }
 authors = [
@@ -29,7 +29,6 @@ classifiers = [
     "Programming Language :: Python :: Implementation :: CPython",
     "Topic :: Software Development :: Compilers",
 ]
-dependencies = ["cuda-tile>=1.8.0"]
 
 [project.urls]
 Homepage = "https://github.com/nvidia/cutile-python"
