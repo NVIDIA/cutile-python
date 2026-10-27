@@ -6,6 +6,7 @@
 
 #pragma once
 
+#include "atomics.h"
 #include "check.h"
 #include "enums.h"
 #include "ref_ptr.h"

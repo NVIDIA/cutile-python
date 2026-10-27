@@ -4,6 +4,7 @@
 
 #include "tile_kernel.h"
 
+#include "atomics.h"
 #include "check.h"
 #include "compiled_host.h"
 #include "cuda_loader.h"
@@ -3114,7 +3115,7 @@ static PyObject* py_tensor_map_tiled(PyObject*, PyObject* args) {
             dtype, global_address,
             rank, shape.data(), strides.data(),
             tile_shape.data(), order.data(),
-            interleave, swizzle, l2_promotion, oob_fill, lock).release();
+            interleave, swizzle, l2_promotion, oob_fill).release();
 }
 
 
@@ -4317,7 +4318,7 @@ Result<NativeLaunchSite*> native_launch_site_create(
             lock);
     if (!profile) return ErrorRaised;
 
-    Result<const DriverApi*> driver_result = get_driver_api(lock);
+    Result<const DriverApi*> driver_result = get_driver_api();
     if (!driver_result.is_ok()) return ErrorRaised;
     const DriverApi* driver = *driver_result;
 
@@ -4583,7 +4584,7 @@ int32_t native_launch_site_launch(
     if (!validate_native_launch_config(config)) return -1;
 
     GlobalLock lock;
-    Result<const DriverApi*> driver_result = get_driver_api(lock);
+    Result<const DriverApi*> driver_result = get_driver_api();
     if (!driver_result.is_ok()) return -1;
     const DriverApi* driver = *driver_result;
     CUstream stream = reinterpret_cast<CUstream>(config.stream);
@@ -5133,7 +5134,7 @@ static PyObject* HostDispatcher_call(
         }
     }
 
-    Result<const DriverApi*> driver = get_driver_api(lock);
+    Result<const DriverApi*> driver = get_driver_api();
     if (!driver.is_ok()) return nullptr;
     if (!extract_cuda_args(
                 *driver,
@@ -5214,7 +5215,7 @@ static PyObject* get_parameter_constraints_from_pyargs(PyObject* self, PyObject*
             kernel_args, num_kernel_args, dispatcher, *helper, lock);
     if (!profile) return nullptr;
 
-    Result<const DriverApi*> driver = get_driver_api(lock);
+    Result<const DriverApi*> driver = get_driver_api();
     if (!driver.is_ok()) return nullptr;
 
     CallConvVersion requested_cconv = py_unwrap<CallingConvention>(cconv).version;
@@ -5438,7 +5439,7 @@ static PyObject* launch_impl(PyObject* const* args, Py_ssize_t nargs,
 
     CUlaunchAttribute launch_attrs[kMaxCUlaunchAttrs];
 
-    Result<const DriverApi*> driver = get_driver_api(lock);
+    Result<const DriverApi*> driver = get_driver_api();
     if (!driver.is_ok()) return nullptr;
 
     const auto num_attrs = with_block
@@ -5499,7 +5500,7 @@ static PyObject* cuda_tile_benchmark(PyObject* mod, PyObject* const* args, Py_ss
     if (!parse_launch_args(args, 4, BENCHMARK_SIGNATURE, false, &launch_args, lock))
         return nullptr;
 
-    Result<const DriverApi*> driver = get_driver_api(lock);
+    Result<const DriverApi*> driver = get_driver_api();
     if (!driver.is_ok()) return nullptr;
 
     CudaContextGuard ctx_guard(*driver);
@@ -5545,7 +5546,7 @@ static PyObject* cuda_tile_export_ipc_benchmark_payload(PyObject*, PyObject* con
                            &launch_args, lock))
         return nullptr;
 
-    Result<const DriverApi*> driver = get_driver_api(lock);
+    Result<const DriverApi*> driver = get_driver_api();
     if (!driver.is_ok()) return nullptr;
 
     CudaContextGuard ctx_guard(*driver);
@@ -5680,7 +5681,7 @@ static PyObject* cuda_tile_benchmark_with_ipc_payload(PyObject*, PyObject* const
         grid.dims[i] = payload.grid_dims[i];
     if (!validate_grid(grid)) return nullptr;
 
-    Result<const DriverApi*> driver = get_driver_api(lock);
+    Result<const DriverApi*> driver = get_driver_api();
     if (!driver.is_ok()) return nullptr;
 
     int device_id = payload.device_id;

@@ -8,7 +8,6 @@
 
 #include <cstddef>
 
-#include "atomics.h"
 #include "check.h"
 #include "hash_map.h"
 
@@ -171,30 +170,6 @@ RefPtr<T> newref(T* ptr) {
     reference_add(*ptr);
     return RefPtr<T>(ptr);
 }
-
-
-// A reference that is set at most once and is never released afterwards. Multiple threads may
-// race to compute the value: the first set() wins, and the other values are released.
-template <typename T>
-class OncePointer {
-    T* ptr_ = nullptr;  // Accessed atomically
-
-public:
-    // Returns a borrowed reference, or nullptr if not set yet
-    T* get() const {
-        return atomic_load_acquire(&ptr_);
-    }
-
-    // Stores `value` if not set yet. Otherwise, releases `value`.
-    // Returns a borrowed reference to the stored value.
-    T* set(RefPtr<T> value) {
-        CHECK(value);
-        T* expected = nullptr;
-        if (atomic_compare_exchange_acq_rel(&ptr_, &expected, value.get()))
-            return value.release();
-        return expected;
-    }
-};
 
 
 template <typename T>

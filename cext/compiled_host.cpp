@@ -203,7 +203,7 @@ PyObject* invoke_host_entry(
         return nullptr;
     }
     if (result != CUDA_SUCCESS) {
-        Result<const DriverApi*> driver_result = get_driver_api(lock);
+        Result<const DriverApi*> driver_result = get_driver_api();
         if (!driver_result.is_ok()) return nullptr;
         const DriverApi* driver = *driver_result;
         raise(PyExc_RuntimeError, "cuda error occurred: ",

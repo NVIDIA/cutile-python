@@ -27,8 +27,7 @@ PyPtr tensor_map_tiled(
         int interleave,
         int swizzle,
         int l2_promotion,
-        int oob_fill,
-        GlobalLock& lock);
+        int oob_fill);
 
 Result<uint32_t> tensor_map_data_type_bitwidth(CUtensorMapDataType dtype);
 

@@ -88,7 +88,6 @@ int main() {
     // Initialize Pyhton & CUDA
     Py_Initialize();
     CHECK(driver_api_init(&g_driver, load_libcuda()));
-    CHECK(g_driver.cuInit(0) == CUDA_SUCCESS);
     // Patch cuEventQuery() so that we can simulate uncompleted events
     orig_cuEventQuery = g_driver.cuEventQuery;
     g_driver.cuEventQuery = patched_cuEventQuery;

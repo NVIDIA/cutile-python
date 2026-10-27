@@ -332,11 +332,10 @@ enum : size_t {
 
 XLA_FFI_Error* cutile_call_instantiate(XLA_FFI_CallFrame* cf) {
     GILGuard g;
-    GlobalLock lock(g);
 #ifdef Py_GIL_DISABLED
     PyCriticalSectionGuard guard(&g_kernel_registry->m);
 #endif
-    Result<const DriverApi*> driver_result = get_driver_api(lock);
+    Result<const DriverApi*> driver_result = get_driver_api();
     if (!driver_result.is_ok())
         return xla_internal_error(cf->api, "CUDA driver not available.");
     const DriverApi* d = *driver_result;

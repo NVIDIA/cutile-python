@@ -4,6 +4,8 @@
 
 #pragma once
 
+#include "check.h"
+
 #if defined(_MSC_VER)
 #include <atomic>
 #endif
@@ -40,3 +42,29 @@ static inline bool atomic_compare_exchange_acq_rel(T* ptr, T* expected, T desire
                                        __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE);
 #endif
 }
+
+
+// A pointer that is set at most once and is never released afterwards. Multiple threads may
+// race to compute the value: the first set() wins, and the other values are released.
+// Accepts owning smart pointers, such as RefPtr<T> or std::unique_ptr<T>.
+template <typename T>
+class OncePointer {
+    T* ptr_ = nullptr;  // Accessed atomically
+
+public:
+    // Returns a borrowed reference, or nullptr if not set yet
+    T* get() const {
+        return atomic_load_acquire(&ptr_);
+    }
+
+    // Stores `value` if not set yet. Otherwise, releases `value`.
+    // Returns a borrowed reference to the stored value.
+    template <typename Ptr>
+    T* set(Ptr value) {
+        CHECK(value);
+        T* expected = nullptr;
+        if (atomic_compare_exchange_acq_rel(&ptr_, &expected, value.get()))
+            return value.release();
+        return expected;
+    }
+};

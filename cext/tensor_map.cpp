@@ -348,7 +348,7 @@ int32_t native_tensor_map_encode_tiled(
         }
         checked_tile_dimensions[i] = static_cast<uint32_t>(dim);
     }
-    Result<const DriverApi*> driver = get_driver_api(lock);
+    Result<const DriverApi*> driver = get_driver_api();
     if (!driver.is_ok()) return -1;
     if (!encode_tensor_map_tiled(
                 *driver,
@@ -563,8 +563,7 @@ PyPtr tensor_map_tiled(
         int interleave,
         int swizzle,
         int l2_promotion,
-        int oob_fill,
-        GlobalLock& lock) {
+        int oob_fill) {
 
     Result<CUtensorMapDataType> data_type = tensor_map_data_type_from_dtype(array_dtype);
     if (!data_type.is_ok()) return {};
@@ -583,7 +582,7 @@ PyPtr tensor_map_tiled(
         global_dimensions[i] = array_dimensions[axis];
         global_element_strides[i] = array_strides[axis];
     }
-    Result<const DriverApi*> driver = get_driver_api(lock);
+    Result<const DriverApi*> driver = get_driver_api();
     if (!driver.is_ok()) return {};
     if (!encode_tensor_map_tiled(
             *driver,
