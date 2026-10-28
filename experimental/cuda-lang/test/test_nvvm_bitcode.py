@@ -2,16 +2,39 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+import os
+from pathlib import Path
+
+import pytest
 import torch
 from torch.testing import assert_close
 
 from cuda.lang._compile import get_compute_capability
 from cuda.lang._compilers import get_nvvm_and_libdevice, PtxCompiler
 from cuda.lang._llvm_bitcode import BitcodeBuilder, DATALAYOUT_PTX, CallingConvention, Binop
-from cuda.tile._cext import TileDispatcher
+from cuda.tile._cext import NVVM, TileDispatcher
 
 from cuda.tile._annotated_function import LeafAnnotationNode
 import cuda.lang as cl
+
+
+@pytest.fixture(scope="module")
+def compiler_tools():
+    directory = os.getenv("CUDA_LANG_NVVM_COMPILER_DIR")
+    if not directory:
+        nvvm, libdevice = get_nvvm_and_libdevice()
+        return nvvm, libdevice, PtxCompiler.get()
+
+    # CI supplies matching tools separately from the installed cuda-lang wheel.
+    directory = Path(directory)
+    for name in ("libnvvm.so", "libdevice.10.bc", "ptxas"):
+        if not (directory / name).is_file():
+            raise FileNotFoundError(f"CUDA_LANG_NVVM_COMPILER_DIR is missing {name}: {directory}")
+    return (
+        NVVM(str(directory / "libnvvm.so")),
+        (directory / "libdevice.10.bc").read_bytes(),
+        PtxCompiler(str(directory / "ptxas")),
+    )
 
 
 def _make_a_plus_b_bitcode() -> bytes:
@@ -46,9 +69,9 @@ def _make_a_plus_b_bitcode() -> bytes:
     return builder.build()
 
 
-def test_a_plus_b():
+def test_a_plus_b(compiler_tools):
     bitcode = _make_a_plus_b_bitcode()
-    cubin = _bitcode_to_cubin(bitcode)
+    cubin = _bitcode_to_cubin(bitcode, compiler_tools)
 
     kernel = _HackKernel(cubin, "aplusb", 3)
     a = torch.ones(32, dtype=torch.float32, device="cuda:0")
@@ -95,9 +118,9 @@ def _make_inline_ptx_bitcode() -> bytes:
     return builder.build()
 
 
-def test_inline_ptx():
+def test_inline_ptx(compiler_tools):
     bitcode = _make_inline_ptx_bitcode()
-    cubin = _bitcode_to_cubin(bitcode)
+    cubin = _bitcode_to_cubin(bitcode, compiler_tools)
 
     kernel = _HackKernel(cubin, "aplusminusb", 3)
     a = torch.tensor([5], dtype=torch.float32, device="cuda")
@@ -113,16 +136,15 @@ def _make_builder() -> BitcodeBuilder:
     return builder
 
 
-def _bitcode_to_cubin(bitcode: bytes) -> bytes:
+def _bitcode_to_cubin(bitcode: bytes, compiler_tools) -> bytes:
     cc = get_compute_capability()
 
     # Compile bitcode to PTX using NVVM
-    nvvm, libdevice = get_nvvm_and_libdevice()
+    nvvm, libdevice, ptx_compiler = compiler_tools
     program = nvvm.create_program()
     program.add_module(bitcode, "main")
     program.add_module(libdevice, "libdevice")
     ptx = program.compile(["-arch=" + cc.arch])
-    ptx_compiler: PtxCompiler = PtxCompiler.get()
     cubin = ptx_compiler.compile(ptx, cc.gpu_name)
     return cubin
 
