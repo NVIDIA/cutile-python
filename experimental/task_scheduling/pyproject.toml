@@ -12,7 +12,7 @@ version = "0.0.1"
 description = "Experimental task scheduling for CUDA Lang"
 readme = "README.md"
 requires-python = ">=3.11, <3.16"
-dependencies = ["cuda-lang"]
+dependencies = ["cuda-tile"]
 
 [tool.setuptools]
 package-dir = {"" = "src"}
