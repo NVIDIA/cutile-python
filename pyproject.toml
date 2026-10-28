@@ -39,7 +39,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-tileiras = [ "cuda-toolkit[tileiras,nvcc,nvvm]>=13.2,<13.5" ]
+tileiras = [ "cuda-toolkit[tileiras,nvcc,nvvm]>=13.2,<13.6" ]
 
 [project.urls]
 Homepage = "https://github.com/nvidia/cutile-python"
