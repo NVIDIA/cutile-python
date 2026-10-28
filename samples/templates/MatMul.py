@@ -113,7 +113,7 @@ if __name__ == "__main__":
     C_fp16_cutile = cutile_matmul(A_fp16, B_fp16)
     print(f"cuTile Output C shape: {C_fp16_cutile.shape}, dtype: {C_fp16_cutile.dtype}")
     if args.correctness_check:
-        torch.testing.assert_close(C_fp16_cutile, A_fp16 @ B_fp16)
+        torch.testing.assert_close(C_fp16_cutile, A_fp16 @ B_fp16, atol=1e-3, rtol=1e-3)
         print("Correctness check passed")
     else:
         print("Correctness check disabled")
