@@ -5,8 +5,6 @@
 from dataclasses import dataclass
 from typing import Awaitable
 
-from cuda.tile._cext import run_coroutine
-
 
 # Replace `await foo()` with `await resume_after(foo())` to bypass the recursion limit.
 @dataclass
@@ -17,4 +15,4 @@ class resume_after:
         return (yield self.awaitable)
 
 
-__all__ = ["run_coroutine", "resume_after"]
+__all__ = ["resume_after"]

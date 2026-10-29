@@ -6,19 +6,21 @@ import ast
 import inspect
 import itertools
 import operator
+from collections import defaultdict
 from contextlib import contextmanager
+from dataclasses import dataclass
 from enum import Enum, auto
 from functools import lru_cache, cache
-from typing import List, NamedTuple, Sequence, Optional, Any, Dict, Type, Callable, Mapping
+from typing import List, NamedTuple, Sequence, Any, Dict, Type, Callable, Mapping
 
 from cuda.tile._exception import TileSyntaxError, Loc, FunctionDesc, make_static_exception
 from cuda.tile._execution import is_function_wrapper, stub_aliases
-from cuda.tile._ir.hir import make_value, ResolvedName, UNKNOWN_NAME
 from cuda.tile._ir import hir, hir_stubs
-from cuda.tile._ir.type import ClosureDefaultPlaceholder, FormattedPiece, StringFormat, \
-    StringFormatWithLocations
+from cuda.tile._ir.type import ClosureDefaultPlaceholder, FormattedPiece, StringFormat
 from cuda.tile._passes.ast_util import ast_get_all_local_names
 from cuda.tile._stub import static_eval, static_assert, static_iter, static_exception
+
+from cuda.tile._cext import HirBuilder, HirValue, HirLabel, HirStarred
 
 
 class HirMode(Enum):
@@ -82,8 +84,23 @@ def get_function_hir(pyfunc: Callable, mode: HirMode) -> hir.Function:
                    func_depth=0)
     signature = inspect.signature(pyfunc)
     ret = _get_function_hir_inner(signature, ctx)
-    _finalize_func(ret, 0, ())
+    _set_enclosing_local_names(ret, ())
     return ret
+
+
+# Resolved position of a named variable.
+#
+# If `depth` is less than the depth of the current function,
+# then this is a captured local variable of an enclosing function.
+# In this case, the local variable name can be found in
+# `hir.Function.enclosing_local_names[depth][index]`.
+#
+# If `depth` is equal to the depth of the current function, then this is a local variable.
+# In this case, the local variable name can be found in `hir.Function.local_names[index]`.
+@dataclass(frozen=True)
+class ResolvedName:
+    depth: int
+    index: int
 
 
 # Translate the 1-based line and 0-based column numbers of the chunk we passed to the
@@ -103,55 +120,35 @@ def _fix_line_and_column_numbers(tree: ast.AST, first_line: int):
             node.end_col_offset -= 1
 
 
-def _collect_local_loads(block: hir.Block, result: set[ResolvedName]) -> None:
-    # Collect the ResolvedName of every load_var that targets a local variable.
-    for call in block.calls:
-        if call.callee is hir_stubs.load_var:
-            rn = call.args[0]
-            if isinstance(rn, ResolvedName) and rn.depth >= 0:
-                result.add(rn)
-        for arg in call.args:
-            if isinstance(arg, hir.Block):
-                _collect_local_loads(arg, result)
-
-
-def _finalize_func(func: hir.Function, depth: int,
-                   enclosing_functions: tuple[hir.Function, ...]) -> set[ResolvedName]:
-    func.enclosing_funcs = enclosing_functions
-    new_enclosing = enclosing_functions + (func,)
-    accessed: set[ResolvedName] = set()
-    _collect_local_loads(func.body, accessed)
+def _set_enclosing_local_names(func: hir.Function,
+                               enclosing_local_names: tuple[tuple[str, ...], ...]):
+    func.enclosing_local_names = enclosing_local_names
+    new_enclosing = enclosing_local_names + (func.local_names,)
     for nested_func in func.nested_functions:
-        accessed |= _finalize_func(nested_func, depth + 1, new_enclosing)
-    func.captures_by_depth = tuple(
-        tuple(sorted({rn.index for rn in accessed if rn.depth == d}))
-        for d in range(depth)
-    )
-    return {rn for rn in accessed if rn.depth < depth}
+        _set_enclosing_local_names(nested_func, new_enclosing)
 
 
 def _get_function_hir_inner(signature: inspect.Signature, ctx: "_Context") -> hir.Function:
     func_def = ctx.function_ast
     assert isinstance(func_def, ast.FunctionDef | ast.Lambda)
-    body = _ast2hir(func_def, ctx)
+    _ast2hir(func_def, ctx)
     all_ast_args = _get_all_parameters(func_def, ctx)
     param_names = tuple(p.arg for p in all_ast_args)
     local_names = tuple(ctx._own_local_names)
-    frozen_global_names = tuple(sorted(ctx.frozen_globals.keys()))
-    frozen_global_values = tuple(ctx.frozen_globals[name] for name in frozen_global_names)
     return hir.Function(
         desc=ctx.function_desc,
-        body=body,
+        program=ctx._hir_builder.build(),
         signature=signature,
         local_names=local_names,
         param_local_indices=tuple(ctx.name_to_local_idx[name] for name in param_names),
         param_locs=tuple(ctx.get_loc(p) for p in all_ast_args),
-        frozen_global_names=frozen_global_names,
-        frozen_global_values=frozen_global_values,
-        value_id_upper_bound=next(ctx.value_id_sequence),
         nested_functions=tuple(ctx.nested_functions),
-        captures_by_depth=(),  # to be filled later
-        enclosing_funcs=(),  # to be filled later
+        captures_by_depth=tuple(
+            tuple(sorted({rn.index for rn in ctx.captured_rns if rn.depth == d}))
+            for d in range(ctx._func_depth)
+        ),
+        enclosing_local_names=(),  # to be filled later
+        stored_indices_by_block=dict(ctx.stored_indices_by_block),
     )
 
 
@@ -177,9 +174,6 @@ class _Context:
         self.mode = mode
         self.parent_loops: List[LoopKind] = []
         self.current_loc = Loc.unknown()
-        self.current_block: Optional[hir.Block] = None
-        self.value_id_sequence = itertools.count()
-        self.block_id_sequence = itertools.count()
         self.comp_acc_id_sequence = itertools.count()
         self.nested_functions = []
         # This function's depth in the nesting hierarchy.
@@ -192,12 +186,14 @@ class _Context:
         self.name_to_local_idx: dict[str, int] = {n: i for i, n in enumerate(sorted_own)}
         # ResolvedNames for names captured from outer scopes.
         self._outer_rns: dict[str, ResolvedName] = outer_rns or {}
-        # Index map for frozen globals: name → index into frozen_global_names.
-        self._frozen_global_idx: dict[str, int] = {
-            n: i for i, n in enumerate(sorted(frozen_globals.keys()))
-        }
-        # Indices of comprehension induction variables(excluded from stored_indices).
+        # Outer-scope variables loaded by this function or its nested functions
+        self.captured_rns: set[ResolvedName] = set()
+        # Indices of comprehension induction variables (excluded from stored_indices_by_block).
         self._comp_induction_indices: set[int] = set()
+        self._hir_builder = HirBuilder(self._get_body_loc(function_ast))
+        self._cur_block = self._hir_builder.start_label()
+        self.stored_indices_by_block = defaultdict(set)
+        self.has_yield = False
 
     def new_comp_induction_index(self, name: str) -> int:
         # Allocate a non-phi local index for a comprehension induction variable.
@@ -212,9 +208,6 @@ class _Context:
         self._own_local_names.append(name)
         self.name_to_local_idx[name] = idx
 
-    def make_value(self) -> hir.Value:
-        return make_value(next(self.value_id_sequence))
-
     @contextmanager
     def change_loc(self, loc: ast.AST | Loc):
         old = self.current_loc
@@ -225,64 +218,123 @@ class _Context:
             self.current_loc = old
 
     @contextmanager
-    def new_block(self, params: Sequence[hir.Value] = ()):
-        block_id = next(self.block_id_sequence)
-        new_block = hir.Block(block_id, tuple(params), calls=[], have_result=False, result=None,
-                              jump=None, jump_loc=Loc.unknown(),
-                              stored_indices=set(), loc=self.current_loc)
-        old = self.current_block
-        self.current_block = new_block
+    def new_block(self):
+        old_label = self._cur_block
+        new_label = self._hir_builder.begin_block(self.current_loc)
+        self._cur_block = new_label
         try:
-            yield self.current_block
+            yield new_label
         finally:
-            self.current_block = old
+            self._hir_builder.end_block(self.current_loc)
+            self._cur_block = old_label
 
-        if old is not None:
-            old.stored_indices.update(new_block.stored_indices)
+        if old_label is not None:
+            self.stored_indices_by_block[old_label].update(self.stored_indices_by_block[new_label])
 
-    def call(self, callee, args, kwargs=()) -> hir.Value:
-        res = self.make_value()
-        self.current_block.calls.append(hir.Call(res, callee, args, kwargs, self.current_loc))
-        return res
+    def call(self, callee, args, kwargs=()) -> HirValue:
+        if not isinstance(callee, HirValue):
+            # A Python object, such as `operator.add`
+            callee = self._hir_builder.load_global(callee, self.current_loc)
+        return self._hir_builder.call(callee, args, kwargs, self.current_loc)
 
-    def call_void(self, callee, args, kwargs=()) -> None:
-        self.current_block.calls.append(hir.Call(None, callee, args, kwargs, self.current_loc))
+    def build_formatted_string(self, format: StringFormat, values) -> HirValue:
+        return self._hir_builder.build_formatted_string(format, tuple(values), self.current_loc)
 
-    def set_block_jump(self, jump: hir.Jump):
-        assert self.current_block.jump is None
-        self.current_block.jump = jump
-        self.current_block.jump_loc = self.current_loc
+    def build_tuple(self, items) -> HirValue:
+        return self._hir_builder.build_tuple(tuple(items), self.current_loc)
 
-    def set_block_jump_with_result(self, jump: hir.Jump, result: hir.Operand):
-        self.set_block_jump(jump)
-        self.current_block.result = result
-        self.current_block.have_result = True
+    def unpack(self, iterable, expected_len: int) -> HirValue:
+        return self._hir_builder.unpack(iterable, expected_len, self.current_loc)
 
-    def store(self, var_name: str, value: hir.Operand):
+    def make_closure(self, func_hir: hir.Function, default_values) -> HirValue:
+        return self._hir_builder.make_closure(func_hir, tuple(default_values), self.current_loc)
+
+    def static_eval(self, expr: hir.StaticEvalExpression, local_values) -> HirValue:
+        return self._hir_builder.static_eval(expr, tuple(local_values), self.current_loc)
+
+    def static_assert(self, condition, message_block: HirLabel) -> HirValue:
+        return self._hir_builder.static_assert(condition, message_block, self.current_loc)
+
+    def generator_yield(self, value: HirValue) -> HirValue:
+        return self._hir_builder.generator_yield(value, self.current_loc)
+
+    def is_in_nested_block(self) -> bool:
+        return self._cur_block != self._hir_builder.start_label()
+
+    def if_else(self, cond, then_block: HirLabel, else_block: HirLabel) -> HirValue:
+        return self._hir_builder.if_else(cond, then_block, else_block, self.current_loc)
+
+    # Static-only if: rejects dynamic conditions
+    def tuple_comp_if(self, cond, then_block: HirLabel) -> HirValue:
+        return self._hir_builder.tuple_comp_if(cond, then_block, self.current_loc)
+
+    # Infinite loop if `iterable` is not given
+    def loop(self, body: HirLabel, *iterable) -> HirValue:
+        return self._hir_builder.loop(body, *iterable, self.current_loc)
+
+    def static_foreach(self, body: HirLabel, items) -> HirValue:
+        return self._hir_builder.static_foreach(body, items, self.current_loc)
+
+    def is_ending_with_jump(self) -> bool:
+        return self._hir_builder.is_ending_with_jump()
+
+    # Pass zero or one result
+    def end_branch(self, *result):
+        assert not self.is_ending_with_jump()
+        self._hir_builder.end_branch(*result, self.current_loc)
+
+    def continue_(self):
+        assert not self.is_ending_with_jump()
+        self._hir_builder.continue_(self.current_loc)
+
+    def break_(self):
+        assert not self.is_ending_with_jump()
+        self._hir_builder.break_(self.current_loc)
+
+    def function_result(self, value: HirValue):
+        assert not self.is_ending_with_jump()
+        self._hir_builder.function_result(value, self.current_loc)
+
+    # Pass zero or one result
+    def return_(self, *result):
+        assert not self.is_ending_with_jump()
+        self._hir_builder.return_(*result, self.current_loc)
+
+    def store(self, var_name: str, value):
         index = self.name_to_local_idx.get(var_name)
         if index is None:
             raise self.syntax_error(
                 f"Cannot assign to '{var_name}':"
                 " assignment to a global or nonlocal variable is not supported")
-        rn = ResolvedName(self._func_depth, index)
-        self.call_void(hir_stubs.store_var, (rn, value))
+        self._hir_builder.store_local(index, value, self.current_loc)
         if index not in self._comp_induction_indices:
-            self.current_block.stored_indices.add(index)
+            self.stored_indices_by_block[self._cur_block].add(index)
 
-    def load(self, var_name: str) -> hir.Value:
+    def load(self, var_name: str) -> HirValue:
         if var_name in self.name_to_local_idx:
-            rn = ResolvedName(self._func_depth, self.name_to_local_idx[var_name])
+            return self._hir_builder.load_local(
+                    self._func_depth, self.name_to_local_idx[var_name], self.current_loc)
         elif var_name in self._outer_rns:
             rn = self._outer_rns[var_name]
-        elif var_name in self._frozen_global_idx:
-            rn = ResolvedName(-1, self._frozen_global_idx[var_name])
+            self.captured_rns.add(rn)
+            return self._hir_builder.load_local(rn.depth, rn.index, self.current_loc)
+        elif var_name in self.frozen_globals:
+            return self._hir_builder.load_global(self.frozen_globals[var_name], self.current_loc)
         else:
-            rn = UNKNOWN_NAME
-        return self.call(hir_stubs.load_var, (rn, var_name))
+            return self._hir_builder.load_undefined_variable(var_name, self.current_loc)
 
     def get_loc(self, node: ast.AST) -> Loc:
         return Loc(node.lineno, node.col_offset, self.filename,
                    node.end_lineno, node.end_col_offset, self.function_desc)
+
+    def _get_body_loc(self, func_def: ast.FunctionDef | ast.Lambda) -> Loc:
+        # A function's body is a list of statements; a lambda's body is a single expression
+        if isinstance(func_def.body, list):
+            first, last = func_def.body[0], func_def.body[-1]
+        else:
+            first = last = func_def.body
+        return Loc(first.lineno, first.col_offset, self.filename,
+                   last.end_lineno, last.end_col_offset, self.function_desc)
 
     def syntax_error(self, message: str, loc=None) -> TileSyntaxError:
         if loc is None:
@@ -320,7 +372,7 @@ def _is_builtin_tuple(expr: ast.expr, ctx: _Context) -> bool:
 
 
 @_register(_expr_handlers, ast.Call)
-def _call_expr(call: ast.Call, ctx: _Context) -> hir.Value:
+def _call_expr(call: ast.Call, ctx: _Context) -> HirValue:
     kwd_func = _parse_keyword_like_func(call.func, ctx)
     if kwd_func is not None:
         if kwd_func == "static_eval":
@@ -336,11 +388,11 @@ def _call_expr(call: ast.Call, ctx: _Context) -> hir.Value:
                     message = _call_static_eval(call.args[1],
                                                 hir.StaticEvalKind.STATIC_ASSERT_MESSAGE, ctx)
                 else:
-                    message = ""
-                ctx.set_block_jump_with_result(hir.Jump.END_BRANCH, message)
+                    message = HirValue("", ctx.current_loc)
+                ctx.end_branch(message)
             condition = _call_static_eval(call.args[0],
                                           hir.StaticEvalKind.STATIC_ASSERT_CONDITION, ctx)
-            return ctx.call(hir_stubs.do_static_assert, (condition, message_block))
+            return ctx.static_assert(condition, message_block)
         elif kwd_func == "static_iter":
             raise TileSyntaxError("static_iter() is only allowed as iterable in a `for` loop,"
                                   " i.e. `for i in static_iter(...)`")
@@ -354,7 +406,7 @@ def _call_expr(call: ast.Call, ctx: _Context) -> hir.Value:
                 and _is_builtin_tuple(call.func, ctx)):
             if len(call.args) == 0:
                 with ctx.change_loc(call):
-                    return ctx.call(hir_stubs.build_tuple, ())
+                    return ctx.build_tuple(())
             if (len(call.args) == 1
                     and isinstance(genexp := call.args[0], ast.GeneratorExp)):
                 with ctx.change_loc(call):
@@ -367,7 +419,7 @@ def _call_expr(call: ast.Call, ctx: _Context) -> hir.Value:
 
 
 def _call_static_eval(expr: ast.expr, kind: hir.StaticEvalKind, ctx: _Context,
-                      orig_raise: ast.Raise | None = None) -> hir.Value:
+                      orig_raise: ast.Raise | None = None) -> HirValue:
     # Wrap the `expr` as `lambda: expr`
     inner_lambda_ast = _wrap_in_lambda(expr, (), expr)
 
@@ -413,8 +465,7 @@ def _call_static_eval(expr: ast.expr, kind: hir.StaticEvalKind, ctx: _Context,
         final_callable = _eval_ast_expr(final_lambda_ast, ctx)
 
     loaded_locals = tuple(ctx.load(local_name) for local_name in used_locals)
-    return ctx.call(hir_stubs.do_static_eval,
-                    (hir.StaticEvalExpression(final_callable, kind), *loaded_locals))
+    return ctx.static_eval(hir.StaticEvalExpression(final_callable, kind), loaded_locals)
 
 
 def _make_return_stmt(expr: ast.expr) -> ast.Return:
@@ -528,7 +579,7 @@ def _is_cuda_module(value: ast.expr, ctx: _Context) -> bool:
 
 
 @_register(_expr_handlers, ast.Name)
-def _name_expr(name: ast.Name, ctx: Any) -> hir.Value:
+def _name_expr(name: ast.Name, ctx: Any) -> HirValue:
     if not isinstance(name.ctx, ast.Load):
         raise ctx.unsupported_syntax()
     return ctx.load(name.id)
@@ -539,7 +590,7 @@ _unary_map = {ast.Invert: operator.invert, ast.Not: operator.not_,
 
 
 @_register(_expr_handlers, ast.UnaryOp)
-def _unary_op(unary: ast.UnaryOp, ctx: _Context) -> hir.Value:
+def _unary_op(unary: ast.UnaryOp, ctx: _Context) -> HirValue:
     op_func = _unary_map.get(type(unary.op))
     if op_func is None:
         raise ctx.unsupported_syntax()
@@ -559,7 +610,7 @@ _binop_map = {
 
 
 @_register(_expr_handlers, ast.BinOp)
-def _binop_expr(binop: ast.BinOp, ctx: _Context) -> hir.Value:
+def _binop_expr(binop: ast.BinOp, ctx: _Context) -> HirValue:
     op_func = _binop_map.get(type(binop.op))
     if op_func is None:
         raise ctx.unsupported_syntax()
@@ -576,7 +627,7 @@ _cmp_map = {
 
 
 @_register(_expr_handlers, ast.Compare)
-def _compare_expr(cmp: ast.Compare, ctx: _Context) -> hir.Value:
+def _compare_expr(cmp: ast.Compare, ctx: _Context) -> HirValue:
     """
     cond = left $op0 comparator0 $op1 comparator1 $op2 comparator2
     -->
@@ -596,8 +647,7 @@ def _compare_expr(cmp: ast.Compare, ctx: _Context) -> hir.Value:
     return _compare_chain(cmp, 0, lhs, ctx)
 
 
-def _compare_chain(cmp: ast.Compare, index: int, lhs: hir.Value,
-                   ctx: _Context) -> hir.Value:
+def _compare_chain(cmp: ast.Compare, index: int, lhs: HirValue, ctx: _Context) -> HirValue:
     op_func0 = _cmp_map.get(type(cmp.ops[index]))
     if op_func0 is None:
         raise ctx.unsupported_syntax()
@@ -609,36 +659,34 @@ def _compare_chain(cmp: ast.Compare, index: int, lhs: hir.Value,
 
     with ctx.new_block() as then_block:
         cond_right = _compare_chain(cmp, index + 1, rhs, ctx)
-        ctx.set_block_jump_with_result(hir.Jump.END_BRANCH, cond_right)
+        ctx.end_branch(cond_right)
 
     with ctx.new_block() as else_block:
-        ctx.set_block_jump_with_result(hir.Jump.END_BRANCH, cond0)
+        ctx.end_branch(cond0)
 
-    return ctx.call(hir_stubs.if_else, (cond0, then_block, else_block))
+    return ctx.if_else(cond0, then_block, else_block)
 
 
 @_register(_expr_handlers, ast.Attribute)
-def _attribute_expr(attr: ast.Attribute, ctx: _Context) -> hir.Value:
+def _attribute_expr(attr: ast.Attribute, ctx: _Context) -> HirValue:
     value = _expr(attr.value, ctx)
     return ctx.call(getattr, (value, attr.attr))
 
 
 @_register(_expr_handlers, ast.Constant)
-def _constant_expr(node: ast.Constant, ctx: Any) -> Any:
+def _constant_expr(node: ast.Constant, ctx: _Context) -> HirValue:
     # We could just return node.value directly here, but we wrap the constant
-    # in a `identity` call in order to preserve location info.
-    return ctx.call(hir_stubs.identity, (node.value,))
+    # in a HirValue in order to preserve location info.
+    return HirValue(node.value, ctx.current_loc)
 
 
 @_register(_expr_handlers, ast.JoinedStr)
-def _fstring_expr(node: ast.JoinedStr, ctx: _Context) -> hir.Value:
+def _fstring_expr(node: ast.JoinedStr, ctx: _Context) -> HirValue:
     pieces = []
-    piece_locs = []
     var_hirs = []
     value_idx = 0
     for part in node.values:
         with ctx.change_loc(part):
-            piece_locs.append(ctx.current_loc)
             if isinstance(part, ast.Constant):
                 pieces.append(str(part.value))
             elif isinstance(part, ast.FormattedValue):
@@ -662,25 +710,24 @@ def _fstring_expr(node: ast.JoinedStr, ctx: _Context) -> hir.Value:
             else:
                 raise ctx.syntax_error("f-string: unsupported component")
     fmt = StringFormat(tuple(pieces))
-    fmt_with_locs = StringFormatWithLocations(fmt, tuple(piece_locs))
-    return ctx.call(hir_stubs.build_formatted_string, (fmt_with_locs, *var_hirs))
+    return ctx.build_formatted_string(fmt, var_hirs)
 
 
 @_register(_expr_handlers, ast.Tuple)
-def _tuple_expr(tup: ast.Tuple, ctx: _Context) -> hir.Value:
+def _tuple_expr(tup: ast.Tuple, ctx: _Context) -> HirValue:
     items = tuple(_starred_expr(x, ctx) for x in tup.elts)
-    return ctx.call(hir_stubs.build_tuple, items)
+    return ctx.build_tuple(items)
 
 
 @_register(_expr_handlers, ast.Subscript)
-def _subscript_expr(subscript: ast.Subscript, ctx: _Context) -> hir.Value:
+def _subscript_expr(subscript: ast.Subscript, ctx: _Context) -> HirValue:
     value = _expr(subscript.value, ctx)
     index = _expr(subscript.slice, ctx)
     return ctx.call(operator.getitem, (value, index))
 
 
 @_register(_expr_handlers, ast.Slice)
-def _slice_expr(slice_: ast.Slice, ctx: _Context) -> hir.Value:
+def _slice_expr(slice_: ast.Slice, ctx: _Context) -> HirValue:
     def get_var(x: ast.AST | None):
         return None if x is None else _expr(x, ctx)
     lower, upper, step = map(get_var, (slice_.lower, slice_.upper, slice_.step))
@@ -688,7 +735,7 @@ def _slice_expr(slice_: ast.Slice, ctx: _Context) -> hir.Value:
 
 
 @_register(_expr_handlers, ast.Lambda)
-def _lambda_expr(lamb: ast.Lambda, ctx: _Context) -> hir.Value:
+def _lambda_expr(lamb: ast.Lambda, ctx: _Context) -> HirValue:
     return _make_closure(lamb, ctx)
 
 
@@ -696,16 +743,16 @@ def _unsupported_expr(expr: ast.AST, ctx: _Context):
     raise ctx.unsupported_syntax()
 
 
-def _expr(expr: ast.expr, ctx: _Context) -> hir.Operand:
+def _expr(expr: ast.expr, ctx: _Context) -> HirValue:
     """Dispatch expression node to appropriate handler"""
     handler = _expr_handlers.get(type(expr), _unsupported_expr)
     with ctx.change_loc(expr):
         return handler(expr, ctx)
 
 
-def _starred_expr(expr: ast.expr, ctx: _Context) -> hir.Operand | hir.Starred:
+def _starred_expr(expr: ast.expr, ctx: _Context) -> HirValue | HirStarred:
     if isinstance(expr, ast.Starred):
-        return hir.Starred(_expr(expr.value, ctx))
+        return HirStarred(_expr(expr.value, ctx))
     else:
         return _expr(expr, ctx)
 
@@ -730,12 +777,12 @@ def _ann_assign_stmt(ann_assign: ast.AnnAssign, ctx: _Context) -> None:
         _do_assign(value, ann_assign.target, ctx)
 
 
-def _do_assign(value: hir.Operand, target, ctx: _Context):
+def _do_assign(value: HirValue, target, ctx: _Context):
     with ctx.change_loc(target):
         if isinstance(target, ast.Name):
             ctx.store(target.id, value)
         elif isinstance(target, ast.Tuple | ast.List):
-            value = ctx.call(hir_stubs.unpack, (value, len(target.elts)))
+            value = ctx.unpack(value, len(target.elts))
             for i, el in enumerate(target.elts):
                 item_var = ctx.call(operator.getitem, (value, i), )
                 _do_assign(item_var, el, ctx)
@@ -774,20 +821,20 @@ def _expr_stmt(expr: ast.Expr, ctx: _Context):
     _expr(expr.value, ctx)
 
 
-def _propagate_return(ctx: _Context, body_block):
+def _propagate_return(ctx: _Context, body_block: HirLabel):
     if ctx.mode != HirMode.HELPER_FUNCTION:
         return
-    if ctx.name_to_local_idx["$returning"] not in body_block.stored_indices:
+    if ctx.name_to_local_idx["$returning"] not in ctx.stored_indices_by_block[body_block]:
         return
     # In order to propagate an early return, insert the following:
     #    if $returning:
     #        break
     flag = ctx.load("$returning")
     with ctx.new_block() as then_block:
-        ctx.set_block_jump(hir.Jump.BREAK)
+        ctx.break_()
     with ctx.new_block() as else_block:
-        ctx.set_block_jump(hir.Jump.END_BRANCH)
-    ctx.call_void(hir_stubs.if_else, (flag, then_block, else_block))
+        ctx.end_branch()
+    ctx.if_else(flag, then_block, else_block)
 
 
 @_register(_stmt_handlers, ast.For)
@@ -798,25 +845,24 @@ def _for_stmt(stmt: ast.For, ctx: _Context):
     static_iter_expr = _get_static_iter_expr(stmt.iter, ctx)
     if static_iter_expr is None:
         kind = LoopKind.FOR
-        op = hir_stubs.loop
         iterable = _expr(stmt.iter, ctx)
     else:
         kind = LoopKind.STATIC_FOR
-        op = hir_stubs.static_foreach
         with ctx.change_loc(static_iter_expr):
             iterable = _call_static_eval(static_iter_expr,
                                          hir.StaticEvalKind.STATIC_ITER_ITERABLE, ctx)
 
     ctx.parent_loops.append(kind)
-    induction_var = ctx.make_value()
-    with ctx.new_block(params=(induction_var,)) as body_block:
-        _do_assign(induction_var, stmt.target, ctx)
-        _stmt_list(stmt.body, ctx)
-        if body_block.jump is None and static_iter_expr is None:
-            ctx.set_block_jump(hir.Jump.CONTINUE)
+    with ctx.new_block() as body_block:
+        _do_assign(body_block.block_parameter(ctx.get_loc(stmt.target)), stmt.target, ctx)
+        if not _stmt_list(stmt.body, ctx) and static_iter_expr is None:
+            ctx.continue_()
     ctx.parent_loops.pop()
 
-    ctx.call_void(op, (body_block, iterable))
+    if static_iter_expr is None:
+        ctx.loop(body_block, iterable)
+    else:
+        ctx.static_foreach(body_block, iterable)
     _propagate_return(ctx, body_block)
 
 
@@ -936,7 +982,7 @@ def _analyze_comprehension_generators(generators: list[ast.comprehension],
 
 
 def _static_tuple_comprehension(elt: ast.expr, generators: list[ast.comprehension],
-                                ctx: _Context) -> hir.Value:
+                                ctx: _Context) -> HirValue:
     if any(g.is_async for g in generators):
         raise ctx.syntax_error("async in tuple comprehension is not supported")
 
@@ -958,7 +1004,7 @@ def _static_tuple_comprehension(elt: ast.expr, generators: list[ast.comprehensio
 
     acc_name = f"$acc_{next(ctx.comp_acc_id_sequence)}"
     ctx.declare_local(acc_name)
-    empty_tuple = ctx.call(hir_stubs.build_tuple, ())
+    empty_tuple = ctx.build_tuple(())
     ctx.store(acc_name, empty_tuple)
 
     def wrap_gen(comp, static_iter_expr, inner, local_names_for_iterable,
@@ -975,23 +1021,22 @@ def _static_tuple_comprehension(elt: ast.expr, generators: list[ast.comprehensio
             # Reveal this generator's induction vars after evaluating the iterable.
             for n in induction_names:
                 ctx.name_to_local_idx[n] = induction_indices[n]
-            induction_var = ctx.make_value()
-            with ctx.new_block(params=(induction_var,)) as body_block:
-                _do_assign(induction_var, comp.target, ctx)
+            with ctx.new_block() as body_block:
+                _do_assign(body_block.block_parameter(ctx.get_loc(comp.target)), comp.target, ctx)
                 if comp.ifs:
                     cond = _bool_expr(_combine_ifs(comp.ifs), ctx)
                     with ctx.new_block() as then_block:
                         inner()
-                        ctx.set_block_jump(hir.Jump.END_BRANCH)
-                    ctx.call_void(hir_stubs.tuple_comp_if, (cond, then_block))
+                        ctx.end_branch()
+                    ctx.tuple_comp_if(cond, then_block)
                 else:
                     inner()
-            ctx.call_void(hir_stubs.static_foreach, (body_block, iterable))
+            ctx.static_foreach(body_block, iterable)
         return emit
 
     def emit_elt():
         elt_val = _expr(elt, ctx)
-        singleton = ctx.call(hir_stubs.build_tuple, (elt_val,))
+        singleton = ctx.build_tuple((elt_val,))
         old_acc = ctx.load(acc_name)
         new_acc = ctx.call(operator.add, (old_acc, singleton))
         ctx.store(acc_name, new_acc)
@@ -1015,7 +1060,7 @@ def _static_tuple_comprehension(elt: ast.expr, generators: list[ast.comprehensio
     return result
 
 
-def _bool_expr(expr: ast.AST, ctx: _Context) -> hir.Value:
+def _bool_expr(expr: ast.AST, ctx: _Context) -> HirValue:
     val = _expr(expr, ctx)
     with ctx.change_loc(expr):
         return ctx.call(bool, (val,))
@@ -1031,25 +1076,24 @@ def _while_stmt(stmt: ast.While, ctx: _Context):
         cond = _bool_expr(stmt.test, ctx)
 
         with ctx.new_block() as then_block:
-            ctx.set_block_jump(hir.Jump.END_BRANCH)
+            ctx.end_branch()
 
         with ctx.new_block() as else_block:
-            ctx.set_block_jump(hir.Jump.BREAK)
+            ctx.break_()
 
-        ctx.call_void(hir_stubs.if_else, (cond, then_block, else_block))
+        ctx.if_else(cond, then_block, else_block)
 
         ctx.parent_loops.append(LoopKind.WHILE)
-        _stmt_list(stmt.body, ctx)
-        if body_block.jump is None:
-            ctx.set_block_jump(hir.Jump.CONTINUE)
+        if not _stmt_list(stmt.body, ctx):
+            ctx.continue_()
         ctx.parent_loops.pop()
 
-    ctx.call_void(hir_stubs.loop, (body_block, None))
+    ctx.loop(body_block)
     _propagate_return(ctx, body_block)
 
 
 @_register(_expr_handlers, ast.BoolOp)
-def _boolop_expr(boolop: ast.BoolOp, ctx: _Context) -> hir.Value:
+def _boolop_expr(boolop: ast.BoolOp, ctx: _Context) -> HirValue:
     assert len(boolop.values) >= 2
     cond0 = _bool_expr(boolop.values[0], ctx)
 
@@ -1072,12 +1116,12 @@ def _boolop_expr(boolop: ast.BoolOp, ctx: _Context) -> hir.Value:
                 cond1 = _bool_expr(boolop, ctx)
             else:
                 cond1 = _bool_expr(boolop.values[1], ctx)
-            ctx.set_block_jump_with_result(hir.Jump.END_BRANCH, cond1)
+            ctx.end_branch(cond1)
 
         with ctx.new_block() as else_block:
-            ctx.set_block_jump_with_result(hir.Jump.END_BRANCH, cond0)
+            ctx.end_branch(cond0)
 
-        return ctx.call(hir_stubs.if_else, (cond0, then_block, else_block))
+        return ctx.if_else(cond0, then_block, else_block)
     elif isinstance(boolop.op, ast.Or):
         """
         cond = cond0() or cond1():
@@ -1090,7 +1134,7 @@ def _boolop_expr(boolop: ast.BoolOp, ctx: _Context) -> hir.Value:
             yield c1
         """
         with ctx.new_block() as then_block:
-            ctx.set_block_jump_with_result(hir.Jump.END_BRANCH, cond0)
+            ctx.end_branch(cond0)
 
         with ctx.new_block() as else_block:
             if len(boolop.values) > 2:
@@ -1098,34 +1142,47 @@ def _boolop_expr(boolop: ast.BoolOp, ctx: _Context) -> hir.Value:
                 cond1 = _bool_expr(boolop, ctx)
             else:
                 cond1 = _bool_expr(boolop.values[1], ctx)
-            ctx.set_block_jump_with_result(hir.Jump.END_BRANCH, cond1)
+            ctx.end_branch(cond1)
 
-        return ctx.call(hir_stubs.if_else, (cond0, then_block, else_block))
+        return ctx.if_else(cond0, then_block, else_block)
     else:
         raise ctx.unsupported_syntax()
 
 
 @_register(_expr_handlers, ast.IfExp)
-def _ifexp_expr(ifexp: ast.IfExp, ctx: _Context) -> hir.Value:
+def _ifexp_expr(ifexp: ast.IfExp, ctx: _Context) -> HirValue:
     cond = _bool_expr(ifexp.test, ctx)
 
     with ctx.new_block() as then_block:
         then_val = _expr(ifexp.body, ctx)
-        ctx.set_block_jump_with_result(hir.Jump.END_BRANCH, then_val)
+        ctx.end_branch(then_val)
 
     with ctx.new_block() as else_block:
         else_val = _expr(ifexp.orelse, ctx)
-        ctx.set_block_jump_with_result(hir.Jump.END_BRANCH, else_val)
+        ctx.end_branch(else_val)
 
-    return ctx.call(hir_stubs.if_else, (cond, then_block, else_block))
+    return ctx.if_else(cond, then_block, else_block)
 
 
 @_register(_expr_handlers, ast.Yield)
-def _yield_stmt(stmt: ast.Yield, ctx: _Context) -> None:
+def _yield_stmt(stmt: ast.Yield, ctx: _Context) -> HirValue:
     if ctx.mode != HirMode.GENERATOR_CONTEXT_MANAGER:
         raise ctx.unsupported_syntax()
-    value = None if stmt.value is None else _expr(stmt.value, ctx)
-    ctx.call(hir_stubs.generator_yield, (value,))
+    # GeneratorYield suspends the EvalBlock coroutine of the function body,
+    # so it can't be inside a nested block
+    if ctx.is_in_nested_block():
+        raise ctx.syntax_error("`yield` statement of a generator-based context manager"
+                               " must be placed outside of loops and conditional statements")
+    if ctx.has_yield:
+        raise ctx.syntax_error("Generator-based context manager must have one `yield` statement")
+    ctx.has_yield = True
+
+    # A bare `yield` is equivalent to `yield None`
+    if stmt.value is None:
+        value = HirValue(None, ctx.current_loc)
+    else:
+        value = _expr(stmt.value, ctx)
+    return ctx.generator_yield(value)
 
 
 @_register(_stmt_handlers, ast.If)
@@ -1133,30 +1190,28 @@ def _if_stmt(stmt: ast.If, ctx: _Context) -> None:
     cond = _bool_expr(stmt.test, ctx)
 
     with ctx.new_block() as then_block:
-        _stmt_list(stmt.body, ctx)
-        if then_block.jump is None:
-            ctx.set_block_jump(hir.Jump.END_BRANCH)
+        if not _stmt_list(stmt.body, ctx):
+            ctx.end_branch()
 
     with ctx.new_block() as else_block:
-        _stmt_list(stmt.orelse, ctx)
-        if else_block.jump is None:
-            ctx.set_block_jump(hir.Jump.END_BRANCH)
+        if not _stmt_list(stmt.orelse, ctx):
+            ctx.end_branch()
 
-    ctx.call_void(hir_stubs.if_else, (cond, then_block, else_block))
+    ctx.if_else(cond, then_block, else_block)
 
 
 @_register(_stmt_handlers, ast.Continue)
 def _continue_stmt(stmt: ast.Continue, ctx: _Context) -> None:
     if ctx.parent_loops and ctx.parent_loops[-1] is LoopKind.STATIC_FOR:
         raise ctx.syntax_error("Continue in a for loop with static_iter() is not supported")
-    ctx.set_block_jump(hir.Jump.CONTINUE)
+    ctx.continue_()
 
 
 @_register(_stmt_handlers, ast.Break)
 def _break_stmt(stmt: ast.Break, ctx: _Context) -> None:
     if ctx.parent_loops and ctx.parent_loops[-1] is LoopKind.STATIC_FOR:
         raise ctx.syntax_error("Break in a for loop with static_iter() is not supported")
-    ctx.set_block_jump(hir.Jump.BREAK)
+    ctx.break_()
 
 
 @_register(_stmt_handlers, ast.Return)
@@ -1164,15 +1219,18 @@ def _return_stmt(stmt: ast.Return, ctx: _Context) -> None:
     if ctx.parent_loops and ctx.parent_loops[-1] is LoopKind.STATIC_FOR:
         raise ctx.syntax_error("Returning from a for loop with static_iter() is not supported")
 
-    return_val = None if stmt.value is None else _expr(stmt.value, ctx)
+    if stmt.value is None:
+        return_val = HirValue(None, ctx.current_loc)
+    else:
+        return_val = _expr(stmt.value, ctx)
     if ctx.mode == HirMode.ENTRY_POINT:
-        ctx.set_block_jump_with_result(hir.Jump.RETURN, return_val)
+        ctx.return_(return_val)
     elif ctx.mode == HirMode.GENERATOR_CONTEXT_MANAGER:
         raise ctx.syntax_error("Returning from a generator-based context manager is not supported")
     else:
         ctx.store("$retval", return_val)
-        ctx.store("$returning", True)
-        ctx.set_block_jump(hir.Jump.BREAK)
+        ctx.store("$returning", HirValue(True, ctx.current_loc))
+        ctx.break_()
 
 
 @_register(_stmt_handlers, ast.With)
@@ -1194,7 +1252,7 @@ def _pass_stmt(stmt: ast.Pass, ctx: _Context) -> None:
     pass
 
 
-def _make_closure(node: ast.FunctionDef | ast.Lambda, ctx: _Context) -> hir.Value:
+def _make_closure(node: ast.FunctionDef | ast.Lambda, ctx: _Context) -> HirValue:
     signature, default_exprs = _signature_from_ast_arguments(node.args)
     default_values = tuple(_expr(x, ctx) for x in default_exprs)
     name = None if isinstance(node, ast.Lambda) else node.name
@@ -1221,9 +1279,12 @@ def _make_closure(node: ast.FunctionDef | ast.Lambda, ctx: _Context) -> hir.Valu
                        own_locals=new_locals)
 
     func_hir = _get_function_hir_inner(signature, new_ctx)
+    # Variables that the nested function captures from outside of the current function
+    # are also captured by the current function
+    ctx.captured_rns.update(rn for rn in new_ctx.captured_rns if rn.depth < ctx._func_depth)
 
     ctx.nested_functions.append(func_hir)
-    return ctx.call(hir_stubs.make_closure, (func_hir, *default_values))
+    return ctx.make_closure(func_hir, default_values)
 
 
 @_register(_stmt_handlers, ast.FunctionDef)
@@ -1286,19 +1347,14 @@ def _stmt(stmt: ast.AST, ctx: _Context) -> None:
         handler(stmt, ctx)
 
 
-def _stmt_list(statements: Sequence[ast.stmt], ctx: _Context):
-    statements = iter(statements)
+# Returns True if the statement list ends with a jump ("continue"/"break"/"return")
+def _stmt_list(statements: Sequence[ast.stmt], ctx: _Context) -> bool:
     for stmt in statements:
         _stmt(stmt, ctx)
-        if ctx.current_block.jump is not None:
-            break
-
-    # Process "dead" statements, i.e. the ones after a jump ("continue"/"break"/"return").
-    # We still need to look at them in order to figure out the set of local variables.
-    # So create a throwaway block to store these into.
-    with ctx.new_block():
-        for stmt in statements:
-            _stmt(stmt, ctx)
+        if ctx.is_ending_with_jump():
+            # Skip the "dead" statements after the jump
+            return True
+    return False
 
 
 def _get_all_parameters(func_def: ast.FunctionDef | ast.Lambda, ctx: _Context) -> List[ast.arg]:
@@ -1321,15 +1377,16 @@ def _get_all_parameters(func_def: ast.FunctionDef | ast.Lambda, ctx: _Context) -
     return all_args
 
 
-def _ast2hir(func_def: ast.FunctionDef | ast.Lambda, ctx: _Context) -> hir.Block:
-    with ctx.change_loc(func_def), ctx.new_block() as root_block:
+def _ast2hir(func_def: ast.FunctionDef | ast.Lambda, ctx: _Context):
+    with ctx.change_loc(func_def):
         if ctx.mode in (HirMode.ENTRY_POINT, HirMode.GENERATOR_CONTEXT_MANAGER):
             assert isinstance(func_def, ast.FunctionDef)
-            _stmt_list(func_def.body, ctx)
+            ends_with_jump = _stmt_list(func_def.body, ctx)
+
             # Add a Return jump to the root block if it doesn't have one
-            if root_block.jump is None and ctx.mode != HirMode.GENERATOR_CONTEXT_MANAGER:
+            if not ends_with_jump and ctx.mode != HirMode.GENERATOR_CONTEXT_MANAGER:
                 with ctx.change_loc(Loc.unknown()):
-                    ctx.set_block_jump(hir.Jump.RETURN)
+                    ctx.return_()
         elif isinstance(func_def, ast.FunctionDef):
             # To enable early returns in a helper function, wrap the body in a loop.
             # Thus, we can use "break" to implement the return statement.
@@ -1337,18 +1394,13 @@ def _ast2hir(func_def: ast.FunctionDef | ast.Lambda, ctx: _Context) -> hir.Block
                 if special not in ctx.name_to_local_idx:
                     ctx.declare_local(special)
             with ctx.new_block() as body_block:
-                ctx.store("$returning", False)
-                _stmt_list(func_def.body, ctx)
-                if body_block.jump is None:
-                    ctx.store("$retval", None)
-                    ctx.set_block_jump(hir.Jump.BREAK)
+                ctx.store("$returning", HirValue(False, ctx.current_loc))
+                if not _stmt_list(func_def.body, ctx):
+                    ctx.store("$retval", HirValue(None, ctx.current_loc))
+                    ctx.break_()
 
-            ctx.call_void(hir_stubs.loop, (body_block, None))
-            root_block.result = ctx.load("$retval")
-            root_block.have_result = True
+            ctx.loop(body_block)
+            ctx.function_result(ctx.load("$retval"))
         else:
             assert isinstance(func_def, ast.Lambda)
-            root_block.result = _expr(func_def.body, ctx)
-            root_block.have_result = True
-
-    return root_block
+            ctx.function_result(_expr(func_def.body, ctx))

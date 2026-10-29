@@ -222,6 +222,11 @@ class LangTypingHooks(TypingHooks):
         return StreamTy()
 
     @override
+    def can_printf(self, ty: TensorLikeTy) -> bool:
+        # Vectors, pointers etc. are formatted by the str() implementations in printing_impl.py
+        return not isinstance(ty, VectorTy | PointerTy | ScalarTy | OpaqueTy)
+
+    @override
     def get_python_constant_type(self, value) -> Type | None:
         from cuda.lang._execution import host_entry, kernel
 

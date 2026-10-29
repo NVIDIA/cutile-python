@@ -22,6 +22,8 @@ public:
         kZeroDivisionError,
         kIndexError,
         kNotImplementedError,
+        kSyntaxError,
+        kInternalError,
     };
 
     Error(OK_t) : data_(0) {}

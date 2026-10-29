@@ -8,9 +8,9 @@
 #include "dtype.h"
 #include "enums.h"
 #include "error.h"
+#include "hir.h"
 #include "tile_kernel.h"
 #include "cuda_helper.h"
-#include "coroutine_util.h"
 #include "xla_ffi_py.h"
 #include "bitstream.h"
 #include "pynvvm.h"
@@ -45,9 +45,6 @@ static int module_exec(PyObject* m) {
     if (!cuda_helper_init(m))
         return -1;
 
-    if (!coroutine_util_init(m))
-        return -1;
-
     if (!tensor_map_init(m))
         return -1;
 
@@ -58,6 +55,9 @@ static int module_exec(PyObject* m) {
         return -1;
 
     if (!pynvvm_init(m))
+        return -1;
+
+    if (!hir_init(m))
         return -1;
 
     return 0;

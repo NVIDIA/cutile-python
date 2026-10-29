@@ -359,6 +359,7 @@ int64_t TensorBase::numel() const {
 class Value;
 struct SliceValue;
 struct TupleValue;
+struct DictValue;
 class DeletionQueue;
 
 
@@ -383,12 +384,14 @@ struct HeapValue {
     X(kPyTuple) /* Raw PyObject* tuple */ \
     X(kUserDefinedEnum) \
     X(kString) /* aka PyUnicode object */ \
+    X(kMiscIrVar) /* shim to interact with the existing hir2ir.py code */ \
     X(kUnsupportedPyObject) /* Any other Python object (delayed error) */
 
 // Parsed values that a Value can point to. They derive from HeapValue.
 #define FOREACH_HEAP_VALUE_TYPE(X) \
     X(kSliceValue, SliceValue) \
-    X(kTupleValue, TupleValue)
+    X(kTupleValue, TupleValue) \
+    X(kDictValue, DictValue)
 
 class BorrowedValue {
     friend class Value;
@@ -396,6 +399,7 @@ class BorrowedValue {
 
     enum Tag : uint8_t {
         kUndefined = 0,
+        kHirValueId,
 
         // Store supported enums as integers
         #define ENUM_TAG_ENTRY(name, _macro, _pymod) k##name,
@@ -422,21 +426,40 @@ public:
     };
 
 private:
-    Tag tag_;
-    void* pointer_;
+    // Same layout as Value::data_: the tag in the high 8 bits, the payload in the low 56 bits
+    uint64_t data_;
 
-    BorrowedValue(Tag tag, void* pointer) : tag_(tag), pointer_(pointer) {}
+    static uint64_t encode(Tag tag, void* pointer) {
+        return (static_cast<uint64_t>(tag) << 56) | reinterpret_cast<uint64_t>(pointer);
+    }
+
+    static Tag decode_tag(uint64_t data) {
+        return static_cast<Tag>(data >> 56);
+    }
+
+    template <typename T>
+    static T* decode_pointer(uint64_t data) {
+        return reinterpret_cast<T*>(data & 0x00ff'ffff'ffff'ffff);
+    }
+
+    explicit BorrowedValue(uint64_t data) : data_(data) {}
+
+    BorrowedValue(Tag tag, void* pointer) : data_(encode(tag, pointer)) {}
 
     BorrowedValue(Tag tag, uint32_t u32)
-        : tag_(tag), pointer_(reinterpret_cast<void*>(static_cast<uintptr_t>(u32))) {}
+        : data_((static_cast<uint64_t>(tag) << 56) | u32) {}
 
     template <typename T>
     BorrowedValue(HeapValue<T>* heap_value)
-        : tag_(static_cast<Tag>(T::kHeapValueTag)), pointer_(heap_value) {}
+        : data_(encode(static_cast<Tag>(T::kHeapValueTag), heap_value)) {}
+
+    Tag tag() const {
+        return decode_tag(data_);
+    }
 
     template <typename T>
     T* pointer() const {
-        return static_cast<T*>(pointer_);
+        return decode_pointer<T>(data_);
     }
 
     PyObject* pyobject() const {
@@ -444,7 +467,7 @@ private:
     }
 
     uint32_t u32() const {
-        return reinterpret_cast<uintptr_t>(pointer_);
+        return static_cast<uint32_t>(data_);
     }
 
     template <typename E> struct DelayedStaticAssertFail;
@@ -461,6 +484,10 @@ private:
     }
 
 public:
+    static BorrowedValue from_raw_data(uint64_t data) {
+        return BorrowedValue(data);
+    }
+
     static BorrowedValue from_pybool(PyObject* pyobj) {
         return BorrowedValue(kBoolConstant, pyobj);
     }
@@ -477,12 +504,46 @@ public:
         return BorrowedValue(kTensor, tensor);
     }
 
+    static BorrowedValue from_misc_ir_var(PyObject* var) {
+        return BorrowedValue(kMiscIrVar, var);
+    }
+
+    bool is_misc_ir_var() const {
+        return tag() == kMiscIrVar;
+    }
+
+    PyObject* as_misc_ir_var() const {
+        CHECK(is_misc_ir_var());
+        return pyobject();
+    }
+
+    static BorrowedValue undefined() {
+        return BorrowedValue(kUndefined, nullptr);
+    }
+
+    bool is_undefined() const {
+        return tag() == kUndefined;
+    }
+
     static BorrowedValue none() {
         return BorrowedValue(kNone, Py_None);
     }
 
+    static BorrowedValue hir_value_id(uint32_t value_id) {
+        return BorrowedValue(kHirValueId, value_id);
+    }
+
+    bool is_hir_value_id() const {
+        return tag() == kHirValueId;
+    }
+
+    uint32_t as_hir_value_id() const {
+        CHECK(is_hir_value_id());
+        return u32();
+    }
+
     inline bool is_none() const {
-        return tag_ == kNone;
+        return tag() == kNone;
     }
 
     static BorrowedValue ellipsis() {
@@ -490,7 +551,7 @@ public:
     }
 
     inline bool is_ellipsis() const {
-        return tag_ == kEllipsis;
+        return tag() == kEllipsis;
     }
 
     static BorrowedValue not_implemented() {
@@ -506,7 +567,7 @@ public:
 
     template <typename E>
     bool is_enum() const {
-        return tag_ == enum_tag<E>();
+        return tag() == enum_tag<E>();
     }
 
     template <typename E>
@@ -534,7 +595,7 @@ public:
     }
 
     inline bool is_unsupported_pyobject() const {
-        return tag_ == kUnsupportedPyObject;
+        return tag() == kUnsupportedPyObject;
     }
 
     static BorrowedValue from_string(PyObject* pyobj) {
@@ -542,7 +603,7 @@ public:
     }
 
     inline bool is_string() const {
-        return tag_ == kString;
+        return tag() == kString;
     }
 
     inline PyObject* as_string() const {
@@ -553,7 +614,7 @@ public:
     static inline BorrowedValue from_tuple_value(TupleValue* tuple_value);
 
     inline NumericDTypeCategory loosely_typed_scalar_category() const {
-        switch (tag_) {
+        switch (tag()) {
         case kBoolConstant: return NumericDTypeCategory::Boolean;
         case kIntConstant: return NumericDTypeCategory::Integer;
         case kFloatConstant: return NumericDTypeCategory::Float;
@@ -563,15 +624,15 @@ public:
     }
 
     inline bool is_loosely_typed_scalar() const {
-        return tag_ == kBoolConstant || tag_ == kFloatConstant || tag_ == kIntConstant;
+        return tag() == kBoolConstant || tag() == kFloatConstant || tag() == kIntConstant;
     }
 
     inline bool is_loosely_typed_bool() const {
-        return tag_ == kBoolConstant;
+        return tag() == kBoolConstant;
     }
 
     inline bool is_loosely_typed_int() const {
-        return tag_ == kIntConstant;
+        return tag() == kIntConstant;
     }
 
     inline PyObject* as_loosely_typed_scalar() const {
@@ -580,7 +641,7 @@ public:
     }
 
     inline bool is_tensor() const {
-        return tag_ == kTensor;
+        return tag() == kTensor;
     }
 
     inline TensorBase* as_tensor() const {
@@ -598,22 +659,22 @@ public:
     }
 
     inline bool is_integer_tensor_like() const {
-        return tag_ == kIntConstant || (tag_ == kTensor && is_integer_dtype(tensor_dtype()));
+        return tag() == kIntConstant || (tag() == kTensor && is_integer_dtype(tensor_dtype()));
     }
 
     inline bool is_boolean_tensor_like() const {
-        return tag_ == kBoolConstant || (tag_ == kTensor && tensor_dtype() == k_bool_);
+        return tag() == kBoolConstant || (tag() == kTensor && tensor_dtype() == k_bool_);
     }
 
     // A Python float has the default float dtype (float32), which is unrestricted
     inline bool is_unrestricted_float_tensor_like() const {
-        return tag_ == kFloatConstant
-            || (tag_ == kTensor && is_unrestricted_float_dtype(tensor_dtype()));
+        return tag() == kFloatConstant
+            || (tag() == kTensor && is_unrestricted_float_dtype(tensor_dtype()));
     }
 
     // A slice may be stored either as a Python slice object or as a SliceValue
     inline bool is_slice() const {
-        return tag_ == kPySlice || tag_ == kSliceValue;
+        return tag() == kPySlice || tag() == kSliceValue;
     }
 
     // Parses a Python slice object on demand
@@ -621,11 +682,25 @@ public:
 
     // A tuple may be stored either as a Python tuple object or as a TupleValue
     inline bool is_tuple() const {
-        return tag_ == kPyTuple || tag_ == kTupleValue;
+        return tag() == kPyTuple || tag() == kTupleValue;
     }
 
     // Parses a Python tuple object on demand
     RefPtr<TupleValue> as_tuple() const;
+
+    // Work with either tuple representation. The items are borrowed from the tuple.
+    size_t tuple_size() const;
+    BorrowedValue tuple_item(size_t i) const;
+
+    const TupleValue& as_borrowed_tuple_value() const;
+
+    static inline BorrowedValue from_dict_value(DictValue* dict_value);
+
+    inline bool is_dict() const {
+        return tag() == kDictValue;
+    }
+
+    const DictValue& as_borrowed_dict_value() const;
 
     PyPtr to_pyobject() const;
 
@@ -651,28 +726,17 @@ class Value {
 
     uint64_t data_;
 
-    static uint64_t encode(BorrowedValue::Tag tag, void* pointer) {
-        return (static_cast<uint64_t>(tag) << 56) | reinterpret_cast<uint64_t>(pointer);
-    }
+    explicit Value(uint64_t data) : data_(data) {}
 
-    static BorrowedValue::Tag decode_tag(uint64_t data) {
-        return static_cast<BorrowedValue::Tag>(data >> 56);
-    }
-
-    template <typename T>
-    static T* decode_pointer(uint64_t data) {
-        return reinterpret_cast<T*>(data & 0x00ff'ffff'ffff'ffff);
-    }
-
-    Value(BorrowedValue::Tag tag, void* pointer) : data_(encode(tag, pointer)) {}
+    Value(BorrowedValue::Tag tag, void* pointer) : data_(BorrowedValue::encode(tag, pointer)) {}
 
     BorrowedValue::Tag tag() const {
-        return decode_tag(data_);
+        return BorrowedValue::decode_tag(data_);
     }
 
     template <typename T>
     T* pointer() const {
-        return decode_pointer<T>(data_);
+        return BorrowedValue::decode_pointer<T>(data_);
     }
 
     PyObject* pyobject() const {
@@ -721,13 +785,23 @@ public:
     }
 
     BorrowedValue borrow() const {
-        return BorrowedValue(tag(), pointer<void>());
+        return BorrowedValue(data_);
+    }
+
+    uint64_t release_raw_data() {
+        uint64_t ret = data_;
+        data_ = 0;
+        return ret;
     }
 
     PyPtr release_pyobject();
 
     static Value from_tensor(RefPtr<TensorBase>&& tensor) {
         return Value(BorrowedValue::kTensor, reinterpret_cast<PyObject*>(tensor.release()));
+    }
+
+    static Value none() {
+        return Value(BorrowedValue::kNone, Py_NewRef(Py_None));
     }
 
     static Value not_implemented() {
@@ -746,16 +820,23 @@ public:
         return Value(BorrowedValue::kTupleValue, tuple_value.release());
     }
 
+    static Value from_dict_value(RefPtr<DictValue>&& dict_value) {
+        return Value(BorrowedValue::kDictValue, dict_value.release());
+    }
+
     template <typename... Items>
     static inline Value pack_tuple(Items&&... items);
 };
 
+static_assert(sizeof(BorrowedValue) == sizeof(Value));
+static_assert(alignof(BorrowedValue) == alignof(Value));
+
 Value BorrowedValue::steal() const {
-    return Value(tag_, pointer_);
+    return Value(data_);
 }
 
 Value BorrowedValue::to_owned() const {
-    Value ret(tag_, pointer_);
+    Value ret(data_);
     ret.add_reference();
     return ret;
 }
@@ -771,6 +852,7 @@ template <typename T>
 void reference_remove(HeapValue<T>& obj) {
     if (obj.refcount.decrement()) delete static_cast<T*>(&obj);
 }
+
 
 // A slice whose start/stop/step are None values (see BorrowedValue::none()) if omitted
 struct SliceValue : HeapValue<SliceValue> {
@@ -803,8 +885,7 @@ struct TupleValue : HeapValue<TupleValue> {
     static constexpr BorrowedValue::HeapValueTag kHeapValueTag =
         BorrowedValue::HeapValueTag::kTupleValue;
 
-    // Creates a tuple of `size` undefined Values
-    static RefPtr<TupleValue> create(size_t size) {
+    static RefPtr<TupleValue> create_undefined(size_t size) {
         RefPtr<TupleValue> ret = allocate(size);
         Value* items = ret->items();
         for (size_t i = 0; i < size; ++i)
@@ -813,7 +894,7 @@ struct TupleValue : HeapValue<TupleValue> {
     }
 
     template <typename... Items>
-    static RefPtr<TupleValue> create(Items&&... items) {
+    static RefPtr<TupleValue> from_items(Items&&... items) {
         RefPtr<TupleValue> ret = allocate(sizeof...(Items));
         Value* value_items = ret->items();
         size_t i = 0;
@@ -884,6 +965,140 @@ private:
 
 static_assert(sizeof(TupleValue) % alignof(Value) == 0);
 
+// The keys of a DictValue: a sequence of distinct interned strings. The keys are stored
+// in the same allocation, right after the header, like a flexible array member in C.
+struct DictStringKeys : SimpleRefcount<DictStringKeys> {
+    // Creates a DictStringKeys with null keys, to be populated by the caller
+    static RefPtr<DictStringKeys> create(size_t size) {
+        void* mem = xcalloc(1, sizeof(DictStringKeys) + size * sizeof(PyPtr));
+        DictStringKeys* ret = ::new (mem) DictStringKeys(size);
+        PyPtr* ret_keys = ret->keys();
+        for (size_t i = 0; i < size; ++i)
+            new (&ret_keys[i]) PyPtr();
+        return steal(ret);
+    }
+
+    DictStringKeys(const DictStringKeys&) = delete;
+    void operator=(const DictStringKeys&) = delete;
+
+    ~DictStringKeys() {
+        PyPtr* keys_ptr = keys();
+        for (size_t i = 0; i < size_; ++i)
+            keys_ptr[i].~PyPtr();
+    }
+
+    // Use create() instead. Deleting goes through operator delete below, since the memory
+    // was allocated with xcalloc().
+    static void* operator new(size_t) = delete;
+    static void operator delete(void* p) {
+        mem_free(p);
+    }
+
+    size_t size() const {
+        return size_;
+    }
+
+    PyPtr* keys() {
+        return reinterpret_cast<PyPtr*>(this + 1);
+    }
+
+    const PyPtr* keys() const {
+        return reinterpret_cast<const PyPtr*>(this + 1);
+    }
+
+    PyPtr& operator[] (size_t i) {
+        return keys()[i];
+    }
+
+    const PyPtr& operator[] (size_t i) const {
+        return keys()[i];
+    }
+
+private:
+    explicit DictStringKeys(size_t size) : size_(size) {}
+
+    size_t size_;
+};
+
+static_assert(sizeof(DictStringKeys) % alignof(PyPtr) == 0);
+
+// A dict with string keys. The keys are stored in a separate DictStringKeys object,
+// and the values are stored in the same allocation, right after the header.
+struct DictValue : HeapValue<DictValue> {
+    static constexpr BorrowedValue::HeapValueTag kHeapValueTag =
+        BorrowedValue::HeapValueTag::kDictValue;
+
+    static RefPtr<DictValue> create_undefined(RefPtr<DictStringKeys> keys) {
+        size_t size = keys->size();
+        void* mem = xcalloc(1, sizeof(DictValue) + size * sizeof(Value));
+        DictValue* ret = ::new (mem) DictValue(std::move(keys));
+        Value* values_ptr = ret->values();
+        for (size_t i = 0; i < size; ++i)
+            new (&values_ptr[i]) Value();
+        return steal(ret);
+    }
+
+    DictValue(const DictValue&) = delete;
+    void operator=(const DictValue&) = delete;
+
+    ~DictValue() {
+        Value* values_ptr = values();
+        for (size_t i = 0; i < size(); ++i)
+            values_ptr[i].~Value();
+    }
+
+    // Use create_undefined() instead. Deleting goes through operator delete below,
+    // since the memory was allocated with xcalloc().
+    static void* operator new(size_t) = delete;
+    static void operator delete(void* p) {
+        mem_free(p);
+    }
+
+    size_t size() const {
+        return keys_->size();
+    }
+
+    const DictStringKeys& keys() const {
+        return *keys_;
+    }
+
+    // Returns a borrowed reference
+    PyObject* key(size_t i) const {
+        return (*keys_)[i].get();
+    }
+
+    Value* values() {
+        return reinterpret_cast<Value*>(this + 1);
+    }
+
+    const Value* values() const {
+        return reinterpret_cast<const Value*>(this + 1);
+    }
+
+    const Value& value(size_t i) const {
+        return values()[i];
+    }
+
+    // Returns a new Python dict object. Unlike with tuples, it is not cached,
+    // since Python dicts are mutable.
+    inline PyPtr to_pyobject();
+
+private:
+    explicit DictValue(RefPtr<DictStringKeys> keys) : keys_(std::move(keys)) {}
+
+    inline PyPtr create_pyobject();
+
+    void release(DeletionQueue* queue) {
+        for (size_t i = 0; i < size(); ++i)
+            values()[i].release(queue);
+    }
+
+    friend class DeletionQueue;
+    RefPtr<DictStringKeys> keys_;
+};
+
+static_assert(sizeof(DictValue) % alignof(Value) == 0);
+
 BorrowedValue BorrowedValue::from_slice_value(SliceValue* slice_value) {
     return BorrowedValue(slice_value);
 }
@@ -892,18 +1107,22 @@ BorrowedValue BorrowedValue::from_tuple_value(TupleValue* tuple_value) {
     return BorrowedValue(tuple_value);
 }
 
+BorrowedValue BorrowedValue::from_dict_value(DictValue* dict_value) {
+    return BorrowedValue(dict_value);
+}
+
 template <typename... Items>
 Value Value::pack_tuple(Items&&... items) {
-    return from_tuple_value(TupleValue::create(std::forward<Items>(items)...));
+    return from_tuple_value(TupleValue::from_items(std::forward<Items>(items)...));
 }
 
 // Slices and tuples may be nested arbitrarily deep, so the conversions below are guarded
 // against unbounded recursion, like CPython's repr() of containers
 PyPtr SliceValue::to_pyobject() {
     if (!cached_pyobject_) {
-        if (Py_EnterRecursiveCall(" while converting a slice to a Python object")) return {};
+        RecursionGuard guard(" while converting a slice to a Python object");
+        if (!guard) return {};
         cached_pyobject_ = create_pyobject();
-        Py_LeaveRecursiveCall();
         if (!cached_pyobject_) return {};
     }
     return cached_pyobject_;
@@ -921,9 +1140,9 @@ PyPtr SliceValue::create_pyobject() {
 
 PyPtr TupleValue::to_pyobject() {
     if (!cached_pyobject_) {
-        if (Py_EnterRecursiveCall(" while converting a tuple to a Python object")) return {};
+        RecursionGuard guard(" while converting a tuple to a Python object");
+        if (!guard) return {};
         cached_pyobject_ = create_pyobject();
-        Py_LeaveRecursiveCall();
         if (!cached_pyobject_) return {};
     }
     return cached_pyobject_;
@@ -940,39 +1159,66 @@ PyPtr TupleValue::create_pyobject() {
     return tuple;
 }
 
+PyPtr DictValue::to_pyobject() {
+    RecursionGuard guard(" while converting a dict to a Python object");
+    if (!guard) return {};
+    return create_pyobject();
+}
+
+PyPtr DictValue::create_pyobject() {
+    PyPtr dict = steal(PyDict_New());
+    if (!dict) return {};
+    for (size_t i = 0; i < size(); ++i) {
+        PyPtr value = values()[i].borrow().to_pyobject();
+        if (!value) return {};
+        if (PyDict_SetItem(dict.get(), key(i), value.get()) < 0) return {};
+    }
+    return dict;
+}
+
 Status value_module_init(PyObject* m);
 
 // Appends the slice like Python's repr(), e.g. "slice(1, None, None)"
 static inline int append_to_string_builder(const SliceValue& slice, StringBuilder* sb) {
-    if (Py_EnterRecursiveCall(" while getting the repr of a slice")) return -1;
+    RecursionGuard guard(" while getting the repr of a slice");
+    if (!guard) return -1;
     sb->append("slice(");
-    int status = slice.start.borrow().append_repr_to_builder(sb);
-    if (status == 0) {
-        sb->append(", ");
-        status = slice.stop.borrow().append_repr_to_builder(sb);
-    }
-    if (status == 0) {
-        sb->append(", ");
-        status = slice.step.borrow().append_repr_to_builder(sb);
-    }
+    if (slice.start.borrow().append_repr_to_builder(sb) < 0) return -1;
+    sb->append(", ");
+    if (slice.stop.borrow().append_repr_to_builder(sb) < 0) return -1;
+    sb->append(", ");
+    if (slice.step.borrow().append_repr_to_builder(sb) < 0) return -1;
     sb->append(")");
-    Py_LeaveRecursiveCall();
-    return status;
+    return 0;
 }
 
 // Appends the tuple like Python's repr(), e.g. "(1, 2)" or "(4,)"
 static inline int append_to_string_builder(const TupleValue& tuple, StringBuilder* sb) {
-    if (Py_EnterRecursiveCall(" while getting the repr of a tuple")) return -1;
+    RecursionGuard guard(" while getting the repr of a tuple");
+    if (!guard) return -1;
     sb->append("(");
-    int status = 0;
-    for (size_t i = 0; i < tuple.size() && status == 0; ++i) {
+    for (size_t i = 0; i < tuple.size(); ++i) {
         if (i > 0) sb->append(", ");
-        status = tuple[i].borrow().append_repr_to_builder(sb);
+        if (tuple[i].borrow().append_repr_to_builder(sb) < 0) return -1;
     }
     if (tuple.size() == 1) sb->append(",");
     sb->append(")");
-    Py_LeaveRecursiveCall();
-    return status;
+    return 0;
+}
+
+// Appends the dict like Python's repr(), e.g. "{'a': 1, 'b': 2}"
+static inline int append_to_string_builder(const DictValue& dict, StringBuilder* sb) {
+    RecursionGuard guard(" while getting the repr of a dict");
+    if (!guard) return -1;
+    sb->append("{");
+    for (size_t i = 0; i < dict.size(); ++i) {
+        if (i > 0) sb->append(", ");
+        sb->append_pyobject_repr(dict.key(i));
+        sb->append(": ");
+        if (dict.values()[i].borrow().append_repr_to_builder(sb) < 0) return -1;
+    }
+    sb->append("}");
+    return 0;
 }
 
 // Prints the value's repr(), e.g. raise(PyExc_IndexError, "Vector index ", key, ...)
@@ -998,3 +1244,9 @@ static inline int append_to_string_builder(UseType u, StringBuilder* sb) {
     u.value.append_type_name_to_builder(sb);
     return 0;
 }
+
+bool is_tensor_pytype(PyTypeObject* pytype);
+PyPtr tensor_to_ir_var(TensorBase* tensor);
+
+BorrowedValue borrowed_value_from_pyobject(PyObject* pyobj);
+

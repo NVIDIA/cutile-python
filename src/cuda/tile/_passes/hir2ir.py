@@ -12,26 +12,24 @@ from typing import Sequence, Mapping, Callable
 
 from .ast2hir import get_function_hir, HirMode
 from .. import TileTypeError
-from .._coroutine_util import resume_after, run_coroutine
 from .._dispatch_mode import StaticEvalMode
-from .._exception import Loc, FunctionDesc, TileInternalError, TileError, TileRecursionError, \
+from .._exception import Loc, FunctionDesc, TileError, TileRecursionError, \
     TileValueError, UnsupportedCallError, UnsupportedSyntaxError, \
     exception_type_and_str, StaticException
 from .._execution import is_function_allowed_in, is_stub, is_static_def, stub_aliases
 from .._ir.hir import StaticEvalKind
-from .._ir import hir, ir, hir_stubs
+from .._ir import hir, ir
 from .._ir.ir import Var, IRContext, Builder
 from .._ir.op_impl import ImplRegistry
-from .._ir.control_flow_ops import end_branch, return_, continue_, break_
 from .._ir.core_ops import (
     loosely_typed_const, build_tuple, sym2var, store_var, build_dict, dataclass_new
 )
 from .._ir.arithmetic_ops import dtype_constructor
-from .._ir.scope import Scope, LocalScope, IntMap
+from .._ir.scope import Scope, LocalScope
 from .._ir.type import FunctionTy, BoundMethodTy, DTypeConstructor, ClosureTy, \
-    ClosureDefaultPlaceholder, TypeTy, TupleTy, BoundMethodValue, TupleValue, \
-    ClosureValue, DictTy, DictValue, var2sym, DataclassTy, StringFormatWithLocations
+    ClosureDefaultPlaceholder, TypeTy, BoundMethodValue, ClosureValue, var2sym, DataclassTy
 from .._ir.typing_support import get_signature, get_dataclass_info, find_method
+from cuda.tile._cext import hir_run, HirFrame, HirLabel, HirGeneratorYielded, hir_eval_block
 
 MAX_RECURSION_DEPTH = 1000
 
@@ -40,7 +38,7 @@ def hir2ir(func_hir: hir.Function,
            param_aggregate_vars: Sequence[ir.Var],
            ir_ctx: IRContext):
     # Run as a coroutine using a software stack, so that we don't exceed Python's recursion limit.
-    run_coroutine(_hir2ir_coroutine(func_hir, param_aggregate_vars, ir_ctx))
+    hir_run(_hir2ir_coroutine(func_hir, param_aggregate_vars, ir_ctx), ir_ctx.log_ir_on_error)
 
 
 async def _hir2ir_coroutine(
@@ -55,7 +53,7 @@ async def _hir2ir_coroutine(
     ir_builder = ir.Builder.get_current()
     with scope.make_current():
         try:
-            await _dispatch_hir_block_inner(func_hir.body, ir_builder)
+            await hir_eval_block(scope.hir_frame, func_hir.program.start_label())
         except Exception as e:
             if ir_ctx.log_ir_on_error:
                 highlight_loc = e.loc if hasattr(e, 'loc') else None
@@ -69,8 +67,8 @@ def _create_scope(func_hir: hir.Function, ir_ctx: IRContext, call_site: Loc | No
                   parent_scopes: tuple[LocalScope, ...],
                   concrete_func_desc: FunctionDesc) -> Scope:
     local_scope = LocalScope(func_hir.local_names, ir_ctx)
-    return Scope(parent_scopes + (local_scope,), None, None, call_site, IntMap(), func_hir,
-                 concrete_func_desc=concrete_func_desc)
+    hir_frame = HirFrame(func_hir.program, call_site, concrete_func_desc)
+    return Scope(parent_scopes + (local_scope,), None, None, hir_frame, func_hir)
 
 
 def _create_scope_for_user_defined_helper(callee_hir: hir.Function, builder: ir.Builder,
@@ -91,180 +89,81 @@ def _concretize_func_desc(func_hir: hir.Function, ir_ctx: IRContext) -> Function
 
 
 def retarget_loc(loc: Loc, scope: Scope) -> Loc:
-    if loc.is_unknown():
-        return loc
-
     # Splice in the scope's call site and, if this loc belongs to the function
     # currently being inlined, swap in the per-specialization FunctionDesc so
     # emitted ops carry the right debug info.
     new_function = loc.function
     if loc.function is scope.func_hir.desc:
-        new_function = scope.concrete_func_desc
-    return dataclasses.replace(loc, function=new_function, call_site=scope.call_site)
+        new_function = scope.hir_frame.function_desc
+    return loc.retarget(scope.hir_frame.call_site_loc, new_function)
 
 
-async def dispatch_hir_block(block: hir.Block, cur_builder: ir.Builder | None = None):
-    if cur_builder is None:
-        cur_builder = ir.Builder.get_current()
-    await _dispatch_hir_block_inner(block, cur_builder)
-
-
-async def _dispatch_hir_block_inner(block: hir.Block, builder: ir.Builder, *,
-                                    start: int = 0,
-                                    suspend_at: int = -1):
-    cursor = start  # Pre-initialize to guarantee it's defined in the `except` block
+# Optionally, pass the block parameter (e.g. the loop induction variable)
+async def dispatch_hir_block(label: HirLabel, *block_parameter):
+    scope = Scope.get_current()
+    # If the block ends with a jump (e.g. `with cm(): continue`), the jump calls the exit callbacks
+    # of the context managers but leaves them on the stack, since they may still be active
+    # on other paths. Such context managers are discarded when we restore the stack here.
+    old_context_stack = scope.context_stack
+    scope.context_stack = list(old_context_stack)
     try:
-        scope = Scope.get_current()
-        for cursor in range(start, len(block.calls)):
-            call = block.calls[cursor]
-            if cursor == suspend_at:
-                return
-            loc = retarget_loc(call.loc, scope)
-            with _wrap_exceptions(loc), builder.change_loc(loc):
-                await _dispatch_call(call, scope)
-            if builder.is_terminated:
-                # The current block has been terminated, e.g. by flattening an if-else
-                # with a constant condition (`if True: break`).
-                return
-        cursor = len(block.calls)
-
-        loc = retarget_loc(block.jump_loc, scope)
-        with _wrap_exceptions(loc), builder.change_loc(loc):
-            await _dispatch_hir_jump(block, scope)
-    except Exception:
-        if builder.ir_ctx.log_ir_on_error:
-            hir_params = ", ".join(str(p) for p in block.params)
-            hir_lines = [str(c) for c in block.calls]
-            if block.jump is not None:
-                hir_lines.append(block.jump_str())
-            hir_str = "\n".join("{}{}".format("--> " if i == cursor else "    ", c)
-                                for i, c in enumerate(hir_lines))
-            print(f"==== HIR for ^{block.block_id}({hir_params}) ====\n{hir_str}\n",
-                  file=sys.stderr)
-        raise
+        return await hir_eval_block(scope.hir_frame, label, *block_parameter)
+    finally:
+        scope.context_stack = old_context_stack
 
 
-async def _dispatch_hir_jump(block: hir.Block, scope: Scope):
-    match block.jump:
-        case hir.Jump.END_BRANCH:
-            end_branch(_resolve_operand(block.result, scope) if block.have_result else None)
-        case hir.Jump.CONTINUE:
-            assert not block.have_result
-            await continue_()
-        case hir.Jump.BREAK:
-            assert not block.have_result
-            await break_()
-        case hir.Jump.RETURN:
-            await return_(_resolve_operand(block.result, scope) if block.have_result else None)
-        case None: pass
-        case _: assert False
-
-
-@contextmanager
-def _wrap_exceptions(loc: Loc):
-    with loc:
-        try:
-            yield
-        except TileError:
-            raise
-        except Exception as e:
-            raise TileInternalError(str(e)) from e
-
-
-async def _dispatch_call(hir_call: hir.Call, scope: Scope):
-    callee_var = _resolve_operand(hir_call.callee, scope)
-    args = []
-    for x in hir_call.args:
-        if isinstance(x, hir.Starred):
-            tup_var = _resolve_operand(x.value, scope)
-            assert isinstance(tup_var, Var)
-            tup_ty = tup_var.get_type()
-            if not isinstance(tup_ty, TupleTy):
-                raise TileTypeError(f"Expected a tuple after *, got {tup_ty}")
-            tup_value = tup_var.get_aggregate()
-            assert isinstance(tup_value, TupleValue)
-            args.extend(tup_value.items)
-        else:
-            args.append(_resolve_operand(x, scope))
-    kwargs = {}
-    for k, v in hir_call.kwargs:
-        resolved_val = _resolve_operand(v, scope)
-        if k is None:
-            assert isinstance(resolved_val, Var)
-            dict_ty = resolved_val.get_type()
-            if not isinstance(dict_ty, DictTy):
-                raise TileTypeError(f"Expected a dictionary after **, got {dict_ty}")
-            dict_value = resolved_val.get_aggregate()
-            assert isinstance(dict_value, DictValue)
-            for item_key, item_value in zip(dict_ty.keys, dict_value.values, strict=True):
-                kwargs[item_key] = item_value
-        else:
-            kwargs[k] = resolved_val
-    retval = await call(callee_var, args, kwargs)
-    if hir_call.result is not None and retval is not None:
-        scope.hir2ir_varmap[hir_call.result.id] = retval
-
-
+# Runs the generator function's body up to its `yield` statement.
+# Returns the generator's scope and the HirGeneratorYielded, which holds the yielded value
+# and can resume the rest of the body (see exit_generator_context_manager()).
 async def enter_generator_context_manager(generator_hir: hir.Function,
                                           args: tuple[Var, ...],
-                                          kwargs: dict[str, Var],
-                                          yield_idx: int) -> tuple[Var, Scope]:
+                                          kwargs: dict[str, Var]
+                                          ) -> tuple[Scope, HirGeneratorYielded]:
     arg_list = _bind_args(generator_hir.signature, generator_hir.desc.name, args, kwargs)
     builder = Builder.get_current()
+    _check_recursive_call(builder.loc)
     new_scope = _create_scope_for_user_defined_helper(generator_hir, builder)
-    await _call_user_defined(generator_hir, arg_list, Builder.get_current(),
-                             new_scope=new_scope, suspend_at=yield_idx)
-    yield_call = generator_hir.body.calls[yield_idx]
-    assert yield_call.callee == hir_stubs.generator_yield
-    [yielded_value] = yield_call.args
-    yielded_value = _resolve_operand(yielded_value, new_scope)
-    assert isinstance(yielded_value, Var)
-    return yielded_value, new_scope
+    with new_scope.make_current():
+        _store_args(generator_hir, arg_list)
+        result = await hir_eval_block(new_scope.hir_frame, generator_hir.program.start_label())
+
+    if not isinstance(result, HirGeneratorYielded):
+        raise TileTypeError("Expected a generator function,"
+                            " but no reachable `yield` statement has been found")
+    return new_scope, result
 
 
-async def exit_generator_context_manager(generator_hir: hir.Function,
-                                         scope: Scope,
-                                         yield_idx: int):
-    builder = Builder.get_current()
-    assert generator_hir.body.jump is None
+# May be called multiple times, once for each path that exits the context manager
+async def exit_generator_context_manager(scope: Scope, yielded: HirGeneratorYielded):
     with scope.make_current():
-        await resume_after(_dispatch_hir_block_inner(generator_hir.body, builder,
-                                                     start=yield_idx + 1))
+        await yielded.resume()
+
+
+# Calls store_var() to bind arguments to parameters
+def _store_args(callee_hir: hir.Function, arg_list: list[Var | tuple[Var, ...]]):
+    for arg, local_idx, param_loc in zip(arg_list, callee_hir.param_local_indices,
+                                         callee_hir.param_locs, strict=True):
+        if isinstance(arg, tuple):
+            # Handle the *vararg parameter
+            arg = build_tuple(arg)
+        elif isinstance(arg, dict):
+            arg = build_dict(tuple(arg.keys()), tuple(arg.values()))
+        store_var(local_idx, arg, param_loc)
 
 
 async def _call_user_defined(callee_hir: hir.Function,
                              arg_list: list[Var | tuple[Var, ...]],
                              builder: ir.Builder,
-                             new_scope: Scope | None = None,
-                             parent_scopes: tuple[LocalScope, ...] = (),
-                             *,
-                             suspend_at: int = -1) -> Var | None:
+                             parent_scopes: tuple[LocalScope, ...] = ()) -> Var:
     _check_recursive_call(builder.loc)
 
-    if new_scope is None:
-        new_scope = _create_scope_for_user_defined_helper(callee_hir, builder, parent_scopes)
+    new_scope = _create_scope_for_user_defined_helper(callee_hir, builder, parent_scopes)
     with new_scope.make_current():
-        # Call store_var() to bind arguments to parameters.
-        for arg, local_idx, param_loc in zip(arg_list, callee_hir.param_local_indices,
-                                             callee_hir.param_locs, strict=True):
-            if isinstance(arg, tuple):
-                # Handle the *vararg parameter
-                arg = build_tuple(arg)
-            elif isinstance(arg, dict):
-                arg = build_dict(tuple(arg.keys()), tuple(arg.values()))
-            store_var(local_idx, arg, param_loc)
+        _store_args(callee_hir, arg_list)
+        # The function body ends with a FunctionResult opcode (see _ast2hir())
+        retval = await hir_eval_block(new_scope.hir_frame, callee_hir.program.start_label())
 
-        # Dispatch the function body. Use resume_after() to break the call stack
-        # and make sure we stay within the Python's recursion limit.
-        await resume_after(_dispatch_hir_block_inner(callee_hir.body, builder,
-                                                     suspend_at=suspend_at))
-
-    if suspend_at >= 0:
-        return None
-
-    assert callee_hir.body.have_result
-    ret = freeze_closures_on_scope_exit(
-            new_scope.hir2ir_varmap[callee_hir.body.result.id], new_scope.local, builder)
+    ret = freeze_closures_on_scope_exit(retval, new_scope.local, builder)
     new_scope.local.mark_dead()
     return ret
 
@@ -335,11 +234,6 @@ async def _call_builtin(callee, impl, args, kwargs, builder: ir.Builder):
     if impl._is_coroutine:
         result = await result
 
-    if builder.is_terminated:
-        # The current block has been terminated, e.g. by flattening an if-else
-        # with a constant condition (`if True: break`). Ignore the `result` in this case.
-        return None
-
     # Map the result variable
     if result is None:
         result = loosely_typed_const(None)
@@ -368,6 +262,21 @@ def _try_find_function_impl(callee):
 
 
 _DTYPE_CONSTRUCTOR_SIGNATURE = inspect.signature(lambda x=0, /: None)
+
+
+# Implementation of GenericCall HIR opcode
+# Sets the builder's location to the given HIR location, retargeted to the current scope.
+# Used by the Python implementations of HIR opcodes.
+@contextmanager
+def change_hir_loc(loc: Loc):
+    builder = Builder.get_current()
+    with builder.change_loc(retarget_loc(loc, Scope.get_current())):
+        yield
+
+
+async def generic_call(callee_var: Var, args, kwargs, loc: Loc) -> Var | None:
+    with change_hir_loc(loc):
+        return await call(callee_var, args, kwargs)
 
 
 async def call(callee_var: Var, args, kwargs) -> Var | None:
@@ -433,15 +342,15 @@ def _get_closure_parent_scopes(ty: ClosureTy, val: ClosureValue,
     for live_scope in ty.captured_scopes:
         ret[live_scope.depth] = live_scope.local_scope
 
-    for depth, (func, frozen_local_indices, frozen_vars) in enumerate(
-                zip(ty.func_hir.enclosing_funcs,
+    for depth, (local_names, frozen_local_indices, frozen_vars) in enumerate(
+                zip(ty.func_hir.enclosing_local_names,
                     ty.func_hir.captures_by_depth,
                     val.frozen_captures_by_depth,
                     strict=True)):
         # Scope at this depth is either live or frozen (mutually exclusive)
         assert (frozen_vars is None) != (ret[depth] is None)
         if frozen_vars is not None:
-            ret[depth] = LocalScope.create_frozen(func.local_names, frozen_local_indices,
+            ret[depth] = LocalScope.create_frozen(local_names, frozen_local_indices,
                                                   frozen_vars, ir_ctx)
     return tuple(ret)
 
@@ -518,20 +427,6 @@ def _check_recursive_call(call_loc: Loc):
     if depth > MAX_RECURSION_DEPTH:
         raise TileRecursionError(f"Maximum recursion depth ({MAX_RECURSION_DEPTH}) reached"
                                  f" while inlining a function call")
-
-
-_ResolvedOperand = (Var | hir.Block | hir.Function
-                    | hir.StaticEvalExpression | StringFormatWithLocations | hir.ResolvedName)
-
-
-def _resolve_operand(x: hir.Operand, scope: Scope) -> _ResolvedOperand:
-    if isinstance(x, hir.Value):
-        return scope.hir2ir_varmap[x.id]
-    elif isinstance(x, hir.Block | hir.Function | hir.StaticEvalExpression
-                    | StringFormatWithLocations | hir.ResolvedName):
-        return x
-    else:
-        return sym2var(x, constant_only=True)
 
 
 def _bind_args(sig: inspect.Signature, func_name: str, args, kwargs,

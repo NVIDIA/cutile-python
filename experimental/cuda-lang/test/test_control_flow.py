@@ -152,17 +152,18 @@ def test_static_phi_int():
 
 def test_static_phi_float():
     @cl.function
-    def choose(flag: cl.Constant[int]):
+    def choose(flag: cl.Constant[int], x):
         if cl.ensure_constant(flag == 0):
-            return cl.float16(7.0)
+            return x
         else:
             cl.static_assert(False, "unsupported flag")
 
     @cl.kernel
-    def kernel(flag: cl.Constant[int], out):
-        out[0] = choose(flag)
+    def kernel(flag: cl.Constant[int], inp, out):
+        out[0] = choose(flag, inp[0])
 
-    sig = KernelSignature((0, make_symbolic_tensor((1,), cl.float16)))
+    sig = KernelSignature((0, make_symbolic_tensor((1,), cl.float16),
+                           make_symbolic_tensor((1,), cl.float16)))
     compile_kernel(kernel, signature=sig, assert_in_mlir="0x0000 : f16")
 
 

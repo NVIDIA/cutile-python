@@ -229,7 +229,7 @@ def get_function_ir(
         )
     parameter_names = function.signature.parameters.keys()
     with (
-        ir.TileBuilder(ctx, function.body.loc) as builder,
+        ir.TileBuilder(ctx, function.program.start_label().loc) as builder,
         cuda_lang_impl_registry.as_current(),
     ):
         params = _create_kernel_parameters(
@@ -239,7 +239,7 @@ def get_function_ir(
             ctx,
         )
         hir2ir(function, params.aggregate_vars, ctx)
-    func_body = ctx.make_block("entry", function.body.loc)
+    func_body = ctx.make_block("entry", function.program.start_label().loc)
     func_body.params = sum((vars for vars, _ in params.nonconstant_flat_vars), ())
     func_body.extend(builder.ops)
     return func_body
@@ -320,7 +320,7 @@ def compile_simt(
         func_hir = get_function_hir(function.pyfunc, mode=HirMode.ENTRY_POINT)
 
     if log_flags.log_hir:
-        _dump("HIR", func_hir.body)
+        _dump("HIR", func_hir.program)
 
     [signature] = signatures
     if signature.symbol is None:

@@ -48,6 +48,11 @@ class Loc:
     def with_call_site(self, call_site) -> "Loc":
         return dataclasses.replace(self, call_site=call_site)
 
+    def retarget(self, call_site: Optional["Loc"], function_desc: FunctionDesc) -> "Loc":
+        if self.is_unknown():
+            return self
+        return dataclasses.replace(self, function=function_desc, call_site=call_site)
+
     def __str__(self) -> str:
         if self.filename:
             return f"{self.filename}:{self.line}:{self.col}"
@@ -90,13 +95,13 @@ def format_location(loc: Loc, exc: Exception | None = None):
     pieces.reverse()
 
     if isinstance(exc, StaticEvalError) and exc.__cause__ is not None:
-        from cuda.tile._ir.static_eval_ops import do_static_eval_impl
+        from cuda.tile._ir.static_eval_ops import _do_static_eval
         from cuda.tile._passes.hir2ir import _call_static_def_function
         static_eval_traceback = exc.__cause__.__traceback__
         while static_eval_traceback is not None:
             frame = static_eval_traceback.tb_frame
             static_eval_traceback = static_eval_traceback.tb_next
-            if frame.f_code is do_static_eval_impl.__code__:
+            if frame.f_code is _do_static_eval.__code__:
                 break
             if frame.f_code is _call_static_def_function.__code__:
                 break

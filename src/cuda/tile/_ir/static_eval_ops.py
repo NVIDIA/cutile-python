@@ -4,10 +4,12 @@
 
 from cuda.tile import TileSyntaxError, TileError, TileStaticEvalError, \
     TileTypeError
+from cuda.tile._cext import HirLabel
 from cuda.tile._datatype import is_boolean
 from cuda.tile._dispatch_mode import StaticEvalMode
-from cuda.tile._exception import StaticAssertionError, StaticException, exception_type_and_str
-from cuda.tile._ir import hir_stubs, hir
+from cuda.tile._exception import Loc, StaticAssertionError, StaticException, \
+    exception_type_and_str
+from cuda.tile._ir import hir
 from cuda.tile._ir.core_ops import loosely_typed_const, build_tuple, sym2var
 from cuda.tile._ir.ir import Var
 from cuda.tile._ir.op_impl import ImplRegistry
@@ -49,9 +51,15 @@ def static_exception_impl(exc: Var):
                           " e.g. cuda.tile.static_exception() or ct.static_exception().")
 
 
-@impl(hir_stubs.do_static_eval)
-def do_static_eval_impl(expr: hir.StaticEvalExpression,
-                        local_var_values: tuple[Var, ...]) -> Var:
+# Implementation of the StaticEval HIR opcode
+def do_static_eval(expr: hir.StaticEvalExpression, local_var_values: tuple[Var, ...],
+                   loc: Loc) -> Var:
+    from cuda.tile._passes.hir2ir import change_hir_loc
+    with change_hir_loc(loc):
+        return _do_static_eval(expr, local_var_values)
+
+
+def _do_static_eval(expr: hir.StaticEvalExpression, local_var_values: tuple[Var, ...]) -> Var:
     local_proxies = tuple(var2sym(x) for x in local_var_values)
     with StaticEvalMode(expr.kind).as_current():
         try:
@@ -117,8 +125,14 @@ def _drain_static_iter_iterable(iterable) -> list[Var]:
     return items
 
 
-@impl(hir_stubs.do_static_assert)
-async def do_static_assert_impl(condition: Var, message_block: hir.Block) -> None:
+# Implementation of the StaticAssert HIR opcode
+async def do_static_assert(condition: Var, message_block: HirLabel, loc: Loc) -> None:
+    from cuda.tile._passes.hir2ir import change_hir_loc
+    with change_hir_loc(loc):
+        await _do_static_assert(condition, message_block)
+
+
+async def _do_static_assert(condition: Var, message_block: HirLabel) -> None:
     if not condition.is_constant():
         raise TileTypeError("static_assert() condition must be a compile-time constant")
 
@@ -141,17 +155,21 @@ async def do_static_assert_impl(condition: Var, message_block: hir.Block) -> Non
     raise StaticAssertionError(message)
 
 
-@impl(hir_stubs.static_foreach)
-async def static_foreach_impl(body: hir.Block, items: Var):
-    scope = Scope.get_current()
+# Implementation of the StaticForeach HIR opcode
+async def static_foreach(body: HirLabel, items: Var, loc: Loc):
+    from cuda.tile._passes.hir2ir import change_hir_loc
+    with change_hir_loc(loc):
+        await _static_foreach(body, items)
+
+
+async def _static_foreach(body: HirLabel, items: Var):
+    from .._passes.hir2ir import dispatch_hir_block
 
     tuple_val = items.get_aggregate()
     assert isinstance(tuple_val, TupleValue)
 
     for item in tuple_val.items:
-        scope.hir2ir_varmap[body.params[0].id] = item
-        from .._passes.hir2ir import dispatch_hir_block
-        await dispatch_hir_block(body)
+        await dispatch_hir_block(body, item)
 
 
 @impl(ct.ensure_constant)

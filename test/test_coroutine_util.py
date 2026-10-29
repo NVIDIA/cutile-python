@@ -2,7 +2,8 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-from cuda.tile._coroutine_util import resume_after, run_coroutine
+from cuda.tile._cext import hir_run
+from cuda.tile._coroutine_util import resume_after
 import pytest
 import traceback
 
@@ -16,7 +17,7 @@ async def series(n):
 
 def test_run_coroutine():
     n = 10000
-    res = run_coroutine(series(n))
+    res = hir_run(series(n))
     assert res == sum(range(n + 1))
 
 
@@ -28,7 +29,7 @@ async def raise_if_zero(n):
 
 def test_propagate_exception():
     with pytest.raises(ValueError, match="Hello"):
-        run_coroutine(raise_if_zero(5))
+        hir_run(raise_if_zero(5))
 
 
 async def raise_then_catch(n):
@@ -48,7 +49,7 @@ async def raise_then_catch(n):
 
 
 def test_raise_then_catch():
-    res = run_coroutine(raise_then_catch(4))
+    res = hir_run(raise_then_catch(4))
     assert res == 100 + 2 + 3 + 4
 
 
@@ -74,7 +75,7 @@ async def raise_then_catch_and_call_another(n):
 
 
 def test_raise_then_catch_and_call_another():
-    res = run_coroutine(raise_then_catch_and_call_another(4))
+    res = hir_run(raise_then_catch_and_call_another(4))
     assert res == 123 + 2 + 3 + 4
 
 
@@ -85,7 +86,7 @@ async def two_calls():
 
 
 def test_return_values():
-    res = run_coroutine(two_calls())
+    res = hir_run(two_calls())
     assert res == (1 + 2 + 3, 1 + 2 + 3 + 4)
 
 
@@ -99,7 +100,7 @@ async def call_leaf():
 
 def test_traceback_preserved():
     try:
-        run_coroutine(call_leaf())
+        hir_run(call_leaf())
     except ValueError as e:
         traceback.print_tb(e.__traceback__)
         frame_names = [f.name for f in traceback.extract_tb(e.__traceback__)]
@@ -123,9 +124,9 @@ async def call_weird_await():
 
 def test_unexpected_awaitable():
     try:
-        run_coroutine(call_weird_await())
+        hir_run(call_weird_await())
     except TypeError as e:
-        assert "Expected a continuation coroutine" in str(e)
+        assert "awaitable must be an EvalBlockAwaitable or a coroutine" in str(e)
         traceback.print_tb(e.__traceback__)
         frame_names = [f.name for f in traceback.extract_tb(e.__traceback__)]
         assert "call_weird_await" in frame_names
@@ -143,6 +144,6 @@ async def resume_after_call_weird_await(flag):
 def test_cleanup_after_internal_error():
     flag = [False]
     coro = resume_after_call_weird_await(flag)
-    with pytest.raises(TypeError, match="Expected a continuation coroutine"):
-        run_coroutine(coro)
+    with pytest.raises(TypeError, match="awaitable must be an EvalBlockAwaitable or a coroutine"):
+        hir_run(coro)
     assert flag[0] is True

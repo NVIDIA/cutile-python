@@ -267,7 +267,7 @@ def _compile(
     parameter_names = tuple(host_hir.signature.parameters)
     ctx = ir.IRContext(execution_space="host")
     with (
-        ir.TileBuilder(ctx, host_hir.body.loc) as builder,
+        ir.TileBuilder(ctx, host_hir.program.start_label().loc) as builder,
         cuda_lang_impl_registry.as_current(),
     ):
         parameters = _create_kernel_parameters(
@@ -277,7 +277,7 @@ def _compile(
             ctx,
         )
         hir2ir(host_hir, parameters.aggregate_vars, ctx)
-    host_body = ctx.make_block("host_entry", host_hir.body.loc)
+    host_body = ctx.make_block("host_entry", host_hir.program.start_label().loc)
     host_body.params = sum(
         (leaves for leaves, _ in parameters.nonconstant_flat_vars), ()
     )

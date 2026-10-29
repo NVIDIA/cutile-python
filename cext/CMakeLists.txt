@@ -57,12 +57,12 @@ set(cext_include_dirs
 add_library(_cext_static STATIC
     bitstream.cpp
     compiled_host.cpp
-    coroutine_util.cpp
     cuda_loader.cpp
     cuda_helper.cpp
     dtype.cpp
     enums.cpp
     error.cpp
+    hir.cpp
     ipc_util.cpp
     memory.cpp
     py.cpp

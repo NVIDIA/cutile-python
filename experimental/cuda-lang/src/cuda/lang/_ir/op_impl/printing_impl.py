@@ -2,10 +2,6 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-from cuda.tile._ir.core_ops import build_formatted_string as tile_build_formatted_string
-from cuda.tile._ir.type import FormattedPiece
-from cuda.tile._ir.type import StringFormatWithLocations
-from cuda.tile._ir import hir_stubs
 import builtins
 
 import cuda.lang._datatype as datatype
@@ -95,28 +91,3 @@ async def repr_tensorlike_impl(x: Var[TensorLikeTy]):
 @impl(str, overload=(VectorTy,))
 async def str_vector_impl(x: Var[VectorTy]):
     return await repr_vector(x)
-
-
-@impl(hir_stubs.build_formatted_string)
-async def build_formatted_string_impl(
-    format: StringFormatWithLocations,
-    values: tuple[Var, ...],
-) -> Var:
-    formatted_values = list(values)
-
-    for piece in format.format.pieces:
-        if not isinstance(piece, FormattedPiece):
-            continue
-        if piece.format_spec is not None:
-            continue
-
-        value = formatted_values[piece.value_idx]
-        value_type = value.get_type()
-
-        if isinstance(value_type, VectorTy | PointerTy | ScalarTy | OpaqueTy):
-            formatted_values[piece.value_idx] = await call_function(str, value)
-
-    return await tile_build_formatted_string(
-        format,
-        tuple(formatted_values),
-    )

@@ -34,3 +34,6 @@ void mem_free(void* p);
 #endif
 
 void mem_copy(void* RESTRICT dst, const void* RESTRICT src, size_t n);
+
+void mem_zero(void* dst, size_t n);
+

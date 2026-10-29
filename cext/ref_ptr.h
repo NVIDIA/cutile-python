@@ -138,6 +138,13 @@ public:
         return ptr_ != that.ptr_;
     }
 
+    void reset() {
+        if (ptr_) {
+            reference_remove(*ptr_);
+            ptr_ = nullptr;
+        }
+    }
+
     T* release() {
         T* ret = ptr_;
         ptr_ = nullptr;

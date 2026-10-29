@@ -287,7 +287,7 @@ def test_multiple_yields_diagnostic():
             append(x, 99)
 
     x = torch.zeros(8, dtype=torch.int32, device="cuda:0")
-    with pytest.raises(TileTypeError, match="must have one `yield` statement"):
+    with pytest.raises(TileSyntaxError, match="must have one `yield` statement"):
         ct.launch(torch.cuda.current_stream(), (1,), kern, (x,))
 
 
@@ -322,7 +322,7 @@ def test_yield_in_control_flow_diagnostic():
             append(x, 99)
 
     x = torch.zeros(8, dtype=torch.int32, device="cuda:0")
-    with pytest.raises(TileTypeError, match="outside of loops and conditional"):
+    with pytest.raises(TileSyntaxError, match="outside of loops and conditional"):
         ct.launch(torch.cuda.current_stream(), (1,), kern, (x,))
 
 

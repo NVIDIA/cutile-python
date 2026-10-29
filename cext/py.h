@@ -126,6 +126,16 @@ PyPtr py_create_object(PyTypeObject* type = &T::pytype) {
     return steal(ret);
 }
 
+template <typename T, typename... Args>
+PyPtr py_create_object_with_args(Args&&... args) {
+    PyObject* ret = T::pytype.tp_alloc(&T::pytype, 0);
+    if (!ret) return {};
+
+    T& obj = py_unwrap<T>(ret);
+    new (&obj) T(std::forward<Args>(args)...);
+    return steal(ret);
+}
+
 template <typename T>
 PyObject* pywrapper_new(PyTypeObject* type, PyObject*, PyObject*) {
     return py_create_object<T>(type).release();
@@ -566,6 +576,12 @@ struct SavedException {
         return bool(type);
     }
 
+    void clear() {
+        type.reset();
+        value.reset();
+        traceback.reset();
+    }
+
     void normalize() {
         PyObject* tmp_type = type.release();
         PyObject* tmp_value = value.release();
@@ -650,6 +666,27 @@ struct ErrorGuard {
                 PyException_SetContext(raised.value.get(), exc.value.release());
         }
         exc = std::move(raised);
+    }
+};
+
+// RAII wrapper for Py_EnterRecursiveCall()/Py_LeaveRecursiveCall(), e.g.
+//     RecursionGuard guard(" while converting a tuple to a Python object");
+//     if (!guard) return {};  // RecursionError is set
+class RecursionGuard {
+    bool entered_;
+
+public:
+    explicit RecursionGuard(const char* where) : entered_(Py_EnterRecursiveCall(where) == 0) {}
+
+    RecursionGuard(const RecursionGuard&) = delete;
+    void operator=(const RecursionGuard&) = delete;
+
+    ~RecursionGuard() {
+        if (entered_) Py_LeaveRecursiveCall();
+    }
+
+    explicit operator bool() const {
+        return entered_;
     }
 };
 

@@ -2,10 +2,11 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 import enum
-from typing import Any, Optional, Sequence, TypeAlias
+from typing import Any, Awaitable, Optional, Sequence, TypeAlias, overload
 
 from cuda.lang._enums import MemoryOrder, VectorReduction
 from cuda.tile._context import TileContextConfig
+from cuda.tile._exception import FunctionDesc, Loc
 from cuda.tile._memory_model import MemoryScope, MemorySpace
 from cuda.tile._numeric_semantics import RoundingMode
 
@@ -212,13 +213,6 @@ def _benchmark(stream: int,
                pyargs_tuples: tuple[tuple[Any, ...], ...],
                flush_l2: bool = True,
                /) -> float: ...
-
-
-def run_coroutine(coro):
-    """
-    Run a coroutine using a software stack to bypass the Python's recursion limit.
-    Use resume_after() to break the call chain and push a new frame to the software stack.
-    """
 
 
 def _export_ipc_benchmark_payload(stream: int,
@@ -1136,3 +1130,124 @@ def _binary_bitwise_tensorlike(fn: str, x: Any, y: Any, /) -> Any:
 
 def _bitwise_shift_tensorlike(fn: str, x: Any, y: Any, /) -> Any:
     ...
+
+
+class HirValue:
+    def __init__(self, value: Any, loc: Any, /): ...
+    @property
+    def loc(self) -> Any: ...
+
+
+class HirStarred:
+    def __init__(self, value: Any, /): ...
+
+
+class HirLabel:
+    def block_parameter(self, loc, /) -> HirValue: ...
+    def num_nested_jumps(self) -> int:
+        """The number of Continue, Break and Return opcodes inside the block, including those
+        nested in IfElse branches."""
+    def ends_with_break(self) -> bool:
+        """Whether the last instruction of the (closed) block is Break."""
+    @property
+    def loc(self) -> Any:
+        """The location of the block. For the start label, the location of the whole program."""
+    def __eq__(self, other: object, /) -> bool: ...
+    def __hash__(self) -> int: ...
+
+
+class HirProgram:
+    def block_str(self, label: HirLabel, /) -> str: ...
+    def start_label(self) -> HirLabel:
+        """Return the label of the whole program, which is not a nested block."""
+
+
+class HirBuilder:
+    def __init__(self, loc, /): ...
+    def call(self, callee, args, kwargs, loc, /) -> HirValue: ...
+    def load_local(self, depth: int, index: int, loc, /) -> HirValue: ...
+    def store_local(self, index: int, value: HirValue, loc, /) -> None: ...
+    def load_global(self, value: Any, loc, /) -> HirValue: ...
+    def load_undefined_variable(self, name: str, loc, /) -> HirValue: ...
+    def build_formatted_string(self, format: Any, values: tuple[HirValue, ...], loc, /
+                               ) -> HirValue: ...
+    def build_tuple(self, items: tuple[HirValue | HirStarred, ...], loc, /) -> HirValue: ...
+    def unpack(self, iterable: HirValue, expected_len: int, loc, /) -> HirValue: ...
+    def make_closure(self, func_hir: Any, default_values: tuple[HirValue, ...], loc, /
+                     ) -> HirValue: ...
+    def static_eval(self, expr: Any, local_values: tuple[HirValue, ...], loc, /) -> HirValue: ...
+    def static_assert(self, condition: HirValue, message_block: HirLabel, loc, /
+                      ) -> HirValue: ...
+    def generator_yield(self, value: HirValue, loc, /) -> HirValue: ...
+    def function_result(self, value: HirValue, loc, /) -> None: ...
+    def if_else(self, cond: HirValue, then_block: HirLabel, else_block: HirLabel, loc, /
+                ) -> HirValue: ...
+    def tuple_comp_if(self, cond: HirValue, then_block: HirLabel, loc, /) -> HirValue:
+        """Static-only if: rejects dynamic conditions."""
+    @overload
+    def loop(self, body: HirLabel, loc, /) -> HirValue:
+        """Infinite loop."""
+    @overload
+    def loop(self, body: HirLabel, iterable: HirValue, loc, /) -> HirValue: ...
+    def static_foreach(self, body: HirLabel, items: HirValue, loc, /) -> HirValue: ...
+    def start_label(self) -> HirLabel:
+        """Return the label of the whole program, which is not a nested block."""
+    def begin_block(self, loc, /) -> HirLabel: ...
+    def end_block(self, loc, /) -> None: ...
+
+    @overload
+    def end_branch(self, loc, /) -> None: ...
+    @overload
+    def end_branch(self, value: HirValue, loc, /) -> None: ...
+
+    def continue_(self, loc, /) -> None: ...
+    def break_(self, loc, /) -> None: ...
+
+    @overload
+    def return_(self, loc, /) -> None: ...
+    @overload
+    def return_(self, value: HirValue, loc, /) -> None: ...
+
+    def is_ending_with_jump(self) -> bool: ...
+    def build(self) -> HirProgram: ...
+
+
+class HirFrame:
+    def __init__(self, program: HirProgram, call_site_loc: Loc | None,
+                 function_desc: FunctionDesc, /): ...
+
+    @property
+    def call_site_loc(self) -> Loc | None: ...
+
+    @property
+    def function_desc(self) -> FunctionDesc: ...
+
+
+def hir_run(awaitable: Awaitable[Any], dump_hir_on_error: bool = False, /) -> Any: ...
+
+
+class HirBlockTerminated: ...
+
+
+HIR_BLOCK_TERMINATED: HirBlockTerminated
+
+
+class HirGeneratorYielded:
+    """The result of evaluating a block that executed GeneratorYield."""
+
+    @property
+    def value(self) -> Any:
+        """The yielded value."""
+
+    def resume(self) -> Awaitable[Any]:
+        """Return a new awaitable that evaluates the rest of the block after the GeneratorYield.
+        Can be called multiple times."""
+
+
+@overload
+def hir_eval_block(frame: HirFrame, label: HirLabel, /) -> Awaitable[Any]:
+    """Evaluate the block. The result is the last value computed in the block, or
+    a HirGeneratorYielded if the block executes GeneratorYield."""
+@overload
+def hir_eval_block(frame: HirFrame, label: HirLabel, block_parameter, /) -> Awaitable[Any]:
+    """Evaluate the block with the given parameter (e.g. the loop induction variable)."""

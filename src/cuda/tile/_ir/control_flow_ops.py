@@ -7,8 +7,9 @@ from typing import Sequence
 
 from typing_extensions import override
 
+from cuda.tile._cext import HirLabel, HirBlockTerminated, HIR_BLOCK_TERMINATED
 from cuda.tile._datatype import TileTypeError, int64, is_foreign_pointer_dtype, is_pointer_dtype
-from cuda.tile._ir import hir_stubs, hir
+from cuda.tile._exception import Loc
 from cuda.tile._ir.aggregate_support import flatten_block_parameters, expand_aggregate_var, \
     flatten_aggregate_types, flatten_aggregates, unflatten_aggregates
 from cuda.tile._ir.core_ops import store_var, store_invalid
@@ -112,13 +113,19 @@ def _undefined_retval(var: TrackedVar) -> bool:
             ty.reason is InvalidReason.UNDEFINED)
 
 
-@impl(hir_stubs.loop)
-async def loop_impl(body: hir.Block, iterable: Var):
+# Implementation of the Loop HIR opcode. `iterable` is None for an infinite loop.
+async def loop(body: HirLabel, iterable: Var | None, loc: Loc):
+    from .._passes.hir2ir import change_hir_loc
+    with change_hir_loc(loc):
+        await _loop(body, iterable)
+
+
+async def _loop(body: HirLabel, iterable: Var | None):
     from .._passes.hir2ir import dispatch_hir_block, retarget_loc
 
     scope = Scope.get_current()
-    range_ty = require_optional_range_type(iterable)
-    if range_ty is None and body.jump == hir.Jump.BREAK and not _have_nested_jump(body.calls):
+    range_ty = None if iterable is None else require_optional_range_type(iterable)
+    if range_ty is None and body.ends_with_break() and body.num_nested_jumps() == 1:
         # In ast2hir, we create a loop around the function body in order to support early returns.
         # But if there is no early return, we can remove the loop. In this case, the loop will only
         # have a "break" at the end of the loop body, and no other break/continue statements.
@@ -128,13 +135,14 @@ async def loop_impl(body: hir.Block, iterable: Var):
         return
 
     builder = Builder.get_current()
-    stored_locals = tuple(sorted(body.stored_indices))
+    stored_locals = tuple(sorted(scope.func_hir.stored_indices_by_block.get(body, set())))
     var_states = tuple(LoopVarState(PhiState(initial_constant_state=ConstantState.NONCONSTANT),
                                     PhiState(),
                                     scope.local.local_variable_name(local_idx))
                        for local_idx in stored_locals)
     initial_values = tuple(scope.local.get(index, builder.loc) for index in stored_locals)
     body_params = []
+    block_parameter = ()
 
     # Logic specific to `for` loops:
     if range_ty is not None:
@@ -146,8 +154,8 @@ async def loop_impl(body: hir.Block, iterable: Var):
         # Create an induction variable
         induction_var = builder.ir_ctx.make_temp()
         induction_var.set_type(builder.ir_ctx.typing_hooks.get_tensor_like_type(range_ty.dtype, ()))
-        scope.hir2ir_varmap[body.params[0].id] = induction_var
         body_params.append(induction_var)
+        block_parameter = (induction_var,)
 
     # Process the loop body
     loop_info = ControlFlowInfo(stored_locals)
@@ -167,8 +175,8 @@ async def loop_impl(body: hir.Block, iterable: Var):
 
         flat_body_vars = flatten_block_parameters(body_vars)
 
-        # Dispatch the body (hir.Block) to populate the new_body (ir.Block) with Operations
-        await dispatch_hir_block(body)
+        # Dispatch the HIR body block to populate the new_body (ir.Block) with Operations
+        await dispatch_hir_block(body, *block_parameter)
 
     # Propagate type information from Continue/Break to body/result phis
     for jump_info in loop_info.jumps:
@@ -277,15 +285,6 @@ async def loop_impl(body: hir.Block, iterable: Var):
         builder.block_restriction.validate_operation(Loop)
 
 
-def _have_nested_jump(calls: Sequence[hir.Call]) -> bool:
-    return any(
-        block.jump != hir.Jump.END_BRANCH or _have_nested_jump(block.calls)
-        for c in calls
-        if c.callee is hir_stubs.if_else
-        for block in c.args[1:]
-    )
-
-
 @dataclass(eq=False)
 class IfElse(Operation, opcode="ifelse"):
     cond: Var = operand()
@@ -314,8 +313,16 @@ class IfElse(Operation, opcode="ifelse"):
         return f"if(cond={self.cond})"
 
 
-@impl(hir_stubs.if_else)
-async def if_else_impl(cond: Var, then_block: hir.Block, else_block: hir.Block) -> Var | None:
+# Implementation of the IfElse HIR opcode
+async def if_else(cond: Var, then_block: HirLabel, else_block: HirLabel,
+                  loc: Loc) -> Var | HirBlockTerminated | None:
+    from .._passes.hir2ir import change_hir_loc
+    with change_hir_loc(loc):
+        return await _if_else(cond, then_block, else_block)
+
+
+async def _if_else(cond: Var, then_block: HirLabel,
+                   else_block: HirLabel) -> Var | HirBlockTerminated | None:
     from .._passes.hir2ir import dispatch_hir_block, retarget_loc
 
     require_bool_scalar_type(cond)
@@ -330,7 +337,9 @@ async def if_else_impl(cond: Var, then_block: hir.Block, else_block: hir.Block) 
     # Get the total number of results by adding the number of stored variables.
     # Note: we sort the stored variable indices to make the order deterministic.
     scope = Scope.get_current()
-    stored_locals = tuple(sorted(then_block.stored_indices | else_block.stored_indices))
+    stored_indices_by_block = scope.func_hir.stored_indices_by_block
+    stored_locals = tuple(sorted(stored_indices_by_block.get(then_block, set())
+                                 | stored_indices_by_block.get(else_block, set())))
 
     # Convert the "then" branch from HIR to IR
     info = ControlFlowInfo(stored_locals)
@@ -351,7 +360,7 @@ async def if_else_impl(cond: Var, then_block: hir.Block, else_block: hir.Block) 
         info = ControlFlowInfo(())
         with enter_nested_block(else_loc) as new_else_block, scope.change_if_else_info(info), \
                 scope.local.enter_branch():
-            end_branch(None)
+            _end_branch(None)
         add_operation_variadic(IfElse, (),
                                cond=cond, then_block=new_then_block, else_block=new_else_block)
         return await _flatten_branch(else_block)
@@ -418,8 +427,14 @@ async def if_else_impl(cond: Var, then_block: hir.Block, else_block: hir.Block) 
     return ret
 
 
-@impl(hir_stubs.tuple_comp_if)
-async def tuple_comp_if_impl(cond: Var, then_block: hir.Block) -> None:
+# Implementation of the TupleCompIf HIR opcode
+async def tuple_comp_if(cond: Var, then_block: HirLabel, loc: Loc) -> None:
+    from .._passes.hir2ir import change_hir_loc
+    with change_hir_loc(loc):
+        await _tuple_comp_if(cond, then_block)
+
+
+async def _tuple_comp_if(cond: Var, then_block: HirLabel) -> None:
     require_bool_scalar_type(cond)
     if not cond.is_constant():
         raise TileTypeError("Tuple comprehension if-conditions must be statically known;"
@@ -429,11 +444,15 @@ async def tuple_comp_if_impl(cond: Var, then_block: hir.Block) -> None:
         await _flatten_branch(then_block)
 
 
-async def _flatten_branch(branch: hir.Block) -> Var | None:
+async def _flatten_branch(branch: HirLabel) -> Var | HirBlockTerminated | None:
     from .._passes.hir2ir import dispatch_hir_block
     info = ControlFlowInfo((), flatten=True)
     with Scope.get_current().change_if_else_info(info):
-        await dispatch_hir_block(branch)
+        res = await dispatch_hir_block(branch)
+    if res is HIR_BLOCK_TERMINATED:
+        # The branch has ended with a jump (e.g. `if True: break`),
+        # which also terminates the enclosing block
+        return HIR_BLOCK_TERMINATED
     if len(info.jumps) == 0:
         return None
     else:
@@ -459,7 +478,14 @@ class Continue(Operation, opcode="continue", terminator=True):
         return f"continue {', '.join([x.name for x in self.values])}"
 
 
-async def continue_():
+async def continue_(loc: Loc) -> HirBlockTerminated:
+    from .._passes.hir2ir import change_hir_loc
+    with change_hir_loc(loc):
+        await _continue()
+    return HIR_BLOCK_TERMINATED
+
+
+async def _continue():
     scope = Scope.get_current()
     info = scope.loop_info
     assert info is not None
@@ -498,7 +524,14 @@ class Break(Operation, opcode="break", terminator=True):
         return f"break {', '.join([x.name for x in self.values])}"
 
 
-async def break_():
+async def break_(loc: Loc) -> HirBlockTerminated:
+    from .._passes.hir2ir import change_hir_loc
+    with change_hir_loc(loc):
+        await _break()
+    return HIR_BLOCK_TERMINATED
+
+
+async def _break():
     scope = Scope.get_current()
     info = scope.loop_info
     assert info is not None
@@ -506,7 +539,7 @@ async def break_():
     if info.flatten:
         return
 
-    # See continue_() for the explanation of why checkpoint() is necessary.
+    # See _continue() for the explanation of why checkpoint() is necessary.
     with scope.checkpoint():
         for ctx_state in reversed(scope.context_stack[scope.loop_context_stack_depth:]):
             await ctx_state.call_exit_callback()
@@ -535,7 +568,13 @@ class EndBranch(Operation, opcode="end_branch", terminator=True):
         return f"yield {', '.join([x.name for x in self.outputs])}"
 
 
-def end_branch(output: Var | None):
+def end_branch(output: Var | None, loc: Loc):
+    from .._passes.hir2ir import change_hir_loc
+    with change_hir_loc(loc):
+        _end_branch(output)
+
+
+def _end_branch(output: Var | None):
     scope = Scope.get_current()
     info = scope.if_else_info
     builder = Builder.get_current()
@@ -571,12 +610,19 @@ class Return(Operation, opcode="return", terminator=True):
         ctx.builder.ret()
 
 
-async def return_(value: Var | None):
+async def return_(value: Var | None, loc: Loc) -> HirBlockTerminated:
+    from .._passes.hir2ir import change_hir_loc
+    with change_hir_loc(loc):
+        await _return(value)
+    return HIR_BLOCK_TERMINATED
+
+
+async def _return(value: Var | None):
     if value is not None and value.get_type() is not NONE:
         raise TileTypeError("Tile kernels cannot return values")
 
     scope = Scope.get_current()
-    # See continue_() for the explanation of why checkpoint() is necessary.
+    # See _continue() for the explanation of why checkpoint() is necessary.
     with scope.checkpoint():
         for ctx_state in reversed(scope.context_stack):
             await ctx_state.call_exit_callback()

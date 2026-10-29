@@ -283,15 +283,15 @@ public:
     template <typename T>
     void push(HeapValue<T>* obj) {
         obj->refcount.count_ = head_;
-        head_ = Value::encode(static_cast<BorrowedValue::Tag>(T::kHeapValueTag), obj);
+        head_ = BorrowedValue::encode(static_cast<BorrowedValue::Tag>(T::kHeapValueTag), obj);
     }
 
     void drain() {
         while (head_) {
-            switch (static_cast<BorrowedValue::HeapValueTag>(Value::decode_tag(head_))) {
+            switch (static_cast<BorrowedValue::HeapValueTag>(BorrowedValue::decode_tag(head_))) {
             #define DRAIN_HEAP_VALUE_CASE(name, type) \
             case BorrowedValue::HeapValueTag::name: { \
-                type* obj = Value::decode_pointer<type>(head_); \
+                type* obj = BorrowedValue::decode_pointer<type>(head_); \
                 head_ = obj->refcount.count_; \
                 obj->release(this); \
                 delete obj; \
@@ -314,6 +314,7 @@ void Value::add_reference() const {
     using T = BorrowedValue;
     switch (tag()) {
     case T::kUndefined:
+    case T::kHirValueId:
     #define ADD_REFERENCE_ENUM_CASE(name, _macro, _pymod) case T::k##name:
     FOREACH_ENUM(ADD_REFERENCE_ENUM_CASE)
     #undef ADD_REFERENCE_ENUM_CASE
@@ -342,6 +343,7 @@ void Value::release(DeletionQueue* queue) {
     using T = BorrowedValue;
     switch (tag()) {
     case T::kUndefined:
+    case T::kHirValueId:
     #define RELEASE_ENUM_CASE(name, _macro, _pymod) case T::k##name:
     FOREACH_ENUM(RELEASE_ENUM_CASE)
     #undef RELEASE_ENUM_CASE
@@ -369,9 +371,14 @@ void Value::release(DeletionQueue* queue) {
 }
 
 PyPtr BorrowedValue::to_pyobject() const {
-    switch (tag_) {
+    switch (tag()) {
     case kUndefined:
         raise(PyExc_AssertionError, "Attempted to convert an undefined value to a Python object");
+        return {};
+
+    case kHirValueId:
+        raise(PyExc_AssertionError,
+              "Attempted to convert HIR value ID to a Python object");
         return {};
 
     #define TO_PYOBJECT_ENUM_CASE(name, _macro, _pymod) \
@@ -413,9 +420,12 @@ PyPtr Value::release_pyobject() {
 }
 
 int BorrowedValue::append_repr_to_builder(StringBuilder* sb) const {
-    switch (tag_) {
+    switch (tag()) {
     case kUndefined:
         sb->append("<undefined>");
+        return 0;
+    case kHirValueId:
+        sb->append_many("<HIR value #", as_hir_value_id(), ">");
         return 0;
 
     #define APPEND_REPR_ENUM_CASE(name, _macro, _pymod) \
@@ -480,9 +490,12 @@ static void append_tensor_type(const TensorBase* tensor, bool capitalize, String
 }
 
 void BorrowedValue::append_type_name_to_builder(StringBuilder* sb) const {
-    switch (tag_) {
+    switch (tag()) {
     case kUndefined:
         sb->append("<undefined>");
+        break;
+    case kHirValueId:
+        sb->append("<HIR value>");
         break;
 
     #define APPEND_ENUM_NAME(name, _macro, _pymod) \
@@ -500,6 +513,7 @@ void BorrowedValue::append_type_name_to_builder(StringBuilder* sb) const {
     case kBoolConstant:
     case kIntConstant:
     case kFloatConstant:
+    case kMiscIrVar:
     case kUnsupportedPyObject:
     case kNotImplemented:
     case kUserDefinedEnum:
@@ -513,6 +527,9 @@ void BorrowedValue::append_type_name_to_builder(StringBuilder* sb) const {
     case kPyTuple:
     case kTupleValue:
         sb->append("tuple");
+        break;
+    case kDictValue:
+        sb->append("dict");
         break;
     }
 }
@@ -533,10 +550,14 @@ static BorrowedValue borrowed_value_from_pyenum(PyObject* pyobj) {
     return BorrowedValue::from_user_defined_enum(pyobj);
 }
 
-static BorrowedValue borrowed_value_from_pyobject(PyObject* pyobj) {
+bool is_tensor_pytype(PyTypeObject* ty) {
+    return ty == &Tile::pytype || ty == &Scalar::pytype || ty == &Vector::pytype
+            || ty == &Pointer::pytype || ty == &OpaqueValue::pytype;
+}
+
+BorrowedValue borrowed_value_from_pyobject(PyObject* pyobj) {
     PyTypeObject* ty = Py_TYPE(pyobj);
-    if (ty == &Tile::pytype || ty == &Scalar::pytype || ty == &Vector::pytype
-            || ty == &Pointer::pytype || ty == &OpaqueValue::pytype)
+    if (is_tensor_pytype(ty))
         return BorrowedValue::from_tensor(reinterpret_cast<TensorBase*>(pyobj));
 
     if (pyobj == Py_NotImplemented)
@@ -568,9 +589,9 @@ static BorrowedValue borrowed_value_from_pyobject(PyObject* pyobj) {
 }
 
 RefPtr<SliceValue> BorrowedValue::as_slice() const {
-    if (tag_ == kSliceValue)
+    if (tag() == kSliceValue)
         return newref(pointer<SliceValue>());
-    CHECK(tag_ == kPySlice);
+    CHECK(tag() == kPySlice);
 
     PySliceObject* pyslice = reinterpret_cast<PySliceObject*>(pyobject());
     RefPtr<SliceValue> ret = ::steal(new SliceValue());
@@ -582,18 +603,41 @@ RefPtr<SliceValue> BorrowedValue::as_slice() const {
 }
 
 RefPtr<TupleValue> BorrowedValue::as_tuple() const {
-    if (tag_ == kTupleValue)
+    if (tag() == kTupleValue)
         return newref(pointer<TupleValue>());
-    CHECK(tag_ == kPyTuple);
+    CHECK(tag() == kPyTuple);
 
     size_t size = static_cast<size_t>(PyTuple_GET_SIZE(pyobject()));
-    RefPtr<TupleValue> ret = TupleValue::create(size);
+    RefPtr<TupleValue> ret = TupleValue::create_undefined(size);
     for (size_t i = 0; i < size; ++i)
         (*ret)[i] = borrowed_value_from_pyobject(PyTuple_GET_ITEM(pyobject(), i)).to_owned();
     ret->cached_pyobject_ = newref(pyobject());
     return ret;
 }
 
+size_t BorrowedValue::tuple_size() const {
+    if (tag() == kTupleValue)
+        return pointer<TupleValue>()->size();
+    CHECK(tag() == kPyTuple);
+    return static_cast<size_t>(PyTuple_GET_SIZE(pyobject()));
+}
+
+BorrowedValue BorrowedValue::tuple_item(size_t i) const {
+    if (tag() == kTupleValue)
+        return (*pointer<TupleValue>())[i].borrow();
+    CHECK(tag() == kPyTuple);
+    return borrowed_value_from_pyobject(PyTuple_GET_ITEM(pyobject(), i));
+}
+
+const TupleValue& BorrowedValue::as_borrowed_tuple_value() const {
+    CHECK(tag() == kTupleValue);
+    return *pointer<TupleValue>();
+}
+
+const DictValue& BorrowedValue::as_borrowed_dict_value() const {
+    CHECK(tag() == kDictValue);
+    return *pointer<DictValue>();
+}
 
 // ----- Fixed-width arithmetic -----
 
@@ -1320,7 +1364,7 @@ static PyObject* tensor_repr(PyObject* self) {
 }
 
 
-static PyPtr tensor_to_ir_var(TensorBase* tensor) {
+PyPtr tensor_to_ir_var(TensorBase* tensor) {
     if (tensor->tag_ == TensorBase::kVar)
         return newref(tensor->data_.var);
 

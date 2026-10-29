@@ -431,12 +431,6 @@ class StringFormat:
 
 
 @dataclass(frozen=True)
-class StringFormatWithLocations:
-    format: StringFormat
-    piece_locs: tuple[Loc, ...]
-
-
-@dataclass(frozen=True)
 class FormattedStringTy(Type):
     format: "StringFormat"
     value_types: tuple
@@ -1085,14 +1079,14 @@ class ClosureTy(Type):
             ret += ", defaults={" + ", ".join(default_strings) + "}"
         if any(x is not None and len(x) > 0 for x in self.frozen_capture_types_by_depth):
             capture_strings = []
-            for types, local_indices, parent_func in zip(self.frozen_capture_types_by_depth,
+            for types, local_indices, local_names in zip(self.frozen_capture_types_by_depth,
                                                          self.func_hir.captures_by_depth,
-                                                         self.func_hir.enclosing_funcs,
+                                                         self.func_hir.enclosing_local_names,
                                                          strict=True):
                 if types is None:
                     continue
                 for ty, idx in zip(types, local_indices, strict=True):
-                    name = parent_func.local_names[idx]
+                    name = local_names[idx]
                     capture_strings.append(f"'{name}': {ty}")
             ret += ", frozen_captures={" + ", ".join(capture_strings) + "}"
 
@@ -1106,7 +1100,7 @@ class ClosureValue(AggregateValue):
     # Should have the same length as the corresponding `ClosureTy.default_value_types`.
     default_values: tuple["Var", ...]
 
-    # Tuple of the same length as `ty.func_hir.enclosing_functions`
+    # Tuple of the same length as `ty.func_hir.enclosing_local_names`
     # and `ty.frozen_capture_types_by_depth`, where `ty` is the `ClosureTy` of this closure.
     #
     # For each depth `i`, `frozen_captures_by_depth[i]` is either:

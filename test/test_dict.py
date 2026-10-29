@@ -85,3 +85,36 @@ def test_dict_getitem_miss():
 
     with pytest.raises(TileTypeError, match="Key 'qux' not found in dictionary"):
         ct.launch(torch.cuda.current_stream(), (1,), kernel, ())
+
+
+def test_duplicate_keyword_from_explicit_and_variadic_kwargs():
+    def leaf(x, foo=0):
+        return x + foo
+
+    def forward(**kwargs):
+        return leaf(1, foo=2, **kwargs)
+
+    @ct.kernel
+    def kernel():
+        forward(foo=3)
+
+    with pytest.raises(TileTypeError, match="Got multiple values for keyword argument 'foo'"):
+        ct.launch(torch.cuda.current_stream(), (1,), kernel, ())
+
+
+def test_duplicate_keyword_from_two_variadic_kwargs():
+    def leaf(foo):
+        return foo
+
+    def make_dict(**kwargs):
+        return kwargs
+
+    def forward(kwargs1, kwargs2):
+        return leaf(**kwargs1, **kwargs2)
+
+    @ct.kernel
+    def kernel():
+        forward(make_dict(foo=1), make_dict(foo=2))
+
+    with pytest.raises(TileTypeError, match="Got multiple values for keyword argument 'foo'"):
+        ct.launch(torch.cuda.current_stream(), (1,), kernel, ())

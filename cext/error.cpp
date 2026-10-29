@@ -7,6 +7,8 @@
 static PyObject* g_type_checking_error_cls;
 static PyObject* g_invalid_value_error_cls;
 static PyObject* g_unsupported_feature_error_cls;
+static PyObject* g_syntax_error_cls;
+static PyObject* g_internal_error_cls;
 
 ErrorRaised_t Error::raise_builtin_exception() {
     PyObject* exc_type = nullptr;
@@ -19,6 +21,8 @@ ErrorRaised_t Error::raise_builtin_exception() {
     case kZeroDivisionError: exc_type = PyExc_ZeroDivisionError; break;
     case kIndexError: exc_type = PyExc_IndexError; break;
     case kNotImplementedError: exc_type = PyExc_NotImplementedError; break;
+    case kSyntaxError: exc_type = PyExc_SyntaxError; break;
+    case kInternalError: exc_type = PyExc_RuntimeError; break;
     }
     PyErr_SetObject(exc_type, message());
     *this = Error(ErrorRaised);
@@ -36,6 +40,8 @@ ErrorRaised_t Error::raise_compile_time_error() {
     case Error::kZeroDivisionError: exc_type = g_invalid_value_error_cls; break;
     case Error::kIndexError: exc_type = g_invalid_value_error_cls; break;
     case Error::kNotImplementedError: exc_type = g_unsupported_feature_error_cls; break;
+    case Error::kSyntaxError: exc_type = g_syntax_error_cls; break;
+    case Error::kInternalError: exc_type = g_internal_error_cls; break;
     }
     PyErr_SetObject(exc_type, message());
     *this = Error(ErrorRaised);
@@ -51,6 +57,10 @@ Status error_module_init(PyObject* m) {
     if (!g_invalid_value_error_cls) return ErrorRaised;
     g_unsupported_feature_error_cls = getattr(exception_mod, "UnsupportedFeatureError").release();
     if (!g_unsupported_feature_error_cls) return ErrorRaised;
+    g_syntax_error_cls = getattr(exception_mod, "TileSyntaxError").release();
+    if (!g_syntax_error_cls) return ErrorRaised;
+    g_internal_error_cls = getattr(exception_mod, "InternalError").release();
+    if (!g_internal_error_cls) return ErrorRaised;
 
     return OK;
 }

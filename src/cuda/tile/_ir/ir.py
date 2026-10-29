@@ -44,6 +44,11 @@ class TypingHooks:
     def get_python_constant_type(self, value: Any) -> Type | None:
         return None
 
+    # Whether a value of the given type can be formatted directly by printf, e.g. in an f-string.
+    # If not, the value is converted with str() first.
+    def can_printf(self, ty: TensorLikeTy) -> bool:
+        return True
+
 
 class IRContext:
     device_execution_space = "tile"

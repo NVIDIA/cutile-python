@@ -19,15 +19,14 @@ import cuda.tile._datatype as datatype
 from cuda.tile._cext import (foreign_dtype_object_to_native, encode_float, decode_float,
                              Tile, Scalar, Vector, Pointer, OpaqueValue, _tensor_to_ir_var)
 from cuda.tile._datatype import DType, numeric_dtype_category, is_integral
-from cuda.tile._exception import Loc, TileSyntaxError, TileValueError, TypeCheckingError
+from cuda.tile._exception import Loc, TileValueError, TypeCheckingError
 from cuda.tile._execution import is_static_def
 from cuda.tile._ir import hir_stubs, hir
-from cuda.tile._ir.hir import ResolvedName
 from cuda.tile._ir.ir import Operation, attribute, Var, Builder, make_aggregate, operand, \
     MemoryEffect, add_operation_variadic
 from cuda.tile._ir.op_impl import ImplRegistry, require_dataclass_type, require_constant_str, \
     OverloadNotFoundError, WILDCARD, require_signed_integer_scalar_type, require_constant_slice, \
-    require_constant_int, PrintfValidator, ensure_string_or_formatted_string, require_tuple_type
+    PrintfValidator, ensure_string_or_formatted_string, require_tuple_type
 from cuda.tile._ir.scope import Scope
 from cuda.tile._ir.type import Type, DTypeSpec, TensorLikeTy, TupleTy, TupleValue, Symbol, \
     DataclassInfo, DataclassTy, DataclassValue, BoundMethodValue, BoundMethodTy, InvalidType, \
@@ -35,7 +34,7 @@ from cuda.tile._ir.type import Type, DTypeSpec, TensorLikeTy, TupleTy, TupleValu
     RangeIterType, RangeValue, TypeTy, ModuleTy, NONE, SliceType, StringTy, FormattedStringTy, \
     StringFormat, FormattedStringValue, FormattedPiece, DictTy, DictValue, EnumTy, TokenTy, \
     FunctionTy, GeneratorContextManagerTy, ContextManagerState, GeneratorContextManagerValue, \
-    NotImplementedTy, SliceValue, StringFormatWithLocations
+    NotImplementedTy, SliceValue
 from cuda.tile._ir.typing_support import type_of_constant_python_value, \
     loose_type_of_constant_python_value, get_dataclass_info, \
     create_dataclass_instance, find_method, dataclass_has_default_repr, dataclass_has_default_cmp
@@ -492,11 +491,6 @@ def build_tuple(items: Sequence[Var], result_var: Var | None = None) -> Var:
     if all(x.is_constant() for x in items):
         res.set_constant(tuple(x.get_constant() for x in items))
     return res
-
-
-@impl(hir_stubs.build_tuple)
-def build_tuple_impl(items: tuple[Var, ...]) -> Var:
-    return build_tuple(items)
 
 
 def tuple_item(tup: TupleValue, index: int) -> Var:
@@ -1001,18 +995,6 @@ class Assign(Operation, opcode="assign"):
         return f"{self.value.name}"
 
 
-@impl(hir_stubs.identity)
-def identity_impl(x: Var) -> Var:
-    if x.is_constant():
-        ty = x.get_type()
-        if ty.is_aggregate():
-            return make_aggregate(x.get_aggregate(), ty, x.get_loose_type())
-        else:
-            return loosely_typed_const(x.get_constant(), x.get_type(), x.get_loose_type())
-    else:
-        return x
-
-
 def assign(value: Var, res: Var, loc: Loc) -> None:
     Builder.get_current().append_verbatim(Assign(value=value, result_vars=(res,), loc=loc))
     res.ctx.copy_type_information(value, res)
@@ -1021,6 +1003,13 @@ def assign(value: Var, res: Var, loc: Loc) -> None:
 def store_var(local_idx: int, value: Var, loc: Loc | None = None):
     scope = Scope.get_current()
     scope.local.store_local_variable(local_idx, value, loc or Builder.get_current().loc)
+
+
+# Implementation of the StoreLocal HIR opcode
+def store_local(local_idx: int, value: Var, loc: Loc):
+    from cuda.tile._passes.hir2ir import change_hir_loc
+    with change_hir_loc(loc):
+        store_var(local_idx, value)
 
 
 def store_invalid(local_idx: int, ty: Type, loc: Loc | None = None):
@@ -1033,23 +1022,27 @@ def store_invalid(local_idx: int, ty: Type, loc: Loc | None = None):
     local_scope.store_local_variable(local_idx, var, loc)
 
 
-@impl(hir_stubs.store_var)
-def store_var_impl(rn: ResolvedName, value: Var):
-    store_var(rn.index, value)
+def load_local(depth: int, index: int, loc: Loc):
+    from cuda.tile._passes.hir2ir import change_hir_loc
+    with change_hir_loc(loc):
+        return _load_local(depth, index)
 
 
-@impl(hir_stubs.load_var)
-def load_var_impl(rn, name: Var):
+def _load_local(depth: int, index: int):
     scope = Scope.get_current()
-    if rn.depth >= 0:
-        ret = scope.local_scopes[rn.depth][rn.index]
-        ret.get_type()  # Trigger an InvalidType check
-        return ret
-    elif rn.index >= 0:
-        val = scope.func_hir.frozen_global_values[rn.index]
-        return sym2var(val, constant_only=True)
-    else:
-        raise TileSyntaxError(f"Undefined variable {name.get_constant()} used")
+    ret = scope.local_scopes[depth][index]
+    ret.get_type()  # Trigger an InvalidType check
+    return ret
+
+
+def load_global(frozen_value, loc: Loc):
+    from cuda.tile._passes.hir2ir import change_hir_loc
+    with change_hir_loc(loc):
+        return _load_global(frozen_value)
+
+
+def _load_global(frozen_value):
+    return sym2var(frozen_value, constant_only=True)
 
 
 @impl(hir_stubs.pop_context)
@@ -1059,8 +1052,14 @@ async def pop_context_impl():
     await ctx_state.call_exit_callback()
 
 
-@impl(hir_stubs.make_closure)
-def make_closure_impl(func_hir: hir.Function, default_values: tuple[Var, ...]):
+# Implementation of the MakeClosure HIR opcode
+def make_closure(func_hir: hir.Function, default_values: tuple[Var, ...], loc: Loc):
+    from cuda.tile._passes.hir2ir import change_hir_loc
+    with change_hir_loc(loc):
+        return _make_closure(func_hir, default_values)
+
+
+def _make_closure(func_hir: hir.Function, default_values: tuple[Var, ...]):
     default_value_types = tuple(v.get_type() for v in default_values)
 
     frozen_captures_by_depth = []
@@ -1184,23 +1183,6 @@ def range_(args: tuple[Var, ...]) -> Var:
     agg_value = RangeValue(start, stop, step)
     ty = RangeIterType(dtype)
     return make_aggregate(agg_value, ty)
-
-
-@impl(hir_stubs.unpack)
-def unpack_impl(iterable: Var, expected_len: Var) -> Var:
-    ty = iterable.get_type()
-    # Don't use the require_tuple_type() helper because we'd like to customize the error message
-    if not isinstance(ty, TupleTy):
-        raise TileTypeError("Expected a tuple", iterable.loc)
-
-    expected_len = require_constant_int(expected_len)
-    if len(ty.value_types) != expected_len:
-        few_many = "few" if len(ty.value_types) < expected_len else "many"
-        raise TileValueError(f"Too {few_many} values to unpack"
-                             f" (expected {expected_len}, got {len(ty.value_types)})")
-    # Return the input tuple. If we add support for additional iterables,
-    # the idea is to cast them to a tuple here.
-    return iterable
 
 
 @comparison_operator_impl(_registry, DTypeSpec, DTypeSpec)
@@ -1374,18 +1356,29 @@ def str_join_impl(self: Var, iterable: Var):
     return builder.build()
 
 
-@impl(hir_stubs.build_formatted_string)
-async def build_formatted_string(format: StringFormatWithLocations, values: tuple[Var, ...]) -> Var:
+# Implementation of the BuildFormattedString HIR opcode
+async def build_formatted_string(format: StringFormat, values: tuple[Var, ...],
+                                 value_locs: tuple[Loc, ...], loc: Loc) -> Var:
+    from cuda.tile._passes.hir2ir import change_hir_loc
+    with change_hir_loc(loc):
+        return await _build_formatted_string(format, values, value_locs)
+
+
+async def _build_formatted_string(format: StringFormat, values: tuple[Var, ...],
+                                  value_locs: tuple[Loc, ...]) -> Var:
+    from cuda.tile._passes.hir2ir import retarget_loc
     builder = FormattedStringBuilder()
 
-    for piece, piece_loc in zip(format.format.pieces, format.piece_locs, strict=True):
+    for piece in format.pieces:
         if isinstance(piece, str):
             builder.append_literal_piece(piece)
             continue
 
         value = values[piece.value_idx]
         val_ty = value.get_type()
-        if isinstance(val_ty, TensorLikeTy):
+        if isinstance(val_ty, TensorLikeTy) and (
+                piece.format_spec is not None
+                or Builder.get_current().ir_ctx.typing_hooks.can_printf(val_ty)):
             builder.append_formatted_piece(value, piece.format_spec)
             continue
 
@@ -1399,7 +1392,7 @@ async def build_formatted_string(format: StringFormatWithLocations, values: tupl
         if piece.format_spec is not None:
             raise TileTypeError(
                 f"f-string: cannot apply format spec to a value of type {val_ty}",
-                piece_loc)
+                retarget_loc(value_locs[piece.value_idx], Scope.get_current()))
 
         from cuda.tile._passes.hir2ir import call_function
         value = await call_function(str, value)
@@ -1437,62 +1430,31 @@ async def enter_context_generator_impl(manager: Var[GeneratorContextManagerTy]):
     from cuda.tile._passes.ast2hir import get_function_hir
     generator_hir = get_function_hir(mgr_ty.func, mode=HirMode.GENERATOR_CONTEXT_MANAGER)
 
-    yield_idx = _find_generator_yield(generator_hir.body)
-
     mgr_value = manager.get_aggregate()
     assert isinstance(mgr_value, GeneratorContextManagerValue)
     kwargs = dict(zip(mgr_ty.kwargs_type.keys, mgr_value.kwarg_values, strict=True))
 
     from cuda.tile._passes.hir2ir import enter_generator_context_manager, \
         exit_generator_context_manager
-    yielded_value, generator_scope = await enter_generator_context_manager(
-            generator_hir, mgr_value.args, kwargs, yield_idx)
+    generator_scope, yielded = await enter_generator_context_manager(
+            generator_hir, mgr_value.args, kwargs)
 
     async def exit_callback():
         with generator_scope.checkpoint():
-            await exit_generator_context_manager(generator_hir, generator_scope, yield_idx)
+            await exit_generator_context_manager(generator_scope, yielded)
 
             # The context manager could have yielded a closure, which could be stored
             # in one of the local variables. Since we are exiting the context manager,
             # we need to make sure that such closure doesn't capture the exiting scope
             # as a live scope. We approach this in a brute-force fashion by searching all locals.
+            # There is no need to search the HIR values: after pop_context, they are only
+            # accessed through locals.
             cur_scope = Scope.get_current()
             builder = Builder.get_current()
             from cuda.tile._passes.hir2ir import freeze_closures_on_scope_exit
             freeze = functools.partial(freeze_closures_on_scope_exit,
                                        dead_scope=generator_scope.local, builder=builder)
             cur_scope.local.map_all_vars(freeze)
-            cur_scope.hir2ir_varmap.map_all_items(freeze)
 
     mgr_ty.state.exit_callback = exit_callback
-    return yielded_value
-
-
-def _find_generator_yield(block: hir.Block) -> int:
-    yields = list(_find_all_yield_statements(block))
-    if len(yields) == 0:
-        raise TileTypeError("Expected a generator function,"
-                            " but no reachable `yield` statement has been found")
-    if len(yields) > 1:
-        first_block, first_idx = yields[0]
-        second_block, second_idx = yields[1]
-        first_loc = first_block.calls[first_idx].loc
-        raise TileTypeError(f"Generator-based context manager must have one `yield` statement"
-                            f"(another `yield` found on line {first_loc.line})",
-                            second_block.calls[second_idx].loc)
-
-    [(yield_block, idx)] = yields
-    if yield_block is not block:
-        raise TileTypeError("`yield` statement of a generator-based context manager"
-                            " must be placed outside of loops and conditional statements")
-
-    return idx
-
-
-def _find_all_yield_statements(block: hir.Block):
-    for i, call in enumerate(block.calls):
-        if call.callee is hir_stubs.generator_yield:
-            yield block, i
-        for arg in call.args:
-            if isinstance(arg, hir.Block):
-                yield from _find_all_yield_statements(arg)
+    return yielded.value

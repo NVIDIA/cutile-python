@@ -7,9 +7,10 @@ import enum
 import threading
 from contextlib import contextmanager
 from dataclasses import dataclass
-from typing import TypeVar, Generic, Callable
+from typing import TypeVar, Callable
 
-from cuda.tile._exception import Loc, FunctionDesc, TileSyntaxError
+from cuda.tile._cext import HirFrame
+from cuda.tile._exception import Loc, TileSyntaxError
 from cuda.tile._ir import hir
 from cuda.tile._ir.ir import Operation, Var, IRContext, TrackedVar
 from cuda.tile._ir.type import InvalidType, ContextManagerState, InvalidReason
@@ -121,55 +122,13 @@ class _MissingItem(enum.IntEnum):
 V = TypeVar("V")
 
 
-class IntMap(Generic[V]):
-    def __init__(self):
-        self._items = []
-
-    def clone(self) -> "IntMap":
-        ret = IntMap()
-        ret._items.extend(self._items)
-        return ret
-
-    def map_all_items(self, func: Callable[[V], V]):
-        for i in range(len(self._items)):
-            old = self._items[i]
-            if old is not _MissingItem.INSTANCE:
-                self._items[i] = func(old)
-
-    def __getitem__(self, idx: int):
-        assert isinstance(idx, int)
-        assert idx >= 0
-        try:
-            val = self._items[idx]
-        except IndexError:
-            raise KeyError()
-        if val is _MissingItem.INSTANCE:
-            raise KeyError()
-        return val
-
-    def __setitem__(self, idx, value):
-        assert isinstance(idx, int)
-        assert idx >= 0
-        size = len(self._items)
-        if idx < size:
-            self._items[idx] = value
-        else:
-            if idx > size:
-                self._items.extend((_MissingItem.INSTANCE,) * (idx - size))
-            self._items.append(value)
-
-
 @dataclass(eq=False)
 class Scope:
     local_scopes: tuple[LocalScope, ...]
     loop_info: ControlFlowInfo | None
     if_else_info: ControlFlowInfo | None
-    call_site: Loc | None
-    hir2ir_varmap: IntMap[Var]
+    hir_frame: HirFrame
     func_hir: hir.Function
-    # FunctionDesc that represents the concrete specialization of `func_hir`
-    # representing this scope.
-    concrete_func_desc: FunctionDesc
     context_stack: list[ContextManagerState] = dataclasses.field(default_factory=list)
     loop_context_stack_depth: int | None = None
 
@@ -182,16 +141,13 @@ class Scope:
         old_loop_info = self.loop_info
         old_if_else_info = self.if_else_info
         old_loop_context_stack_depth = self.loop_context_stack_depth
-        old_hir2ir_varmap = self.hir2ir_varmap
         old_context_stack = self.context_stack
 
         self.context_stack = list(old_context_stack)
-        self.hir2ir_varmap = old_hir2ir_varmap.clone()
         try:
             with self.local.enter_branch():
                 yield
         finally:
-            self.hir2ir_varmap = old_hir2ir_varmap
             self.context_stack = old_context_stack
             self.loop_info = old_loop_info
             self.if_else_info = old_if_else_info

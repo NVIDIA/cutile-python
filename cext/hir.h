@@ -4,5 +4,7 @@
 
 #pragma once
 
-Status coroutine_util_init(PyObject* m);
+#include "py.h"
+
+Status hir_init(PyObject* m);
 

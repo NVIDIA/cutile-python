@@ -49,6 +49,12 @@ void mem_copy(void* RESTRICT dst, const void* RESTRICT src, size_t n) {
     for (size_t i = 0; i < n; ++i)
         dst_c[i] = src_c[i];
 }
+
+void mem_zero(void* dst, size_t n) {
+    char* dst_c = static_cast<char*>(dst);
+    for (size_t i = 0; i < n; ++i)
+        dst_c[i] = 0;
+}
 #ifdef _WIN32
 #pragma optimize("", on)
 #endif

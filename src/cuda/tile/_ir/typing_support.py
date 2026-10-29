@@ -114,15 +114,19 @@ def _parse_params(params: str, namespace: ModuleType) -> inspect.Signature:
     return inspect.signature(definitions["f"])
 
 
+def _is_cext_callable(f) -> bool:
+    """Returns True if `f` is a class or a method defined in the C++ extension"""
+    return ((isinstance(f, type) and f in _CEXT_CLASSES)
+            or (isinstance(f, MethodDescriptorType) and f.__objclass__ in _CEXT_CLASSES))
+
+
 def _cext_params(f) -> tuple[str, ModuleType] | None:
     """Returns the parameters of a class or a method defined in the C++ extension, e.g.
     "self, /, shape", and the namespace for evaluating their defaults, or None if `f` isn't one"""
-    if isinstance(f, type) and f in _CEXT_CLASSES:
-        cls, is_method = f, False
-    elif isinstance(f, MethodDescriptorType) and f.__objclass__ in _CEXT_CLASSES:
-        cls, is_method = f.__objclass__, True
-    else:
+    if not _is_cext_callable(f):
         return None
+    is_method = isinstance(f, MethodDescriptorType)
+    cls = f.__objclass__ if is_method else f
     namespace = importlib.import_module(cls.__module__)
 
     if f.__text_signature__ is not None:
@@ -148,14 +152,19 @@ def _cext_params(f) -> tuple[str, ModuleType] | None:
     return "", namespace
 
 
-@cache
 def _cext_signature(f) -> inspect.Signature | None:
     """Returns the signature of a class or a method defined in the C++ extension,
     or None if `f` isn't one"""
-    params = _cext_params(f)
-    if params is None:
+    # Check before going through the cache, so that the cache doesn't keep alive
+    # every user function that we get the signature of
+    if not _is_cext_callable(f):
         return None
-    return _parse_params(*params)
+    return _parse_cext_signature(f)
+
+
+@cache
+def _parse_cext_signature(f) -> inspect.Signature:
+    return _parse_params(*_cext_params(f))
 
 
 def get_parameter_names(f) -> tuple[str, ...]:

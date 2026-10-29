@@ -52,13 +52,14 @@ class StaticEvalMode(DispatchMode):
 
         if is_static_eval_safe_stub(func):
             from cuda.tile._ir.core_ops import sym2var
-            from cuda.tile._cext import run_coroutine
+            from cuda.tile._cext import hir_run
             from cuda.tile._passes.hir2ir import call
             from cuda.tile._ir.type import var2sym
+            from cuda.tile._ir.ir import Builder
             func = sym2var(func)
             args = tuple(sym2var(x) for x in args)
             kwargs = {k: sym2var(v) for k, v in kwargs.items()}
-            res = run_coroutine(call(func, args, kwargs))
+            res = hir_run(call(func, args, kwargs), Builder.get_current().ir_ctx.log_ir_on_error)
             return var2sym(res)
 
         if func in (static_eval, static_assert, static_iter):

@@ -432,7 +432,7 @@ class _IrKeeper:
             ir_ctx = ir.IRContext(log_ir_on_error=self._log_cutile_ir,
                                   tileiras_version=self.bytecode_version,
                                   typing_hooks=_TileTypingHooks())
-            with ir.Builder(ir_ctx, self._func_hir.body.loc) as ir_builder:
+            with ir.Builder(ir_ctx, self._func_hir.program.start_label().loc) as ir_builder:
                 with tile_impl_registry.as_current():
                     params = _create_kernel_parameters(sig.parameters,
                                                        self.ann_func.parameter_annotations,
@@ -440,7 +440,7 @@ class _IrKeeper:
                                                        ir_ctx)
                     hir2ir(self._func_hir, params.aggregate_vars, ir_ctx)
 
-            func_body = ir.Block(ir_ctx, self._func_hir.body.loc)
+            func_body = ir.Block(ir_ctx, self._func_hir.program.start_label().loc)
             func_body.params = sum((vars for vars, _ in params.nonconstant_flat_vars), ())
             func_body.extend(ir_builder.ops)
 
