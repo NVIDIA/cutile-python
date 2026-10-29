@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 from cuda.lang._execution import stub, function
-from .._enums import TMALoadMode, TMAStoreMode, CTAGroup  # noqa: F401
+from .._enums import TMALoadMode, TMAStoreMode, CTAGroup, AsyncCopyReportMechanism  # noqa: F401
 from . import nvvm as _nvvm
 
 
@@ -41,6 +41,7 @@ def copy_async_bulk_tensor_global_to_shared(
     mode=TMALoadMode.TILE,
     cta_group=None,
     predicate=None,
+    report_mechanism=AsyncCopyReportMechanism.DISABLED,
 ):
     """Initiate a multi-dimensional TMA copy from global to shared memory.
 
@@ -67,6 +68,8 @@ def copy_async_bulk_tensor_global_to_shared(
         cta_group (CTAGroup | None): Selects the behavior of a multi-block
             async copy.
         predicate (bool | None):
+        report_mechanism (AsyncCopyReportMechanism): Specifies the mbarrier
+            reporting mechanism.
     """
 
 

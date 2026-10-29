@@ -488,6 +488,18 @@ class Tcgen05WaitKind(enum.Enum):
         p(("load", "store",)[self._value_])
 
 
+class ValidatePattern(enum.Enum):
+    PER_16BYTES_80000000 = 1
+    PER_16BYTES_8000 = 2
+    PER_16BYTES_80 = 3
+    PER_16BYTES_8 = 4
+    PER_ELEMENT_FF = 5
+
+    def _print_mlir_unqualified(self, p):
+        p(("", "per_16bytes_80000000", "per_16bytes_8000", "per_16bytes_80",
+           "per_16bytes_8", "per_element_ff",)[self._value_])
+
+
 class VoteSyncKind(enum.Enum):
     any = 0
     all = 1
@@ -1024,6 +1036,16 @@ class Tcgen05MMAKindAttr(Attribute, dialect='nvvm', mnemonic='tcgen05_mma_kind')
 @dataclass(kw_only=True)
 class Tcgen05WaitKindAttr(Attribute, dialect='nvvm', mnemonic='tcgen05_wait'):
     value: "Tcgen05WaitKind"
+
+    def _print_mlir_unqualified(self, p):
+        p("<")
+        self.value._print_mlir_unqualified(p)
+        p(">")
+
+
+@dataclass(kw_only=True)
+class ValidatePatternAttr(Attribute, dialect='nvvm', mnemonic='validate_pattern'):
+    value: "ValidatePattern"
 
     def _print_mlir_unqualified(self, p):
         p("<")
@@ -2078,6 +2100,7 @@ def add_CpAsyncBulkTensorGlobalToSharedClusterOp(
     mbar: Value,
     im2colOffsets: Sequence[Value],
     multicastMask: Optional[Value] = None,
+    validatePattern: Optional[ValidatePattern] = None,
     l2CacheHint: Optional[Value] = None,
     mode: TMALoadMode = TMALoadMode(0),
     isCTAOnly: bool = False,
@@ -2086,6 +2109,8 @@ def add_CpAsyncBulkTensorGlobalToSharedClusterOp(
     extra_attributes: Sequence[tuple[str, Attribute]] = (),
 ) -> None:
     all_props = []
+    if validatePattern is not None:
+        all_props.append(('validatePattern', ValidatePatternAttr(value=validatePattern)))
     all_props.append(('mode', TMALoadModeAttr(value=mode)))
     all_props.append(('isCTAOnly', BoolAttr(value=isCTAOnly)))
     if group is not None:

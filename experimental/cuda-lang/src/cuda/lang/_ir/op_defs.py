@@ -10,6 +10,7 @@ from typing import Optional, Any, TYPE_CHECKING
 
 
 from cuda.lang._enums import (
+    AsyncCopyReportMechanism,
     CTAGroup,
     MemoryOrder,
     RoundingMode,
@@ -246,6 +247,9 @@ class CopyAsyncBulkTensorGlobalToShared(
     mode: TMALoadMode = attribute()
     is_cta_only: bool = attribute()
     cta_group: CTAGroup | None = attribute(default=None)
+    report_mechanism: AsyncCopyReportMechanism = attribute(
+        default=AsyncCopyReportMechanism.DISABLED
+    )
 
 
 @dataclass(eq=False)

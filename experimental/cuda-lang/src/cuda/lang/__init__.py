@@ -40,6 +40,7 @@ from ._stub.load_store_matrix import (
     store_matrix,
 )
 from ._enums import (
+    AsyncCopyReportMechanism,
     AtomicOp,
     MatrixLoadShape,
     MatrixLoadSourceFormat,
@@ -385,6 +386,7 @@ __all__ = (
     "MemorySpace",
     "MemoryScope",
     "MemoryOrder",
+    "AsyncCopyReportMechanism",
     "AtomicOp",
     "RoundingMode",
     "BarrierReductionKind",

@@ -10,6 +10,7 @@ from typing import Callable, Sequence, get_type_hints
 
 from cuda.lang._compiler_options import CompilerOptions
 from cuda.lang._enums import (
+    AsyncCopyReportMechanism,
     MemoryOrder,
     RoundingMode,
     SaturationMode,
@@ -42,6 +43,20 @@ _NVVM_ROUNDING_MODES = {
     RoundingMode.RN: mlir.nvvm.FPRoundingMode.RN,
     RoundingMode.RP: mlir.nvvm.FPRoundingMode.RP,
     RoundingMode.RZ: mlir.nvvm.FPRoundingMode.RZ,
+}
+
+_NVVM_COPY_REPORT_PATTERNS = {
+    AsyncCopyReportMechanism.DISABLED: None,
+    AsyncCopyReportMechanism.VALIDITY_PER_16_BYTES_80000000:
+        mlir.nvvm.ValidatePattern.PER_16BYTES_80000000,
+    AsyncCopyReportMechanism.VALIDITY_PER_16_BYTES_8000:
+        mlir.nvvm.ValidatePattern.PER_16BYTES_8000,
+    AsyncCopyReportMechanism.VALIDITY_PER_16_BYTES_80:
+        mlir.nvvm.ValidatePattern.PER_16BYTES_80,
+    AsyncCopyReportMechanism.VALIDITY_PER_16_BYTES_8:
+        mlir.nvvm.ValidatePattern.PER_16BYTES_8,
+    AsyncCopyReportMechanism.VALIDITY_PER_ELEMENT_FF:
+        mlir.nvvm.ValidatePattern.PER_ELEMENT_FF,
 }
 
 
@@ -1859,6 +1874,7 @@ def lower_copy_async_bulk_tensor_g2s(
         isCTAOnly=operation.is_cta_only,
         group=group,
         predicate=_optional_mlir_operand(context, operation.predicate),
+        validatePattern=_NVVM_COPY_REPORT_PATTERNS[operation.report_mechanism],
     )
     return ()
 

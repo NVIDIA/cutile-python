@@ -232,6 +232,15 @@ class MatrixLoadSourceFormat(Enum):
     B4X16_P64 = "b4x16_p64"
 
 
+class AsyncCopyReportMechanism(Enum):
+    DISABLED = auto()
+    VALIDITY_PER_16_BYTES_80000000 = auto()
+    VALIDITY_PER_16_BYTES_8000 = auto()
+    VALIDITY_PER_16_BYTES_80 = auto()
+    VALIDITY_PER_16_BYTES_8 = auto()
+    VALIDITY_PER_ELEMENT_FF = auto()
+
+
 __all__ = (
     "MemorySpace",
     "MemoryScope",
