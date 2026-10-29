@@ -85,7 +85,7 @@ def _normalize_order(
     return tuple(result)
 
 
-@stub(host=True, compiled_host=True, tile=False)
+@stub(host=True, tile=False, simt=False, compiled_host=True)
 def tensor_map_tiled(array,
                      tile_shape: int | tuple[int, ...],
                      *,

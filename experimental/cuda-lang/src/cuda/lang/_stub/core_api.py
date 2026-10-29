@@ -5,7 +5,7 @@
 from typing import TypeVar, Generic
 
 import cuda.lang as cl
-from cuda.lang._execution import stub, function
+from cuda.lang._execution import simt_stub, function
 from cuda.lang._exception import TypeCheckingError
 from cuda.tile._stub import (
     Array as TileArray,
@@ -23,10 +23,10 @@ T = TypeVar("T")
 
 
 class LocalArrayContextManager(Generic[T]):
-    @stub
+    @simt_stub
     def __enter__(self) -> "Array[T]": ...
 
-    @stub
+    @simt_stub
     def __exit__(self, exc_type, exc_val, exc_tb): ...
 
 
@@ -60,7 +60,7 @@ class Array(TileArray, Generic[T]):
     """
 
     @staticmethod
-    @stub(compiled_host=True)
+    @simt_stub(compiled_host=True)
     def from_parts(
         pointer: Pointer,
         shape: int | tuple[int, ...],
@@ -101,22 +101,22 @@ class Array(TileArray, Generic[T]):
         """
 
     @property
-    @stub(compiled_host=True)
+    @simt_stub(compiled_host=True)
     def dtype(self): ...
 
     @property
-    @stub(compiled_host=True)
+    @simt_stub(compiled_host=True)
     def ndim(self): ...
 
     @property
-    @stub(compiled_host=True)
+    @simt_stub(compiled_host=True)
     def shape(self): ...
 
     @property
-    @stub(compiled_host=True)
+    @simt_stub(compiled_host=True)
     def strides(self): ...
 
-    @stub(compiled_host=True)
+    @simt_stub(compiled_host=True)
     def pointer(
         self, index_or_indices: int | tuple[int, ...] | None = None
     ) -> "Pointer":
@@ -128,14 +128,14 @@ class Array(TileArray, Generic[T]):
         """
         ...
 
-    @stub
+    @simt_stub
     def __setitem__(self, indices: int | tuple[int, ...], value: T):
         """Assign ``value`` to index given by ``indices``.
         Equivalent to ``self.pointer(indices).store(value)``.
         """
         ...
 
-    @stub
+    @simt_stub
     def __getitem__(self, indices: int | slice | tuple[int | slice, ...]) -> T | "Array[T]":
         """Retrieve value or view given by ``indices``.
         When every dimension is indexed by an integer, this is equivalent to
@@ -145,7 +145,7 @@ class Array(TileArray, Generic[T]):
         ...
 
 
-@stub(host=True, compiled_host=True)
+@simt_stub(host=True, compiled_host=True)
 def dtype_of(value, /) -> DType:
     """
     Returns the data type of a scalar, pointer, or vector value.
@@ -171,7 +171,7 @@ def full_mask() -> int:
     return FULL_MASK
 
 
-@stub
+@simt_stub
 def thread_index(axis: int, /) -> int:
     """Gets the index of the current thread in a block.
 
@@ -183,7 +183,7 @@ def thread_index(axis: int, /) -> int:
     """
 
 
-@stub
+@simt_stub
 def thread_count(axis: int, /) -> int:
     """Gets the number of threads in a block.
 
@@ -192,7 +192,7 @@ def thread_count(axis: int, /) -> int:
     """
 
 
-@stub
+@simt_stub
 def block_index(axis: int, /) -> int:
     """Gets the index of the current block in the grid.
 
@@ -204,7 +204,7 @@ def block_index(axis: int, /) -> int:
     """
 
 
-@stub
+@simt_stub
 def block_count(axis: int, /) -> int:
     """Gets the total number of blocks in the grid.
 
@@ -249,7 +249,7 @@ def warp_count() -> int:
     return (bdx * bdy * bdz - 1) // lane_count() + 1
 
 
-@stub
+@simt_stub
 def cluster_index(axis: int, /) -> int:
     """Gets the index of the current cluster in the grid.
 
@@ -261,7 +261,7 @@ def cluster_index(axis: int, /) -> int:
     """
 
 
-@stub
+@simt_stub
 def cluster_count(axis: int, /) -> int:
     """Gets the total number of clusters in the grid.
 
@@ -270,7 +270,7 @@ def cluster_count(axis: int, /) -> int:
     """
 
 
-@stub
+@simt_stub
 def block_in_cluster_index(axis: int, /) -> int:
     """Gets the index of the current block within its cluster.
 
@@ -282,7 +282,7 @@ def block_in_cluster_index(axis: int, /) -> int:
     """
 
 
-@stub
+@simt_stub
 def block_in_cluster_count(axis: int, /) -> int:
     """Get the number of blocks in a cluster.
 
@@ -291,7 +291,7 @@ def block_in_cluster_count(axis: int, /) -> int:
     """
 
 
-@stub
+@simt_stub
 def shared_array(
     shape: int | tuple[int, ...],
     dtype: DType,
@@ -367,7 +367,7 @@ def shared_array(
     """
 
 
-@stub
+@simt_stub
 def local_array(
     shape: int | tuple[int, ...],
     dtype: DType,
@@ -409,7 +409,7 @@ def local_array(
     """
 
 
-@stub
+@simt_stub
 def setmaxregister_increase(number_of_registers):
     """Hint to change the number of registers owned by the warp.
 
@@ -420,7 +420,7 @@ def setmaxregister_increase(number_of_registers):
     pass
 
 
-@stub
+@simt_stub
 def setmaxregister_decrease(number_of_registers):
     """Hint to change the number of registers owned by the warp.
 
@@ -431,13 +431,13 @@ def setmaxregister_decrease(number_of_registers):
     pass
 
 
-@stub
+@simt_stub
 def elect_sync(membermask: int = FULL_MASK, /) -> bool:
     """Return whether the caller is the elected thread in ``membermask``."""
     pass
 
 
-@stub
+@simt_stub
 def vote_all_sync(predicate: bool, mask: int = FULL_MASK) -> bool:
     """Return whether ``predicate`` is true for all lanes in ``mask``.
 
@@ -447,7 +447,7 @@ def vote_all_sync(predicate: bool, mask: int = FULL_MASK) -> bool:
     """
 
 
-@stub
+@simt_stub
 def vote_any_sync(predicate: bool, mask: int = FULL_MASK) -> bool:
     """Return whether ``predicate`` is true for one or more lanes in ``mask``.
 
@@ -457,7 +457,7 @@ def vote_any_sync(predicate: bool, mask: int = FULL_MASK) -> bool:
     """
 
 
-@stub
+@simt_stub
 def vote_uniform_sync(predicate: bool, mask: int = FULL_MASK) -> bool:
     """Return whether ``predicate`` has the same value in all lanes in ``mask``.
 
@@ -467,7 +467,7 @@ def vote_uniform_sync(predicate: bool, mask: int = FULL_MASK) -> bool:
     """
 
 
-@stub
+@simt_stub
 def vote_ballot_sync(predicate: bool, mask: int = FULL_MASK) -> int:
     """Return the selected lanes for which ``predicate`` is true.
 
@@ -477,7 +477,7 @@ def vote_ballot_sync(predicate: bool, mask: int = FULL_MASK) -> int:
     """
 
 
-@stub
+@simt_stub
 def _inline_ptx(ptx_code: str, /, *args: Scalar | Pointer | DType) -> tuple:
     """Execute inline PTX.
 
@@ -546,7 +546,7 @@ def clock(dtype=uint32):
     return fn()
 
 
-@stub
+@simt_stub
 def atomic_rmw(
     op: AtomicOp,
     ptr: Pointer,
@@ -594,7 +594,7 @@ def atomic_rmw(
     """
 
 
-@stub
+@simt_stub
 def shuffle_sync(
     kind: ShuffleKind,
     value: T,
@@ -628,7 +628,7 @@ def shuffle_sync(
     """
 
 
-@stub
+@simt_stub
 def address_space_cast(value: Pointer, memory_space: MemorySpace) -> Pointer:
     """Cast a pointer to the given memory space, preserving dtype.
 
@@ -646,7 +646,7 @@ def address_space_cast(value: Pointer, memory_space: MemorySpace) -> Pointer:
     """
 
 
-@stub
+@simt_stub
 def map_shared_to_cluster(pointer: Pointer, rank: int) -> Pointer:
     """
     Map a pointer in shared memory from another CTA within the same cluster
@@ -674,7 +674,7 @@ def shared_cluster_leader_bit_mask() -> int:
     return 0xFEFFFFFF
 
 
-@stub
+@simt_stub
 def map_shared_to_block_pair_leader(pointer: Pointer) -> Pointer:
     """
     Map a shared-memory pointer to the same offset in the leader block of its
@@ -693,22 +693,22 @@ def nanosleep(nanoseconds: int):
     nvvm.nanosleep(nanoseconds)
 
 
-@stub
+@simt_stub
 def memory_barrier(scope: MemoryScope) -> None:
     """Issue a memory fence with the given scope."""
 
 
-@stub
+@simt_stub
 def grid_dependency_control_wait() -> None:
     """Wait for prerequisite grids in a programmatic dependent launch."""
 
 
-@stub
+@simt_stub
 def grid_dependency_control_launch_dependents() -> None:
     """Launch dependent grids in a programmatic dependent launch."""
 
 
-@stub(compiled_host=True)
+@simt_stub(compiled_host=True)
 def bitcast(x, /, dtype):
     """Reinterpret a value as being of specified data type.
     """

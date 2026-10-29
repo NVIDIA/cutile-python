@@ -34,7 +34,7 @@ from .._datatype import (
     uint8,
     uint32,
 )
-from cuda.lang._execution import stub, function
+from cuda.lang._execution import simt_stub, function
 from .bits import set_bit32, set_bits32
 from .nvvm import P3, P6
 from . import nvvm as _nvvm
@@ -124,7 +124,7 @@ def tcgen05_shift_down(address, cta_group: CTAGroup = CTAGroup.CTA_1) -> None:
         _nvvm.tcgen05_shift_down_cg2(address)
 
 
-@stub
+@simt_stub
 def tcgen05_allocate(
     address: P3,
     number_of_columns: int,
@@ -144,7 +144,7 @@ def tcgen05_allocate(
     ...
 
 
-@stub
+@simt_stub
 def tcgen05_deallocate(
     address: P6,
     number_of_columns: int,
@@ -165,7 +165,7 @@ def tcgen05_deallocate(
     ...
 
 
-@stub
+@simt_stub
 def tcgen05_tmem_offset(
     pointer: P6,
     *,
@@ -185,7 +185,7 @@ def tcgen05_tmem_offset(
     ...
 
 
-@stub
+@simt_stub
 def tcgen05_commit(
     mbarrier: P3,
     *,
@@ -203,7 +203,7 @@ def tcgen05_commit(
     ...
 
 
-@stub
+@simt_stub
 def tcgen05_load(
     shape: Tcgen05LoadStoreShape,
     tensor_memory_address: P6,
@@ -236,7 +236,7 @@ def tcgen05_load(
     ...
 
 
-@stub
+@simt_stub
 def tcgen05_copy(
     address,
     shared_memory_descriptor,
@@ -261,7 +261,7 @@ def tcgen05_copy(
     """
 
 
-@stub
+@simt_stub
 def tcgen05_store(
     shape: Tcgen05LoadStoreShape,
     tensor_memory_address,
@@ -344,7 +344,7 @@ _TCGEN05_DTYPE_FORMATS = {
 }
 
 
-@stub(host=True)
+@simt_stub(host=True)
 def _tcgen05_encode_dtype(
     dtype: DType | int, format_kind: _Tcgen05DTypeFormat
 ) -> int:
@@ -743,11 +743,11 @@ class Tcgen05SharedMemoryDescriptor:
     )
     swizzle_mode: SwizzleMode = SwizzleMode.SWIZZLE_NONE
 
-    @stub
+    @simt_stub
     def encode(self) -> int: ...
 
 
-@stub
+@simt_stub
 def tcgen05_mma(
     kind,
     matrix_d,
@@ -792,7 +792,7 @@ def tcgen05_mma(
     """
 
 
-@stub
+@simt_stub
 def tcgen05_mma_block_scale(
     kind,
     matrix_d,
@@ -834,7 +834,7 @@ def tcgen05_mma_block_scale(
     """
 
 
-@stub
+@simt_stub
 def tcgen05_mma_weight_stationary(
     kind,
     matrix_d,

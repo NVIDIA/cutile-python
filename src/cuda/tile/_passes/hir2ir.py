@@ -279,9 +279,14 @@ async def _call_function(callee: Callable,
     callee = stub_aliases.get(callee, callee)
 
     execution_space = builder.ir_ctx.execution_space
-    if not is_function_allowed_in(callee, execution_space):
+    if not is_function_allowed_in(
+        callee, execution_space,
+        device_execution_space=builder.ir_ctx.device_execution_space,
+    ):
+        code_space = (execution_space if execution_space == "host"
+                      else builder.ir_ctx.device_execution_space)
         raise UnsupportedCallError(
-            f"{callee.__name__}() is not supported in {execution_space} code"
+            f"{callee.__name__}() is not supported in {code_space} code"
         )
 
     impl = _try_find_function_impl(callee)

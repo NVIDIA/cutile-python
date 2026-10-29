@@ -4,12 +4,12 @@
 
 from typing import Any, Tuple
 
-from cuda.tile._execution import stub
+from cuda.tile._execution import tile_stub
 
 from ._types import Tilelib
 
 
-@stub
+@tile_stub
 def foreign_call(
     *,
     tilelibs: Tuple[Tilelib, ...],

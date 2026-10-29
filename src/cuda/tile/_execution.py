@@ -16,7 +16,7 @@ if TYPE_CHECKING:
     from cuda.tile.compilation import KernelSignature
     from cuda.tile._ir.ir import ExecutionSpace
 
-__all__ = ("function", "kernel", "stub")
+__all__ = ("function", "kernel", "stub", "tile_stub")
 
 
 ###############################################################################
@@ -42,14 +42,15 @@ def function(func=None, /, *, host=False, tile=True):
         tile (bool, optional): Whether the function can be called from |tile code|.
             Default is True.
     """
-    return function_internal(func, host=host, tile=tile, compiled_host=True)
+    return function_internal(func, host=host, tile=tile, simt=False, compiled_host=True)
 
 
-def function_internal(func=None, /, *, host=False, tile=True, compiled_host=True):
+def function_internal(func=None, /, *, host, tile, simt, compiled_host=True):
     def decorator(func):
         if host:
             func._cutile_compiled_host_function = compiled_host
             func._cutile_tile_function = tile
+            func._cutile_simt_function = simt
             return func
         else:
             @functools.wraps(func)
@@ -58,6 +59,7 @@ def function_internal(func=None, /, *, host=False, tile=True, compiled_host=True
                         wrapped, args, kwargs)
             wrapped._cutile_compiled_host_function = compiled_host
             wrapped._cutile_tile_function = tile
+            wrapped._cutile_simt_function = simt
             wrapped._cutile_function_wrapper = True
             return wrapped
 
@@ -190,10 +192,15 @@ class StubInfo:
     static_eval_ok: bool
 
 
-def stub(func=None, /, *, host=False, tile=True, static_eval_ok: bool = False,
+def stub(func=None, /, *, host, tile, simt, static_eval_ok: bool = False,
          compiled_host: bool = False):
+    """Declare an API stub with explicit Python-host, tile, and SIMT permissions.
+
+    ``compiled_host`` separately controls support in compiled host code.
+    """
     def decorate(func):
-        func = function_internal(func, host=host, tile=tile, compiled_host=compiled_host)
+        func = function_internal(func, host=host, tile=tile, simt=simt,
+                                 compiled_host=compiled_host)
         func._cutile_python_stub = StubInfo(static_eval_ok=static_eval_ok)
         return func
 
@@ -201,6 +208,13 @@ def stub(func=None, /, *, host=False, tile=True, static_eval_ok: bool = False,
         return decorate
     else:
         return decorate(func)
+
+
+def tile_stub(func=None, /, *, host=False, static_eval_ok: bool = False,
+              compiled_host: bool = False):
+    """Declare a tile API stub with SIMT calls disabled."""
+    return stub(func, host=host, tile=True, simt=False,
+                static_eval_ok=static_eval_ok, compiled_host=compiled_host)
 
 
 def is_stub(func) -> bool:
@@ -239,14 +253,20 @@ def is_function_wrapper(func) -> bool:
     return getattr(func, "_cutile_function_wrapper", False)
 
 
-def is_function_allowed_in(func, execution_space: "ExecutionSpace") -> bool:
+def is_function_allowed_in(func, execution_space: "ExecutionSpace", *,
+                           device_execution_space: str = "tile") -> bool:
     """Return whether an explicitly annotated function supports an execution space.
 
     Unannotated Python helpers inherit the execution space of their caller.
     """
     assert execution_space in ("host", "device")
-    attribute = ("_cutile_compiled_host_function"
-                 if execution_space == "host" else "_cutile_tile_function")
+    assert device_execution_space in ("tile", "simt")
+    if execution_space == "host":
+        attribute = "_cutile_compiled_host_function"
+    elif device_execution_space == "tile":
+        attribute = "_cutile_tile_function"
+    else:
+        attribute = "_cutile_simt_function"
     return getattr(func, attribute, True)
 
 

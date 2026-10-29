@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from functools import cache, lru_cache
 from typing import Callable, Any, Annotated, NamedTuple, Sequence
 
-from cuda.lang._execution import stub
+from cuda.lang._execution import simt_stub
 from cuda.lang._ir.op_defs import call_intrinsic
 from cuda.lang._ir.type import OpaqueTy, PointerTy, ScalarTy, VectorTy, make_rank0_ty
 from cuda.lang._ir.type_checking_helpers import require_vector_type, require_scalar_or_vector_type
@@ -274,21 +274,21 @@ _libdevice_func_impl._is_coroutine = False
 
 
 def nvvm_intrinsic_stub(func, *, name: str | None):
-    func = stub(func)
+    func = simt_stub(func)
     func._cutile_custom_implementation_handler = _nvvm_intrinsic_impl
     func._llvm_intrinsic_name = name
     return func
 
 
 def llvm_intrinsic_stub(func, *, name: str | None):
-    func = stub(func)
+    func = simt_stub(func)
     func._cutile_custom_implementation_handler = _llvm_intrinsic_impl
     func._llvm_intrinsic_name = name
     return func
 
 
 def libdevice_function_stub(func):
-    func = stub(func)
+    func = simt_stub(func)
     func._cutile_custom_implementation_handler = _libdevice_func_impl
     return func
 

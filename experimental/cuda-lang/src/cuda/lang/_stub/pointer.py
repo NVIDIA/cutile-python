@@ -5,7 +5,7 @@
 from __future__ import annotations
 from typing import TYPE_CHECKING
 
-from cuda.lang._execution import stub
+from cuda.lang._execution import simt_stub
 from cuda.lang._enums import MemoryOrder
 from cuda.tile._memory_model import MemoryScope
 
@@ -13,7 +13,7 @@ if TYPE_CHECKING:
     from .types import Pointer, Scalar, Vector
 
 
-@stub
+@simt_stub
 def load(
     pointer: Pointer,
     /,
@@ -39,7 +39,7 @@ def load(
     ...
 
 
-@stub
+@simt_stub
 def store(
     pointer: Pointer,
     value: Scalar | Pointer | Vector | int | float | bool,
@@ -64,7 +64,7 @@ def store(
     ...
 
 
-@stub
+@simt_stub
 def atomic_load(
     pointer: Pointer,
     /,
@@ -99,7 +99,7 @@ def atomic_load(
     ...
 
 
-@stub
+@simt_stub
 def atomic_store(
     pointer: Pointer,
     value: Scalar | Pointer | Vector | int | float | bool,

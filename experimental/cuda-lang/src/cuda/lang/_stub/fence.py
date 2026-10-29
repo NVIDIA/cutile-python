@@ -4,7 +4,7 @@
 
 from dataclasses import dataclass
 from enum import Enum, auto
-from cuda.lang._execution import stub
+from cuda.lang._execution import simt_stub
 from .._enums import FenceProxy, MemoryOrder, MemoryScope
 
 
@@ -47,7 +47,7 @@ class _FenceAddressRestriction(FenceRestriction):
     size: int = 128
 
 
-@stub
+@simt_stub
 def fence(
     order: MemoryOrder = MemoryOrder.SEQ_CST,
     scope: MemoryScope = MemoryScope.SYS,
@@ -70,7 +70,7 @@ def fence(
     ...
 
 
-@stub
+@simt_stub
 def fence_proxy_bidirectional(
     proxy: FenceProxy,
     *,

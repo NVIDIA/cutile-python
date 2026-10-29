@@ -2,12 +2,12 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-from cuda.lang._execution import stub, function
-from .._enums import TMALoadMode, TMAStoreMode, CTAGroup, AsyncCopyReportMechanism  # noqa: F401
+from cuda.lang._execution import simt_stub, function
+from .._enums import TMALoadMode, TMAStoreMode, AsyncCopyReportMechanism 
 from . import nvvm as _nvvm
 
 
-@stub
+@simt_stub
 def copy_async_mbarrier_arrive(mbar) -> None:
     """Signal an arrival after earlier ``cp.async`` copies complete.
 
@@ -17,7 +17,7 @@ def copy_async_mbarrier_arrive(mbar) -> None:
     ...
 
 
-@stub
+@simt_stub
 def copy_async_mbarrier_arrive_no_increment(mbar) -> None:
     """Signal an asynchronous-copy arrival without incrementing the count.
 
@@ -27,7 +27,7 @@ def copy_async_mbarrier_arrive_no_increment(mbar) -> None:
     ...
 
 
-@stub
+@simt_stub
 def copy_async_bulk_tensor_global_to_shared(
     src_tensor_map_descriptor,
     src_coordinates,
@@ -73,7 +73,7 @@ def copy_async_bulk_tensor_global_to_shared(
     """
 
 
-@stub
+@simt_stub
 def copy_async_bulk_tensor_shared_to_global(
     src_memory,
     dst_tensor_map_descriptor,
@@ -114,7 +114,7 @@ def copy_async_bulk_commit_group():
     _nvvm.cp_async_bulk_commit_group()
 
 
-@stub()
+@simt_stub
 def copy_async_bulk_wait_group(number_of_groups, *, read=False):
     """Wait for completion of the most recent bulk async-groups.
 

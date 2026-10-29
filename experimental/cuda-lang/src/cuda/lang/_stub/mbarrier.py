@@ -5,7 +5,7 @@
 from typing import Literal
 
 from cuda.lang._enums import MbarrierLayout, MbarrierScope
-from cuda.lang._execution import stub
+from cuda.lang._execution import simt_stub
 from cuda.lang._datatype import uint32, uint64, bool_
 from cuda.lang._enums import MemoryOrder
 
@@ -14,7 +14,7 @@ ArriveMemoryOrder = Literal[MemoryOrder.RELAXED, MemoryOrder.RELEASE]
 WaitMemoryOrder = Literal[MemoryOrder.RELAXED, MemoryOrder.ACQUIRE]
 
 
-@stub
+@simt_stub
 def mbarrier_initialize(
     mbar, participants: int, *, layout: MbarrierLayout | None = None
 ) -> None:
@@ -29,7 +29,7 @@ def mbarrier_initialize(
     ...
 
 
-@stub
+@simt_stub
 def mbarrier_has_layout(mbar, layout: MbarrierLayout) -> "bool_":
     """Test whether an initialized mbarrier has the specified storage layout.
 
@@ -43,7 +43,7 @@ def mbarrier_has_layout(mbar, layout: MbarrierLayout) -> "bool_":
     ...
 
 
-@stub
+@simt_stub
 def mbarrier_invalidate(mbar) -> None:
     """Invalidate an mbarrier object before its storage is reused.
 
@@ -53,7 +53,7 @@ def mbarrier_invalidate(mbar) -> None:
     ...
 
 
-@stub
+@simt_stub
 def mbarrier_arrive(
     mbar,
     count: int = 1,
@@ -80,7 +80,7 @@ def mbarrier_arrive(
     """
 
 
-@stub
+@simt_stub
 def mbarrier_arrive_nocomplete(mbar, count: int) -> "uint64":
     """Arrive without completing the current phase.
 
@@ -94,7 +94,7 @@ def mbarrier_arrive_nocomplete(mbar, count: int) -> "uint64":
     ...
 
 
-@stub
+@simt_stub
 def mbarrier_arrive_drop_nocomplete(mbar, count: int) -> "uint64":
     """Arrive without completing the phase and drop expected arrivals.
 
@@ -108,7 +108,7 @@ def mbarrier_arrive_drop_nocomplete(mbar, count: int) -> "uint64":
     ...
 
 
-@stub
+@simt_stub
 def mbarrier_arrive_expect_transaction(
     mbar,
     bytes: int,
@@ -133,7 +133,7 @@ def mbarrier_arrive_expect_transaction(
     ...
 
 
-@stub
+@simt_stub
 def mbarrier_expect_transaction(
     mbar,
     bytes: int,
@@ -150,7 +150,7 @@ def mbarrier_expect_transaction(
     ...
 
 
-@stub
+@simt_stub
 def mbarrier_complete_transaction(
     mbar,
     bytes: int,
@@ -167,7 +167,7 @@ def mbarrier_complete_transaction(
     ...
 
 
-@stub
+@simt_stub
 def mbarrier_pending_count(state) -> "uint32":
     """Query the pending arrival count from the opaque mbarrier state.
 
@@ -181,7 +181,7 @@ def mbarrier_pending_count(state) -> "uint32":
     ...
 
 
-@stub
+@simt_stub
 def mbarrier_test_wait(
     mbar,
     state,
@@ -202,7 +202,7 @@ def mbarrier_test_wait(
     """
 
 
-@stub
+@simt_stub
 def mbarrier_test_wait_parity(
     mbar,
     parity: int,
@@ -224,7 +224,7 @@ def mbarrier_test_wait_parity(
     """
 
 
-@stub
+@simt_stub
 def mbarrier_try_wait(
     mbar,
     state,
@@ -264,7 +264,7 @@ def mbarrier_wait(
         pass
 
 
-@stub
+@simt_stub
 def mbarrier_try_wait_parity(
     mbar,
     parity: int,

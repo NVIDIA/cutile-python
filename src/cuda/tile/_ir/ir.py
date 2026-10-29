@@ -46,6 +46,8 @@ class TypingHooks:
 
 
 class IRContext:
+    device_execution_space = "tile"
+
     def __init__(self, log_ir_on_error: bool, tileiras_version: BytecodeVersion,
                  typing_hooks: TypingHooks, *,
                  execution_space: ExecutionSpace = "device"):

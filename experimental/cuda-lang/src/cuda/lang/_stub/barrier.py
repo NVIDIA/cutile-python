@@ -4,13 +4,13 @@
 
 from typing import Literal
 
-from cuda.lang._execution import function, stub
+from cuda.lang._execution import function, simt_stub
 from .._enums import BarrierReductionKind, MemoryOrder
 from .core_api import FULL_MASK
 from . import nvvm as _nvvm
 
 
-@stub
+@simt_stub
 def barrier_sync_block(
     number_of_threads: int | None = None,
     barrier_id: int = 0,
@@ -26,7 +26,7 @@ def barrier_sync_block(
     """
 
 
-@stub
+@simt_stub
 def barrier_sync_block_aligned(
     number_of_threads: int | None = None,
     barrier_id: int = 0,
@@ -59,7 +59,7 @@ def barrier_arrive_block_aligned(
     _nvvm.barrier_cta_arrive_aligned_count(barrier_id, number_of_threads)
 
 
-@stub
+@simt_stub
 def barrier_reduce_block(
     op: BarrierReductionKind,
     predicate: bool,
@@ -79,7 +79,7 @@ def barrier_reduce_block(
     """
 
 
-@stub
+@simt_stub
 def barrier_reduce_block_aligned(
     op: BarrierReductionKind,
     predicate: bool,
@@ -89,7 +89,7 @@ def barrier_reduce_block_aligned(
     """Same as ``barrier_reduce_block``, but must be textually aligned."""
 
 
-@stub
+@simt_stub
 def barrier_arrive_cluster(
     *,
     memory_order: Literal[
@@ -103,7 +103,7 @@ def barrier_arrive_cluster(
     """
 
 
-@stub
+@simt_stub
 def barrier_arrive_cluster_aligned(
     *,
     memory_order: Literal[

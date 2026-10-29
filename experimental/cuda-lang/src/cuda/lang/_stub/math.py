@@ -2,12 +2,12 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-from cuda.lang._execution import stub
+from cuda.lang._execution import simt_stub
 from cuda.lang._enums import RoundingMode, SaturationMode
 from cuda.tile._cext import _binary_wrapping_arithmetic_tensorlike
 
 
-@stub(static_eval_ok=True, compiled_host=True)
+@simt_stub(static_eval_ok=True, compiled_host=True)
 def add(x, y, /, *, rounding_mode: RoundingMode | None = None,
         flush_to_zero: bool = False):
     """Compute ``x + y``.
@@ -20,7 +20,7 @@ def add(x, y, /, *, rounding_mode: RoundingMode | None = None,
     ...
 
 
-@stub(static_eval_ok=True, compiled_host=True)
+@simt_stub(static_eval_ok=True, compiled_host=True)
 def sub(x, y, /, *, rounding_mode: RoundingMode | None = None,
         flush_to_zero: bool = False):
     """Compute ``x - y``.
@@ -33,13 +33,13 @@ def sub(x, y, /, *, rounding_mode: RoundingMode | None = None,
     ...
 
 
-@stub(static_eval_ok=True, compiled_host=True)
+@simt_stub(static_eval_ok=True, compiled_host=True)
 def mul(x, y, /):
     """Compute ``x * y``."""
     ...
 
 
-@stub(host=True, compiled_host=True)
+@simt_stub(host=True, compiled_host=True)
 def wrapping_add(x, y, /):
     """Compute ``x + y`` for integers, wrapping around on overflow.
 
@@ -55,7 +55,7 @@ def wrapping_add(x, y, /):
     return _binary_wrapping_arithmetic_tensorlike("wrapping_add", x, y, False)
 
 
-@stub(host=True, compiled_host=True)
+@simt_stub(host=True, compiled_host=True)
 def wrapping_sub(x, y, /):
     """Compute ``x - y`` for integers, wrapping around on overflow.
 
@@ -71,7 +71,7 @@ def wrapping_sub(x, y, /):
     return _binary_wrapping_arithmetic_tensorlike("wrapping_sub", x, y, False)
 
 
-@stub(host=True, compiled_host=True)
+@simt_stub(host=True, compiled_host=True)
 def wrapping_mul(x, y, /):
     """Compute ``x * y`` for integers, wrapping around on overflow.
 
@@ -87,7 +87,7 @@ def wrapping_mul(x, y, /):
     return _binary_wrapping_arithmetic_tensorlike("wrapping_mul", x, y, False)
 
 
-@stub
+@simt_stub
 def fma(
     x,
     y,
@@ -117,7 +117,7 @@ def fma(
     ...
 
 
-@stub(static_eval_ok=True, compiled_host=True)
+@simt_stub(static_eval_ok=True, compiled_host=True)
 def truediv(x, y, /, *, approx=False):
     """Compute ``x / y``.
 
@@ -127,43 +127,43 @@ def truediv(x, y, /, *, approx=False):
     """
 
 
-@stub(static_eval_ok=True, compiled_host=True)
+@simt_stub(static_eval_ok=True, compiled_host=True)
 def floordiv(x, y, /):
     """Compute ``x // y``."""
     ...
 
 
-@stub(static_eval_ok=True, compiled_host=True)
+@simt_stub(static_eval_ok=True, compiled_host=True)
 def mod(x, y, /):
     """Compute ``x % y``."""
     ...
 
 
-@stub(static_eval_ok=True, compiled_host=True)
+@simt_stub(static_eval_ok=True, compiled_host=True)
 def integer_remainder(x, y, /):
     """Compute the remainder of integer division following C truncation rules.
     """
     ...
 
 
-@stub(static_eval_ok=True, compiled_host=True)
+@simt_stub(static_eval_ok=True, compiled_host=True)
 def divmod(x, y, /):
     """Compute divmod(x, y)."""
 
 
-@stub(static_eval_ok=True, compiled_host=True)
+@simt_stub(static_eval_ok=True, compiled_host=True)
 def negative(x, /):
     """Compute ``-x``."""
     ...
 
 
-@stub
+@simt_stub
 def ceil(x, /):
     """Round ``x`` toward positive infinity."""
     ...
 
 
-@stub
+@simt_stub
 def exp(x, /, *, approx=False):
     """Compute ``e`` raised to the power ``x``.
 
@@ -174,7 +174,7 @@ def exp(x, /, *, approx=False):
     ...
 
 
-@stub
+@simt_stub
 def exp2(x, /, *, flush_to_zero=False):
     """Compute ``2`` raised to the power ``x``.
 
@@ -185,7 +185,7 @@ def exp2(x, /, *, flush_to_zero=False):
     ...
 
 
-@stub
+@simt_stub
 def sin(x, /, *, approx=False):
     """Compute the sine of ``x``.
 
@@ -196,7 +196,7 @@ def sin(x, /, *, approx=False):
     ...
 
 
-@stub
+@simt_stub
 def cos(x, /, *, approx=False):
     """Compute the cosine of ``x``.
 
@@ -207,7 +207,7 @@ def cos(x, /, *, approx=False):
     ...
 
 
-@stub
+@simt_stub
 def sincos(x, /, *, approx=False):
     """Compute both the sine and cosine of ``x``.
 
@@ -218,7 +218,7 @@ def sincos(x, /, *, approx=False):
     ...
 
 
-@stub
+@simt_stub
 def tan(x, /, *, approx=False):
     """Compute the tangent of ``x``.
 
@@ -229,43 +229,43 @@ def tan(x, /, *, approx=False):
     ...
 
 
-@stub
+@simt_stub
 def sinh(x, /):
     """Compute the hyperbolic sine of ``x``."""
     ...
 
 
-@stub
+@simt_stub
 def cosh(x, /):
     """Compute the hyperbolic cosine of ``x``."""
     ...
 
 
-@stub
+@simt_stub
 def tanh(x, /):
     """Compute the hyperbolic tangent of ``x``."""
     ...
 
 
-@stub
+@simt_stub
 def sqrt(x, /):
     """Compute the square root of ``x``."""
     ...
 
 
-@stub
+@simt_stub
 def rsqrt(x, /):
     """Compute the reciprocal square root of ``x``."""
     ...
 
 
-@stub
+@simt_stub
 def floor(x, /):
     """Round ``x`` toward negative infinity."""
     ...
 
 
-@stub
+@simt_stub
 def log(x, /, *, approx=False):
     """Compute the natural logarithm of ``x``.
 
@@ -276,7 +276,7 @@ def log(x, /, *, approx=False):
     ...
 
 
-@stub
+@simt_stub
 def log2(x, /, *, approx=False):
     """Compute the base-2 logarithm of ``x``.
 
@@ -287,43 +287,43 @@ def log2(x, /, *, approx=False):
     ...
 
 
-@stub
+@simt_stub
 def abs(x, /):
     """Compute the absolute value of ``x``."""
     ...
 
 
-@stub
+@simt_stub
 def atan2(x, y, /):
     """Compute the angle whose tangent is ``x / y``."""
     ...
 
 
-@stub
+@simt_stub
 def isnan(x, /):
     """Return whether ``x`` is NaN."""
     ...
 
 
-@stub
+@simt_stub
 def isinf(x, /):
     """Return whether ``x`` is positive or negative infinity."""
     ...
 
 
-@stub
+@simt_stub
 def isfinite(x, /):
     """Return whether ``x`` is finite."""
     ...
 
 
-@stub
+@simt_stub
 def isnormal(x, /):
     """Return whether ``x`` is a normal floating-point value."""
     ...
 
 
-@stub
+@simt_stub
 def pow(x, y, /, *, approx=False):
     """Calculate the value of ``x`` to the power of ``y``.
 
@@ -334,7 +334,7 @@ def pow(x, y, /, *, approx=False):
     ...
 
 
-@stub(static_eval_ok=True)
+@simt_stub(static_eval_ok=True)
 def maximum(x, y, /, *, propagate_nan=False):
     """Compute the element-wise maximum of ``x`` and ``y``.
 
@@ -348,7 +348,7 @@ def maximum(x, y, /, *, propagate_nan=False):
     ...
 
 
-@stub(static_eval_ok=True)
+@simt_stub(static_eval_ok=True)
 def minimum(x, y, /, *, propagate_nan=False):
     """Compute the element-wise minimum of ``x`` and ``y``.
 
@@ -362,67 +362,67 @@ def minimum(x, y, /, *, propagate_nan=False):
     ...
 
 
-@stub(static_eval_ok=True, compiled_host=True)
+@simt_stub(static_eval_ok=True, compiled_host=True)
 def bitwise_and(x, y, /):
     """Compute ``x & y``."""
 
 
-@stub(static_eval_ok=True, compiled_host=True)
+@simt_stub(static_eval_ok=True, compiled_host=True)
 def bitwise_or(x, y, /):
     """Compute ``x | y``."""
 
 
-@stub(static_eval_ok=True, compiled_host=True)
+@simt_stub(static_eval_ok=True, compiled_host=True)
 def bitwise_xor(x, y, /):
     """Compute ``x ^ y``."""
 
 
-@stub(static_eval_ok=True, compiled_host=True)
+@simt_stub(static_eval_ok=True, compiled_host=True)
 def bitwise_lshift(x, y, /):
     """Compute ``x << y``."""
 
 
-@stub(static_eval_ok=True, compiled_host=True)
+@simt_stub(static_eval_ok=True, compiled_host=True)
 def bitwise_rshift(x, y, /):
     """Compute ``x >> y``."""
 
 
-@stub(static_eval_ok=True, compiled_host=True)
+@simt_stub(static_eval_ok=True, compiled_host=True)
 def bitwise_not(x, /):
     """Compute ``~x``."""
 
 
-@stub(static_eval_ok=True, compiled_host=True)
+@simt_stub(static_eval_ok=True, compiled_host=True)
 def greater(x, y, /):
     """Compute ``x > y``."""
 
 
-@stub(static_eval_ok=True, compiled_host=True)
+@simt_stub(static_eval_ok=True, compiled_host=True)
 def greater_equal(x, y, /):
     """Compute ``x >= y``."""
 
 
-@stub(static_eval_ok=True, compiled_host=True)
+@simt_stub(static_eval_ok=True, compiled_host=True)
 def less(x, y, /):
     """Compute ``x < y``."""
 
 
-@stub(static_eval_ok=True, compiled_host=True)
+@simt_stub(static_eval_ok=True, compiled_host=True)
 def less_equal(x, y, /):
     """Compute ``x <= y``."""
 
 
-@stub(static_eval_ok=True, compiled_host=True)
+@simt_stub(static_eval_ok=True, compiled_host=True)
 def equal(x, y, /):
     """Compute ``x == y``."""
 
 
-@stub(static_eval_ok=True, compiled_host=True)
+@simt_stub(static_eval_ok=True, compiled_host=True)
 def not_equal(x, y, /):
     """Compute ``x != y``."""
 
 
-@stub
+@simt_stub
 def where(condition, x, y, /):
     """Select elements from ``x`` or ``y`` with a scalar or vector condition.
 

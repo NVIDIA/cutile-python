@@ -7,11 +7,11 @@ from .._enums import (
     MatrixLoadShape,
     MatrixLoadSourceFormat,
 )
-from cuda.lang._execution import stub
+from cuda.lang._execution import simt_stub
 from typing import Literal
 
 
-@stub()
+@simt_stub
 def load_matrix(
     src,
     /,
@@ -38,7 +38,7 @@ def load_matrix(
     ...
 
 
-@stub()
+@simt_stub
 def store_matrix(
     dst,
     values,

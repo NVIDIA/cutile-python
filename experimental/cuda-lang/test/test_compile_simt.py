@@ -3,12 +3,13 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import cuda.lang as cl
+import cuda.tile as ct
 import cuda.lang._compile as compile_module
 import cuda.lang._logging as logging_module
 import pytest
 from cuda.lang._compiler_options import CompilerOptions
 from cuda.tile._exception import UnsupportedCallError
-from cuda.tile._execution import is_function_allowed_in
+from cuda.tile._execution import (is_function_allowed_in, stub)
 
 from cuda.lang._ir import hir, ir
 from cuda.lang._logging import LoggingConfig
@@ -26,18 +27,76 @@ def test_function_execution_spaces():
         pass
 
     assert is_function_allowed_in(simt_function, "host")
-    assert is_function_allowed_in(simt_function, "device")
+    assert is_function_allowed_in(simt_function, "device", device_execution_space="simt")
+    assert not is_function_allowed_in(simt_function, "device", device_execution_space="tile")
 
-    @cl.function(tile=False)
+    @cl.function(simt=False)
     def host_function():
         pass
 
     assert is_function_allowed_in(host_function, "host")
     assert not is_function_allowed_in(host_function, "device")
+    assert not is_function_allowed_in(host_function, "device", device_execution_space="simt")
+
+
+@pytest.mark.parametrize("host", [False, True])
+@pytest.mark.parametrize("tile, simt", [(False, False), (False, True), (True, False), (True, True)])
+@pytest.mark.parametrize("compiled_host", [False, True])
+def test_stub_execution_spaces(host, tile, simt, compiled_host):
+    @stub(host=host, tile=tile, simt=simt, compiled_host=compiled_host)
+    def helper():
+        return 42
+
+    assert is_function_allowed_in(helper, "host") == compiled_host
+    assert is_function_allowed_in(helper, "device", device_execution_space="tile") == tile
+    assert is_function_allowed_in(helper, "device", device_execution_space="simt") == simt
+    if host:
+        assert helper() == 42
+    else:
+        with pytest.raises(RuntimeError, match="Device functions can only be called"):
+            helper()
+
+
+@pytest.mark.parametrize("host", [False, True])
+@pytest.mark.parametrize("tile", [False, True])
+def test_ct_function_execution_spaces(host, tile):
+    @ct.function(host=host, tile=tile)
+    def helper():
+        return 42
+
+    assert is_function_allowed_in(helper, "host")
+    assert is_function_allowed_in(helper, "device", device_execution_space="tile") == tile
+    assert not is_function_allowed_in(helper, "device", device_execution_space="simt")
+    if host:
+        assert helper() == 42
+    else:
+        with pytest.raises(
+            RuntimeError, match="Device functions can only be called from device code"
+        ):
+            helper()
+
+
+@pytest.mark.parametrize("host", [False, True])
+@pytest.mark.parametrize("tile, simt", [(False, False), (False, True), (True, False), (True, True)])
+def test_cl_function_execution_spaces(host, tile, simt):
+    @cl.function(host=host, tile=tile, simt=simt)
+    def helper():
+        return 42
+
+    assert is_function_allowed_in(helper, "host")
+    assert is_function_allowed_in(helper, "device", device_execution_space="tile") == tile
+    assert is_function_allowed_in(helper, "device", device_execution_space="simt") == simt
+    if host:
+        assert helper() == 42
+    else:
+        with pytest.raises(
+            RuntimeError, match="Device functions can only be called from device code"
+        ):
+            helper()
 
 
 def test_compile_simt_honors_execution_space():
-    @cl.function(host=True, tile=False)
+    @cl.function(host=True, simt=False)
     def host_only():
         pass
 
@@ -46,7 +105,7 @@ def test_compile_simt_honors_execution_space():
 
     with pytest.raises(
         UnsupportedCallError,
-        match=r"host_only\(\) is not supported in device code",
+        match=r"host_only\(\) is not supported in simt code",
     ):
         cl.compile_simt(kernel, [KernelSignature([])])
 

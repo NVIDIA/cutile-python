@@ -11,7 +11,7 @@ from cuda.lang._ir import ir
 from ._compiler_options import CompilerOptions, DebugInfo
 from cuda.tile import _cext
 from cuda.tile._cext import launch_extended
-from cuda.tile._execution import function, stub, static_def
+from cuda.tile._execution import function_internal, stub, static_def
 
 if TYPE_CHECKING:
     from cuda.lang.compilation import KernelSignature
@@ -23,6 +23,7 @@ __all__ = (
     "kernel",
     "launch",
     "stub",
+    "simt_stub",
     "static_def"
 )
 
@@ -30,7 +31,30 @@ __all__ = (
 Dim3: TypeAlias = tuple[int] | tuple[int, int] | tuple[int, int, int]
 
 
-@stub(host=True, tile=False, compiled_host=True)
+def function(func=None, /, *, host=False, tile=False, simt=True):
+    """Mark a helper's supported execution spaces.
+
+    By default, the helper supports SIMT code only. Ordinary undecorated helpers
+    inherit the execution space of their caller.
+
+    Args:
+        host (bool): Allow calls from Python host code. Default is False.
+        tile (bool): Allow calls from cuda.tile code. Default is False.
+        simt (bool): Allow calls from cuda.lang SIMT code. Default is True.
+
+    Use ``tile=True, simt=True`` for a helper shared by both device compilers.
+    """
+    return function_internal(func, host=host, tile=tile, simt=simt, compiled_host=True)
+
+
+def simt_stub(func=None, /, *, host=False, static_eval_ok: bool = False,
+              compiled_host: bool = False):
+    """Declare a SIMT API stub with tile calls disabled."""
+    return stub(func, host=host, tile=False, simt=True,
+                static_eval_ok=static_eval_ok, compiled_host=compiled_host)
+
+
+@stub(host=True, tile=False, simt=False, compiled_host=True)
 def launch(
     stream,
     block_count: Dim3,

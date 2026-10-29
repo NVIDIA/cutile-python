@@ -468,7 +468,6 @@ memory loads or stores, or control flow that depends on runtime values.
 
 Helper Functions
 ----------------
-
 An ordinary Python helper inherits the mode of its caller. No extra decorator
 or annotation is required:
 
@@ -507,6 +506,14 @@ can use full Python, subject to the compile-time restrictions above. Helpers
 defined inside default-mode code become
 :ref:`symbolic closures <language-symbolic-closures>` when passed into static
 evaluation.
+
+Use ``@cl.function`` to explicitly mark a helper's execution spaces. Its
+defaults are ``simt=True, host=False, tile=False``: the helper can be called from
+SIMT code, while direct Python calls and tile compilation are disabled.
+Set ``host=True`` to permit direct Python calls, or ``simt=False`` for a helper
+that is only compiled for the host. Set ``tile=True`` to also permit calls from
+``cuda.tile`` code. Use ``@cl.function(tile=True, simt=True)`` for a helper shared
+by both device compilers.
 
 Inlining and Recursion
 ~~~~~~~~~~~~~~~~~~~~~~

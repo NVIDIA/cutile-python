@@ -2,11 +2,11 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-from cuda.lang._execution import stub
+from cuda.lang._execution import simt_stub
 import cuda.lang._datatype as datatype
 
 
-@stub
+@simt_stub
 def _call_foreign_function(
     func: str, return_type: datatype.TypeSpec, parameters: tuple[datatype.TypeSpec]
 ):

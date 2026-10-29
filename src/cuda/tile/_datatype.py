@@ -8,7 +8,7 @@ from typing import Optional, Tuple
 from enum import IntEnum
 
 from cuda.tile._exception import TileTypeError
-from cuda.tile._execution import stub
+from cuda.tile._execution import stub, tile_stub
 from cuda.tile._memory_model import MemorySpace
 import cuda.tile._bytecode as bc
 from cuda.tile._cext import (
@@ -52,7 +52,6 @@ class IntegerInfo:
     """
     Machine information for integer data types, similar to numpy.iinfo.
     """
-    @stub(host=True)
     def __init__(self, dtype: DType):
         if not is_integral(dtype):
             raise TypeError(f"'{dtype}' is not an integer dtype")
@@ -396,20 +395,17 @@ def _generate_rst_table() -> str:
 class PointerInfo:
     """Information encoded in a pointer dtype."""
 
-    @stub(host=True)
     def __init__(self, dtype: DType):
         if not is_pointer_dtype(dtype):
             raise TypeError(f"'{dtype}' is not a pointer dtype")
         self._dtype = dtype
 
     @property
-    @stub(host=True)
     def opaque(self) -> bool:
         """Whether the pointer dtype is opaque."""
         return _pointer_pointee_dtype(self._dtype) is None
 
     @property
-    @stub(host=True)
     def pointee_dtype(self) -> DType:
         """Data type pointed to by this pointer dtype."""
         ret = _pointer_pointee_dtype(self._dtype)
@@ -418,7 +414,6 @@ class PointerInfo:
         return ret
 
     @property
-    @stub(host=True)
     def memory_space(self) -> MemorySpace:
         """CUDA memory space encoded in this pointer dtype."""
         return _pointer_memory_space(self._dtype)
@@ -443,13 +438,13 @@ class PointerInfo:
         return hash(self._dtype)
 
 
-@stub(host=True, compiled_host=True)
+@stub(host=True, tile=True, simt=True, compiled_host=True)
 def is_pointer_dtype(dtype: DType) -> bool:
     """Return whether ``dtype`` is a pointer dtype."""
     return _is_pointer_dtype(dtype)
 
 
-@stub(host=True, compiled_host=True)
+@stub(host=True, tile=True, simt=True, compiled_host=True)
 def pointer_dtype(pointee_dtype: DType,
                   memory_space: MemorySpace = MemorySpace.GENERIC) -> DType:
     """Return the dtype for a pointer to ``pointee_dtype`` in ``memory_space``.
@@ -464,7 +459,7 @@ def pointer_dtype(pointee_dtype: DType,
     return _get_pointer_dtype(pointee_dtype, memory_space)
 
 
-@stub(host=True, compiled_host=True)
+@stub(host=True, tile=True, simt=True, compiled_host=True)
 def opaque_pointer_dtype(memory_space: MemorySpace = MemorySpace.GENERIC) -> DType:
     """Return the dtype for an opaque pointer in ``memory_space``.
 
@@ -486,7 +481,7 @@ def foreign_pointer_pointee_dtype(dtype: DType) -> DType:
     return _foreign_pointer_pointee_dtype(dtype)
 
 
-@stub(host=True)
+@tile_stub(host=True)
 def foreign_pointer_dtype(pointee_dtype: DType) -> DType:
     if not isinstance(pointee_dtype, DType):
         raise TypeError("pointee_dtype must be a cuda.tile dtype")
