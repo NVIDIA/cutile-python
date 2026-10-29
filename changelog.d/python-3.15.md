@@ -1,1 +1,0 @@
-- Added support for Python 3.15 and 3.15t (free-threading), and dropped Python 3.10.
