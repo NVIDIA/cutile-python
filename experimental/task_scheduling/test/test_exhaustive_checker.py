@@ -35,9 +35,9 @@ class Pipe(ts.MemoryResource):
         return True
 
 
-def async_config(stages):
+def async_config(stages, producers=32, consumers=32):
     return ts.PipelineConfig.create_async_async_pipeline_cfg(
-        stages, ts.CooperativeGroup(32), ts.CooperativeGroup(32)
+        stages, ts.CooperativeGroup(producers), ts.CooperativeGroup(consumers)
     )
 
 
@@ -75,7 +75,7 @@ def task(index, schedule, name):
 
 
 def test_one_producer_feeding_two_consumers_is_safe():
-    pipe = Pipe(name="pipe", pipeline_config=async_config(2))
+    pipe = Pipe(name="pipe", pipeline_config=async_config(2, consumers=64))
 
     @ts.schedule
     def producer(pipe):
@@ -196,12 +196,13 @@ def test_two_producers_must_both_arrive():
     result = ts.check_all_interleavings(tasks)
     assert result.is_safe
     assert result.complete_count >= 1
+    pipe.pipeline_config = async_config(2, producers=64)
     ts.TaskManager(tasks, {})
 
 
 def test_producer_with_fewer_commits_deadlocks_the_consumer():
     """The second round never fills: only one of two producers commits it."""
-    pipe = Pipe(name="pipe", pipeline_config=async_config(2))
+    pipe = Pipe(name="pipe", pipeline_config=async_config(2, producers=64))
 
     @ts.schedule
     def producer(pipe):

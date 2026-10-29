@@ -383,7 +383,10 @@ def test_multigroup_tma_umma_release_mask_compiles():
         1,
         128,
         ts.CooperativeGroup(1),
-        ts.CooperativeGroup(4),
+        # Two V-group leaders share the N coordinate of each CTA's empty
+        # barrier under mcast_mode_mn=(0, 1), so two tcgen05.commit signals
+        # reach it per stage.
+        ts.CooperativeGroup(2),
         cta_layout_vmnk=(2, 2, 2, 1),
         mcast_mode_mn=(0, 1),
         consumer_signaling_threads=ts.SignalingThreads.CtaLeader,
@@ -664,7 +667,14 @@ def test_deadlock_witness_for_consumer_without_producer(capsys):
 
 
 def test_register_over_budget_and_warn_only():
-    pipe = Pipe(name="pipe", pipeline_config=config())
+    # The producer grows to eight warps below; size its group accordingly so the
+    # only diagnostic is the register budget.
+    pipe = Pipe(
+        name="pipe",
+        pipeline_config=ts.PipelineConfig.create_async_async_pipeline_cfg(
+            1, ts.CooperativeGroup(256), ts.CooperativeGroup(32)
+        ),
+    )
     source, sink, producer, consumer = make_balanced_tasks(pipe)
     producer.num_registers = 256
     producer.num_warps = 8

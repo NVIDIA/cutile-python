@@ -216,10 +216,6 @@ class PipelineType(Enum):
     AsyncUmma = "AsyncUmma"
     UmmaUmma = "UmmaUmma"
     ClcFetchAsync = "ClcFetchAsync"
-    DpcTmaDlc = "DpcTmaDlc"
-    DlcAsync = "DlcAsync"
-    AsyncDlc = "AsyncDlc"
-    DlcDlc = "DlcDlc"
 
 
 class TileSchedulerType(Enum):

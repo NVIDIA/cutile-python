@@ -7,7 +7,7 @@ import io
 import warnings
 from contextlib import redirect_stdout
 
-from .enums import PipelineType, ScheduleStage
+from .enums import PipelineType, ScheduleStage, SignalingThreads
 from .exhaustive_checker import (
     check_all_interleavings,
     collect_opaque_keys,
@@ -19,6 +19,7 @@ from .exhaustive_checker import (
 from .ir import freeze_program_ir
 from .memory import BarrierAllocator, SmemAllocator, TmemAllocator
 from .pipeline import DevicePipelineBinding
+from .pipeline_group import PipelineGroup
 from .schedule_builder import Schedule, _iter_steps
 from .task import (
     DeviceTask,
@@ -27,6 +28,96 @@ from .task import (
     barrier_arena_factory_for,
     smem_base_factory_for,
 )
+
+_WARP_SIZE = 32
+_TMA_PIPELINE_TYPES = (PipelineType.TmaAsync, PipelineType.TmaUmma)
+
+
+def _signaling_label(signaling: SignalingThreads) -> str:
+    """Spell a SignalingThreads value the same way on every Python version."""
+    names = [flag.name for flag in SignalingThreads if flag & signaling]
+    return "|".join(names) or str(int(signaling))
+
+
+def _static_cta_layout(config) -> tuple[int, int, int, int] | None:
+    """Return the static VMNK cluster layout, or None when it is opaque."""
+    layout = config.cta_layout_vmnk
+    if layout is None:
+        return (1, 1, 1, 1)
+    if (
+        isinstance(layout, (tuple, list))
+        and len(layout) == 4
+        and all(type(size) is int and size > 0 for size in layout)
+    ):
+        return tuple(layout)
+    return None
+
+
+def _rank_coordinates(rank: int, layout: tuple[int, int, int, int]) -> tuple[int, ...]:
+    v_size, m_size, n_size, _ = layout
+    return (
+        rank % v_size,
+        (rank // v_size) % m_size,
+        (rank // (v_size * m_size)) % n_size,
+        rank // (v_size * m_size * n_size),
+    )
+
+
+def _tcgen05_commit_sources(
+    layout: tuple[int, int, int, int],
+    mcast_mode_mn: tuple[int, int],
+    *,
+    cta_leader: bool,
+    pinned: bool,
+    vmnk_multicast: bool,
+) -> int:
+    """Count the CTAs whose ``tcgen05.commit`` lands on one CTA's barrier.
+
+    A pinned task commits from one CTA and ``CtaLeader`` signaling from the
+    leader of each V-group. The commit multicasts to the committing CTA's own
+    V-group, or with ``vmnk_multicast`` (a ``TmaUmma`` release) to every CTA
+    of the same K slice that shares the M coordinate when ``mcast_mode_mn[0]``
+    is set or the N coordinate when ``mcast_mode_mn[1]`` is set, which mirrors
+    ``DevicePipelineBinding.tma_umma_multicast_mask``.
+    """
+    v_size = layout[0]
+    total = v_size * layout[1] * layout[2] * layout[3]
+    if pinned:
+        return 1
+    if vmnk_multicast and total != v_size:
+        multicast_m, multicast_n = mcast_mode_mn
+        count = 0
+        for rank in range(total):
+            v, m, n, k = _rank_coordinates(rank, layout)
+            if k != 0 or (cta_leader and v != 0):
+                continue
+            if (multicast_m and m == 0) or (multicast_n and n == 0):
+                count += 1
+        return count
+    return 1 if cta_leader else v_size
+
+
+def _tma_async_lanes_per_warp(
+    layout: tuple[int, int, int, int], mcast_mode_mn: tuple[int, int]
+) -> int:
+    """Return the empty-arrive lanes CUTLASS's TmaAsync release selects per warp.
+
+    One lane signals each cluster peer that multicasts into this CTA: the CTAs
+    sharing the M coordinate (N peers) when ``mcast_mode_mn[0]`` is set and the
+    CTAs sharing the N coordinate (M peers) when ``mcast_mode_mn[1]`` is set,
+    counting this CTA once. This mirrors
+    ``DevicePipelineBinding.tma_async_consumer_selected``.
+    """
+    _, m_size, n_size, _ = layout
+    multicast_m, multicast_n = mcast_mode_mn
+    lanes = 0
+    if multicast_m:
+        lanes += n_size
+    if multicast_n:
+        lanes += m_size
+    if multicast_m and multicast_n:
+        lanes -= 1
+    return max(lanes, 1)
 
 
 class TaskManager:
@@ -209,6 +300,7 @@ class TaskManager:
             self._verify_resource_coverage,
             self._verify_dependency_graph,
             self._verify_bracketing,
+            self._verify_pipeline_thread_counts,
             self._verify_memory_budgets,
         ):
             self._run_check(check)
@@ -335,6 +427,312 @@ class TaskManager:
             if state:
                 raise ValueError(f"{task.name}: unterminated pipeline work group")
         del producer_open
+
+    def _verify_pipeline_thread_counts(self) -> None:
+        """Verify cooperative-group sizes against the arrivals the lowering emits.
+
+        Every full and empty barrier is initialized with ``group.size`` expected
+        arrivals, so that size must equal the number of ``mbarrier.arrive``,
+        ``arrive.expect_tx`` or ``tcgen05.commit`` signals one stage receives
+        from the tasks that commit or release the resource:
+
+        * AsyncThread sides (``AsyncAsync`` both sides, ``AsyncUmma`` producers,
+          ``UmmaAsync`` and ``ClcFetchAsync`` consumers): every thread of every
+          signaling task arrives, multiplied by the CTAs that route into the
+          same barrier (the V-group of a UMMA pipeline, the whole cluster for
+          CLC). ``CtaLeader`` signaling and ``run_only_on_cta_id`` tasks count
+          one CTA. A size of 1 is accepted when exactly one warp on one CTA
+          signals, because the lowering then elects one lane.
+        * tcgen05 sides (``UmmaAsync``/``UmmaUmma`` producers, ``TmaUmma``/
+          ``AsyncUmma``/``UmmaUmma`` consumers): one commit per signaling warp
+          per CTA whose multicast mask covers the barrier, that is the V-group,
+          or for ``TmaUmma`` releases the CTAs sharing the M or N coordinate
+          selected by ``mcast_mode_mn``.
+        * TMA producers: ``arrive.expect_tx`` is issued once per producer
+          warp, or once per task under ``TaskWarpLeader``; a multi-warp TMA
+          task needs one of ``TaskWarpLeader`` or ``interleave_stride``.
+        * ``TmaAsync`` consumers: the CUTLASS lane model (one lane per
+          multicast peer per warp) or an all-thread release.
+        * CLC producers: one ``arrive.expect_tx`` per CTA barrier.
+
+        A side with no committing or releasing task is skipped; the barrier
+        model of the exhaustive checker reports that situation.
+        """
+
+        def signaling_tasks(resource, stage):
+            return [
+                task
+                for task in self.tasks
+                if any(
+                    step.memory_resource is resource and step.schedule_stage is stage
+                    for step in _iter_steps(task.schedule)
+                )
+            ]
+
+        def describe(tasks):
+            return ", ".join(
+                f"'{task.name}' ({task.num_warps} warps"
+                + (
+                    f", CTA {task.run_only_on_cta_id}"
+                    if task.run_only_on_cta_id is not None
+                    else ""
+                )
+                + ")"
+                for task in tasks
+            )
+
+        def mismatch(resource, side, size, expected, formula, tasks, signaling=None):
+            message = (
+                f"Resource '{resource.name}' "
+                f"(pipeline={resource.pipeline_config.pipeline_type.value}): "
+                f"{side}_group.size={size} does not match expected {expected} "
+                f"(= {formula}). Task(s): [{describe(tasks)}]"
+            )
+            if signaling is not None:
+                message += f", signaling={_signaling_label(signaling)}"
+            raise ValueError(message + ".")
+
+        def cta_scale(task, signaling, scale):
+            if signaling.has_cta_leader() or task.run_only_on_cta_id is not None:
+                return 1
+            return scale
+
+        def check_async_thread_side(resource, side, size, signaling, tasks, scale):
+            """Every thread arrives, or one elected lane when a lone warp signals."""
+            if not tasks:
+                return
+            warps = sum(task.num_warps * cta_scale(task, signaling, scale) for task in tasks)
+            expected = warps * _WARP_SIZE
+            if size == expected or (size == 1 and warps == 1):
+                return
+            formula = "Σ task.num_warps × 32"
+            if scale > 1:
+                formula += f" × ctas({scale})"
+            mismatch(resource, side, size, expected, formula, tasks, signaling)
+
+        def check_tcgen05_side(resource, side, size, signaling, tasks, layout, mcast):
+            """One tcgen05.commit per warp per CTA whose multicast reaches the barrier."""
+            if not tasks:
+                return
+            expected = 0
+            for task in tasks:
+                sources = _tcgen05_commit_sources(
+                    layout,
+                    resource.pipeline_config.mcast_mode_mn,
+                    cta_leader=signaling.has_cta_leader(),
+                    pinned=task.run_only_on_cta_id is not None,
+                    vmnk_multicast=mcast,
+                )
+                expected += task.num_warps * sources
+            if size != expected:
+                mismatch(
+                    resource,
+                    side,
+                    size,
+                    expected,
+                    "Σ task.num_warps × committing CTAs whose tcgen05.commit "
+                    "multicast reaches this barrier",
+                    tasks,
+                    signaling,
+                )
+
+        def check_tma_producer_side(resource, size, signaling, tasks, stride):
+            """arrive.expect_tx is elected once per warp, or once per task."""
+            if not tasks:
+                return
+            config = resource.pipeline_config
+            multi_warp = any(task.num_warps > 1 for task in tasks)
+            if multi_warp and stride <= 1 and not signaling.has_task_warp_leader():
+                raise ValueError(
+                    f"Resource '{resource.name}' (pipeline={config.pipeline_type.value}) "
+                    f"has TMA producer task(s) with more than one warp, but "
+                    f"interleave_stride={stride} and producer_signaling_threads="
+                    f"{_signaling_label(signaling)}. Multi-warp TMA producer tasks must either use "
+                    f"interleave_stride > 1 for independent per-warp barrier stages or "
+                    f"producer_signaling_threads=TaskWarpLeader for one aggregate "
+                    f"transaction-barrier arrive. Task(s): [{describe(tasks)}]."
+                )
+            if multi_warp and stride > 1 and signaling.has_task_warp_leader():
+                raise ValueError(
+                    f"Resource '{resource.name}' (pipeline={config.pipeline_type.value}) "
+                    f"combines interleave_stride={stride} with "
+                    f"producer_signaling_threads={_signaling_label(signaling)}. "
+                    f"Multi-warp TMA producer "
+                    f"tasks must choose either interleaved independent per-warp "
+                    f"arrivals or TaskWarpLeader aggregate arrivals."
+                )
+            if stride > 1:
+                if size != 1:
+                    raise ValueError(
+                        f"Resource '{resource.name}' "
+                        f"(pipeline={config.pipeline_type.value}): "
+                        f"producer_group.size={size} but interleave_stride={stride} "
+                        f"means each barrier stage is signaled by one elected warp "
+                        f"thread. Expected producer_group.size=1."
+                    )
+                return
+            if signaling.has_task_warp_leader():
+                expected = len(tasks)
+                formula = (
+                    "one selected warp per task, because TaskWarpLeader guards "
+                    "arrive.expect_tx"
+                )
+            else:
+                expected = sum(task.num_warps for task in tasks)
+                formula = (
+                    "Σ producer_task.num_warps, because arrive.expect_tx is elected "
+                    "once per warp"
+                )
+            if size != expected:
+                mismatch(resource, "producer", size, expected, formula, tasks)
+
+        def check_interleaved_release(resource, size, tasks, stride):
+            if tasks and size != 1:
+                raise ValueError(
+                    f"Resource '{resource.name}' "
+                    f"(pipeline={resource.pipeline_config.pipeline_type.value}): "
+                    f"consumer_group.size={size} but interleave_stride={stride} means "
+                    f"each empty barrier stage is released by one elected warp thread. "
+                    f"Expected consumer_group.size=1."
+                )
+
+        def check_tma_async_consumer_side(resource, size, signaling, tasks, layout):
+            """CUTLASS lane model (one lane per multicast peer) or all threads."""
+            if not tasks:
+                return
+            config = resource.pipeline_config
+            lanes = _tma_async_lanes_per_warp(layout, config.mcast_mode_mn)
+            warps = sum(task.num_warps for task in tasks)
+            all_threads = warps * _WARP_SIZE
+            lane_expected = warps * lanes
+            if size in (all_threads, lane_expected):
+                return
+            lane_formula = "Σ consumer_task.num_warps"
+            if lanes != 1:
+                lane_formula += f" × multicast lanes-per-warp({lanes})"
+            raise ValueError(
+                f"Resource '{resource.name}' (pipeline={config.pipeline_type.value}): "
+                f"consumer_group.size={size} does not match expected {lane_expected} "
+                f"for a per-warp lane release (= {lane_formula}) or {all_threads} for "
+                f"an all-thread release (= Σ consumer_task.num_warps × 32). "
+                f"Task(s): [{describe(tasks)}], signaling={_signaling_label(signaling)}."
+            )
+
+        def check_fixed(resource, side, size, expected, reason):
+            if size != expected:
+                raise ValueError(
+                    f"Resource '{resource.name}' "
+                    f"(pipeline={resource.pipeline_config.pipeline_type.value}): "
+                    f"{side}_group.size={size} but {reason}. "
+                    f"Expected {side}_group.size={expected}."
+                )
+
+        for resource in self.resources:
+            config = resource.pipeline_config
+            if config is None or isinstance(resource, PipelineGroup):
+                continue
+            ptype = config.pipeline_type
+            layout = _static_cta_layout(config)
+            if layout is None:
+                warnings.warn(
+                    f"resource {resource.name!r} has an opaque cta_layout_vmnk; "
+                    "skipping pipeline thread-count validation",
+                    stacklevel=2,
+                )
+                continue
+            v_size = layout[0]
+            cluster_total = layout[0] * layout[1] * layout[2] * layout[3]
+            producers = signaling_tasks(resource, ScheduleStage.ProducerCommit)
+            consumers = signaling_tasks(resource, ScheduleStage.ConsumerRelease)
+            producer_size = config.producer_group.size
+            consumer_size = config.consumer_group.size
+            producer_signaling = config.producer_signaling_threads
+            consumer_signaling = config.consumer_signaling_threads
+
+            if producer_signaling.has_task_warp_leader() and ptype not in _TMA_PIPELINE_TYPES:
+                raise ValueError(
+                    f"Resource '{resource.name}' (pipeline={ptype.value}) uses "
+                    f"producer_signaling_threads={_signaling_label(producer_signaling)}, but "
+                    f"TaskWarpLeader is only supported for TMA producer pipelines."
+                )
+            if consumer_signaling.has_task_warp_leader():
+                raise ValueError(
+                    f"Resource '{resource.name}' (pipeline={ptype.value}) uses "
+                    f"consumer_signaling_threads={_signaling_label(consumer_signaling)}, but "
+                    f"TaskWarpLeader is producer-side only."
+                )
+            wait_signaling = config.consumer_wait_signaling_threads
+            if wait_signaling is not None and wait_signaling.has_task_warp_leader():
+                raise ValueError(
+                    f"Resource '{resource.name}' (pipeline={ptype.value}) uses "
+                    f"consumer_wait_signaling_threads={_signaling_label(wait_signaling)}, but "
+                    f"TaskWarpLeader is producer-side only."
+                )
+
+            # Producer side: the full barrier.
+            if ptype is PipelineType.AsyncAsync:
+                check_async_thread_side(
+                    resource, "producer", producer_size, producer_signaling, producers, 1
+                )
+            elif ptype is PipelineType.AsyncUmma:
+                # Arrivals are routed to the V-group leader's full barrier.
+                check_async_thread_side(
+                    resource, "producer", producer_size, producer_signaling, producers, v_size
+                )
+            elif ptype in (PipelineType.UmmaAsync, PipelineType.UmmaUmma):
+                check_tcgen05_side(
+                    resource, "producer", producer_size, producer_signaling, producers,
+                    layout, False,
+                )
+            elif ptype in _TMA_PIPELINE_TYPES:
+                check_tma_producer_side(
+                    resource, producer_size, producer_signaling, producers,
+                    config.producer_commit_interleave_stride,
+                )
+            elif ptype is PipelineType.ClcFetchAsync:
+                check_fixed(
+                    resource, "producer", producer_size, 1,
+                    "the scheduler thread arms each CTA's full barrier with one "
+                    "arrive.expect_tx",
+                )
+
+            # Consumer side: the empty barrier.
+            release_stride = config.consumer_release_interleave_stride
+            if ptype is PipelineType.TmaUmma:
+                if release_stride > 1:
+                    check_interleaved_release(resource, consumer_size, consumers, release_stride)
+                else:
+                    check_tcgen05_side(
+                        resource, "consumer", consumer_size, consumer_signaling, consumers,
+                        layout, True,
+                    )
+            elif ptype in (PipelineType.AsyncUmma, PipelineType.UmmaUmma):
+                check_tcgen05_side(
+                    resource, "consumer", consumer_size, consumer_signaling, consumers,
+                    layout, False,
+                )
+            elif ptype is PipelineType.AsyncAsync:
+                check_async_thread_side(
+                    resource, "consumer", consumer_size, consumer_signaling, consumers, 1
+                )
+            elif ptype is PipelineType.UmmaAsync:
+                # Arrivals are routed to the V-group leader's empty barrier.
+                check_async_thread_side(
+                    resource, "consumer", consumer_size, consumer_signaling, consumers, v_size
+                )
+            elif ptype is PipelineType.ClcFetchAsync:
+                # Every CTA releases into the cluster leader's empty barrier.
+                check_async_thread_side(
+                    resource, "consumer", consumer_size, consumer_signaling, consumers,
+                    cluster_total,
+                )
+            elif ptype is PipelineType.TmaAsync:
+                if release_stride > 1:
+                    check_interleaved_release(resource, consumer_size, consumers, release_stride)
+                else:
+                    check_tma_async_consumer_side(
+                        resource, consumer_size, consumer_signaling, consumers, layout
+                    )
 
     def _verify_memory_budgets(self) -> None:
         if self.smem_allocator is not None:
