@@ -13,27 +13,20 @@ from conftest import dtype_id, shape_id
 from util import estimate_bench_iter
 
 
-@pytest.fixture(params=[
-    (8, 16, 512),
-    (100, 250),
-    (1000, 4000),
-    (2048, 8192),
-    (65536, 16384),
-], ids=shape_id)
-def shape(request):
-    return request.param
-
-
-@pytest.fixture(params=[
-    torch.bfloat16, torch.float32,
-    # FIXME: f16 raises TileCompilerError: uses too much shared memory even on (64, 64)
-    # torch.float16
-], ids=dtype_id)
-def dtype(request):
-    return request.param
-
-
 @pytest.mark.benchmark(group='layer_norm')
+@pytest.mark.parametrize("shape,dtype", [
+    pytest.param(shape, dtype, id=f"{shape_id(shape)}-{dtype_id(dtype)}")
+    # FIXME: f16 raises TileCompilerError: uses too much shared memory even on (64, 64)
+    for dtype in (torch.bfloat16, torch.float32)
+    for shape in [
+        (8, 16, 512),
+        (100, 250),
+        (1000, 4000),
+        (2048, 8192),
+        # Half the memory requirement for FP32 to fit 40GB
+        (32768 if dtype == torch.float32 else 65536, 16384),
+    ]
+])
 @pytest.mark.parametrize("mode", ["forward", "backward"])
 def bench_layer_norm(shape, dtype, mode, backend, benchmark):
     weight = torch.randn(shape[-1], dtype=dtype, device='cuda:0', requires_grad=True)
