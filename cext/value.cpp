@@ -1009,9 +1009,10 @@ Status TensorBase::allocate_bits_array(int64_t count) {
 
 template <typename T>
 void tensor_dealloc(PyObject* self) {
+    auto free = Py_TYPE(self)->tp_free;
     T* t = reinterpret_cast<T*>(self);
     t->~T();
-    Py_TYPE(self)->tp_free(self);
+    free(self);
 }
 
 template <typename T>
