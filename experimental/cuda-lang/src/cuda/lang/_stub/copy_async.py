@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 from cuda.lang._execution import simt_stub, function
-from .._enums import TMALoadMode, TMAStoreMode, AsyncCopyReportMechanism 
+from .._enums import TMALoadMode, TMAStoreMode, AsyncCopyReportMechanism
 from . import nvvm as _nvvm
 
 

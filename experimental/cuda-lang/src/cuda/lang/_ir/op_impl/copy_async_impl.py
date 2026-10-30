@@ -12,7 +12,7 @@ from cuda.tile._ir.op_impl import ImplRegistry
 from cuda.tile._ir.ops import implicit_cast
 from cuda.tile._ir.ir import add_operation_variadic
 import cuda.lang._datatype as datatype
-from cuda.lang._enums import MemorySpace, AsyncCopyReportMechanism
+from cuda.lang._enums import MemorySpace, AsyncCopyReportMechanism, CTAGroup
 from cuda.lang._ir.op_defs import (
     CopyAsyncBulkTensorGlobalToShared,
     CopyAsyncBulkTensorSharedToGlobal,
@@ -140,7 +140,7 @@ def copy_async_bulk_tensor_global_to_shared_impl(
         )
         require_optional(predicate, require_boolean_scalar_type)
         cta_group_value = require_optional_constant_enum(
-            cta_group, copy_async.CTAGroup
+            cta_group, CTAGroup
         )
     add_operation_variadic(
         CopyAsyncBulkTensorGlobalToShared,
