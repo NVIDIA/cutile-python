@@ -6,6 +6,7 @@ import sys
 import torch
 import subprocess
 import os
+import platform
 import pytest
 
 # ==============================================================================
@@ -27,7 +28,9 @@ SAMPLES_TO_TEST = [
     "AttentionFMHA.py",
     "LayerNorm.py",
     "MoE.py",
-    "AllGatherMatmul.py",
+    pytest.param("AllGatherMatmul.py", marks=pytest.mark.skipif(
+        sys.version_info >= (3, 15) and platform.machine() == "aarch64",
+        reason="torch 2.15.0 hits an illegal memory access in SymmetricMemory on aarch64")),
     "BlockScaledMatMul.py",
     "NVFP4ScaledMatMul.py",
 ]
