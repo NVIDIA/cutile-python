@@ -16,8 +16,8 @@ from .util import (
     make_symbolic_scalar,
     make_symbolic_tensor,
     require_hopper_or_newer,
+    require_rubin_family,
 )
-
 
 HOPPER_TARGET = {"gpu_name": "sm_90", "arch": "compute_90"}
 SM100_TARGET = {"gpu_name": "sm_100a", "arch": "compute_100a"}
@@ -96,6 +96,74 @@ def test_copy_async_mbarrier_arrive_completion(arrival_operation, arrivals):
     assert torch.equal(out.cpu(), expected)
 
 
+@require_rubin_family()
+@pytest.mark.skipif(not cconv_v3_enabled(), reason="Tensor-map arguments require cconv3")
+@pytest.mark.parametrize(
+    ("report", "dtype", "pattern"),
+    (
+        (cl.AsyncCopyReportMechanism.DISABLED, torch.uint8, 0xff),
+        (cl.AsyncCopyReportMechanism.VALIDITY_PER_16_BYTES_80000000, torch.int32, -(1 << 31)),
+        (cl.AsyncCopyReportMechanism.VALIDITY_PER_16_BYTES_8000, torch.uint16, 0x8000),
+        (cl.AsyncCopyReportMechanism.VALIDITY_PER_16_BYTES_80, torch.uint8, 0x80),
+        (cl.AsyncCopyReportMechanism.VALIDITY_PER_16_BYTES_8, torch.uint8, 0x88),
+        (cl.AsyncCopyReportMechanism.VALIDITY_PER_ELEMENT_FF, torch.uint8, 0xff),
+    ),
+)
+@pytest.mark.parametrize("cluster", (False, True))
+@pytest.mark.parametrize("match_first", (False, True))
+def test_copy_report_completion(report, dtype, pattern, cluster, match_first):
+    rows, columns = 16, 32
+    transaction_bytes = rows * columns * torch.empty((), dtype=dtype).element_size()
+
+    @cl.kernel
+    def kernel(desc: cl.TensorMap, out, reports):
+        tid = cl.thread_index(0)
+        dst = cl.shared_array(rows * columns, out.dtype, alignment=512)
+        mbar = cl.shared_array(1, cl.mbarrier, alignment=8).pointer()
+        if tid == 0:
+            cl.mbarrier_initialize(mbar, 1, layout=cl.MbarrierLayout.V1)
+            cl.fence(
+                "RELEASE",
+                "CLUSTER",
+                restriction=cl.FenceRestriction.mbarrier_initialize(),
+            )
+        cl.barrier_sync_block_aligned()
+        copy_dst = dst.pointer()
+        if cl.ensure_constant(cluster):
+            copy_dst = cl.map_shared_to_cluster(copy_dst, 0)
+        for phase in range(2):
+            if tid == 0:
+                cl.mbarrier_arrive_expect_transaction(mbar, transaction_bytes)
+                cl.copy_async_bulk_tensor_global_to_shared(
+                    desc, (0, phase * rows), copy_dst, mbar, report_mechanism=report
+                )
+            report_predicate, report_value = cl.mbarrier_wait_report_parity(mbar, phase)
+            if tid == 0:
+                reports[phase, 0] = report_predicate
+                reports[phase, 1] = report_value
+            for row in range(rows):
+                out[phase * rows + row, tid] = dst[row * columns + tid]
+            cl.barrier_sync_block_aligned()
+        if tid == 0:
+            cl.mbarrier_invalidate(mbar)
+
+    src = torch.zeros((2 * rows, columns), dtype=dtype).cuda(0)
+    if match_first:
+        src[:rows] = pattern
+    else:
+        src[rows:] = pattern
+    out = torch.empty_like(src)
+    reports = torch.full((2, 2), -1, dtype=torch.int32).cuda(0)
+    desc = cl.tensor_map_tiled(src, (columns, rows), order=(1, 0))
+    cl.launch(torch.cuda.current_stream(), (1,), (columns,), kernel, (desc, out, reports))
+    assert torch.equal(out.cpu(), src.cpu())
+    enabled = report is not cl.AsyncCopyReportMechanism.DISABLED
+    assert reports.cpu().tolist() == [
+        [int(enabled and match_first), 0],
+        [int(enabled and not match_first), 0],
+    ]
+
+
 class CopyAsyncPtxTestBase:
     @staticmethod
     def signature():
@@ -116,7 +184,7 @@ class CopyAsyncPtxTestBase:
 class TestG2S(CopyAsyncPtxTestBase):
 
     @staticmethod
-    def make_report_kernel(report: cl.AsyncCopyReportMechanism, cluster: bool):
+    def make_report_kernel(report, cluster: bool):
         @cl.kernel
         def k(
             desc: cl.TensorMap,

@@ -1072,7 +1072,7 @@ def make_gemm_kernel(
             cl.mbarrier_wait_parity(
                 tmem_dealloc,
                 0,
-                time_hint=10_000_000,
+                time_limit_hint_ns=10_000_000,
             )
             cl.tcgen05_deallocate(
                 tmem,

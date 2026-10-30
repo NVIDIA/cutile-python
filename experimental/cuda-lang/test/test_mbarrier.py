@@ -393,20 +393,27 @@ def test_expect_complete_transaction_intrinsic_name(operation, intrinsic, scope)
 @pytest.mark.parametrize("scope", SCOPES)
 @pytest.mark.parametrize("memory_order", WAIT_MEMORY_ORDERS)
 @pytest.mark.parametrize("parity", [False, True])
-def test_test_wait_intrinsic_name(parity, memory_order, scope):
+@pytest.mark.parametrize("report", [False, True])
+def test_test_wait_intrinsic_name(parity, memory_order, scope, report):
+    name = (
+        "mbarrier_test_wait"
+        + ("_report" if report else "")
+        + ("_parity" if parity else "")
+    )
+    operation = getattr(cl, name)
+
     @cl.kernel
     def kernel():
         mbar = cl.shared_array(
             shape=(1,), dtype=cl.mbarrier, alignment=8
         ).pointer()
-        if parity:
-            cl.mbarrier_test_wait_parity(mbar, 0, scope=scope, memory_order=memory_order)
-        else:
-            cl.mbarrier_test_wait(mbar, cl.uint64(0), scope=scope, memory_order=memory_order)
+        operation(mbar, 0, scope=scope, memory_order=memory_order)
 
     expected = "llvm.nvvm.mbarrier.test.wait"
     if parity:
         expected += ".parity"
+    if report:
+        expected += ".primary.report"
     if memory_order is cl.MemoryOrder.RELAXED:
         expected += ".relaxed"
     expected += f".scope.{scope.value}.space.cta"
@@ -414,30 +421,84 @@ def test_test_wait_intrinsic_name(parity, memory_order, scope):
 
 
 @pytest.mark.parametrize("scope", SCOPES)
-@pytest.mark.parametrize("time_hint", [None, 1000])
+@pytest.mark.parametrize("time_limit_hint_ns", [None, 1000])
 @pytest.mark.parametrize("memory_order", WAIT_MEMORY_ORDERS)
 @pytest.mark.parametrize("parity", [False, True])
-def test_try_wait_intrinsic_name(parity, memory_order, time_hint, scope):
+@pytest.mark.parametrize("report", [False, True])
+def test_try_wait_intrinsic_name(parity, memory_order, time_limit_hint_ns, scope, report):
+    name = "mbarrier_try_wait" + ("_report" if report else "")
+    operation = getattr(cl, name + ("_parity" if parity else ""))
+
     @cl.kernel
     def kernel():
         mbar = cl.shared_array(
             shape=(1,), dtype=cl.mbarrier, alignment=8
         ).pointer()
-        if parity:
-            cl.mbarrier_try_wait_parity(
-                mbar, 0, time_hint=time_hint, scope=scope, memory_order=memory_order
-            )
-        else:
-            cl.mbarrier_try_wait(
-                mbar, cl.uint64(0), time_hint=time_hint, scope=scope, memory_order=memory_order
-            )
+        operation(
+            mbar, 0, time_limit_hint_ns=time_limit_hint_ns,
+            scope=scope, memory_order=memory_order,
+        )
 
     expected = "llvm.nvvm.mbarrier.try.wait"
     if parity:
         expected += ".parity"
-    if time_hint is not None:
+    if time_limit_hint_ns is not None:
         expected += ".tl"
+    if report:
+        expected += ".primary.report"
     if memory_order is cl.MemoryOrder.RELAXED:
         expected += ".relaxed"
     expected += f".scope.{scope.value}.space.cta"
     assert expected in _get_intrinsics(kernel)
+
+
+REPORT_WAITS = (
+    cl.mbarrier_test_wait_report,
+    cl.mbarrier_test_wait_report_parity,
+    cl.mbarrier_try_wait_report,
+    cl.mbarrier_try_wait_report_parity,
+    cl.mbarrier_wait_report,
+    cl.mbarrier_wait_report_parity,
+)
+
+
+@pytest.mark.parametrize("operation", REPORT_WAITS[:4])
+def test_report_wait_rejects_unsupported_target(operation):
+    @cl.kernel
+    def kernel():
+        mbar = cl.shared_array(1, cl.mbarrier, alignment=8).pointer()
+        operation(mbar, 0)
+
+    compile_kernel(
+        kernel,
+        raises=pytest.raises(UnsupportedFeatureError, match="reporting"),
+        gpu_name="sm_80",
+        arch="compute_80",
+    )
+
+
+@pytest.mark.parametrize("operation", REPORT_WAITS)
+@pytest.mark.parametrize("layout", tuple(cl.MbarrierLayout))
+@require_hopper_or_newer()
+def test_report_wait_results(operation, layout):
+    parity = "parity" in operation.__name__
+    blocking = operation in (cl.mbarrier_wait_report, cl.mbarrier_wait_report_parity)
+
+    @cl.kernel
+    def kernel(out):
+        mbar = cl.shared_array(1, cl.mbarrier, alignment=8).pointer()
+        cl.mbarrier_initialize(mbar, 1, layout=layout)
+        state = cl.mbarrier_arrive(mbar)
+        if cl.ensure_constant(blocking):
+            report_predicate, report_value = operation(mbar, 0 if parity else state)
+            out[0] = True
+        else:
+            complete, report_predicate, report_value = operation(mbar, 0 if parity else state)
+            out[0] = complete
+        out[1] = report_predicate
+        out[2] = report_value
+        cl.mbarrier_invalidate(mbar)
+
+    out = torch.full((3,), -1, dtype=torch.int64).cuda(0)
+    cl.launch(torch.cuda.current_stream(), (1,), (1,), kernel, (out,))
+    assert out.cpu().tolist() == [1, 0, 0]

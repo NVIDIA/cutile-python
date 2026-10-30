@@ -229,7 +229,7 @@ def mbarrier_try_wait(
     mbar,
     state,
     *,
-    time_hint: int | None = None,
+    time_limit_hint_ns: int | None = None,
     scope: MbarrierScope = MbarrierScope.BLOCK,
     memory_order: WaitMemoryOrder = MemoryOrder.ACQUIRE,
 ) -> "bool_":
@@ -238,7 +238,8 @@ def mbarrier_try_wait(
     Args:
         mbar: Pointer to mbarrier in shared memory.
         state: Opaque token returned by an arrival on the same mbarrier.
-        time_hint: Optional nonnegative ``int32`` time limit in nanoseconds.
+        time_limit_hint_ns: Optional time limit hint in nanoseconds that may be
+            used instead of the system-dependent limit.
         scope: Visibility scope.
         memory_order:
 
@@ -251,7 +252,7 @@ def mbarrier_wait(
     mbar,
     state,
     *,
-    time_hint: int = 10_000,
+    time_limit_hint_ns: int = 10_000,
     scope: MbarrierScope = MbarrierScope.BLOCK,
     memory_order: WaitMemoryOrder = MemoryOrder.ACQUIRE,
 ):
@@ -259,7 +260,7 @@ def mbarrier_wait(
     Accepts the same arguments as :func:``mbarrier_try_wait``.
     """
     while not mbarrier_try_wait(
-        mbar, state, time_hint=time_hint, scope=scope, memory_order=memory_order
+        mbar, state, time_limit_hint_ns=time_limit_hint_ns, scope=scope, memory_order=memory_order
     ):
         pass
 
@@ -269,7 +270,7 @@ def mbarrier_try_wait_parity(
     mbar,
     parity: int,
     *,
-    time_hint: int | None = None,
+    time_limit_hint_ns: int | None = None,
     scope: MbarrierScope = MbarrierScope.BLOCK,
     memory_order: WaitMemoryOrder = MemoryOrder.ACQUIRE,
 ) -> "bool_":
@@ -279,7 +280,8 @@ def mbarrier_try_wait_parity(
     Args:
         mbar: Pointer to mbarrier in shared memory.
         parity: Phase parity, either 0 or 1.
-        time_hint: Optional nonnegative ``int32`` time limit in nanoseconds.
+        time_limit_hint_ns: Optional time limit hint in nanoseconds that may be
+            used instead of the system-dependent limit.
         scope: Visibility scope.
         memory_order:
 
@@ -292,7 +294,7 @@ def mbarrier_wait_parity(
     mbar,
     parity: int,
     *,
-    time_hint: int = 10_000,
+    time_limit_hint_ns: int = 10_000,
     scope: MbarrierScope = MbarrierScope.BLOCK,
     memory_order: WaitMemoryOrder = MemoryOrder.ACQUIRE,
 ):
@@ -300,6 +302,160 @@ def mbarrier_wait_parity(
     Accepts the same arguments as :func:``mbarrier_try_wait_parity``.
     """
     while not mbarrier_try_wait_parity(
-        mbar, parity, time_hint=time_hint, scope=scope, memory_order=memory_order
+        mbar, parity, time_limit_hint_ns=time_limit_hint_ns, scope=scope, memory_order=memory_order
     ):
         pass
+
+
+@simt_stub
+def mbarrier_test_wait_report(
+    mbar,
+    state,
+    *,
+    scope: MbarrierScope = MbarrierScope.BLOCK,
+    memory_order: WaitMemoryOrder = MemoryOrder.ACQUIRE,
+) -> "tuple[bool_, bool_, uint32]":
+    """Test primary-phase completion.
+
+    Args:
+        mbar: Pointer to mbarrier in block-local shared memory.
+        state: Opaque token from an arrival on the same barrier.
+        scope: Visibility scope.
+        memory_order: Memory ordering.
+
+    Returns:
+        Completion, report predicate, and value. Reports are valid on completion.
+    """
+    ...
+
+
+@simt_stub
+def mbarrier_test_wait_report_parity(
+    mbar,
+    parity: int,
+    *,
+    scope: MbarrierScope = MbarrierScope.BLOCK,
+    memory_order: WaitMemoryOrder = MemoryOrder.ACQUIRE,
+) -> "tuple[bool_, bool_, uint32]":
+    """Test primary-phase completion by parity.
+
+    Args:
+        mbar: Pointer to mbarrier in block-local shared memory.
+        parity: Phase parity, either 0 or 1.
+        scope: Visibility scope.
+        memory_order: Memory ordering.
+
+    Returns:
+        Completion, report predicate, and value. Reports are valid on completion.
+    """
+    ...
+
+
+@simt_stub
+def mbarrier_try_wait_report(
+    mbar,
+    state,
+    *,
+    time_limit_hint_ns: int | None = None,
+    scope: MbarrierScope = MbarrierScope.BLOCK,
+    memory_order: WaitMemoryOrder = MemoryOrder.ACQUIRE,
+) -> "tuple[bool_, bool_, uint32]":
+    """Try waiting for primary-phase completion.
+
+    Args:
+        mbar: Pointer to mbarrier in block-local shared memory.
+        state: Opaque token from an arrival on the same barrier.
+        time_limit_hint_ns: Optional time limit hint in nanoseconds that may be
+            used instead of the system-dependent limit.
+        scope: Visibility scope.
+        memory_order: Memory ordering.
+
+    Returns:
+        Completion, report predicate, and value. Reports are valid on completion.
+    """
+    ...
+
+
+@simt_stub
+def mbarrier_try_wait_report_parity(
+    mbar,
+    parity: int,
+    *,
+    time_limit_hint_ns: int | None = None,
+    scope: MbarrierScope = MbarrierScope.BLOCK,
+    memory_order: WaitMemoryOrder = MemoryOrder.ACQUIRE,
+) -> "tuple[bool_, bool_, uint32]":
+    """Try waiting for primary-phase completion by parity.
+
+    Args:
+        mbar: Pointer to mbarrier in block-local shared memory.
+        parity: Phase parity, either 0 or 1.
+        time_limit_hint_ns: Optional time limit hint in nanoseconds that may be
+            used instead of the system-dependent limit.
+        scope: Visibility scope.
+        memory_order: Memory ordering.
+
+    Returns:
+        Completion, report predicate, and value. Reports are valid on completion.
+    """
+    ...
+
+
+def mbarrier_wait_report(
+    mbar,
+    state,
+    *,
+    time_limit_hint_ns: int = 10_000,
+    scope: MbarrierScope = MbarrierScope.BLOCK,
+    memory_order: WaitMemoryOrder = MemoryOrder.ACQUIRE,
+) -> "tuple[bool_, uint32]":
+    """Wait for primary-phase completion.
+
+    Args:
+        mbar: Pointer to mbarrier in block-local shared memory.
+        state: Opaque token from an arrival on the same barrier.
+        time_limit_hint_ns: Optional time limit hint in nanoseconds that may be
+            used instead of the system-dependent limit.
+        scope: Visibility scope.
+        memory_order: Memory ordering.
+
+    Returns:
+        Report predicate and value.
+    """
+    while True:
+        complete, report_predicate, report_value = mbarrier_try_wait_report(
+            mbar, state, time_limit_hint_ns=time_limit_hint_ns,
+            scope=scope, memory_order=memory_order,
+        )
+        if complete:
+            return report_predicate, report_value
+
+
+def mbarrier_wait_report_parity(
+    mbar,
+    parity: int,
+    *,
+    time_limit_hint_ns: int = 10_000,
+    scope: MbarrierScope = MbarrierScope.BLOCK,
+    memory_order: WaitMemoryOrder = MemoryOrder.ACQUIRE,
+) -> "tuple[bool_, uint32]":
+    """Wait for primary-phase completion by parity.
+
+    Args:
+        mbar: Pointer to mbarrier in block-local shared memory.
+        parity: Phase parity, either 0 or 1.
+        time_limit_hint_ns: Optional time limit hint in nanoseconds that may be
+            used instead of the system-dependent limit.
+        scope: Visibility scope.
+        memory_order: Memory ordering.
+
+    Returns:
+        Report predicate and value.
+    """
+    while True:
+        complete, report_predicate, report_value = mbarrier_try_wait_report_parity(
+            mbar, parity, time_limit_hint_ns=time_limit_hint_ns,
+            scope=scope, memory_order=memory_order,
+        )
+        if complete:
+            return report_predicate, report_value

@@ -16,6 +16,14 @@ from .ir_utils import (
 )
 
 
+def require_rubin_family():
+    major, minor = get_compute_capability()
+    return pytest.mark.skipif(
+        major != 10 or minor < 7,
+        reason="feature requires SM107 or higher in the same family",
+    )
+
+
 def require_blackwell_or_newer():
     return pytest.mark.skipif(
         get_compute_capability() < (10, 0),

@@ -1182,7 +1182,7 @@ def kernel(device_task_manager):
                 peer_dealloc, scope=cl.MbarrierScope.BLOCK
             )
             cl.mbarrier_wait_parity(
-                tmem_dealloc_mbar_ptr, 0, time_hint=10_000_000
+                tmem_dealloc_mbar_ptr, 0, time_limit_hint_ns=10_000_000
             )
             cl.tcgen05_deallocate(
                 tmem_raw_addr,

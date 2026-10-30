@@ -17,6 +17,7 @@ from cuda.lang._ir.type_checking_helpers import (
 from cuda.lang._stub import mbarrier
 from .inline_ptx_impl import inline_ptx
 from cuda.tile._ir.arithmetic_ops import astype
+from cuda.tile._ir.core_ops import build_tuple
 from cuda.tile._ir.ir import add_operation_variadic
 from cuda.tile._ir.op_impl import (
     ImplRegistry,
@@ -38,7 +39,9 @@ def mbarrier_initialize_impl(mbar: Var, participants: Var, layout: Var) -> None:
     require_mbarrier_ptr(mbar, (MemorySpace.SHARED,))
     layout_suffix = ""
     if not is_none(layout):
-        require_target_greater_equal(9, 0, "mbarrier_initialize with an explicit layout")
+        require_target_greater_equal(
+            9, 0, "mbarrier_initialize with an explicit layout"
+        )
         layout = require_constant_enum(layout, MbarrierLayout)
         layout_suffix = f".layout::v{layout.value}"
     participants = astype(participants, datatype.int32)
@@ -125,8 +128,8 @@ def mbarrier_arrive_impl(
     return results[0] if return_type else None
 
 
-@impl(mbarrier.mbarrier_arrive_nocomplete, fixed_args=['noComplete'])
-@impl(mbarrier.mbarrier_arrive_drop_nocomplete, fixed_args=['drop.noComplete'])
+@impl(mbarrier.mbarrier_arrive_nocomplete, fixed_args=["noComplete"])
+@impl(mbarrier.mbarrier_arrive_drop_nocomplete, fixed_args=["drop.noComplete"])
 def mbarrier_arrive_nocomplete_impl(kind: str, mbar: Var, count: Var) -> Var:
     require_mbarrier_ptr(mbar, (MemorySpace.SHARED,))
     count = astype(count, datatype.int32)
@@ -213,99 +216,91 @@ def mbarrier_pending_count_impl(state: Var) -> Var:
     )
 
 
-@impl(mbarrier.mbarrier_test_wait)
-def mbarrier_test_wait_impl(
-    mbar: Var, state: Var, scope: Var, memory_order: Var
-) -> Var:
-    scope = require_constant_enum(scope, MbarrierScope)
-    state = astype(state, datatype.int64)
-    require_mbarrier_ptr(mbar, (MemorySpace.SHARED,))
-    memory_order = require_mbarrier_memory_order(memory_order, WAIT_MEMORY_ORDERS)
-    intrinsic = "llvm.nvvm.mbarrier.test.wait"
-    if memory_order is MemoryOrder.RELAXED:
-        intrinsic += ".relaxed"
-    intrinsic += _mbar_space_scope_suffix(scope, MemorySpace.SHARED)
-    return add_operation(
-        RawLLVMIntrinsic,
-        ScalarTy(datatype.bool_),
-        intrinsic=intrinsic,
-        operands_=(mbar, state),
-    )
-
-
-@impl(mbarrier.mbarrier_test_wait_parity)
-def mbarrier_test_wait_parity_impl(
-    mbar: Var, parity: Var, scope: Var, memory_order: Var
-) -> Var:
-    require_mbarrier_ptr(mbar, (MemorySpace.SHARED,))
-    parity = astype(parity, datatype.int32)
-    scope = require_constant_enum(scope, MbarrierScope)
-    memory_order = require_mbarrier_memory_order(memory_order, WAIT_MEMORY_ORDERS)
-    intrinsic = "llvm.nvvm.mbarrier.test.wait.parity"
-    if memory_order is MemoryOrder.RELAXED:
-        intrinsic += ".relaxed"
-    intrinsic += _mbar_space_scope_suffix(scope, MemorySpace.SHARED)
-    return add_operation(
-        RawLLVMIntrinsic,
-        ScalarTy(datatype.bool_),
-        intrinsic=intrinsic,
-        operands_=(mbar, parity),
-    )
-
-
-@impl(mbarrier.mbarrier_try_wait)
-def mbarrier_try_wait_impl(
+def mbarrier_wait_impl(
+    kind: str,
+    parity: bool,
+    report: bool,
     mbar: Var,
     state: Var,
-    time_hint: Var,
     scope: Var,
     memory_order: Var,
+    time_limit_hint_ns: Var | None = None,
 ) -> Var:
+    if report:
+        require_target_greater_equal(9, 0, "mbarrier wait with reporting")
     require_mbarrier_ptr(mbar, (MemorySpace.SHARED,))
-    state = astype(state, datatype.int64)
+    state = astype(state, datatype.int32 if parity else datatype.int64)
     scope = require_constant_enum(scope, MbarrierScope)
     memory_order = require_mbarrier_memory_order(memory_order, WAIT_MEMORY_ORDERS)
-    intrinsic = "llvm.nvvm.mbarrier.try.wait"
-    args = (mbar, state)
-    if not is_none(time_hint):
+    intrinsic = f"llvm.nvvm.mbarrier.{kind}"
+    if parity:
+        intrinsic += ".parity"
+    operands = (mbar, state)
+    if time_limit_hint_ns is not None and not is_none(time_limit_hint_ns):
         intrinsic += ".tl"
-        time_hint = astype(time_hint, datatype.int32)
-        args = (*args, time_hint)
+        operands += (astype(time_limit_hint_ns, datatype.int32),)
+    if report:
+        intrinsic += ".primary.report"
     if memory_order is MemoryOrder.RELAXED:
         intrinsic += ".relaxed"
     intrinsic += _mbar_space_scope_suffix(scope, MemorySpace.SHARED)
-    return add_operation(
+    result_types = (ScalarTy(datatype.bool_),)
+    if report:
+        result_types += (ScalarTy(datatype.bool_), ScalarTy(datatype.uint32))
+    results = add_operation_variadic(
         RawLLVMIntrinsic,
-        ScalarTy(datatype.bool_),
+        result_types,
         intrinsic=intrinsic,
-        operands_=args,
+        operands_=operands,
+    )
+    return build_tuple(results) if report else results[0]
+
+
+@impl(mbarrier.mbarrier_test_wait, fixed_args=[False])
+@impl(mbarrier.mbarrier_test_wait_report, fixed_args=[True])
+def mbarrier_test_wait_impl(
+    report: bool, mbar: Var, state: Var, scope: Var, memory_order: Var
+) -> Var:
+    return mbarrier_wait_impl(
+        "test.wait", False, report, mbar, state, scope, memory_order
     )
 
 
-@impl(mbarrier.mbarrier_try_wait_parity)
-def mbarrier_try_wait_parity_impl(
+@impl(mbarrier.mbarrier_test_wait_parity, fixed_args=[False])
+@impl(mbarrier.mbarrier_test_wait_report_parity, fixed_args=[True])
+def mbarrier_test_wait_parity_impl(
+    report: bool, mbar: Var, parity: Var, scope: Var, memory_order: Var
+) -> Var:
+    return mbarrier_wait_impl(
+        "test.wait", True, report, mbar, parity, scope, memory_order
+    )
+
+
+@impl(mbarrier.mbarrier_try_wait, fixed_args=[False])
+@impl(mbarrier.mbarrier_try_wait_report, fixed_args=[True])
+def mbarrier_try_wait_impl(
+    report: bool,
     mbar: Var,
-    parity: Var,
-    time_hint: Var,
+    state: Var,
+    time_limit_hint_ns: Var,
     scope: Var,
     memory_order: Var,
 ) -> Var:
-    require_mbarrier_ptr(mbar, (MemorySpace.SHARED,))
-    parity = astype(parity, datatype.int32)
-    scope = require_constant_enum(scope, MbarrierScope)
-    memory_order = require_mbarrier_memory_order(memory_order, WAIT_MEMORY_ORDERS)
-    intrinsic = "llvm.nvvm.mbarrier.try.wait.parity"
-    args = (mbar, parity)
-    if not is_none(time_hint):
-        time_hint = astype(time_hint, datatype.int32)
-        args = (*args, time_hint)
-        intrinsic += ".tl"
-    if memory_order is MemoryOrder.RELAXED:
-        intrinsic += ".relaxed"
-    intrinsic += _mbar_space_scope_suffix(scope, MemorySpace.SHARED)
-    return add_operation(
-        RawLLVMIntrinsic,
-        ScalarTy(datatype.bool_),
-        intrinsic=intrinsic,
-        operands_=args,
+    return mbarrier_wait_impl(
+        "try.wait", False, report, mbar, state, scope, memory_order, time_limit_hint_ns
+    )
+
+
+@impl(mbarrier.mbarrier_try_wait_parity, fixed_args=[False])
+@impl(mbarrier.mbarrier_try_wait_report_parity, fixed_args=[True])
+def mbarrier_try_wait_parity_impl(
+    report: bool,
+    mbar: Var,
+    parity: Var,
+    time_limit_hint_ns: Var,
+    scope: Var,
+    memory_order: Var,
+) -> Var:
+    return mbarrier_wait_impl(
+        "try.wait", True, report, mbar, parity, scope, memory_order, time_limit_hint_ns
     )
