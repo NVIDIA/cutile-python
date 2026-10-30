@@ -154,7 +154,9 @@ class Array:
         """The number of elements in each of the |array|'s dimensions.
 
         Returns:
-            tuple[int32,...]:
+            tuple[int32 | int64, ...]: Uses the array's index dtype (``int32``
+                by default). Dimensions may be runtime values or compile-time
+                constants; see :class:`ArrayAnnotation`.
         """
 
     @property
@@ -163,7 +165,9 @@ class Array:
         """The number of elements to step in each dimension while traversing the |array|.
 
         Returns:
-            tuple[int32,...]:
+            tuple[int32 | int64, ...]: Uses the array's index dtype (``int32``
+                by default). Dimensions may be runtime values or compile-time
+                constants; see :class:`ArrayAnnotation`.
         """
 
     @property

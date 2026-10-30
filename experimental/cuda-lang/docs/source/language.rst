@@ -36,8 +36,8 @@ the shared concepts.
      - Default mode
      - Static evaluation
    * - Supported syntax and mutable Python objects
-     - Python subset; mutable Python objects such as lists and dictionaries
-       are unsupported.
+     - Python subset; creating or mutating ordinary Python lists and
+       dictionaries is unsupported.
      - Full Python; mutable Python objects can be created and used during
        compilation.
    * - ``print(...)``
@@ -133,7 +133,7 @@ through ``cuda.lang``.
 
 .. note::
 
-   Regular Python type hints are not honored by the compiler. For example,
+   Ordinary scalar type hints do not enforce or convert types. For example,
    ``x: int``, ``x: float``, or ``x: cl.int32`` does not enforce or convert
    ``x`` to that type. Use an explicit conversion such as ``cl.int32(x)``
    when you need a particular scalar type.
@@ -141,6 +141,11 @@ through ``cuda.lang``.
    In ``cl.Constant[int]``, ``cl.Constant`` marks the argument as constant.
    The inner ``int`` is a regular Python type hint; it does not validate or
    convert the argument's type.
+
+   Tuple annotations describe the argument structure and can apply supported
+   metadata to individual elements, for example
+   ``tuple[cl.Array, cl.Constant[int]]``. Ordinary element type hints still do
+   not enforce or convert element types.
 
    Annotations on helper parameters, local variables, and return values do not
    affect compilation. In particular, ``cl.Constant`` only marks an argument
@@ -449,7 +454,10 @@ Here, Python builds a dictionary of symbolic expressions and selects one using
 the constant ``operation`` string. ``"increment"`` selects ``x + 1``;
 ``"double"`` selects ``x * 2``. The dictionary exists only during compilation,
 and the selected arithmetic runs on the GPU after the load. This dictionary
-literal needs ``static_eval`` because ``dict`` is unsupported in default mode.
+literal needs ``static_eval`` because dictionary literals are unsupported in
+default mode. Limited read-only dictionaries are available through helper
+``**kwargs`` parameters, as described under
+:ref:`language-supported-python-features`.
 
 Static evaluation does not emit runtime code (compiler IR). It can
 build symbolic expressions for default mode to compile later, but it cannot
@@ -808,10 +816,21 @@ Supported Value Types
 * GPU arrays and CUDA streams.
 * |cuda.lang| only: typed pointers, vectors, and tensor-map descriptors.
 * |cuda.tile| only: tiles.
+* |cuda.tile| also accepts non-empty Python lists of arrays as kernel arguments.
+  These become list views with same-rank, same-dtype array elements, supporting
+  ``len`` and integer indexing. The list structure cannot be modified.
 
-Mutable Python objects such as lists, dictionaries, sets, and iterators are
-by design unsupported in default mode. Use immutable data structures such as tuples
-or frozen dataclasses instead. Arrays can still load and store GPU memory.
+Creating or mutating ordinary Python lists, dictionaries, sets, and iterators
+is unsupported in default mode. The list-of-arrays argument conversion above
+does not provide general Python list semantics. Use immutable data structures
+such as tuples or frozen dataclasses instead. Arrays can still load and store
+GPU memory.
+
+Dictionary support is limited to read-only dictionaries formed by collecting
+keyword arguments into a helper's ``**kwargs`` parameter. These support lookup
+by compile-time string keys, ``get``, membership tests, and forwarding with
+``helper(**kwargs)``. Their values may be runtime values; the dictionary cannot
+be mutated.
 
 Supported Language Syntax
 ~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -831,7 +850,8 @@ Supported Language Syntax
 * Nested function and lambda definitions. Helpers and closures can return
   values; kernels can only use ``return`` without a value.
 * Variadic helper parameters (``*args`` and ``**kwargs``) and argument
-  unpacking (``helper(*args, **kwargs)``).
+  unpacking (``helper(*args, **kwargs)``). A helper's ``**kwargs`` parameter is
+  a read-only dictionary.
 * Tuple concatenation with ``+``, ``len(tuple)``, and membership tests with
   ``in`` and ``not in``. Tuple indexing requires a compile-time constant index.
   Tuple comprehensions use ``cl.static_iter`` for every iterable, for example
