@@ -2,76 +2,62 @@
 ..
 .. SPDX-License-Identifier: Apache-2.0
 
-(Experimental) cuda.lang
-========================
+CUDA Languages for Python
+=========================
 
-|cuda lang| brings low-level CUDA programming to Python. It exposes the familiar
-CUDA C++ execution model while adding Pythonic APIs for modern hardware features
-such as Tensor Memory Accelerator (TMA) and Tensor Cores.
+CUDA Languages brings two GPU programming models to Python:
+``cuda.lang`` for SIMT programming and ``cuda.tile`` (cuTile) for
+Tile programming. They share language design and compiler infrastructure.
 
-|cuda lang| and |cuTile| share unified language design and compiler infrastructure
-so applications can combine explicit SIMT control with higher-level tile programming.
+Both namespaces are included in the ``cuda-tile`` package, which will be renamed
+to ``cuda-languages`` in the near future.
+Package setup is described in :doc:`getting-started/installation`.
 
-Getting Started
----------------
+.. _choose-a-programming-model:
 
-The following kernel launches one CUDA block with 4 threads to normalize a 1D
-array. Each thread vector-loads 4 values from global memory, atomically adds its
-partial sum into one shared-memory value through a pointer, then divides each
-loaded value by the block sum and stores the normalized values back to global
-memory:
+Programming Models
+------------------
 
-.. testcode::
-   :template: setup_only.py
+.. list-table::
+   :header-rows: 1
+   :widths: 22 39 39
 
-   @cl.kernel
-   def normalize_kernel(values, normalized):
-       total = cl.shared_array(1, cl.float32)
-       tx = cl.thread_index(0)
-       offset = tx * 4
+   * -
+     - ``cuda.tile [Stable]``
+     - ``cuda.lang [Beta]``
+   * - Execution unit
+     - Abstract tile blocks.
+     - Threads, warps, thread blocks, and thread block clusters.
+   * - Data model
+     - Array and tile.
+     - Array, pointer, scalar, and vector.
+   * - Execution control
+     - Compiler-managed mapping to threads, synchronization within a block,
+       and hardware operations.
+     - Explicit thread-block size, shared memory, tensor memory, barriers, and
+       other hardware primitives.
+   * - Architecture portability
+     - Arch-agnostic tile operations let the compiler target different
+       supported GPU architectures, providing portability without rewriting
+       the kernel for each architecture.
+     - Portable SIMT operations, with optional architecture-specific primitives
+       that may require different implementations across GPU generations.
+   * - Start here
+     - :doc:`getting-started/tile`
+     - :doc:`getting-started/lang`
 
-       if tx == 0:
-           total[0] = 0.0
-       cl.barrier_sync_block()
-
-       loaded = values.pointer(offset).load(count=4, alignment=16)
-       partial_sum = loaded[0] + loaded[1] + loaded[2] + loaded[3]
-       cl.atomic_rmw(cl.AtomicOp.ADD, total.pointer(0), partial_sum)
-       cl.barrier_sync_block()
-
-       loaded = loaded / total[0]
-       normalized[offset + 0] = loaded[0]
-       normalized[offset + 1] = loaded[1]
-       normalized[offset + 2] = loaded[2]
-       normalized[offset + 3] = loaded[3]
-
-   values = torch.tensor(
-       [
-           1.0, 1.0, 2.0, 4.0,
-           1.0, 1.0, 2.0, 4.0,
-           1.0, 1.0, 2.0, 4.0,
-           1.0, 1.0, 2.0, 4.0,
-       ],
-       dtype=torch.float32,
-       device="cuda:0",
-   )
-   normalized = torch.empty_like(values)
-   cl.launch(stream,
-             (1,),  # grid size
-             (4,),  # block size
-             normalize_kernel, (values, normalized))
-   print(normalized.cpu().tolist())
-
-.. testoutput::
-
-   [0.03125, 0.03125, 0.0625, 0.125, 0.03125, 0.03125, 0.0625, 0.125, 0.03125, 0.03125, 0.0625, 0.125, 0.03125, 0.03125, 0.0625, 0.125]
-
+``cuda.tile`` expresses parallel array computations at tile granularity, with
+compiler-managed execution across supported GPU architectures. ``cuda.lang``
+provides explicit control over threads, memory, and synchronization, including
+architecture-specific optimizations.
 
 .. toctree::
    :maxdepth: 2
    :hidden:
 
+   getting-started/index
    language
-   data
-   operations
-   private
+   tile/index
+   lang/index
+   integration/index
+   reference/index

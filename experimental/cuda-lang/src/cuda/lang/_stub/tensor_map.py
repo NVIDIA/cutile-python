@@ -105,12 +105,16 @@ def tensor_map_tiled(array,
     Args:
         array: Global array supplying the element type, base address, shape,
             and strides. Its rank must be between one and five.
-        tile_shape (int | tuple[int, ...]): One positive integer no greater
-            than 256 per array dimension. For a one-dimensional array, an
-            integer is equivalent to a one-element tuple. May contain runtime
+        tile_shape (int | tuple[int, ...]): Tile extents in descriptor-axis
+            order: ``tile_shape[i]`` covers array axis ``order[i]``. Each extent
+            is a positive integer no greater than 256. For a one-dimensional
+            array, an integer is equivalent to a one-element tuple. May contain runtime
             integers inside a :func:`host_entry`.
         order (tuple[int, ...] | AxisOrder): Permutation mapping descriptor axes to
-            array axes. ``AxisOrder.KEEP`` selects ``(0, 1, ..., array.ndim - 1)`` and
+            array axes, applied to the array's shape and strides. ``tile_shape``
+            and copy coordinates are supplied in the resulting descriptor order.
+            Descriptor axis zero must have an array stride of one element.
+            ``AxisOrder.KEEP`` selects ``(0, 1, ..., array.ndim - 1)`` and
             ``AxisOrder.REVERSE`` reverses that order. An explicit permutation such as
             ``(1, 0, 2)`` may also be used.
         interleave (TensorMapInterleave): Global-memory interleave mode.
@@ -139,6 +143,10 @@ def tensor_map_tiled(array,
         :func:`copy_async_bulk_tensor_global_to_shared` and ``dst_coordinates``
         of :func:`copy_async_bulk_tensor_shared_to_global` follow this axis
         order. Global strides describe global memory, not shared memory.
+
+        For :data:`~cuda.lang.float4_e2m1fn_x2` arrays, TMA uses byte elements.
+        ``tile_shape`` and copy coordinates count packed pairs, with two FP4
+        values per byte.
 
         For ``interleave=TensorMapInterleave.NONE``, a descriptor coordinate
         ``d`` selects the global element offset::

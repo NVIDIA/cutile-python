@@ -57,9 +57,17 @@ import cuda.lang as cl
 @function()
 def tcgen05_wait_load() -> None:
     """
-    Causes the executing thread to block until all prior
-    :func:`tcgen05_load` operations issued by the executing thread
-    have completed.
+    Wait for this thread's preceding :func:`tcgen05_load` operations.
+
+    :Participation: :ref:`Warp aligned <api-participation>` (32 lanes).
+
+    :Completion: Synchronous.
+
+    :Ordering: For a handoff to another warp, call
+        :func:`tcgen05_fence_before_thread_sync` after this wait, then
+        signal the consumer through thread synchronization. The consumer
+        calls :func:`tcgen05_fence_after_thread_sync` before dependent
+        ``tcgen05`` operations.
     """
     _nvvm.tcgen05_wait_ld()
 
@@ -67,9 +75,17 @@ def tcgen05_wait_load() -> None:
 @function()
 def tcgen05_wait_store() -> None:
     """
-    Causes the executing thread to block until all prior
-    :func:`tcgen05_store` operations issued by the executing thread
-    have completed.
+    Wait for this thread's preceding :func:`tcgen05_store` operations.
+
+    :Participation: :ref:`Warp aligned <api-participation>` (32 lanes).
+
+    :Completion: Synchronous.
+
+    :Ordering: For a handoff to another warp, call
+        :func:`tcgen05_fence_before_thread_sync` after this wait, then
+        signal the consumer through thread synchronization. The consumer
+        calls :func:`tcgen05_fence_after_thread_sync` before dependent
+        ``tcgen05`` operations.
     """
     _nvvm.tcgen05_wait_st()
 
@@ -79,6 +95,13 @@ def tcgen05_fence_before_thread_sync() -> None:
     """
     Orders all prior async tcgen05 operations with respect to the subsequent
     tcgen05 and execution ordering operations
+
+    :Participation: :ref:`Per-thread <api-participation>`.
+    :Ordering: Pair with :func:`tcgen05_fence_after_thread_sync` across a
+        barrier or atomic protocol. Complete non-pipelined accesses with their
+        operation-specific waits before signaling consumers.
+        :func:`tcgen05_commit` supplies the producer ordering for its tracked
+        MMA, copy, and shift operations.
     """
     _nvvm.tcgen05_fence_before_thread_sync()
 
@@ -88,6 +111,13 @@ def tcgen05_fence_after_thread_sync() -> None:
     """
     Orders all subsequent async tcgen05 operations with respect to the prior
     tcgen05 and execution ordering operations
+
+    :Participation: :ref:`Per-thread <api-participation>`.
+    :Ordering: Execute after the matching thread synchronization and before
+        dependent asynchronous ``tcgen05`` operations. This also applies
+        after an mbarrier completion wait in the issuing thread. See the
+        `PTX synchronization patterns
+        <https://docs.nvidia.com/cuda/parallel-thread-execution/#canonical-synchronization-patterns>`_.
     """
     _nvvm.tcgen05_fence_after_thread_sync()
 
@@ -99,7 +129,12 @@ def tcgen05_relinquish_allocation_permit(cta_group: CTAGroup = CTAGroup.CTA_1) -
     tensor memory.
 
     Args:
-        cta_group (CTAGroup): cta group 1 or 2
+        cta_group (CTAGroup): CTA scope; see :class:`~cuda.lang.CTAGroup`.
+
+    :Participation: :ref:`Warp aligned <api-participation>` (32 lanes). One warp for ``CTA_1``;
+        one warp from each peer block for ``CTA_2``.
+    :Lifetime: After this call, no thread in this block may allocate more
+        TMEM. Existing allocations remain valid until explicitly deallocated.
     """
     cl.static_assert(cta_group in (CTAGroup.CTA_1, CTAGroup.CTA_2))
     if cta_group == CTAGroup.CTA_1:
@@ -114,8 +149,16 @@ def tcgen05_shift_down(address, cta_group: CTAGroup = CTAGroup.CTA_1) -> None:
     Asynchronously shift down the rows of the matrix in the Tensor Memory for a warp.
 
     Args:
-        address: Pointer in tensor memory.
-        cta_group (CTAGroup): cta group 1 or 2.
+        address: Pointer to a live region in tensor memory.
+        cta_group (CTAGroup): CTA scope; see :class:`~cuda.lang.CTAGroup`.
+
+    :Participation: :ref:`Single-thread issue <api-participation>` per operation.
+    :Scope: Block for ``CTA_1``; block pair for ``CTA_2``.
+    :Completion: Asynchronous; explicit completion through
+        :func:`tcgen05_commit` and a wait on its mbarrier.
+    :Ordering: A subsequent MMA from the issuing thread has pipelined
+        ordering for its TMEM A reads when ``cta_group`` matches. For an explicit
+        completion handoff, use :func:`tcgen05_commit`.
     """
     cl.static_assert(cta_group in (CTAGroup.CTA_1, CTAGroup.CTA_2))
     if cta_group == CTAGroup.CTA_1:
@@ -136,10 +179,21 @@ def tcgen05_allocate(
     Args:
         address: Location where the address of the allocated memory should be
             written.
-        number_of_columns: Number of columns to be allocated. Must be a power
-            of two in [32, 512]. Statically known values are checked at
-            compile time; dynamic values must satisfy this at runtime.
-        cta_group (CTAGroup): cta group 1 or 2.
+        number_of_columns: Columns to allocate: a power of two in [32, 512]. Runtime
+            values are allowed. Successive allocation sizes within a block
+            must not increase.
+        cta_group (CTAGroup): CTA scope; see :class:`~cuda.lang.CTAGroup`.
+
+    :Memory: ``address`` must identify a four-byte-aligned, 32-bit output slot
+        in the issuing block's shared memory.
+    :Participation: :ref:`Warp aligned <api-participation>` (32 lanes). One warp for ``CTA_1``;
+        one warp from each peer block for ``CTA_2``. The output slot and
+        column count must be uniform within each warp.
+    :Completion: Synchronous; may block until TMEM is available. Returns after writing
+        the allocated address to the shared-memory output slot.
+
+    :Lifetime: Release every allocation with :func:`tcgen05_deallocate`
+        before kernel exit.
     """
     ...
 
@@ -160,7 +214,14 @@ def tcgen05_deallocate(
             allocation and be a power of two in [32, 512]. Statically known
             values are checked at compile time; dynamic values must satisfy
             this at runtime.
-        cta_group (CTAGroup): cta group 1 or 2.
+        cta_group (CTAGroup): CTA scope; see :class:`~cuda.lang.CTAGroup`.
+
+    :Participation: :ref:`Warp aligned <api-participation>` (32 lanes). One warp for ``CTA_1``;
+        one warp from each peer block for ``CTA_2``. The allocation address
+        and column count must be uniform within each warp.
+    :Completion: Synchronous.
+    :Ordering: Finish all accesses to the allocation, including from the peer
+        block, and synchronize its users before this call.
     """
     ...
 
@@ -174,6 +235,11 @@ def tcgen05_tmem_offset(
 ) -> P6:
     """Offset a tensor memory pointer by lane and column coordinates.
 
+    When the returned pointer is used by :func:`tcgen05_load` or
+    :func:`tcgen05_store`, the operation must still obey the calling warp's
+    :ref:`TMEM warp access ranges <lang-tmem-warp-access-ranges>`.
+    Changing ``lane_offset`` does not grant access outside that range.
+
     Args:
         pointer: Pointer in tensor memory.
         lane_offset (int): Number of tensor memory lanes to add.
@@ -181,6 +247,9 @@ def tcgen05_tmem_offset(
 
     Returns:
         A tensor memory pointer with the same pointee type as ``pointer``.
+
+    :Participation: :ref:`Per-thread <api-participation>`.
+    :Completion: Synchronous.
     """
     ...
 
@@ -195,10 +264,22 @@ def tcgen05_commit(
     """Commit tcgen05 tensor memory operations and arrive at ``mbarrier``.
 
     Args:
-        mbarrier: Pointer to an initialized mbarrier in shared memory.
+        mbarrier: Pointer to an initialized, eight-byte-aligned shared mbarrier.
+            Include one hardware arrival per commit in its expected count.
         multicast_mask: 16-bit mask selecting the destination blocks for a
             multicast commit.
-        cta_group (CTAGroup): cta group 1 or 2.
+        cta_group (CTAGroup): CTA scope; see :class:`~cuda.lang.CTAGroup`.
+
+    :Participation: :ref:`Single-thread issue <api-participation>`; use the thread
+        that issued the tracked MMA, copy, or shift operations.
+    :Scope: Block for ``CTA_1``; block pair for ``CTA_2``.
+    :Completion: Asynchronous signal; schedules one mbarrier arrival after
+        the issuing thread's preceding MMA, copy, and shift operations finish.
+    :Ordering: After a successful mbarrier wait, consumers call
+        :func:`tcgen05_fence_after_thread_sync` before dependent
+        ``tcgen05`` operations, including in the issuing thread. A relaxed
+        wait is sufficient for this specialized protocol. The commit
+        supplies the before-thread-sync ordering for its tracked operations.
     """
     ...
 
@@ -216,22 +297,37 @@ def tcgen05_load(
     """Load registers from tensor memory using a tcgen05 load shape.
 
     Args:
-        shape: Compile-time load shape.
+        shape (Tcgen05LoadStoreShape): Load shape; see :class:`~cuda.lang.Tcgen05LoadStoreShape`
+            for the PTX fragment layouts.
         tensor_memory_address: Pointer to source in tensor memory.
-        element_count: Number of logical ``dtype`` elements in the result.
+        element_count (const int): Number of logical ``dtype`` elements in the result.
             The PTX repetition count is inferred from ``shape``, ``dtype``,
             and ``element_count``.
-        dtype: Element data type of the result. The hardware always moves
+        dtype (DType | None): Element data type of the result. The hardware always moves
             32-bit register words, so this reinterprets their bits rather than
             converting them. Defaults to :data:`~cuda.lang.int32`.
-        pack: Whether to use the packed 16-bit form.
-        offset: Address offset for the second access when the load accesses
+        pack (const bool | None): Whether to use the packed 16-bit form.
+        offset (const int | None): Address offset for the second access when the load accesses
            two elements as indicated by the ``x2`` suffix of the ``shape``
            argument.
 
     Returns:
-        The loaded register words reinterpreted as ``dtype``, as a scalar when
+        This lane's register fragment reinterpreted as ``dtype``, as a scalar when
         ``element_count`` is one and a :class:`~cuda.lang.Vector` otherwise.
+
+    :Participation: :ref:`Warp aligned <api-participation>` (32 lanes); the TMEM base address must
+        be uniform within the warp.
+        The TMEM lanes accessible to a warp depend on its index within its
+        warpgroup; see :ref:`TMEM warp access ranges <lang-tmem-warp-access-ranges>`.
+        The selected shape determines the fragment returned from those lanes.
+        It does not expand the warp's accessible lane range.
+    :Completion: Asynchronous; explicit completion via :func:`tcgen05_wait_load`.
+    :Ordering: After a producer's mbarrier completion wait, call
+        :func:`tcgen05_fence_after_thread_sync` before this load. True
+        register dependencies within a thread are respected. Use
+        :func:`tcgen05_wait_load` to complete the reads before handing
+        their source storage to another warp; that handoff also uses
+        :func:`tcgen05_fence_before_thread_sync` and thread synchronization.
     """
     ...
 
@@ -254,10 +350,23 @@ def tcgen05_copy(
         address: Pointer in tensor memory allocated by tcgen05_allocate.
         shared_memory_descriptor: Shared memory descriptor encoded
             as a 64-bit integer.
-        cta_group (CTAGroup): cta group 1 or 2.
-        shape: Shape of the copy.
-        multicast: Warp multicast pattern.
-        source_format:
+        cta_group (CTAGroup): CTA scope; see :class:`~cuda.lang.CTAGroup`.
+        shape (Tcgen05CopyShape): Copy shape; see :class:`~cuda.lang.Tcgen05CopyShape`.
+        multicast (Tcgen05CopyMulticast | None): Warp distribution; see
+            :class:`~cuda.lang.Tcgen05CopyMulticast`.
+        source_format (Tcgen05CopySourceFormat | None): Optional source packing;
+            see :class:`~cuda.lang.Tcgen05CopySourceFormat`.
+
+    :Memory: Keep shared source data stable until its reads complete.
+    :Participation: :ref:`Single-thread issue <api-participation>` per operation.
+    :Scope: Block for ``CTA_1``; block pair for ``CTA_2``.
+    :Completion: Asynchronous; explicit completion through
+        :func:`tcgen05_commit` and a wait on its mbarrier.
+    :Ordering: For shared operands written by ordinary stores, writers execute
+        an async-proxy fence and synchronize before submission. A later MMA from the same thread
+        can consume copied A through the `PTX copy/MMA pipeline
+        <https://docs.nvidia.com/cuda/parallel-thread-execution/#pipelined-tcgen05-instructions>`_.
+        Follow its CTA-group and address rules for the selected copy shape.
     """
 
 
@@ -274,20 +383,32 @@ def tcgen05_store(
     Store registers to tensor memory using a tcgen05 store shape.
 
     Args:
-        shape: Store shape.
+        shape (Tcgen05LoadStoreShape): Store shape.
         tensor_memory_address: Pointer in tensor memory (address space 6).
-        value: Scalar or vector of any non-``bool`` data type. Its bits are
-            reinterpreted as the 32-bit register words the hardware stores, so
-            its total bit width must be a multiple of 32 and the resulting
-            register count must be valid for ``shape``. This is the inverse of
-            the ``dtype`` and ``element_count`` arguments of
+        value: This lane's scalar or vector fragment, with any non-``bool``
+            data type. Its bits are reinterpreted as 32-bit register words;
+            the total bit width must be a multiple of 32 and the register
+            count must be valid for ``shape``. This is the inverse of
             :func:`tcgen05_load`.
-        unpack: unpack a 32-bit element in the register into two 16-bit
+        unpack (const bool): unpack a 32-bit element in the register into two 16-bit
             elements and store them in adjacent columns.
-        offset: When shape 16x32bx2 is used, base address of the first access is
+        offset (const int | None): When shape 16x32bx2 is used, base address of the first access is
             specified by ``tensor_memory_address`` and the base address of the second
             access is specified by ``tensor_memory_address + offset``, where offset is
             an immediate argument.
+
+    :Participation: :ref:`Warp aligned <api-participation>` (32 lanes); the TMEM base address must
+        be uniform within the warp.
+        The TMEM lanes accessible to a warp depend on its index within its
+        warpgroup; see :ref:`TMEM warp access ranges <lang-tmem-warp-access-ranges>`.
+        The selected shape determines the fragment stored in those lanes.
+        It does not expand the warp's accessible lane range.
+    :Completion: Asynchronous; explicit completion via :func:`tcgen05_wait_store`.
+    :Ordering: Same-warp TMEM load/store pairs have the pipeline ordering
+        listed in the `PTX tcgen05 rules
+        <https://docs.nvidia.com/cuda/parallel-thread-execution/#pipelined-tcgen05-instructions>`_.
+        For a handoff to another warp, complete these stores with
+        :func:`tcgen05_wait_store`, then fence and synchronize as described there.
     """
 
 
@@ -498,8 +619,8 @@ class Tcgen05SharedMemoryDescriptor:
     :func:`tcgen05_mma`. Its address, strides, and swizzle mode must describe the
     same physical layout that was used to populate shared memory.
 
-    How tcgen05 organizes a swizzled matrix
-    ---------------------------------------
+    How ``tcgen05`` Organizes a Swizzled Matrix
+    -------------------------------------------
 
     The PTX specification describes tcgen05 layouts using 16-byte *cells*. A
     *swizzle layout atom* is the smallest rectangular group of cells that repeats
@@ -521,7 +642,7 @@ class Tcgen05SharedMemoryDescriptor:
     which of these two dimensions is the leading dimension, not the order in
     which the shape is printed.
 
-    .. list-table:: tcgen05 swizzle atom shapes
+    .. list-table:: ``tcgen05`` Swizzle Atom Shapes
        :header-rows: 1
 
        * - Swizzle mode
@@ -600,7 +721,7 @@ class Tcgen05SharedMemoryDescriptor:
       for the address permutations produced by TMA, supported atomicities, and
       repeating-pattern alignment.
 
-    Constructing a 128B K-major BF16 operand with TMA
+    Constructing a 128B K-Major BF16 Operand with TMA
     --------------------------------------------------
 
     Suppose a BF16 matrix is K-major: values adjacent along K are adjacent in
@@ -698,7 +819,7 @@ class Tcgen05SharedMemoryDescriptor:
     row, while eight consecutive M rows at the same ``K_outer`` fill one complete
     atom. This is the K-major Swizzle 128B layout consumed by tcgen05.
 
-    Compatibility invariant
+    Compatibility Invariant
     -----------------------
 
     A TMA-produced shared-memory layout can be consumed by tcgen05 when every
@@ -764,10 +885,11 @@ def tcgen05_mma(
     a_shift=False,
 ) -> None:
     """
-    Perform the 5th generation of matrix multiply and accumulate operation.
+    Issue one 5th generation matrix multiply-accumulate instruction.
 
     Args:
-        kind (Tcgen05MMAKind): Data type the operation should be performed in.
+        kind (Tcgen05MMAKind): Operation family; see :class:`~cuda.lang.Tcgen05MMAKind`
+            for supported instruction shapes and K extents.
         matrix_d (P6): Pointer in tensor memory to the destination and optional
             accumulator matrix D.
         matrix_a (P6 | int64): Matrix A encoded as either a 64-bit shared-memory
@@ -775,20 +897,28 @@ def tcgen05_mma(
         matrix_b (int64): Matrix B encoded as a 64-bit shared-memory descriptor.
         instruction_descriptor (int32 | uint32): Encoded instruction descriptor.
         accumulate (bool): Whether input matrix D is included in the result.
-        cta_group (CTAGroup): Controlls whether the operation takes place in
-            one block or a pair of blocks.
+        cta_group (CTAGroup): CTA scope; see :class:`~cuda.lang.CTAGroup`.
         sparse_metadata (P6 | None): Optional pointer in tensor memory containing
             sparsity metadata for packed sparse matrix A. ``None`` selects dense
-            MMA; presence selects sparse MMA and must be compile-time known.
-        scale_input_d (int | None): Optional compile-time exponent in
+            MMA; a pointer selects sparse MMA.
+        scale_input_d (const int | None): Optional exponent in
             ``[0, 15]`` that scales input D by ``2**-scale_input_d``.
             Supported only for ``F16`` and ``TF32`` kinds.
         disable_output_lane (vector | None): Optional vector mask selecting
             tensor-memory lanes that must not be updated.
-        collector_op (Tcgen05MMACollectorOp): Collector-buffer operation for
-            matrix A.
-        a_shift (bool): Shifts the rows of the A matrix down by one row and
+        collector_op (Tcgen05MMACollectorOp): Collector operation; see
+            :class:`~cuda.lang.Tcgen05MMACollectorOp`.
+        a_shift (const bool): Shifts the rows of the A matrix down by one row and
             can only be applied if A is in tensor memory
+
+    :Participation: :ref:`Single-thread issue <api-participation>` per operation.
+    :Scope: Block for ``CTA_1``; block pair for ``CTA_2``.
+    :Completion: Asynchronous; explicit completion through
+        :func:`tcgen05_commit` and a wait on its mbarrier.
+    :Ordering: For shared operands written by ordinary stores, writers execute
+        an async-proxy fence and synchronize before submission. Successive MMAs from the same thread
+        with the same ``cta_group``, accumulator address, and shape have
+        ordered accumulator reads and writes.
     """
 
 
@@ -812,8 +942,8 @@ def tcgen05_mma_block_scale(
     Performs block scaled MMA operation on 5th-generation tensor cores.
 
     Args:
-        kind (Tcgen05MMABlockScaleKind): Data type the operation should be
-            performed in.
+        kind (Tcgen05MMABlockScaleKind): Arithmetic family; see
+            :class:`~cuda.lang.Tcgen05MMABlockScaleKind`.
         matrix_d (P6): Pointer in tensor memory to the destination and optional
             accumulator matrix D.
         matrix_a (P6 | int64): Matrix A encoded as either a 64-bit shared-memory
@@ -825,12 +955,22 @@ def tcgen05_mma_block_scale(
         accumulate (bool): Whether input matrix D is included in the result.
         sparse_metadata (P6 | None): Optional pointer in tensor memory containing
             sparsity metadata for packed sparse matrix A. ``None`` selects dense
-            MMA; presence selects sparse MMA and must be compile-time known.
-        cta_group (CTAGroup): Controlls whether the operation takes place in
-            one block or a pair of blocks.
-        scale_vector_size (Tcgen05MMAScaleVectorSize): Scale-vector layout.
-        collector_op (Tcgen05MMACollectorOp): Collector-buffer operation for
-            matrix A.
+            MMA; a pointer selects sparse MMA.
+        cta_group (CTAGroup): CTA scope; see :class:`~cuda.lang.CTAGroup`.
+        scale_vector_size (Tcgen05MMAScaleVectorSize): Scaling granularity; see
+            :class:`~cuda.lang.Tcgen05MMAScaleVectorSize`.
+        collector_op (Tcgen05MMACollectorOp): Collector operation; see
+            :class:`~cuda.lang.Tcgen05MMACollectorOp`.
+
+    :Memory: Scale-factor packing must match ``kind`` and ``scale_vector_size``.
+    :Participation: :ref:`Single-thread issue <api-participation>` per operation.
+    :Scope: Block for ``CTA_1``; block pair for ``CTA_2``.
+    :Completion: Asynchronous; explicit completion through
+        :func:`tcgen05_commit` and a wait on its mbarrier.
+    :Ordering: For shared operands written by ordinary stores, writers execute
+        an async-proxy fence and synchronize before submission. Successive MMAs from the same thread
+        with the same ``cta_group``, accumulator address, and shape have
+        ordered accumulator reads and writes.
     """
 
 
@@ -853,7 +993,8 @@ def tcgen05_mma_weight_stationary(
     multiply and accumulate operation.
 
     Args:
-        kind (Tcgen05MMAKind): Data type the operation should be performed in.
+        kind (Tcgen05MMAKind): Operation family; see :class:`~cuda.lang.Tcgen05MMAKind`
+            for supported instruction shapes and K extents.
         matrix_d (P6): Pointer in tensor memory to the destination and optional
             accumulator matrix D.
         matrix_a (P6 | int64): Matrix A encoded as either a 64-bit shared-memory
@@ -863,12 +1004,21 @@ def tcgen05_mma_weight_stationary(
         accumulate (bool): Whether input matrix D is included in the result.
         sparse_metadata (P6 | None): Optional pointer in tensor memory containing
             sparsity metadata for packed sparse matrix A. ``None`` selects dense
-            MMA; presence selects sparse MMA and must be compile-time known.
-        zero_column_mask (int64 | None): Optional integral scalar containing a 64-bit
-            zero-column mask descriptor for matrix B.
-        collector_op (Tcgen05MMACollectorOp): Collector-buffer operation for
-            matrix A.
-        collector_b_buffer (Tcgen05MMACollectorBBuffer):
+            MMA; a pointer selects sparse MMA.
+        zero_column_mask (int64 | None): Optional integral scalar containing a
+            64-bit zero-column mask descriptor for matrix B.
+        collector_op (Tcgen05MMACollectorOp): Collector operation; see
+            :class:`~cuda.lang.Tcgen05MMACollectorOp`.
+        collector_b_buffer (Tcgen05MMACollectorBBuffer): Matrix B collector;
+            see :class:`~cuda.lang.Tcgen05MMACollectorBBuffer`.
+
+    :Participation: :ref:`Single-thread issue <api-participation>` per operation.
+    :Scope: Block (``CTA_1``); other ``tcgen05`` operations in this kernel
+        must also use ``CTA_1``.
+    :Completion: Asynchronous; explicit completion through
+        :func:`tcgen05_commit` and a wait on its mbarrier.
+    :Ordering: For shared operands written by ordinary stores, writers execute
+        an async-proxy fence and synchronize before submission.
     """
 
 

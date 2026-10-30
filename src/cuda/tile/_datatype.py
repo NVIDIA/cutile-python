@@ -312,18 +312,31 @@ def _get_all_public_numeric_dtypes_for_docs():
     return [dtype for dtype in _promotion_table_short_names if _is_public(dtype.name)]
 
 
-def _generate_rst_numeric_dtypes() -> str:
-    """Generate RST documentation for numeric datatypes."""
-    import cuda.tile
+def _generate_rst_numeric_dtypes(namespaces=("cuda.tile",)) -> str:
+    """Generate one numeric dtype entry with its public names in the given namespaces."""
+    from importlib import import_module
+    from inspect import cleandoc
+
+    modules = [import_module(namespace) for namespace in namespaces]
+    dtypes = _get_all_public_numeric_dtypes_for_docs()
+    for module in modules:
+        for name in module.__all__:
+            dtype = getattr(module, name)
+            if isinstance(dtype, DType) and is_numeric(dtype) and dtype not in dtypes:
+                dtypes.append(dtype)
     content = []
 
-    for dtype in _get_all_public_numeric_dtypes_for_docs():
-        # Skip dtypes not exposed in cuda.tile yet
-        if not hasattr(cuda.tile, dtype.name):
+    for dtype in dtypes:
+        names = [f"{module.__name__}.{dtype.name}" for module in modules
+                 if getattr(module, dtype.name, None) is dtype]
+        if not names:
             continue
-        content.append(f".. autodata:: cuda.tile.{dtype.name}")
-        content.append("   :annotation:")
-        content.append("")  # Empty line between types
+        content.append(f".. py:data:: {names[0]}")
+        content.extend(f"             {name}" for name in names[1:])
+        content.append("   :module:")
+        content.append("")
+        content.extend(f"   {line}" for line in cleandoc(dtype.__doc__ or "").splitlines())
+        content.append("")
 
     return '\n'.join(content)
 

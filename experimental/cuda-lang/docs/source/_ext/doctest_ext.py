@@ -247,6 +247,22 @@ def _make_code_block(code, groups=None, source_info=None, node_type=None, option
     return node
 
 
+def _make_copyable(blocks):
+    container = nodes.container()
+    container["classes"].append("snippet-tab-copyable")
+    copy_btn = (
+        '<button class="snippet-copy-btn" title="Copy" '
+        'onclick="let c=this.parentNode.querySelector(\'pre\').textContent;'
+        'navigator.clipboard.writeText(c);'
+        'this.textContent=\'Copied!\';'
+        'setTimeout(()=>this.textContent=\'Copy\',1500)">'
+        'Copy</button>'
+    )
+    container += nodes.raw('', copy_btn, format='html')
+    container.extend(blocks)
+    return container
+
+
 def _make_tabs(env, snippet_block, full_block):
     """Build a CSS-only tabbed container with Snippet and Complete blocks.
 
@@ -279,19 +295,8 @@ def _make_tabs(env, snippet_block, full_block):
     panel1 += snippet_block
     container += panel1
 
-    panel2 = nodes.container()
+    panel2 = _make_copyable([full_block])
     panel2["classes"].append("snippet-tab-panel")
-    panel2["classes"].append("snippet-tab-copyable")
-    copy_btn = (
-        '<button class="snippet-copy-btn" title="Copy" '
-        'onclick="let c=this.parentNode.querySelector(\'pre\').textContent;'
-        'navigator.clipboard.writeText(c);'
-        'this.textContent=\'Copied!\';'
-        'setTimeout(()=>this.textContent=\'Copy\',1500)">'
-        'Copy</button>'
-    )
-    panel2 += nodes.raw('', copy_btn, format='html')
-    panel2 += full_block
     container += panel2
 
     return container
@@ -330,7 +335,7 @@ class SnippetTestcodeDirective(TestcodeDirective):
         self.content = full.split('\n')
 
         if not had_markers:
-            return super().run()
+            return [_make_copyable(super().run())]
 
         snippet = textwrap.dedent(snippet)
 

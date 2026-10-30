@@ -316,18 +316,17 @@ def shared_array(
         dynamic (bool):
         alignment (int | None):
 
-    Shared arrays must be declared at the beginning of the kernel.
+    Shared allocations cannot occur inside runtime control flow. They can follow
+    other statements, and static shared arrays can be created in helpers called
+    outside runtime control flow. Their storage has the lifetime of the owning
+    block.
     The optional alignment is specified in bytes and must be a positive power of
     two.
 
-    If `dynamic` is `False` (default), the array will be placed in the statically allocated
-    shared memory. In this case, `shape` must be a compile-time constant.
-
-    If `dynamic` is `True`, the array will be placed in the dynamically allocated shared memory
-    (regardless of whether the provided shape is actually constant).
-    In this case, `shape` is allowed to be dynamic. However, only a restricted set of expressions
-    is allowed to be used for the dynamic shape: currently, only referencing an integer
-    kernel parameter directly is permitted.
+    By default, ``shape`` must be a compile-time constant, and the compiler fixes
+    the allocation size per block. With ``dynamic=True``, :func:`launch` computes
+    the required shared memory per block at launch time. Shape dimensions can be
+    constants or direct references to ``int32`` kernel parameters.
 
     Static shared memory example:
 
@@ -383,7 +382,13 @@ def local_array(
     dtype: DType,
     alignment: int | None = None,
 ) -> LocalArrayContextManager:
-    """Create an on-device array in local memory.
+    """Create an array with storage private to a thread.
+
+    Its values can often remain in registers, especially when indices are known
+    at compile time, so using it does not necessarily cause local-memory traffic.
+    Actual storage depends on the access pattern and register requirements.
+    Inspect generated code and profiling results before treating a local array
+    as a performance bottleneck.
 
     Args:
         shape (int | tuple[int, ...]):
@@ -391,7 +396,7 @@ def local_array(
         alignment (int | None):
 
     Local arrays must be declared in a `with` statement and have static shape.
-    The local memory is only valid inside the with block.
+    The array storage is only valid inside the with block.
     The optional alignment is specified in bytes and must be a positive power
     of two.
 
@@ -443,7 +448,18 @@ def setmaxregister_decrease(number_of_registers):
 
 @simt_stub
 def elect_sync(membermask: int = FULL_MASK, /) -> bool:
-    """Return whether the caller is the elected thread in ``membermask``."""
+    """Elect one leader from the warp lanes selected by ``membermask``.
+
+    Args:
+        membermask (int): Participation mask; bit ``i`` selects lane ``i``.
+
+    Returns:
+        True for the elected leader and False for the other participants.
+
+    :Target: SM90 or newer.
+    :Participation: :ref:`Masked warp <api-participation>` (``membermask``).
+    :Completion: Synchronous.
+    """
     pass
 
 
@@ -454,6 +470,9 @@ def vote_all_sync(predicate: bool, mask: int = FULL_MASK) -> bool:
     Args:
         predicate: Per-lane boolean value.
         mask: Mask indicating membership where bit ``i`` selects lane ``i``.
+
+    :Participation: :ref:`Masked warp <api-participation>` (``mask``).
+    :Completion: Synchronous.
     """
 
 
@@ -464,6 +483,9 @@ def vote_any_sync(predicate: bool, mask: int = FULL_MASK) -> bool:
     Args:
         predicate: Per-lane boolean value.
         mask: Mask indicating membership where bit ``i`` selects lane ``i``.
+
+    :Participation: :ref:`Masked warp <api-participation>` (``mask``).
+    :Completion: Synchronous.
     """
 
 
@@ -474,6 +496,9 @@ def vote_uniform_sync(predicate: bool, mask: int = FULL_MASK) -> bool:
     Args:
         predicate: Per-lane boolean value.
         mask: Mask indicating membership where bit ``i`` selects lane ``i``.
+
+    :Participation: :ref:`Masked warp <api-participation>` (``mask``).
+    :Completion: Synchronous.
     """
 
 
@@ -484,6 +509,9 @@ def vote_ballot_sync(predicate: bool, mask: int = FULL_MASK) -> int:
     Args:
         predicate: Per-lane boolean value.
         mask: Mask indicating membership where bit ``i`` selects lane ``i``.
+
+    :Participation: :ref:`Masked warp <api-participation>` (``mask``).
+    :Completion: Synchronous.
     """
 
 
@@ -575,13 +603,13 @@ def atomic_rmw(
     use only ``operand`` and require ``operand2`` to be ``None``.
 
     Args:
-        op: Operation to perform.
+        op (AtomicOp): Operation to perform.
         ptr: Pointer to the value to modify.
         operand: Operand for the operation, or the expected value for ``CAS``.
         operand2: New value. Only valid for compare-and-swap.
-        memory_order: Memory order for the operation.
-        memory_scope: Scope of threads that participate in memory ordering.
-        alignment: Minimum byte alignment that the compiler can assume. The
+        memory_order (MemoryOrder): Memory order for the operation.
+        memory_scope (MemoryScope): Scope of threads that participate in memory ordering.
+        alignment (const int | None): Minimum byte alignment that the compiler can assume. The
             value must be a positive power of two. If the value is ``None``,
             the natural alignment of the pointee data type is used.
 
@@ -601,6 +629,12 @@ def atomic_rmw(
         .. testoutput::
 
             after: 10, prev_val: 7
+
+    :Target: Supported types and targets depend on the operation; see the `PTX atomic
+        instruction reference
+        <https://docs.nvidia.com/cuda/parallel-thread-execution/#parallel-synchronization-and-communication-instructions-atom>`_.
+    :Participation: :ref:`Per-thread <api-participation>`.
+    :Completion: Synchronous.
     """
 
 
@@ -615,12 +649,12 @@ def shuffle_sync(
     """Exchange register data between threads of a warp.
 
     Args:
-        kind: Compile-time constant `ShuffleKind` indicating the shuffle operation.
+        kind (ShuffleKind): Shuffle operation.
         value: This lane's input. Must be an ``int32``, ``uint32``, or ``float32``
             scalar. The returned value has the same type.
         offset: specifies a source lane or source lane offset
             (depending on kind).
-        width: Sub-warp width: 1, 2, 4, 8, 16, or 32.
+        width (const int): Sub-warp width: 1, 2, 4, 8, 16, or 32.
         mask: Integer participation mask. Defaults to all 32 lanes.
 
     Returns:
@@ -635,6 +669,11 @@ def shuffle_sync(
         value, in_range = cl.shuffle_sync(cl.ShuffleKind.INDEX, lane, 0)
         cl.assert_(value == 0)
         cl.assert_(in_range)
+
+    :Participation: :ref:`Masked warp <api-participation>` (``mask``). The source
+        lane must also be active and participating. ``in_range`` describes the
+        source-index calculation.
+    :Completion: Synchronous.
     """
 
 
@@ -659,8 +698,8 @@ def address_space_cast(value: Pointer, memory_space: MemorySpace) -> Pointer:
 @simt_stub
 def map_shared_to_cluster(pointer: Pointer, rank: int) -> Pointer:
     """
-    Map a pointer in shared memory from another CTA within the same cluster
-    with rank ``rank`` to this CTA.
+    Map a pointer in shared memory from another thread block within the same cluster
+    with rank ``rank`` to this thread block.
     The pointer is expected to have memory space
     ``MemorySpace.SHARED`` and a pointer with memory space
     ``MemorySpace.SHARED_CLUSTER`` is returned.
@@ -668,7 +707,7 @@ def map_shared_to_cluster(pointer: Pointer, rank: int) -> Pointer:
 
     Args:
         pointer: Address to be mapped.
-        rank (int): Rank of the destination CTA within the cluster.
+        rank (int): Rank of the destination thread block within the cluster.
     """
 
 
@@ -705,7 +744,15 @@ def nanosleep(nanoseconds: int):
 
 @simt_stub
 def memory_barrier(scope: MemoryScope) -> None:
-    """Issue a memory fence with the given scope."""
+    """Issue a memory fence with the given scope.
+
+    Args:
+        scope (MemoryScope): Threads that can observe the ordering effect.
+
+    :Target: Cluster scope requires SM90 or newer.
+    :Participation: :ref:`Per-thread <api-participation>`.
+    :Ordering: Sequentially consistent fence at the selected scope.
+    """
 
 
 @simt_stub

@@ -21,10 +21,18 @@ def mbarrier_initialize(
     """Initialize an mbarrier with the expected participant count and layout.
 
     Args:
-        mbar: Pointer to mbarrier in block-local shared memory.
+        mbar: Pointer to eight bytes of block-local shared storage for one
+            ``cl.mbarrier``, with eight-byte alignment.
         participants: Initial expected arrival count for each phase. Must be
             between 1 and 1,048,575 for version 0, or 1 and 511 for version 1.
-        layout: Storage layout. Explicit layouts require SM90 or newer.
+        layout (MbarrierLayout | None): Storage layout. Explicit layouts require SM90 or newer.
+
+    :Memory: Invalidate an existing object with :func:`mbarrier_invalidate`
+        before initializing that storage again.
+    :Participation: :ref:`Single-thread issue <api-participation>` per mbarrier.
+    :Completion: Synchronous; initializes phase zero.
+    :Ordering: Publish initialization with a block barrier before other
+        threads use the object.
     """
     ...
 
@@ -34,11 +42,15 @@ def mbarrier_has_layout(mbar, layout: MbarrierLayout) -> "bool_":
     """Test whether an initialized mbarrier has the specified storage layout.
 
     Args:
-        mbar: Pointer to mbarrier in block-local shared memory.
-        layout: Storage layout to check for.
+        mbar: Pointer to an initialized, eight-byte-aligned ``cl.mbarrier``
+            in block-local shared memory.
+        layout (MbarrierLayout): Storage layout to check for.
 
     Returns:
         True if the mbarrier has the specified layout.
+
+    :Target: SM90 or newer, with a toolchain supporting ``mbarrier.check_layout``.
+    :Participation: :ref:`Per-thread <api-participation>`.
     """
     ...
 
@@ -48,7 +60,13 @@ def mbarrier_invalidate(mbar) -> None:
     """Invalidate an mbarrier object before its storage is reused.
 
     Args:
-        mbar: Pointer to mbarrier in shared memory.
+        mbar: Pointer to an initialized, eight-byte-aligned ``cl.mbarrier``
+            in block-local shared memory.
+
+    :Participation: :ref:`Single-thread issue <api-participation>` per mbarrier, after all threads
+        and asynchronous operations finish using it.
+    :Completion: Synchronous; storage can be repurposed after invalidation.
+        Reuse across ordinary phases keeps the object initialized.
     """
     ...
 
@@ -63,20 +81,32 @@ def mbarrier_arrive(
     memory_order: ArriveMemoryOrder = MemoryOrder.RELEASE,
 ) -> "uint64 | None":
     """Arrive at ``mbar``. When the mbarrier resides in ``MemorySpace.SHARED``,
-    an opaque 64-bit value capturing the phase of the mbarrier object _prior_
+    an opaque 64-bit value capturing the phase of the mbarrier object *prior*
     to this arrive operation is returned. ``drop=True`` drops a participant
     from the barrier.
 
     Args:
-        mbar: Pointer to mbarrier in shared memory.
-        count: The amount by which the pending arrival count is decremented.
-        drop: Whether to decrement the expected arrival count of the mbarrier.
-        scope: Visibility scope.
-        memory_order:
+        mbar: Pointer to an initialized, eight-byte-aligned ``cl.mbarrier``
+            in ``MemorySpace.SHARED`` or ``MemorySpace.SHARED_CLUSTER``.
+        count: Positive amount subtracted from pending arrivals, at most the
+            pending arrival count. A runtime value or a value greater than one
+            requires SM90 or newer.
+        drop (const bool): Whether to also subtract ``count`` from subsequent phases'
+            expected arrival count, which must remain positive.
+        scope (MbarrierScope): Visibility scope.
+        memory_order (MemoryOrder): ``MemoryOrder.RELEASE`` or
+            ``MemoryOrder.RELAXED``. Release orders prior memory accesses;
+            relaxed provides arrival accounting only.
 
     Returns:
         On a block-local barrier, returns an opaque token.
         On a cluster barrier, returns ``None``.
+
+    :Participation: :ref:`Per-thread <api-participation>`.
+    :Completion: Arrival only; observe phase completion with a matching
+        mbarrier test or wait.
+    :Ordering: Before any next-phase arrival, at least one test or wait must
+        observe completion of the preceding phase.
     """
 
 
@@ -85,11 +115,18 @@ def mbarrier_arrive_nocomplete(mbar, count: int) -> "uint64":
     """Arrive without completing the current phase.
 
     Args:
-        mbar: Pointer to mbarrier in block-local shared memory.
-        count: Amount to subtract from the pending arrival count.
+        mbar: Pointer to an initialized, eight-byte-aligned ``cl.mbarrier``
+            in block-local shared memory.
+        count: Amount subtracted from pending arrivals. Must be positive and
+            strictly less than the pending count, keeping the phase incomplete.
 
     Returns:
         Opaque 64-bit token for the phase before the arrival.
+
+    :Participation: :ref:`Per-thread <api-participation>`.
+    :Completion: Arrival only; returns a token for a later wait.
+    :Ordering: Before any next-phase arrival, at least one test or wait must
+        observe completion of the preceding phase.
     """
     ...
 
@@ -99,11 +136,19 @@ def mbarrier_arrive_drop_nocomplete(mbar, count: int) -> "uint64":
     """Arrive without completing the phase and drop expected arrivals.
 
     Args:
-        mbar: Pointer to mbarrier in block-local shared memory.
-        count: Amount to subtract from the pending and expected arrival counts.
+        mbar: Pointer to an initialized, eight-byte-aligned ``cl.mbarrier``
+            in block-local shared memory.
+        count: Positive amount subtracted from pending arrivals and subsequent
+            phases' expected arrivals. Must be less than the pending arrival
+            count and leave the expected arrival count positive.
 
     Returns:
         Opaque 64-bit token for the phase before the arrival.
+
+    :Participation: :ref:`Per-thread <api-participation>`.
+    :Completion: Arrival only; returns a token for a later wait.
+    :Ordering: Before any next-phase arrival, at least one test or wait must
+        observe completion of the preceding phase.
     """
     ...
 
@@ -120,15 +165,28 @@ def mbarrier_arrive_expect_transaction(
     """Arrive at ``mbar`` and add expected transaction bytes.
 
     Args:
-        mbar: Pointer to mbarrier in shared memory.
-        bytes: Transaction bytes added to the current phase.
-        drop: Whether to decrement the expected arrival count of the mbarrier.
-        scope: Visibility scope.
-        memory_order:
+        mbar: Pointer to an initialized, eight-byte-aligned ``cl.mbarrier``
+            in ``MemorySpace.SHARED`` or ``MemorySpace.SHARED_CLUSTER``.
+        bytes: Transaction bytes added to the current phase. Each call also
+            subtracts one pending arrival. Account for each expected byte once
+            through asynchronous completion or :func:`mbarrier_complete_transaction`.
+        drop (const bool): Whether to also subtract one from subsequent phases' expected
+            arrival count, which must remain positive.
+        scope (MbarrierScope): Visibility scope.
+        memory_order (MemoryOrder): ``MemoryOrder.RELEASE`` or
+            ``MemoryOrder.RELAXED``. Release orders prior memory accesses;
+            relaxed provides arrival accounting only.
 
     Returns:
         On a block-local barrier, returns an opaque token.
         On a cluster barrier, returns ``None``.
+
+    :Target: SM90 or newer.
+    :Participation: :ref:`Per-thread <api-participation>`.
+    :Completion: Arrival only; observe the phase with an mbarrier wait
+        after all expected arrivals and transaction bytes are satisfied.
+    :Ordering: Before any next-phase arrival, at least one test or wait must
+        observe completion of the preceding phase.
     """
     ...
 
@@ -143,9 +201,18 @@ def mbarrier_expect_transaction(
     """Add expected transaction bytes to ``mbar`` without arriving.
 
     Args:
-        mbar: Pointer to mbarrier in shared memory.
-        bytes: Transaction bytes added to the current phase.
-        scope: Visibility scope.
+        mbar: Pointer to an initialized, eight-byte-aligned ``cl.mbarrier``
+            in ``MemorySpace.SHARED`` or ``MemorySpace.SHARED_CLUSTER``.
+        bytes: Transaction bytes added to the current phase. Register these
+            while an arrival is still pending to prevent premature completion.
+            Account for each byte once through asynchronous completion or
+            :func:`mbarrier_complete_transaction`.
+        scope (MbarrierScope): Visibility scope.
+
+    :Target: SM90 or newer.
+    :Participation: :ref:`Per-thread <api-participation>`.
+    :Completion: Accounting update only; observe the phase with an
+        mbarrier wait.
     """
     ...
 
@@ -160,9 +227,17 @@ def mbarrier_complete_transaction(
     """Mark transaction bytes as complete for ``mbar``.
 
     Args:
-        mbar: Pointer to mbarrier in shared memory.
-        bytes: Number of completed transaction bytes to subtract.
-        scope: Visibility scope.
+        mbar: Pointer to an initialized, eight-byte-aligned ``cl.mbarrier``
+            in ``MemorySpace.SHARED`` or ``MemorySpace.SHARED_CLUSTER``.
+        bytes: Completed transaction bytes to subtract. The corresponding work
+            must already be complete. TMA updates this count automatically;
+            count each completion once.
+        scope (MbarrierScope): Visibility scope.
+
+    :Target: SM90 or newer.
+    :Participation: :ref:`Per-thread <api-participation>`.
+    :Completion: Accounting update only; observe the phase with an
+        mbarrier wait.
     """
     ...
 
@@ -177,6 +252,8 @@ def mbarrier_pending_count(state) -> "uint32":
 
     Returns:
         Pending arrival count before the arrival that produced ``state``.
+
+    :Participation: :ref:`Per-thread <api-participation>`.
     """
     ...
 
@@ -192,13 +269,23 @@ def mbarrier_test_wait(
     """Non-blocking test whether ``mbar`` has completed.
 
     Args:
-        mbar: Pointer to mbarrier in shared memory.
-        state: Opaque token returned by an arrival on the same barrier.
-        scope: Visibility scope.
-        memory_order:
+        mbar: Pointer to an initialized, eight-byte-aligned ``cl.mbarrier``
+            in block-local shared memory.
+        state: Opaque arrival token from this mbarrier's current incomplete
+            phase or immediately preceding completed phase.
+        scope (MbarrierScope): Visibility scope.
+        memory_order (MemoryOrder): ``MemoryOrder.ACQUIRE`` or
+            ``MemoryOrder.RELAXED``. Acquire ordering applies when the
+            completion test succeeds.
 
     Returns:
-        Indicates whether the phase is complete.
+        True if the selected phase completed: its pending arrival and
+        transaction counts both reached zero. Otherwise False.
+
+    :Participation: :ref:`Per-thread <api-participation>`.
+    :Completion: Nonblocking test; retry until ``True`` to observe completion.
+    :Ordering: A successful acquire test makes the completed phase's
+        release-ordered writes visible within ``scope``.
     """
 
 
@@ -214,13 +301,23 @@ def mbarrier_test_wait_parity(
     ``parity`` is the 0/1 integer parity of the phase to test for.
 
     Args:
-        mbar: Pointer to mbarrier in shared memory.
-        parity: Phase parity, either 0 or 1.
-        scope: Visibility scope.
-        memory_order:
+        mbar: Pointer to an initialized, eight-byte-aligned ``cl.mbarrier``
+            in block-local shared memory.
+        parity: Parity (0 or 1) of the current incomplete phase or immediately
+            preceding completed phase.
+        scope (MbarrierScope): Visibility scope.
+        memory_order (MemoryOrder): ``MemoryOrder.ACQUIRE`` or
+            ``MemoryOrder.RELAXED``. Acquire ordering applies when the
+            completion test succeeds.
 
     Returns:
-        Indicates whether the selected phase is complete.
+        True if the selected phase completed: its pending arrival and
+        transaction counts both reached zero. Otherwise False.
+
+    :Participation: :ref:`Per-thread <api-participation>`.
+    :Completion: Nonblocking test; retry until ``True`` to observe completion.
+    :Ordering: A successful acquire test makes the completed phase's
+        release-ordered writes visible within ``scope``.
     """
 
 
@@ -236,15 +333,26 @@ def mbarrier_try_wait(
     """Bounded-wait test whether ``mbar`` has completed.
 
     Args:
-        mbar: Pointer to mbarrier in shared memory.
-        state: Opaque token returned by an arrival on the same mbarrier.
+        mbar: Pointer to an initialized, eight-byte-aligned ``cl.mbarrier``
+            in block-local shared memory.
+        state: Opaque arrival token from this mbarrier's current incomplete
+            phase or immediately preceding completed phase.
         time_limit_hint_ns: Optional time limit hint in nanoseconds that may be
             used instead of the system-dependent limit.
-        scope: Visibility scope.
-        memory_order:
+        scope (MbarrierScope): Visibility scope.
+        memory_order (MemoryOrder): ``MemoryOrder.ACQUIRE`` or
+            ``MemoryOrder.RELAXED``. Acquire ordering applies when the
+            completion test succeeds.
 
     Returns:
-        Indicates whether the phase completed before the instruction resumed.
+        True if the selected phase completed: its pending arrival and
+        transaction counts both reached zero. Otherwise False.
+
+    :Target: SM90 or newer.
+    :Participation: :ref:`Per-thread <api-participation>`.
+    :Completion: May resume with ``False``; retry until ``True`` to observe completion.
+    :Ordering: A successful acquire test makes the completed phase's
+        release-ordered writes visible within ``scope``.
     """
 
 
@@ -256,8 +364,24 @@ def mbarrier_wait(
     scope: MbarrierScope = MbarrierScope.BLOCK,
     memory_order: WaitMemoryOrder = MemoryOrder.ACQUIRE,
 ):
-    """Synchronously wait for an mbarrier to complete.
-    Accepts the same arguments as :func:``mbarrier_try_wait``.
+    """Wait for a phase's pending arrivals and transactions to reach zero.
+
+    Repeats :func:`mbarrier_try_wait` until it succeeds. The time hint
+    applies to each attempt.
+
+    Args:
+        mbar: Pointer to an initialized, eight-byte-aligned ``cl.mbarrier``
+            in block-local shared memory.
+        state: Opaque arrival token from this mbarrier's current incomplete
+            phase or immediately preceding completed phase.
+        time_hint: Nonnegative nanosecond time hint for each wait attempt.
+        scope (MbarrierScope): Visibility scope.
+        memory_order (MemoryOrder): ``MemoryOrder.ACQUIRE`` or ``MemoryOrder.RELAXED``.
+
+    :Participation: :ref:`Per-thread <api-participation>`.
+    :Completion: Synchronous.
+    :Ordering: Acquire makes the completed phase's release-ordered writes
+        visible within ``scope``.
     """
     while not mbarrier_try_wait(
         mbar, state, time_limit_hint_ns=time_limit_hint_ns, scope=scope, memory_order=memory_order
@@ -278,15 +402,25 @@ def mbarrier_try_wait_parity(
     ``parity`` is the 0/1 integer parity of the phase to test for.
 
     Args:
-        mbar: Pointer to mbarrier in shared memory.
-        parity: Phase parity, either 0 or 1.
+        mbar: Pointer to an initialized, eight-byte-aligned ``cl.mbarrier``
+            in block-local shared memory.
+        parity: Parity (0 or 1) of the current incomplete phase or immediately
+            preceding completed phase.
         time_limit_hint_ns: Optional time limit hint in nanoseconds that may be
             used instead of the system-dependent limit.
-        scope: Visibility scope.
-        memory_order:
+        scope (MbarrierScope): Visibility scope.
+        memory_order (MemoryOrder): ``MemoryOrder.ACQUIRE`` or
+            ``MemoryOrder.RELAXED``. Acquire ordering applies when the
+            completion test succeeds.
 
     Returns:
-        Indicates whether the phase completed before the instruction resumed.
+        True if the selected phase completed: its pending arrival and
+        transaction counts both reached zero. Otherwise False.
+
+    :Participation: :ref:`Per-thread <api-participation>`.
+    :Completion: May resume with ``False``; retry until ``True`` to observe completion.
+    :Ordering: A successful acquire test makes the completed phase's
+        release-ordered writes visible within ``scope``.
     """
 
 
@@ -298,8 +432,24 @@ def mbarrier_wait_parity(
     scope: MbarrierScope = MbarrierScope.BLOCK,
     memory_order: WaitMemoryOrder = MemoryOrder.ACQUIRE,
 ):
-    """Synchronously wait for an mbarrier to complete for a given phase parity.
-    Accepts the same arguments as :func:``mbarrier_try_wait_parity``.
+    """Wait for the selected phase's pending arrivals and transactions to reach zero.
+
+    Repeats :func:`mbarrier_try_wait_parity` until it succeeds. The time
+    hint applies to each attempt.
+
+    Args:
+        mbar: Pointer to an initialized, eight-byte-aligned ``cl.mbarrier``
+            in block-local shared memory.
+        parity: Parity (0 or 1) of the current incomplete phase or immediately
+            preceding completed phase.
+        time_hint: Nonnegative nanosecond time hint for each wait attempt.
+        scope (MbarrierScope): Visibility scope.
+        memory_order (MemoryOrder): ``MemoryOrder.ACQUIRE`` or ``MemoryOrder.RELAXED``.
+
+    :Participation: :ref:`Per-thread <api-participation>`.
+    :Completion: Synchronous.
+    :Ordering: Acquire makes the completed phase's release-ordered writes
+        visible within ``scope``.
     """
     while not mbarrier_try_wait_parity(
         mbar, parity, time_limit_hint_ns=time_limit_hint_ns, scope=scope, memory_order=memory_order

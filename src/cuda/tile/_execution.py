@@ -83,9 +83,9 @@ class kernel(TileDispatcher):
     The types usable as parameters to a |kernel| are described in the |data model|.
 
     Args:
-        num_ctas: Number of CTAs in a CGA. Must be a power of 2 between 1 and 16, inclusive.
-            Default: None (auto).
-        occupancy: Expected number of active CTAs per SM, [1, 32]. Default: None (auto).
+        num_ctas: Number of thread blocks in a CGA. Must be a power of 2 between 1 and 16,
+            inclusive. Default: None (auto).
+        occupancy: Expected number of active thread blocks per SM, [1, 32]. Default: None (auto).
         opt_level: Optimization level [0, 3], default 3.
         num_worker_warps: Number of warps in the CUDA core warp groups in a
             warp-specialized kernel. The compiler may add warps

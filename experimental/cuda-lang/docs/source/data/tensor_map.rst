@@ -6,15 +6,19 @@
 
 .. _data-tensor-map-descriptor-pointers:
 
-Tensor-map descriptor values and pointers
+Tensor-Map Descriptor Values and Pointers
 =========================================
 
 :func:`tensor_map_tiled` returns an immutable :class:`TensorMap` value containing
 the descriptor bytes. The caller must keep the memory referenced by the
 descriptor alive until all kernels using it have completed.
 
-Passing a descriptor from host to kernel copies the descriptor into device
-as a grid constant and passes a pointer to the descriptor as the kernel argument.
+Passing a descriptor from Python to a kernel copies the descriptor into device
+parameter storage as a grid constant and passes a pointer to it as the kernel
+argument. A :func:`host_entry` can create a descriptor with
+:func:`tensor_map_tiled` and pass it to a kernel in the same way. Passing an
+existing Python ``TensorMap`` into a ``host_entry`` is currently unsupported.
+See :ref:`language-entry-arguments` for the other entry argument types.
 
 In device code, the pointer can be used directly for an async copy. Loading
 from this pointer produces an opaque descriptor value

@@ -18,7 +18,7 @@ build/
 .rgignore
 **/docs/venv
 **/docs/build
-**/docs/source/generated
+**/docs/source/**/generated
 **/docs/source/stubs
 *.benchmarks
 .vscode/

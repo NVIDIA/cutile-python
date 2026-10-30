@@ -2,10 +2,8 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-from cuda.tile._memory_model import (
-    MemoryScope,
-    MemorySpace
-)
+from cuda.tile import MemoryScope
+from cuda.tile._memory_model import MemorySpace
 from ._execution import (
     function,
     host_entry,
@@ -178,10 +176,12 @@ from ._stub.pointer import (
     atomic_load,
     atomic_store,
 )
-from cuda.tile._stub import (
+from cuda.tile import (
     ArrayAnnotation,
     Constant,
     ScalarInt64,
+)
+from cuda.tile._stub import (
     static_eval,
     static_exception,
     static_assert,
