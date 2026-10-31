@@ -136,13 +136,15 @@ Constraints marked |v2only| require ``cutile_python_v2``.
     * - :py:class:`TupleConstraint` |v2only|
       - The tuple's elements are passed as consecutive arguments, as if each element were
         an individual top-level parameter. The binary format of each element follows the same
-        rules as its corresponding constraint type (:py:class:`ScalarConstraint` or
-        :py:class:`ArrayConstraint`).
+        rules as its corresponding constraint type. Elements may be scalars, arrays,
+        lists of arrays, constants, or nested tuples. Constants are omitted and nested
+        tuples are flattened recursively.
 
         When the tuple parameter is annotated with
         :py:class:`ct.Constant[tuple] <cuda.tile.Constant>`, the entire tuple is omitted from
         the launch arguments (same as :py:class:`ConstantConstraint`). In this case, all
-        elements of the :py:class:`TupleConstraint` must be :py:class:`ConstantConstraint`.
+        leaf elements of the :py:class:`TupleConstraint` must be
+        :py:class:`ConstantConstraint`.
 
     * - :py:class:`ConstantConstraint`
       - Omitted from the launch arguments.

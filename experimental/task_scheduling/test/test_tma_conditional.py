@@ -3,15 +3,17 @@
 
 """Trace marker tests for the conditional TMA copy tutorial.
 
-``03_copy_tma_conditional`` writes a four-column trace side channel: column 0
+``03_copy_tma_conditional`` writes a six-column trace side channel: column 0
 holds ``BEGIN_MARKER`` at ``trace[0, 0]``, column 1 holds
 ``HEARTBEAT_MARKER`` every fourth row starting at row 0, column 2 holds
 ``HIGHLIGHT_MARKER`` at ``trace[highlight_row, 2]``, and column 3 holds
-``END_MARKER`` at ``trace[rows - 1, 3]``. The helpers assume ``rows > 0`` and
-an integer ``highlight_row`` with ``0 <= highlight_row < rows``.
+``END_MARKER`` at ``trace[rows - 1, 3]``. Column 4 marks the highlight-or-last
+boolean expression and column 5 marks first-and-highlight. The helpers assume
+``rows > 0`` and an integer ``highlight_row`` with
+``0 <= highlight_row < rows``.
 
-The parametrized rejection cases mutate one required marker at a time to check
-extra and missing begin, heartbeat, highlight, and end markers.
+The parametrized rejection cases mutate one marker at a time to check the
+begin, heartbeat, highlight, end, edge, and first-highlight columns.
 """
 
 import importlib
@@ -32,11 +34,14 @@ def _conditional_copy_module():
 
 def _valid_trace(rows: int, highlight_row: int) -> torch.Tensor:
     mod = _conditional_copy_module()
-    trace = torch.zeros(rows, 4, dtype=torch.float16)
+    trace = torch.zeros(rows, 6, dtype=torch.float16)
     trace[0, 0] = mod.BEGIN_MARKER
     trace[list(range(0, rows, 4)), 1] = mod.HEARTBEAT_MARKER
     trace[highlight_row, 2] = mod.HIGHLIGHT_MARKER
     trace[rows - 1, 3] = mod.END_MARKER
+    trace[sorted({highlight_row, rows - 1}), 4] = mod.EDGE_MARKER
+    if highlight_row == 0:
+        trace[0, 5] = mod.FIRST_HIGHLIGHT_MARKER
     return trace
 
 
@@ -49,6 +54,16 @@ def test_conditional_tma_trace_verifier_accepts_exact_markers():
         _valid_trace(rows, highlight_row),
         num_rows=rows,
         highlight_row=highlight_row,
+    )
+
+
+def test_conditional_tma_trace_verifier_accepts_first_highlight():
+    mod = _conditional_copy_module()
+    rows = 9
+    mod._verify_trace_markers(
+        _valid_trace(rows, 0),
+        num_rows=rows,
+        highlight_row=0,
     )
 
 
@@ -118,6 +133,16 @@ def test_conditional_copy_program_infers_resource_roles():
             "end trace column 3",
             id="missing-end",
         ),
+        pytest.param(
+            lambda trace, mod: trace.__setitem__((5, 4), 0),
+            "edge trace column 4",
+            id="missing-edge",
+        ),
+        pytest.param(
+            lambda trace, mod: trace.__setitem__((0, 5), mod.FIRST_HIGHLIGHT_MARKER),
+            "first-highlight trace column 5",
+            id="extra-first-highlight",
+        ),
     ],
 )
 def test_conditional_tma_trace_verifier_rejects_extra_or_missing_markers(
@@ -136,3 +161,13 @@ def test_conditional_tma_trace_verifier_rejects_extra_or_missing_markers(
             num_rows=rows,
             highlight_row=highlight_row,
         )
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
+@pytest.mark.parametrize("highlight_row", [0, 128, 255])
+def test_copy_tma_conditional_on_device(highlight_row):
+    if torch.cuda.get_device_capability()[0] != 10:
+        pytest.skip("requires an SM100-class GPU")
+    _conditional_copy_module().run_tma_copy_conditional_kernel_prim(
+        (256, 512), highlight_row, verbose=False
+    )

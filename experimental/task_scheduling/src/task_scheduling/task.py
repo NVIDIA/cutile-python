@@ -9,11 +9,15 @@ import cuda.lang as cl
 
 from ._device import block_in_cluster_rank
 from .enums import (
+    ComplementedIterationPredicate,
+    GuardAnd,
+    GuardOr,
     OpaqueCondition,
     PipelineGroupMode,
     SKIPPABLE,
     ScheduleStage,
     TileSchedulerType,
+    iter_leaves,
 )
 from .ir import ScheduleValue
 from .pipeline import DevicePipelineBinding, PipelineState, require_device_support
@@ -32,6 +36,7 @@ from .schedule_builder import (
     Node,
     Schedule,
     Step,
+    WhileTrueLoop,
     WorkTileLoop,
     _iter_nodes,
     contains_break,
@@ -114,13 +119,42 @@ class ExecutionContext:
 
 @dataclass(frozen=True)
 class DeviceGuard:
+    """One lowered guard; ``and`` / ``or`` nodes combine ``operands``.
+
+    ``negated`` complements an iteration predicate or an opaque leaf. Composite
+    guards arrive in negation-normal form, so ``and`` / ``or`` never negate.
+    """
+
     kind: str
     period: int
     start: int
     slot: int
     negated: bool
+    operands: tuple["DeviceGuard", ...] = ()
 
     def active(self, context: ExecutionContext) -> object:
+        if self.kind == "and":
+            active = self.operands[0].active(context)
+            for index in cl.static_iter(range(1, len(self.operands))):
+                active = active and self.operands[index].active(context)
+            return active
+        if self.kind == "or":
+            active = self.operands[0].active(context)
+            for index in cl.static_iter(range(1, len(self.operands))):
+                active = active or self.operands[index].active(context)
+            return active
+        if self.kind == "opaque":
+            value = context.route(self.slot)
+            active = value != 0
+            return active != self.negated
+        if self.kind == "skippable":
+            return not context.skipped
+        active = self._iteration_active(context)
+        if self.negated:
+            return not active
+        return active
+
+    def _iteration_active(self, context: ExecutionContext) -> object:
         if self.kind == "first":
             return context.iteration_index == 0
         if self.kind == "last":
@@ -130,12 +164,6 @@ class DeviceGuard:
                 context.iteration_index >= self.start
                 and (context.iteration_index - self.start) % self.period == 0
             )
-        if self.kind == "opaque":
-            value = context.route(self.slot)
-            active = value != 0
-            return active != self.negated
-        if self.kind == "skippable":
-            return not context.skipped
         return False
 
 
@@ -826,6 +854,65 @@ class DeviceDomainLoop:
         context = replace(
             context,
             route_values=context.route_values[:route_depth] + results,
+        )
+        return context.pop_routes(self.release_count)
+
+
+def _run_loop_hook(hook, context):
+    """Run a cursor hook and pop the single route value it appends."""
+    context = hook(context)
+    cursor = context.route(len(context.route_values) - 1)
+    return context.pop_routes(1), cursor
+
+
+@dataclass(frozen=True)
+class DeviceWhileTrueLoop:
+    """Repeat a breakable body; init/advance hooks produce the loop cursor.
+
+    The cursor becomes ``loop_offset`` for the body and the advance hook.
+    Domain bounds are unavailable inside a while loop, so the work-visible
+    ``loop_start`` / ``loop_end`` / ``loop_step`` are ``None``.
+    """
+
+    init: object
+    advance: object
+    body: tuple[object, ...]
+    release_count: int = 0
+
+    def __call__(self, context: ExecutionContext) -> ExecutionContext:
+        outer_loop_offset = context.loop_offset
+        outer_loop_start = context.loop_start
+        outer_loop_end = context.loop_end
+        outer_loop_step = context.loop_step
+        outer_in_domain_loop = context.in_domain_loop
+        outer_break_requested = context.break_requested
+        route_depth = len(context.route_values)
+        context, cursor = _run_loop_hook(self.init, context)
+        context = replace(
+            context,
+            loop_offset=cursor,
+            loop_start=None,
+            loop_end=None,
+            loop_step=None,
+            in_domain_loop=True,
+            break_requested=False,
+        )
+        while True:
+            context = _run_device_nodes(self.body, context).truncate_routes(
+                route_depth
+            )
+            if context.break_requested:
+                break
+            context, cursor = _run_loop_hook(self.advance, context)
+            context = replace(context, loop_offset=cursor)
+        context = replace(
+            context,
+            loop_offset=outer_loop_offset,
+            loop_start=outer_loop_start,
+            loop_end=outer_loop_end,
+            loop_step=outer_loop_step,
+            in_domain_loop=outer_in_domain_loop,
+            break_requested=outer_break_requested,
         )
         return context.pop_routes(self.release_count)
 
@@ -1768,6 +1855,22 @@ class Task:
                 ) from error
 
         def lower_guard(guard, anonymous_routes):
+            if isinstance(guard, (GuardAnd, GuardOr)):
+                return DeviceGuard(
+                    "and" if isinstance(guard, GuardAnd) else "or",
+                    1,
+                    0,
+                    -1,
+                    False,
+                    tuple(
+                        lower_guard(operand, anonymous_routes)
+                        for operand in guard.operands
+                    ),
+                )
+            if isinstance(guard, ComplementedIterationPredicate):
+                return replace(
+                    lower_guard(guard.predicate, anonymous_routes), negated=True
+                )
             if guard is FIRST_ITER:
                 return DeviceGuard("first", 1, 0, -1, False)
             if guard is LAST_ITER:
@@ -1800,12 +1903,12 @@ class Task:
             if isinstance(node, DomainLoop):
                 uses.update(node.initial_values.values())
                 uses.update(node.yield_values.values())
-            if isinstance(node, ConditionalBlock) and isinstance(
-                node.condition, OpaqueCondition
-            ):
-                value = node.condition.route_token
-                if isinstance(value, ScheduleValue):
-                    uses.add(value)
+            if isinstance(node, ConditionalBlock):
+                for leaf in iter_leaves(node.condition):
+                    if isinstance(leaf, OpaqueCondition) and isinstance(
+                        leaf.route_token, ScheduleValue
+                    ):
+                        uses.add(leaf.route_token)
             for child in node.body:
                 uses.update(anonymous_uses(child))
             return uses
@@ -1871,7 +1974,12 @@ class Task:
                     )
                 elif isinstance(
                     device_node,
-                    (DeviceConditional, DeviceDomainLoop, DeviceWorkTileLoop),
+                    (
+                        DeviceConditional,
+                        DeviceDomainLoop,
+                        DeviceWhileTrueLoop,
+                        DeviceWorkTileLoop,
+                    ),
                 ):
                     release_count = dead_trailing_count(
                         anonymous_routes, future_uses, frame_depth
@@ -2152,6 +2260,31 @@ class Task:
                     has_break=has_break,
                     unroll=node.unroll or 1,
                 )
+            if isinstance(node, WhileTrueLoop):
+                # Hooks take no routed inputs; each appends only its cursor,
+                # which the loop reads and pops immediately.
+                hook_routes = list(anonymous_routes)
+                init = replace(
+                    lower(node.init, hook_routes, in_domain_loop=in_domain_loop),
+                    append_output_count=1,
+                )
+                advance = replace(
+                    lower(node.advance, hook_routes, in_domain_loop=True),
+                    append_output_count=1,
+                )
+                body_routes = list(anonymous_routes)
+                body = lower_nodes(
+                    node.body,
+                    body_routes,
+                    in_domain_loop=True,
+                    frame_depth=len(body_routes),
+                    preserve_routes=True,
+                )
+                return DeviceWhileTrueLoop(
+                    init,
+                    advance,
+                    (_breakable_sequence(node.body, body),),
+                )
             if isinstance(node, WorkTileLoop):
                 config = node.work_queue.tile_scheduler_config
                 if config is None:
@@ -2197,7 +2330,7 @@ class Task:
                         )
                     ):
                         return in_domain
-                elif isinstance(node, DomainLoop):
+                elif isinstance(node, (DomainLoop, WhileTrueLoop)):
                     if advances_per_domain(node.body, resource, True):
                         return True
                 elif isinstance(node, ConditionalBlock):
@@ -2328,6 +2461,10 @@ class Task:
                 "dynamic WorkQueue device lowering requires a scheduler-specific "
                 "work-tile adapter"
             )
+        if isinstance(node, WhileTrueLoop):
+            raise NotImplementedError(
+                "while_true_loop() cursor hooks require frozen device lowering"
+            )
         raise TypeError(type(node).__name__)
 
     def _guard_active(self, guard: object, context: ExecutionContext) -> object:
@@ -2339,6 +2476,16 @@ class Task:
             raise NotImplementedError(
                 "opaque guards require frozen device lowering"
             )
+        if isinstance(guard, (GuardAnd, GuardOr)):
+            active = self._guard_active(guard.operands[0], context)
+            for operand in cl.static_iter(guard.operands[1:]):
+                if isinstance(guard, GuardAnd):
+                    active = active and self._guard_active(operand, context)
+                else:
+                    active = active or self._guard_active(operand, context)
+            return active
+        if isinstance(guard, ComplementedIterationPredicate):
+            return not self._guard_active(guard.predicate, context)
         if isinstance(guard, IterationPredicate):
             # Predicates contain only host constants; CUDA Lang specializes them.
             from .enums import Every, FIRST_ITER, LAST_ITER

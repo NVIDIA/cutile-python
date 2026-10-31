@@ -136,7 +136,7 @@ def test_negative_stride():
 def test_static_phi_int():
     @cl.function
     def choose(flag: cl.Constant[int]):
-        if cl.static_eval(flag == 0):
+        if cl.ensure_constant(flag == 0):
             return cl.int32(7)
         else:
             cl.static_assert(False, "unsupported flag")
@@ -153,7 +153,7 @@ def test_static_phi_int():
 def test_static_phi_float():
     @cl.function
     def choose(flag: cl.Constant[int]):
-        if cl.static_eval(flag == 0):
+        if cl.ensure_constant(flag == 0):
             return cl.float16(7.0)
         else:
             cl.static_assert(False, "unsupported flag")

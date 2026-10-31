@@ -5,7 +5,7 @@
 
 This package separates a pure-Python scheduling model from CUDA Lang device lowering. Import `task_scheduling` as `ts`, define resources and named `@ts.consumer_work` or `@ts.producer_work` methods, and capture a schedule with `@ts.schedule`. The captured `Schedule` is immutable; `TaskManager` consumes it for host validation, and `Task.to_device()` lowers it for device execution.
 
-`Task.to_device()` freezes the validated schedule into CUDA Lang-compatible nodes. Directly decorated static work methods are used for device lowering. Explicit callback mappings remain available as low-level overrides and are keyed by readable captured labels (optionally `"resource.label"` or `(resource, label)` when a task needs disambiguation). Pipeline steps are generated from their `PipelineConfig` and `DevicePipelineBinding`; they do not require kernel-specific acquire/wait/commit/release callbacks. At runtime, an immutable `ExecutionContext` carries internal routed values and pipeline index/phase state while kernel resources remain available through a named `tasks_inputs` object. Domain loops, first/last/every guards, opaque guards, warp ranges, CTA pinning, and `setmaxnreg` are lowered from this frozen program.
+`Task.to_device()` freezes the validated schedule into CUDA Lang-compatible nodes. Directly decorated static work methods are used for device lowering. Explicit callback mappings remain available as low-level overrides and are keyed by readable captured labels (optionally `"resource.label"` or `(resource, label)` when a task needs disambiguation). Pipeline steps are generated from their `PipelineConfig` and `DevicePipelineBinding`; they do not require kernel-specific acquire/wait/commit/release callbacks. At runtime, an immutable `ExecutionContext` carries internal routed values and pipeline index/phase state while kernel resources remain available through a named `tasks_inputs` object. Domain loops, first/last/every guards, opaque guards and their `&` / `|` / `~` combinations, warp ranges, CTA pinning, and `setmaxnreg` are lowered from this frozen program.
 
 A work decorator placed above `@staticmethod` lets host task execution and device lowering share one implementation. Instance work methods remain usable for host schedule construction; low-level users must supply an explicit callback mapping to lower them because resource instances are not passed into CUDA Lang callbacks.
 
@@ -37,6 +37,38 @@ guards. An inner region executes only when every enclosing guard is active.
 Predicates and other work outputs produced inside a branch may be used by its
 nested regions, but cannot escape to a parent or sibling scope. Reusing the same
 routed predicate preserves true/false correlation in host analysis.
+
+Conditions combine with `&` (and), `|` (or), and `~` (not), so a guard that
+depends on several terms fits in one region:
+
+```python
+with ts.domain_loop(0, num_rows, 1) as d:
+    ready = smem.is_ready()
+    urgent = smem.is_urgent()
+    with ts.when_true((ready & ~urgent) | d.first):
+        smem.handle_tile()
+```
+
+Python's `and`, `or`, and `not` cannot be overloaded; converting a condition to
+`bool` raises a `ScheduleError` that points at the operators. `d.first_iter()`,
+`d.last_iter()`, and `d.every(...)` are context managers. Their operand forms are
+`d.first`, `d.last`, and `d.every_pred(period, start=0)`, or the module constants
+`ts.FIRST_ITER` and `ts.LAST_ITER`. `~ts.FIRST_ITER` is every iteration but the
+first, not the last; in a one-iteration loop, `~ts.FIRST_ITER` and
+`~ts.LAST_ITER` are both false. `when_false(expr)` equals `when_true(~expr)`, and
+captured guards are kept in negation-normal form. Nesting regions still works
+and means the same as `&`. A `key=` on a composite applies to each opaque leaf
+and leaves iteration predicates unchanged; a composite with no opaque leaf
+rejects `key=`.
+
+The exhaustive checker validates each observably distinct control-flow class
+rather than all `2**K` assignments of `K` opaque keys. Two assignments are
+equivalent when every guard in every task has the same value at every modeled
+domain iteration; one representative of each class is checked. A schedule that
+observes only `a & b` has two classes, while one that also observes `a` alone
+keeps three. `tutorial/01_copy_basics/03_copy_tma_conditional.py` adds a boolean
+OR (`highlight | ts.LAST_ITER`) and a mixed AND (`ts.FIRST_ITER & highlight`) to
+its trace markers.
 
 The runnable `tutorial/01_copy_basics/04_copy_tma_nested_conditional.py` example
 extends the conditional TMA copy with all four two-level true/false combinations
@@ -93,8 +125,7 @@ returns its initial values.
 Side effects and pipeline-state updates performed before the break are retained.
 A break exits only the domain loop, so an enclosing `work_tile_loop()` continues.
 `last_iter()` still means the last iteration of the declared range; it is not an
-exit hook. Breaks outside a domain loop and expired loop handles are rejected.
-Unbounded while loops remain unsupported.
+exit hook. Breaks outside a loop and expired loop handles are rejected.
 
 The nested-copy tutorial also accepts `--stop-row 5`. Both producer and consumer
 break before acquiring/waiting for row 5, and the example verifies that the
@@ -107,6 +138,52 @@ representative loop bounds, including zero-trip loops. Opaque assignments remain
 fixed during each explored execution; these checks do not prove safety for all
 possible iteration-varying runtime predicate sequences.
 
+`while_true_loop(init=..., advance=..., verify_num_iters=...)` captures a
+dynamic loop with no trip count. `init` and `advance` are uncalled consumer work
+methods with `outputs=1` and no routed inputs. Their result is the loop cursor,
+which device work reads as `stage_info.loop_offset`: `init` seeds it, and
+`advance` computes the next cursor after every round without a break. Domain
+bounds are `None` inside the loop. The loop exits when a `loop.break_loop()`
+runs. Work after that call in the same round does not run:
+
+```python
+with ts.while_true_loop(
+    init=smem.retry_init,
+    advance=smem.retry_advance,
+    verify_num_iters=(2, 3, 4),
+) as loop:
+    rows_done = smem.rows_done()
+    with ts.when_true(rows_done):
+        loop.break_loop()
+    with ts.when_false(rows_done, verify_num_fires=1):
+        smem.try_wait()
+        smem.wait()
+        value = smem.read_smem(smem_view)
+        smem.release()
+        output.store(value)
+```
+
+The exit formula is the disjunction of the `when_true` / `when_false` guards that
+dominate each break; nested guards form a conjunction. A while loop carries no
+values, and a schedule may contain either a domain loop or a while loop, with
+neither nested in the other or in a runtime condition. Under
+`work_tile_loop(skip_if=...)`, the while loop must be inside `wtl.skippable()`.
+
+The exhaustive checker models each count `N` in `verify_num_iters` (default
+`(1, 2)`) as `N - 1` retry rounds followed by a break round. A break round
+satisfies an exit clause and a retry round satisfies none, while the other
+opaque keys vary freely in every round. Partner tasks observe the final break
+round. Every retry round must perform a blocking or state-changing pipeline
+operation, and capture rejects an unconditional break when `N > 1`. A loop with
+no satisfiable exit is an error. `verify_num_fires=N` on a guard inside the loop
+is a verifier-only assertion that the block runs on exactly `N` modeled rounds;
+it discards impossible histories, such as consumer rounds that a representative
+single-round producer never commits.
+`tutorial/01_copy_basics/04_copy_tma_while_exit.py` is a runnable example of a
+while loop that retries until all rows are stored. Its `--verify-num-iters`,
+`--inject-nested-break`, and `--inject-unconditional-break` flags print the
+modeled histories on the host.
+
 `StageInfo` contains the current `stage_idx`, `phase`, selected full `barrier`, zero-based iteration count, loop offset/bounds, work label, and owning `ExecutionContext`; loop offset/bounds are `None` for peeled work outside a domain loop. This lets pipeline payload work use `stage_info.barrier` without knowing how barrier arrays are stored by the device manager.
 
 Work-call arguments are classified during schedule capture: `ScheduleValue` arguments are routed, while ordinary Python values are captured as compile-time operands. The frozen device step preserves the method's original parameter order when it combines both kinds. Work methods may therefore declare any number of static arguments and route any statically known number of inputs or results without annotating the argument kinds. Routed values may have different CUDA Lang types. Work methods declare their result count with `outputs=N`, and each call creates independent lexical SSA values.
@@ -117,7 +194,7 @@ The public host API also includes identity-based `MemoryResource` metadata, pipe
 
 ## Device support boundary
 
-`AsyncAsync`, `TmaAsync`, `TmaUmma`, and `UmmaAsync` metadata have a generic CUDA Lang lowering path. It owns immutable producer/consumer index and phase state, initializes offset-addressed full/empty runs in one manager-owned mbarrier arena, lowers try/acquire/wait, and emits the pipeline-specific mbarrier or `tcgen05.commit` signals. The remaining UMMA, CLC, DPC, and DLC pipeline kinds remain available to host analysis but raise `NotImplementedError` when device pipeline creation is requested.
+`AsyncAsync`, `TmaAsync`, `TmaUmma`, and `UmmaAsync` metadata have a generic CUDA Lang lowering path. It owns immutable producer/consumer index and phase state, initializes offset-addressed full/empty runs in one manager-owned mbarrier arena, lowers try/acquire/wait, and emits the pipeline-specific mbarrier or `tcgen05.commit` signals. The remaining UMMA and CLC pipeline kinds remain available to host analysis but raise `NotImplementedError` when device pipeline creation is requested.
 
 Persistent `WorkTileLoop` execution requires a scheduler-specific work-queue adapter and is currently host-analysis-only. Domain-loop starts and ends may be runtime values declared with `dynamic_domain_bound(resolver)`. A schedule may also declare `stage_info` as its first parameter and use, for example, `stage_info.context.tasks_inputs.num_rows` directly as a dynamic loop bound. The resolver receives the manager-owned `tasks_inputs` object inside the kernel; host analysis continues to use an explicit representative-domain fallback. Device domain loops currently require a positive static step. Literal opaque guards need an explicit device-condition adapter, while routed `ScheduleValue` opaque guards are supported.
 
@@ -125,6 +202,8 @@ The exhaustive checker is bounded by `max_states`. Its result reports `hit_state
 
 ## Current limitations
 
-The current checker proves acquire/wait availability and physical-range alias safety across expanded domain/work-tile loops and opaque assignments. It does not yet model PDL launch ordering or scheduler-specific CLC queue state. PDL and CLC metadata can be retained on host objects, but they are not currently part of the interleaving state, so those configurations require an external check.
+The checker simulates each pipeline's full and empty barriers per ring stage. A full barrier flips after every producer task of the resource has committed the stage and an empty barrier after every consumer task has released it, so one producer feeding several consumers is a broadcast, several producers feeding one consumer must all arrive, and a task that commits or releases fewer times than its partners is reported as a deadlock whose witness names the stage, phase, and arrival count. Operands of `TmaUmma`, `AsyncUmma`, and `UmmaUmma` consumers stay live past `release()`: the read hold ends at the next `acquire()` of that stage or at a `wait()` on a `UmmaAsync` or `UmmaUmma` resource that the same task commits after the reads (the `tcgen05.commit` pairing), so an aliased write issued in between is reported as a race. The checker proves acquire/wait availability and physical-range alias safety across expanded domain/work-tile loops and opaque assignments. It does not yet model PDL launch ordering or scheduler-specific CLC queue state. PDL and CLC metadata can be retained on host objects, but they are not currently part of the interleaving state, so those configurations require an external check.
+
+`TaskManager` also checks every `CooperativeGroup` size against the arrivals the lowering emits per barrier stage, counting the tasks that commit or release the resource: all threads of an async side (one elected lane when a single warp signals), one `arrive.expect_tx` per TMA producer warp or per task under `TaskWarpLeader`, one `tcgen05.commit` per UMMA warp and per CTA whose multicast mask reaches the barrier, the CUTLASS lane model or an all-thread release for `TmaAsync` consumers, and one arrival per CTA for CLC producers. Cluster routing scales async arrivals by the V-group (`AsyncUmma` producers, `UmmaAsync` consumers) or the whole cluster (`ClcFetchAsync` consumers), while `CtaLeader` signaling and `run_only_on_cta_id` tasks count one CTA. A mismatch is reported as a `ValueError` naming the expected count and formula; `skip_validation=True` downgrades it to a warning. Resources with an opaque `cta_layout_vmnk` are skipped with a warning.
 
 Pipeline groups, interleave strides, multicast signaling, and deferred barrier storage are validated as host metadata. Generic device materialization for those combinations is not implemented. The copy and GEMM tutorials exercise the shared TMA-to-async, TMA-to-UMMA, and UMMA-to-async lowering while their callbacks contain only pipeline payload work. Static pipeline auditing recognizes the corresponding CUDA Lang calls but does not infer effects hidden behind arbitrary user wrappers.

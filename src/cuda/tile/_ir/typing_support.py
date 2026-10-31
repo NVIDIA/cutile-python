@@ -1,12 +1,14 @@
 # SPDX-FileCopyrightText: Copyright (c) <2025> NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 #
 # SPDX-License-Identifier: Apache-2.0
+import ast
+import importlib
 import inspect
 import operator
 import dataclasses
 from contextlib import _GeneratorContextManager
 from functools import lru_cache, cache
-from types import ModuleType, FunctionType, BuiltinFunctionType
+from types import ModuleType, FunctionType, BuiltinFunctionType, MethodDescriptorType
 from typing import Any, Sequence
 
 from cuda.tile import _datatype as datatype, DType
@@ -17,6 +19,7 @@ from .type import DataclassInfo, PointerInfoTy, NotImplementedTy
 from .type import Type, DTypeConstructor, DTypeSpec, NONE, StringTy, \
     ELLIPSIS, SLICE, ModuleTy, FunctionTy, EnumTy, TypeTy, LooselyTypedScalar
 from .._cext import classify_constant, ConstantKind, foreign_dtype_object_to_native
+from .._cext import Tile, Scalar, Vector, Pointer, OpaqueValue
 from .._execution import is_function_wrapper
 
 
@@ -96,12 +99,89 @@ BUILTIN_FUNC_SIGNATURES = {
 }
 
 
+# Types defined in the C++ extension. Their docstrings are generated from _cext.pyi and carry
+# the signatures: either as a text signature (__text_signature__), or, when a default can't be
+# written as a literal (e.g. an enum member), as the first line of __doc__.
+# inspect.signature() only supports the former, and only with literal defaults.
+_CEXT_CLASSES = (Tile, Scalar, Vector, Pointer, OpaqueValue)
+
+
+# Parses parameters like "self, /, shape, *, alignment=None". Default values are evaluated
+# in `namespace`, so they can refer to its names, e.g. "MemoryOrder.ACQUIRE".
+def _parse_params(params: str, namespace: ModuleType) -> inspect.Signature:
+    definitions = {}
+    exec(f"def f({params}): pass", vars(namespace), definitions)
+    return inspect.signature(definitions["f"])
+
+
+def _cext_params(f) -> tuple[str, ModuleType] | None:
+    """Returns the parameters of a class or a method defined in the C++ extension, e.g.
+    "self, /, shape", and the namespace for evaluating their defaults, or None if `f` isn't one"""
+    if isinstance(f, type) and f in _CEXT_CLASSES:
+        cls, is_method = f, False
+    elif isinstance(f, MethodDescriptorType) and f.__objclass__ in _CEXT_CLASSES:
+        cls, is_method = f.__objclass__, True
+    else:
+        return None
+    namespace = importlib.import_module(cls.__module__)
+
+    if f.__text_signature__ is not None:
+        # E.g. "($self, /, shape)"; `$self` marks the bound parameter
+        return f.__text_signature__[1:-1].replace("$self", "self"), namespace
+
+    # E.g. "atomic_load(*, memory_order=MemoryOrder.ACQUIRE)" on the first line of __doc__,
+    # which doesn't include `self`. Like in a text signature, `self` is positional-only.
+    first_line = (f.__doc__ or "").split("\n", 1)[0]
+    prefix = f"{f.__name__}("
+    if first_line.startswith(prefix) and first_line.endswith(")"):
+        params = first_line[len(prefix):-1]
+        if is_method:
+            if "/" in params:
+                params = "self, " + params
+            else:
+                params = "self, /, " + params if params else "self, /"
+        return params, namespace
+
+    if is_method:
+        raise TypeError(f"{cls.__name__}.{f.__name__} has no signature in its docstring")
+    # A class without a constructor
+    return "", namespace
+
+
+@cache
+def _cext_signature(f) -> inspect.Signature | None:
+    """Returns the signature of a class or a method defined in the C++ extension,
+    or None if `f` isn't one"""
+    params = _cext_params(f)
+    if params is None:
+        return None
+    return _parse_params(*params)
+
+
+def get_parameter_names(f) -> tuple[str, ...]:
+    """Like get_signature(f).parameters, but doesn't evaluate default values. This allows checking
+    the parameters while the modules that define the defaults may not be fully imported yet."""
+    params = _cext_params(f)
+    if params is None:
+        return tuple(get_signature(f).parameters)
+    args = ast.parse(f"def f({params[0]}): pass").body[0].args
+    names = [arg.arg for arg in args.posonlyargs + args.args]
+    if args.vararg is not None:
+        names.append(args.vararg.arg)
+    names += [arg.arg for arg in args.kwonlyargs]
+    if args.kwarg is not None:
+        names.append(args.kwarg.arg)
+    return tuple(names)
+
+
 def get_signature(f) -> inspect.Signature:
     if stub := BUILTIN_FUNC_SIGNATURES.get(f):
         f = stub
     elif is_dtype_constructor(f):
         # Data type constructors
         f = lambda x=0, /: None  # noqa: E731
+    elif (sig := _cext_signature(f)) is not None:
+        return sig
 
     if isinstance(f, type):
         return inspect.signature(f)

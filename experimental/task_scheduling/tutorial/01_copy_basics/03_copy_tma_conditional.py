@@ -6,6 +6,21 @@
 The schedule is built and validated once on the host, then frozen into three
 device tasks. Four warps consume shared-memory tiles, one warp issues TMA
 loads, and three padding warps complete the register-allocation warp group.
+
+Guarded regions inside ``domain_loop``:
+
+* ``ts.first_iter()`` / ``ts.every(4)`` — begin and heartbeat markers on load
+* ``when_true(smem.is_highlight_tile())`` — opaque runtime guard that tags the
+  host-selected highlight row on the store task
+* ``when_true(highlight | ts.LAST_ITER)`` — boolean OR across runtime and
+  iteration predicates
+* ``when_true(ts.FIRST_ITER & highlight)`` — a mixed boolean AND
+* ``ts.last_iter()`` — end marker on the last row
+
+Boolean guards use ``&`` / ``|`` / ``~`` because Python's ``and`` / ``or`` /
+``not`` cannot build captured expressions. Nested ``when_true`` blocks remain
+useful when structured nesting reads more clearly than a single conjunction.
+
 Resource/task flow:
 
                    +-------------------+
@@ -53,17 +68,21 @@ LOAD_TASK_WARP_IDX = 4
 PADDING_TASK_WARP_IDX = 5
 HIGHLIGHT_ROW = 128
 HEARTBEAT_PERIOD = 4
-TRACE_COLUMNS = 4
+TRACE_COLUMNS = 6
 
 TRACE_BEGIN_COLUMN = 0
 TRACE_HEARTBEAT_COLUMN = 1
 TRACE_HIGHLIGHT_COLUMN = 2
 TRACE_END_COLUMN = 3
+TRACE_EDGE_COLUMN = 4
+TRACE_FIRST_HIGHLIGHT_COLUMN = 5
 
 BEGIN_MARKER = 1000.0
 HEARTBEAT_MARKER = 2000.0
 HIGHLIGHT_MARKER = 3000.0
 END_MARKER = 4000.0
+EDGE_MARKER = 5000.0
+FIRST_HIGHLIGHT_MARKER = 6000.0
 
 # This program owns one SMEM allocation, so its view begins at the arena base.
 SMEM_VIEW_OFFSET_BYTES = 0
@@ -208,6 +227,25 @@ class TraceGmemResource(ts.MemoryResource):
             stage_info, TRACE_END_COLUMN, END_MARKER, STORE_TASK_WARP_IDX
         )
 
+    @ts.producer_work
+    @staticmethod
+    def mark_edge(stage_info):
+        """Mark the highlight row or the final row selected by a boolean OR."""
+        return TraceGmemResource._record_trace(
+            stage_info, TRACE_EDGE_COLUMN, EDGE_MARKER, STORE_TASK_WARP_IDX
+        )
+
+    @ts.producer_work
+    @staticmethod
+    def mark_first_highlight(stage_info):
+        """Mark only when the selected highlight is the first row."""
+        return TraceGmemResource._record_trace(
+            stage_info,
+            TRACE_FIRST_HIGHLIGHT_COLUMN,
+            FIRST_HIGHLIGHT_MARKER,
+            STORE_TASK_WARP_IDX,
+        )
+
 
 @ts.schedule
 def load_schedule(stage_info, input_gmem, smem, trace):
@@ -246,6 +284,12 @@ def store_schedule(stage_info, smem, output_gmem, trace):
         highlight = smem.is_highlight_tile()
         with ts.when_true(highlight):
             trace.mark_highlight()
+        # Validation enumerates distinct control-flow classes, not raw
+        # combinations of every boolean leaf.
+        with ts.when_true(highlight | ts.LAST_ITER):
+            trace.mark_edge()
+        with ts.when_true(ts.FIRST_ITER & highlight):
+            trace.mark_first_highlight()
         output_gmem.store(value)
         with ts.last_iter():
             trace.mark_end()
@@ -290,7 +334,7 @@ class TmaCopyProgram:
     smem_allocation: object
 
 
-def make_tma_copy_program():
+def make_tma_copy_program(highlight_row=HIGHLIGHT_ROW):
     """Construct and validate the complete task-scheduling program."""
     pipeline_config = ts.PipelineConfig.create_tma_async_pipeline_cfg(
         num_stages=NUM_STAGES,
@@ -306,6 +350,7 @@ def make_tma_copy_program():
         name="smemResource",
         pipeline_config=pipeline_config,
         smem_requirements=[smem_allocation],
+        highlight_row=highlight_row,
     )
     output_gmem = OutputGmemResource(name="outputGmemResource")
     trace_gmem = TraceGmemResource(name="traceGmemResource")
@@ -458,6 +503,20 @@ def _verify_trace_markers(
         expected_rows=[num_rows - 1],
         label="end",
     )
+    _expect_trace_column(
+        trace=trace,
+        column=TRACE_EDGE_COLUMN,
+        marker=EDGE_MARKER,
+        expected_rows=sorted({highlight_row, num_rows - 1}),
+        label="edge",
+    )
+    _expect_trace_column(
+        trace=trace,
+        column=TRACE_FIRST_HIGHLIGHT_COLUMN,
+        marker=FIRST_HIGHLIGHT_MARKER,
+        expected_rows=[0] if highlight_row == 0 else [],
+        label="first-highlight",
+    )
 
 
 def run_tma_copy_conditional_kernel_prim(
@@ -479,13 +538,7 @@ def run_tma_copy_conditional_kernel_prim(
     if not 0 <= highlight_row < rows:
         raise ValueError("highlight row is outside the input")
 
-    program = make_tma_copy_program()
-    # The default tree captures 128. Preserve explicit rejection rather than
-    # silently lowering a different opaque guard than host analysis saw.
-    if highlight_row != program.smem.highlight_row:
-        raise ValueError(
-            f"this specialization requires highlight_row={program.smem.highlight_row}"
-        )
+    program = make_tma_copy_program(highlight_row)
     if verbose:
         program.manager.print_verbose_report()
 

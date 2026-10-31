@@ -351,7 +351,7 @@ def test_atomic_operation_type():
 def test_block_mutex_example():
     @dataclass(frozen=True)
     class Mutex:
-        storage: cl.Pointer[int]
+        storage: cl.Pointer
         # could be cluster if storage is in DSM
         scope: cl.MemoryScope = cl.MemoryScope.BLOCK
 

@@ -28,7 +28,7 @@ def epilogue_store_tile(c_ptr, tmem_base, warp, base_col, g_row, g_col, n):
         column_offset=base_col,
     )
     values = cl.tcgen05_load(
-        cl.Tcgen05LoadStoreShape.SHAPE_32X32B,
+        cl.Tcgen05LoadStoreShape.SHAPE_32x32b,
         tmem_ptr,
         element_count=16,
         dtype=cl.float32,

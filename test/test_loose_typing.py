@@ -36,7 +36,7 @@ def test_propagate_constant_int_then_promote():
 
 def test_propagate_constant_int_then_promote_out_of_range():
     a = torch.zeros((4,), dtype=torch.int32, device="cuda:0")
-    with pytest.raises(TileValueError, match="Integer constant -170 is out of range of int8"):
+    with pytest.raises(TileValueError, match="Value -170 is out of range for int8"):
         ct.launch(torch.cuda.current_stream(), (1,), propagate_constant_int_then_promote, (50, a))
 
 

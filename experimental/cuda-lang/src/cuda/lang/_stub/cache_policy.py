@@ -4,10 +4,10 @@
 
 
 from .._enums import CachePolicy
-from .._execution import stub
+from .._execution import simt_stub
 
 
-@stub
+@simt_stub
 def create_range_cache_policy(
     base_address,
     primary_size,
@@ -38,7 +38,7 @@ def create_range_cache_policy(
     """
 
 
-@stub
+@simt_stub
 def create_fractional_cache_policy(
     primary_policy,
     /,

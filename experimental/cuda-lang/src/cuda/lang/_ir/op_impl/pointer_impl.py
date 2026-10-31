@@ -2,6 +2,8 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+from cuda.tile._exception import UnsupportedFeatureError
+from cuda.lang._target import TargetInfo
 import operator
 
 import cuda.lang._datatype as datatype
@@ -12,6 +14,7 @@ from cuda.lang._ir.type import (
     ArrayTy,
     ArrayValue,
     MemorySpace,
+    OpaqueTy,
     PointerInfoTy,
     PointerTy,
     ScalarTy,
@@ -28,6 +31,7 @@ from cuda.lang._ir.atomics_support import (
 from cuda.lang._ir.op_defs import (
     AtomicLoad,
     AtomicStore,
+    BitCast,
     LoadPointer,
     StorePointer,
 )
@@ -66,7 +70,6 @@ from cuda.tile._ir.op_impl import (
     require_constant_pointer_info,
     require_constant_str,
     require_dtype_spec,
-    require_optional_constant_int,
 )
 from cuda.tile._ir.ops import PointerOffset
 from ..._stub import core_api
@@ -238,8 +241,7 @@ def pointer_getitem(object: Var[PointerTy], key: Var[Type]):
 
 
 def _require_tensor_map_descriptor_value(value: Var) -> None:
-    value_ty = require_scalar_type(value)
-    if value_ty.dtype is not datatype.tensor_map_descriptor:
+    if value.get_type() != OpaqueTy(datatype.tensor_map_descriptor):
         raise TypeCheckingError(
             "Tensor-map descriptor stores require a tensor_map_descriptor value"
         )
@@ -440,9 +442,9 @@ def array_slice(self: Var, axis: Var, start: Var, stop: Var) -> Var:
     return array_from_parts_impl(pointer, build_tuple(new_shape), build_tuple(array_val.strides))
 
 
-def load_pointer(pointer: Var[PointerTy], count: int | None = None, alignment: int | None = None):
+def load_pointer(pointer: Var[PointerTy], count: int = 1, alignment: int | None = None):
     pointee_dtype = pointer.get_type().pointee_dtype
-    if count is None or count == 1:
+    if count == 1:
         result_ty = make_rank0_ty(pointee_dtype)
     else:
         result_ty = VectorTy(pointee_dtype, count)
@@ -461,7 +463,7 @@ def pointer_load(
     alignment: Var,
 ) -> Var:
     pointer = ensure_pointer(pointer)
-    count = require_optional_constant_int(count)
+    count = require_constant_int(count)
     alignment = require_optional_alignment(alignment)
     return load_pointer(pointer, count, alignment)
 
@@ -491,15 +493,23 @@ def pointer_store(
     )
 
 
-def require_atomic_scalar_dtype(
-    operation_type: type[Operation], dtype: datatype.DType
+def require_atomic_access_size(
+    operation_type: type[Operation], dtype: datatype.DType, count: int = 1
 ) -> int:
-    """Require a scalar type with a power-of-two byte size."""
+    """Require an access with a power-of-two byte size."""
     byte_count, remainder = divmod(dtype.bitwidth, 8)
-    if remainder or byte_count & (byte_count - 1):
+    byte_count *= count
+    if remainder or byte_count <= 0 or byte_count & (byte_count - 1):
         raise TypeCheckingError(
-            f"Type {dtype} cannot be accessed atomically; {operation_type._opcode} "
-            "requires a pointee whose size is a power-of-two number of bytes"
+            f"{operation_type._opcode} requires a total access size that is a "
+            "power-of-two number of bytes"
+        )
+    if byte_count > 16:
+        raise TypeCheckingError("Atomic vector accesses support at most 16 bytes")
+    if byte_count > 8 and TargetInfo.get_current().major < 9:
+        raise UnsupportedFeatureError(
+            "Atomic loads and stores of greater than 8 bytes are only "
+            "supported in Hopper and newer"
         )
     return byte_count
 
@@ -523,9 +533,16 @@ def require_atomic_mmio(
     return True
 
 
+def atomic_integer_storage_type(byte_count: int) -> ScalarTy | OpaqueTy:
+    if byte_count == 16:
+        return OpaqueTy(datatype._int128)
+    return ScalarTy(datatype.integer_dtype(byte_count * 8, signed=True))
+
+
 @impl(pointer_api.atomic_load)
 def pointer_atomic_load(
     pointer: Var,
+    count: Var,
     memory_order: Var,
     memory_scope: Var,
     mmio: Var,
@@ -533,7 +550,14 @@ def pointer_atomic_load(
 ) -> Var:
     pointer_type = require_pointer_type(pointer)
     pointee_dtype = pointer_type.pointee_dtype
-    natural_alignment = require_atomic_scalar_dtype(AtomicLoad, pointee_dtype)
+    count = require_constant_int(count)
+    result_type = (
+        ScalarTy(pointee_dtype) if count == 1
+        else VectorTy(pointee_dtype, count)
+    )
+    natural_alignment = require_atomic_access_size(
+        AtomicLoad, pointee_dtype, count
+    )
     mmio_value = require_constant_bool(mmio)
     memory_order, memory_scope = require_atomic_memory_order_and_scope(
         AtomicLoad,
@@ -547,15 +571,23 @@ def pointer_atomic_load(
     alignment = require_optional_alignment(alignment)
     if alignment is None:
         alignment = natural_alignment
-    return add_operation(
+    atomic_type = (
+        atomic_integer_storage_type(natural_alignment)
+        if isinstance(result_type, VectorTy)
+        else result_type
+    )
+    result = add_operation(
         AtomicLoad,
-        ScalarTy(pointee_dtype),
+        atomic_type,
         pointer=pointer,
         alignment=alignment,
         memory_order=memory_order,
         memory_scope=memory_scope,
         mmio=mmio_value,
     )
+    if isinstance(result_type, VectorTy):
+        result = add_operation(BitCast, result_type, x=result)
+    return result
 
 
 @impl(pointer_api.atomic_store)
@@ -569,12 +601,17 @@ def pointer_atomic_store(
 ) -> None:
     pointer_type = require_pointer_type(pointer)
     pointee_dtype = pointer_type.pointee_dtype
-    natural_alignment = require_atomic_scalar_dtype(AtomicStore, pointee_dtype)
-    require_scalar_type(value)
+    value_type = value.get_type()
+    if not isinstance(value_type, VectorTy | ScalarTy):
+        raise TypeCheckingError(f"Expected a vector or scalar but got {value_type}")
     value = implicit_cast(
         value,
         pointee_dtype,
         "Stored value type is incompatible with pointer type",
+    )
+    natural_alignment = require_atomic_access_size(
+        AtomicStore, pointee_dtype,
+        value_type.length if isinstance(value_type, VectorTy) else 1,
     )
     mmio_value = require_constant_bool(mmio)
     memory_order, memory_scope = require_atomic_memory_order_and_scope(
@@ -589,6 +626,10 @@ def pointer_atomic_store(
     alignment = require_optional_alignment(alignment)
     if alignment is None:
         alignment = natural_alignment
+    if isinstance(value_type, VectorTy):
+        value = add_operation(
+            BitCast, atomic_integer_storage_type(natural_alignment), x=value
+        )
     add_operation_variadic(
         AtomicStore,
         (),
@@ -623,6 +664,11 @@ def pointer_opaque_impl(object: Var[PointerTy], name: Var):
     return loosely_typed_const(object.get_type().opaque)
 
 
+@impl(getattr, overload=(PointerTy, "pointer_dtype"))
+def pointer_pointer_dtype_impl(object: Var[PointerTy], name: Var):
+    return loosely_typed_const(object.get_type().pointer_dtype)
+
+
 @impl(getattr, overload=(PointerTy, "pointee_dtype"))
 def pointer_pointee_dtype_impl(object: Var[PointerTy], name: Var):
     ty = object.get_type()
@@ -644,6 +690,28 @@ def getattr_pointer_method(object: Var, name: Var):
     name = require_constant_str(name)
     unbound_func = getattr(Pointer, name)
     return bind_method(object, unbound_func)
+
+
+@impl(Pointer.load)
+def pointer_method_load(self: Var, count: Var, alignment: Var) -> Var:
+    return pointer_load(self, count, alignment)
+
+
+@impl(Pointer.store)
+def pointer_method_store(self: Var, value: Var, alignment: Var) -> None:
+    return pointer_store(self, value, alignment)
+
+
+@impl(Pointer.atomic_load)
+def pointer_method_atomic_load(self: Var, count: Var, memory_order: Var, memory_scope: Var,
+                               mmio: Var, alignment: Var) -> Var:
+    return pointer_atomic_load(self, count, memory_order, memory_scope, mmio, alignment)
+
+
+@impl(Pointer.atomic_store)
+def pointer_method_atomic_store(self: Var, value: Var, memory_order: Var, memory_scope: Var,
+                                mmio: Var, alignment: Var) -> None:
+    return pointer_atomic_store(self, value, memory_order, memory_scope, mmio, alignment)
 
 
 @impl(core_api.address_space_cast)

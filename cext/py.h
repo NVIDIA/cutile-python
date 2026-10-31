@@ -6,7 +6,9 @@
 
 #pragma once
 
+#include "atomics.h"
 #include "check.h"
+#include "enums.h"
 #include "ref_ptr.h"
 #include "vec.h"
 #include <Python.h>
@@ -23,6 +25,31 @@ static inline void reference_add(PyObject& obj) {
 
 static inline void reference_remove(PyObject& obj) {
     Py_DECREF(&obj);
+}
+
+// Returns -1, 0 or 1. `obj` must be an int.
+static inline int pylong_sign(PyObject* obj) {
+#if PY_VERSION_HEX >= 0x030E0000
+    int sign;
+    CHECK(PyLong_GetSign(obj, &sign) == 0);
+    return sign;
+#else
+    return _PyLong_Sign(obj);
+#endif
+}
+
+// Returns the number of bits needed to represent abs(obj). `obj` must be an int.
+static inline uint64_t pylong_num_bits(PyObject* obj) {
+#if PY_VERSION_HEX >= 0x030D0000
+    int64_t nbits = _PyLong_NumBits(obj);
+    CHECK(nbits >= 0);
+    return static_cast<uint64_t>(nbits);
+#else
+    size_t nbits = _PyLong_NumBits(obj);
+    CHECK(nbits != static_cast<size_t>(-1));
+    static_assert(SIZE_MAX <= UINT64_MAX);
+    return nbits;
+#endif
 }
 
 static inline int pylong_as_int(PyObject* obj) {
@@ -70,19 +97,6 @@ T pylong_as(PyObject* obj) {
 template <typename T>
 T pylong_as(const PyPtr& ptr) {
     return pylong_as<T>(ptr.get());
-}
-
-template <typename T>
-T pylong_as_overflow_and(PyObject* obj, int* overflow) {
-    if constexpr (std::is_same_v<T, int>) {
-        return pylong_as_int(obj);
-    } else if constexpr (std::is_same_v<T, long>) {
-        return PyLong_AsLongAndOverflow(obj, overflow);
-    } else if constexpr (std::is_same_v<T, long long>) {
-        return PyLong_AsLongLongAndOverflow(obj, overflow);
-    } else {
-        static_assert(!sizeof(T*), "pylong_as_overflow_and<T> not implemented for given T");
-    }
 }
 
 template <typename T>
@@ -424,6 +438,15 @@ static inline int append_to_string_builder(long long x, StringBuilder* sb) {
     return 0;
 }
 
+// Same formatting as repr() of a Python float
+static inline int append_to_string_builder(double x, StringBuilder* sb) {
+    char* s = PyOS_double_to_string(x, 'r', 0, Py_DTSF_ADD_DOT_0, nullptr);
+    if (!s) return -1;
+    sb->append_cstring(s);
+    PyMem_Free(s);
+    return 0;
+}
+
 static inline int append_to_string_builder(PyObject* obj, StringBuilder* sb) {
     if (obj) sb->append_pyobject_str(obj);
     else sb->append("(null)");
@@ -486,7 +509,11 @@ static inline int append_to_string_builder(const std::optional<T>& opt, StringBu
 
 template <typename T, typename = std::enable_if_t<std::is_enum_v<T>>>
 static inline int append_to_string_builder(const T& value, StringBuilder* sb) {
-    sb->append(static_cast<std::underlying_type_t<T>>(value));
+    if constexpr (_enum_detail::is_reflection_enabled_enum<T>::value) {
+        sb->append_many(enum_name<T>(), ".", enum_str<T>(value));
+    } else {
+        sb->append(static_cast<std::underlying_type_t<T>>(value));
+    }
     return 0;
 }
 
@@ -497,6 +524,15 @@ ErrorRaised_t raise(PyObject* exctype, Args&&... message) {
     builder.append_many(std::forward<Args>(message)...);
     return builder.raise(exctype);
 }
+
+// For initializing interned string constants at module init time, e.g.
+//     static PyObject* g_foo_pyunicode;
+//     ...
+//     INIT_STRING_IDENT(foo);
+#define INIT_STRING_CONSTANT(name, value) \
+    if (!(name = PyUnicode_InternFromString(value))) return ErrorRaised
+
+#define INIT_STRING_IDENT(ident) INIT_STRING_CONSTANT(g_##ident##_pyunicode, #ident)
 
 template <typename... Args>
 PyPtr to_pyunicode(Args&&... pieces) {
@@ -581,6 +617,10 @@ static inline PyPtr getattr(const PyPtr& obj, const char* attrname) {
     return getattr(obj.get(), attrname);
 }
 
+static inline PyPtr getattr(const PyPtr& obj, PyObject* attrname) {
+    return getattr(obj.get(), attrname);
+}
+
 static inline void pyunicode_intern_in_place(PyPtr* s) {
     PyObject* raw = s->release();
     PyUnicode_InternInPlace(&raw);
@@ -600,7 +640,49 @@ struct ErrorGuard {
     ~ErrorGuard() {
         exc.restore();
     }
+
+    void replace_with_raised_exception() {
+        SavedException raised = save_raised_exception();
+        if (exc && raised) {
+            exc.normalize();
+            raised.normalize();
+            if (exc.value.get() != raised.value.get())
+                PyException_SetContext(raised.value.get(), exc.value.release());
+        }
+        exc = std::move(raised);
+    }
 };
+
+template <typename T>
+T pylong_as_overflow_and(PyObject* obj, int* overflow) {
+    if constexpr (std::is_same_v<T, int>) {
+        return pylong_as_int(obj);
+    } else if constexpr (std::is_same_v<T, long>) {
+        return PyLong_AsLongAndOverflow(obj, overflow);
+    } else if constexpr (std::is_same_v<T, long long>) {
+        return PyLong_AsLongLongAndOverflow(obj, overflow);
+    } else if constexpr (std::is_same_v<T, unsigned long>
+                         || std::is_same_v<T, unsigned long long>) {
+        *overflow = 0;
+        PyPtr ref;
+        if (!PyLong_Check(obj)) {
+            ref = steal(PyNumber_Index(obj));
+            if (!ref) return T(-1);
+            obj = ref.get();
+        }
+        if (pylong_sign(obj) < 0) {
+            *overflow = -1;
+            return T(-1);
+        }
+        if (pylong_num_bits(obj) > sizeof(T) * 8) {
+            *overflow = 1;
+            return T(-1);
+        }
+        return pylong_as<T>(obj);
+    } else {
+        static_assert(!sizeof(T*), "pylong_as_overflow_and<T> not implemented for given T");
+    }
+}
 
 static inline PyPtr try_getattr(PyObject* obj, const char* attrname,
                                 SavedException* exc = nullptr) {
@@ -726,5 +808,61 @@ class ProtectedByGlobalLock {
     T object_;
 public:
     T& get(GlobalLock&) { return object_; }
+};
+
+Result<Vec<uint8_t>> pylong_as_unsigned_bytes(PyObject* pylong);
+
+class LazyImporter {
+    OncePointer<PyObject> obj_;  // Never released once set
+
+public:
+    // Gets "module_name[.name[.subname]]".
+    // Returns a borrowed reference, or nullptr with an exception set.
+    PyObject* get(const char* module_name, const char* name = nullptr,
+                  const char* subname = nullptr) {
+        if (PyObject* obj = obj_.get()) return obj;
+
+        PyPtr new_obj = steal(PyImport_ImportModule(module_name));
+        if (!new_obj) return nullptr;
+        if (name) {
+            new_obj = getattr(new_obj, name);
+            if (!new_obj) return nullptr;
+        }
+        if (subname) {
+            new_obj = getattr(new_obj, subname);
+            if (!new_obj) return nullptr;
+        }
+
+        // Another thread may have set it while we were importing, even if GIL is enabled,
+        // since the import may release the GIL. In that case, ours is released.
+        return obj_.set(std::move(new_obj));
+    }
+};
+
+
+#ifdef Py_GIL_DISABLED
+using MaybeMutex = PyMutex;
+#else
+struct MaybeMutex { char dummy; };
+#endif
+
+
+class MaybeLock {
+    MaybeMutex* mutex;
+public:
+    MaybeLock(MaybeMutex* mutex) : mutex(mutex) {
+#ifdef Py_GIL_DISABLED
+        PyMutex_Lock(mutex);
+#endif
+    }
+
+    ~MaybeLock() {
+#ifdef Py_GIL_DISABLED
+        PyMutex_Unlock(mutex);
+#endif
+    }
+
+    MaybeLock(const MaybeLock&) = delete;
+    void operator=(const MaybeLock&) = delete;
 };
 

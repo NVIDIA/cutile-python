@@ -49,7 +49,7 @@ array element.
    opaque_pointer_dtype
    address_space_cast
    map_shared_to_cluster
-   map_shared_to_leader_block
+   map_shared_to_block_pair_leader
    shared_cluster_leader_bit_mask
 
 .. autosummary::
@@ -133,6 +133,9 @@ Math
     add
     sub
     mul
+    wrapping_add
+    wrapping_sub
+    wrapping_mul
     fma
     truediv
     floordiv

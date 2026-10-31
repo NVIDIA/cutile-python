@@ -69,19 +69,19 @@ def tcgen05_impl_registry() -> ImplRegistry:
 
 
 TCGEN05_VALID_NUMS_BY_SHAPE = {
-    Tcgen05LoadStoreShape.SHAPE_16X64B: (1, 2, 4, 8, 16, 32, 64, 128),
-    Tcgen05LoadStoreShape.SHAPE_16X128B: (1, 2, 4, 8, 16, 32, 64),
-    Tcgen05LoadStoreShape.SHAPE_16X256B: (1, 2, 4, 8, 16, 32),
-    Tcgen05LoadStoreShape.SHAPE_32X32B: (1, 2, 4, 8, 16, 32, 64, 128),
-    Tcgen05LoadStoreShape.SHAPE_16X32BX2: (1, 2, 4, 8, 16, 32, 64, 128),
+    Tcgen05LoadStoreShape.SHAPE_16x64b: (1, 2, 4, 8, 16, 32, 64, 128),
+    Tcgen05LoadStoreShape.SHAPE_16x128b: (1, 2, 4, 8, 16, 32, 64),
+    Tcgen05LoadStoreShape.SHAPE_16x256b: (1, 2, 4, 8, 16, 32),
+    Tcgen05LoadStoreShape.SHAPE_32x32b: (1, 2, 4, 8, 16, 32, 64, 128),
+    Tcgen05LoadStoreShape.SHAPE_16x32bx2: (1, 2, 4, 8, 16, 32, 64, 128),
 }
 
 TCGEN05_REGISTERS_PER_REPETITION = {
-    Tcgen05LoadStoreShape.SHAPE_16X64B: 1,
-    Tcgen05LoadStoreShape.SHAPE_16X128B: 2,
-    Tcgen05LoadStoreShape.SHAPE_16X256B: 4,
-    Tcgen05LoadStoreShape.SHAPE_32X32B: 1,
-    Tcgen05LoadStoreShape.SHAPE_16X32BX2: 1,
+    Tcgen05LoadStoreShape.SHAPE_16x64b: 1,
+    Tcgen05LoadStoreShape.SHAPE_16x128b: 2,
+    Tcgen05LoadStoreShape.SHAPE_16x256b: 4,
+    Tcgen05LoadStoreShape.SHAPE_32x32b: 1,
+    Tcgen05LoadStoreShape.SHAPE_16x32bx2: 1,
 }
 
 TCGEN05_REGISTER_BITS = 32
@@ -218,7 +218,7 @@ def tcgen05_commit_impl(
     require_mbarrier_ptr(mbarrier)
     operands = [mbarrier]
     cta_group_value = require_constant_enum(cta_group, CTAGroup)
-    intrinsic = "llvm.nvvm.tcgen05.commit"
+    intrinsic = "llvm.nvvm.nv.tcgen05.commit"
     if not is_none(multicast_mask):
         intrinsic += ".mc"
         mask = implicit_cast(multicast_mask, datatype.int16, "multicast mask")
@@ -317,12 +317,12 @@ def tcgen05_store_impl(
         )
 
     num = register_count // registers_per_repetition
-    needs_offset = shape_value == Tcgen05LoadStoreShape.SHAPE_16X32BX2
+    needs_offset = shape_value == Tcgen05LoadStoreShape.SHAPE_16x32bx2
     has_offset = offset is not None
     if needs_offset != has_offset:
         raise TypeCheckingError(
             "offset parameter is only valid with shape "
-            "Tcgen05LoadStoreShape.SHAPE_16X32BX2"
+            "Tcgen05LoadStoreShape.SHAPE_16x32bx2"
         )
 
     register_type = _tcgen05_register_type(register_count)
@@ -390,11 +390,11 @@ def tcgen05_load_impl(
         )
 
     has_offset = not is_none(offset)
-    uses_offset = shape_value is Tcgen05LoadStoreShape.SHAPE_16X32BX2
+    uses_offset = shape_value is Tcgen05LoadStoreShape.SHAPE_16x32bx2
     if uses_offset and not has_offset:
-        raise TypeCheckingError("tcgen05_load with SHAPE_16X32BX2 requires offset")
+        raise TypeCheckingError("tcgen05_load with SHAPE_16x32bx2 requires offset")
     if has_offset and not uses_offset:
-        raise TypeCheckingError("tcgen05_load offset is only valid with SHAPE_16X32BX2")
+        raise TypeCheckingError("tcgen05_load offset is only valid with SHAPE_16x32bx2")
 
     operands = [tensor_memory_address]
     if has_offset:

@@ -97,7 +97,8 @@ are also immutable.
 
 The caller of a |kernel| must ensure that:
 
-- No |arrays| passed to the |kernel| alias one another.
+- Array arguments obey the aliasing requirements described under
+  :ref:`data-global-arrays`.
 - All |arrays| remain valid until the |kernel| completes execution.
 
 Control Flow
@@ -179,6 +180,17 @@ Type Annotations
 Kernel parameter type annotations use ``typing.Annotated`` metadata to control
 constant embedding, array shape and index metadata, the integer dtype of scalar
 parameters, and list element types.
+
+Ordinary type hints such as ``int``, ``float``, or ``ct.int32`` do not enforce
+or convert parameter types. Use an explicit conversion such as ``ct.int32(x)``
+when a specific scalar dtype is needed. In ``ct.Constant[int]``, ``ct.Constant``
+marks the argument as constant; the inner ``int`` does not validate or convert it.
+
+Tuple annotations describe the argument structure and can apply supported
+metadata to individual elements, for example ``tuple[ct.Array, ct.Constant[int]]``.
+Ordinary element type hints still do not enforce or convert element types.
+Annotations on helper parameters, local variables, and return values do not
+control kernel argument conversion.
 
 Constant Annotations
 ~~~~~~~~~~~~~~~~~~~~

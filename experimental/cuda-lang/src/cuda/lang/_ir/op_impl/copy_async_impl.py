@@ -2,6 +2,8 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+from cuda.lang._exception import UnsupportedFeatureError
+from cuda.lang._target import TargetInfo
 from cuda.lang._ir.op_defs import RawLLVMIntrinsic
 from cuda.tile._ir.op_impl import require_constant_int
 from cuda.tile._ir.op_impl import require_constant_bool
@@ -10,7 +12,7 @@ from cuda.tile._ir.op_impl import ImplRegistry
 from cuda.tile._ir.ops import implicit_cast
 from cuda.tile._ir.ir import add_operation_variadic
 import cuda.lang._datatype as datatype
-from cuda.lang._enums import MemorySpace
+from cuda.lang._enums import MemorySpace, AsyncCopyReportMechanism, CTAGroup
 from cuda.lang._ir.op_defs import (
     CopyAsyncBulkTensorGlobalToShared,
     CopyAsyncBulkTensorSharedToGlobal,
@@ -92,6 +94,7 @@ def copy_async_bulk_tensor_global_to_shared_impl(
     mode,
     cta_group,
     predicate,
+    report_mechanism,
 ):
     src_coordinate_vars = require_uniform_int_tuple_type(src_coordinates)
     im2col_offset_vars = require_uniform_int_tuple_type(im2col_offsets)
@@ -114,6 +117,14 @@ def copy_async_bulk_tensor_global_to_shared_impl(
         for offset in im2col_offset_vars
     )
     l2_cache_hint = optional_cast(l2_cache_hint, datatype.int64, "TMA L2 cache hint")
+    report_mechanism = require_constant_enum(report_mechanism, AsyncCopyReportMechanism)
+
+    if report_mechanism is not AsyncCopyReportMechanism.DISABLED:
+        target = TargetInfo.get_current()
+        if not (target.major == 10 and target.minor >= 7 and target.suffix in ("a", "f")):
+            raise UnsupportedFeatureError(
+                "Async-copy reporting requires sm_107f or higher in the same family"
+            )
 
     if is_cta_only:
         message = (
@@ -129,7 +140,7 @@ def copy_async_bulk_tensor_global_to_shared_impl(
         )
         require_optional(predicate, require_boolean_scalar_type)
         cta_group_value = require_optional_constant_enum(
-            cta_group, copy_async.CTAGroup
+            cta_group, CTAGroup
         )
     add_operation_variadic(
         CopyAsyncBulkTensorGlobalToShared,
@@ -147,6 +158,7 @@ def copy_async_bulk_tensor_global_to_shared_impl(
         mode=mode,
         is_cta_only=is_cta_only,
         cta_group=cta_group_value,
+        report_mechanism=report_mechanism,
     )
 
 

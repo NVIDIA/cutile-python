@@ -6,9 +6,7 @@ import torch
 import cuda.tile as ct
 from cuda.tile._cext import dev_features_enabled
 from cuda.tile._compile import _get_max_supported_bytecode_version
-from cuda.tile._bytecode import SimpleType
-from cuda.tile._bytecode.float import float_to_bits
-from cuda.tile._bytecode.float import float_from_bits
+from cuda.tile._cext import encode_float, decode_float
 from functools import cache
 import tempfile
 
@@ -70,14 +68,14 @@ def unswizzle_32_4_4(tile_swizzled_scale):
                                .reshape((m0 * m2 * m1, k0 * k1)))
 
 
-def bits_to_torch(x: torch.Tensor, sampletype: SimpleType):
-    x_out = [float_from_bits(int(i), sampletype) for i in x.view(-1)]
+def bits_to_torch(x: torch.Tensor, dtype: ct.DType):
+    x_out = [decode_float(int(i), dtype) for i in x.view(-1)]
     x_out = torch.tensor(x_out, dtype=torch.float32, device=x.device).reshape(x.shape)
     return x_out
 
 
-def torch_to_bits(x: torch.Tensor, sampletype: SimpleType):
-    x_out = [float_to_bits(i, sampletype) for i in x.view(-1)]
+def torch_to_bits(x: torch.Tensor, dtype: ct.DType):
+    x_out = [encode_float(i, dtype) for i in x.view(-1)]
     x_out = torch.tensor(x_out, dtype=torch.uint8, device=x.device).reshape(x.shape)
     return x_out
 

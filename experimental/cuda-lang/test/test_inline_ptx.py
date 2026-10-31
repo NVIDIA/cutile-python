@@ -117,10 +117,6 @@ def test_inline_ptx_special_register_operand():
     compile_kernel(kernel, assert_in_ptx="%clock")
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="needs llvm version bump",
-)
 def test_inline_ptx_escaped_special_register():
     @cl.kernel
     def kernel():

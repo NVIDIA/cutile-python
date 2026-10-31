@@ -948,7 +948,7 @@ class TmemSPResource(ts.MemoryResource):
         )
         chunks = tuple(
             cl.tcgen05_load(
-                cl.Tcgen05LoadStoreShape.SHAPE_32X32B,
+                cl.Tcgen05LoadStoreShape.SHAPE_32x32b,
                 _tmem_pointer(
                     row_tmem,
                     column_offset=chunk_idx * fmha_config.tmem_x_load_s,
@@ -1259,12 +1259,12 @@ class TmemSPResource(ts.MemoryResource):
             column_offset=p_column,
         )
         cl.tcgen05_store(
-            cl.Tcgen05LoadStoreShape.SHAPE_32X32B,
+            cl.Tcgen05LoadStoreShape.SHAPE_32x32b,
             p_tmem,
             packed_first,
         )
         cl.tcgen05_store(
-            cl.Tcgen05LoadStoreShape.SHAPE_32X32B,
+            cl.Tcgen05LoadStoreShape.SHAPE_32x32b,
             _tmem_pointer(
                 p_tmem,
                 column_offset=fmha_config.tmem_x_load_s,
@@ -1365,7 +1365,7 @@ class TmemSPResource(ts.MemoryResource):
             )
             store_fragment = values.astype(cl.float16).reinterpret_as_vector(cl.int32, tmem_x)
             cl.tcgen05_store(
-                cl.Tcgen05LoadStoreShape.SHAPE_32X32B,
+                cl.Tcgen05LoadStoreShape.SHAPE_32x32b,
                 _tmem_pointer(tmem_p_addr, column_offset=pair_idx * tmem_x),
                 store_fragment,
             )
@@ -1595,14 +1595,14 @@ class TmemOResource(ts.MemoryResource):
         for column in cl.static_iter(range(0, fmha_config.epi_tile[1], 16)):
             tile = _tmem_pointer(output_tmem, column_offset=column)
             values = cl.tcgen05_load(
-                cl.Tcgen05LoadStoreShape.SHAPE_32X32B,
+                cl.Tcgen05LoadStoreShape.SHAPE_32x32b,
                 tile,
                 element_count=16,
                 dtype=cl.float32,
             )
             cl.tcgen05_wait_load()
             cl.tcgen05_store(
-                cl.Tcgen05LoadStoreShape.SHAPE_32X32B,
+                cl.Tcgen05LoadStoreShape.SHAPE_32x32b,
                 tile,
                 values * vec_scale,
             )
@@ -1665,7 +1665,7 @@ class SmemOResource(ts.MemoryResource):
         tmem_x = 16
         for column in cl.static_iter(range(0, fmha_config.epi_tile[1], tmem_x)):
             values = cl.tcgen05_load(
-                cl.Tcgen05LoadStoreShape.SHAPE_32X32B,
+                cl.Tcgen05LoadStoreShape.SHAPE_32x32b,
                 _tmem_pointer(output_tmem, column_offset=column),
                 element_count=tmem_x,
                 dtype=cl.float32,

@@ -104,7 +104,7 @@ def load_o(stage_info, column):
     warp, _ = warp_and_lane(stage_info)
     chunks = tuple(
         cl.tcgen05_load(
-            cl.Tcgen05LoadStoreShape.SHAPE_16X256B,
+            cl.Tcgen05LoadStoreShape.SHAPE_16x256b,
             tmem_ptr(stage_info, column, warp * 32 + chunk * 16),
             element_count=4,
             dtype=cl.float32,

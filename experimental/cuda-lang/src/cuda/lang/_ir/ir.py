@@ -88,6 +88,8 @@ class Block(TileBlock):
 
 
 class IRContext(TileIRContext):
+    device_execution_space = "simt"
+
     def __init__(
         self,
         log_ir_on_error: bool = True,

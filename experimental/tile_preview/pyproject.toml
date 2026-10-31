@@ -4,14 +4,36 @@
 
 [build-system]
 build-backend = "setuptools.build_meta"
-requires = ["setuptools", "wheel"]
+requires = ["setuptools==84.0.0", "wheel"]
 
 [project]
 name = "cuda-tile-preview"
-dynamic = ["version"]
+dynamic = ["version", "dependencies"]
 description = "Preview APIs for cuda-tile"
-requires-python = ">=3.10, <3.15"
-dependencies = ["cuda-tile"]
+readme = { file = "README.md", content-type = "text/markdown" }
+authors = [
+    { name = "NVIDIA Corporation" }
+]
+license = "Apache-2.0"
+license-files = ["LICENSES/*"]
+requires-python = ">=3.11, <3.16"
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: GPU :: NVIDIA CUDA :: 13",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Programming Language :: Python :: 3.15",
+    "Programming Language :: Python :: Implementation :: CPython",
+    "Topic :: Software Development :: Compilers",
+]
+
+[project.urls]
+Homepage = "https://github.com/nvidia/cutile-python"
+Repository = "https://github.com/nvidia/cutile-python"
+"Bug Tracker" = "https://github.com/nvidia/cutile-python/issues"
 
 [tool.setuptools]
 package-dir = {"" = "src"}
@@ -24,3 +46,6 @@ where = ["src"]
 include = [
     "cuda.tile_preview",
 ]
+
+[tool.setuptools.package-data]
+"cuda.tile_preview" = ["VERSION"]

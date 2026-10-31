@@ -26,7 +26,7 @@ from cuda.tile._ir.ops import implicit_cast
 
 from .core_api_impl import bitcast
 from .inline_ptx_impl import inline_ptx
-from .vector_impl import vector_getitem
+from .vector_impl import vector_getitem_raw
 
 
 _registry = ImplRegistry()
@@ -123,7 +123,7 @@ def store_async_cluster_impl(
             raise TypeCheckingError(message)
         index_type = ScalarTy(datatype.int32)
         elements = tuple(
-            vector_getitem(value, strictly_typed_const(index, index_type))
+            vector_getitem_raw(value, strictly_typed_const(index, index_type))
             for index in range(value_type.length)
         )
         registers = tuple(as_integer(element, bitwidth) for element in elements)

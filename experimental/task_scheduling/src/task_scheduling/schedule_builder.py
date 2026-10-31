@@ -10,20 +10,24 @@ from collections.abc import Iterator
 from contextlib import AbstractContextManager, contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field, replace
-from types import MappingProxyType
-from typing import Callable, Hashable, Mapping
+from types import MappingProxyType, TracebackType
+from typing import Callable, Hashable, Mapping, NoReturn
 
 from .enums import (
     BlockGuard,
+    ComplementedIterationPredicate,
     Every,
     FIRST_ITER,
+    GuardAnd,
+    GuardOr,
     IterationPredicate,
     LAST_ITER,
     OpaqueCondition,
     SKIPPABLE,
     ScheduleStage,
+    iter_leaves,
 )
-from .ir import ScheduleValue
+from .ir import ScheduleValue, _NegatedScheduleValue
 from .resources import (
     MemoryResource,
     WorkQueue,
@@ -48,15 +52,24 @@ class Step:
 
 @dataclass(kw_only=True, eq=False, frozen=True)
 class BreakLoop:
-    """Exit the enclosing domain loop, skipping the remaining iteration body."""
+    """Exit the enclosing loop, skipping the remaining iteration body."""
 
     exit_values: tuple[ScheduleValue, ...] = ()
 
 
 @dataclass(kw_only=True, eq=False, frozen=True)
 class ConditionalBlock:
+    """A region executed only when its guard holds.
+
+    ``verify_num_fires`` is a verifier-only assertion for blocks inside
+    ``while_true_loop()``: the exact number of modeled rounds on which the
+    effective guard, including enclosing guards, holds. It constrains the
+    opaque exit histories the checker explores and has no device effect.
+    """
+
     body: tuple["Node", ...] | list["Node"]
     condition: BlockGuard
+    verify_num_fires: int | None = None
 
 
 @dataclass(kw_only=True, eq=False, frozen=True)
@@ -132,7 +145,26 @@ class WorkTileLoop:
     skip_if: Callable[..., object] | None = None
 
 
-Node = Step | BreakLoop | ConditionalBlock | DomainLoop | WorkTileLoop
+@dataclass(kw_only=True, eq=False, frozen=True)
+class WhileTrueLoop:
+    """A dynamic loop that repeats its body until a ``break_loop()`` runs.
+
+    ``init`` and ``advance`` are consumer-work hook steps outside ``body``.
+    Each returns the loop cursor, which device work reads as
+    ``stage_info.loop_offset``: ``init`` runs once before the first round and
+    ``advance`` after every round that does not break. The exit formula is
+    the disjunction of the guards that dominate each ``break_loop()``.
+    ``verify_num_iters`` lists the modeled round counts the exhaustive checker
+    explores; a count ``N`` is checked as ``N - 1`` retries and one break.
+    """
+
+    init: Step
+    advance: Step
+    verify_num_iters: tuple[int, ...]
+    body: tuple["Node", ...] | list["Node"]
+
+
+Node = Step | BreakLoop | ConditionalBlock | DomainLoop | WorkTileLoop | WhileTrueLoop
 
 
 @dataclass(kw_only=True, frozen=True)
@@ -164,9 +196,15 @@ def _child_nodes(node: Node) -> tuple[Node, ...] | list[Node]:
 
 
 def _iter_nodes(nodes: tuple[Node, ...] | list[Node]) -> Iterator[Node]:
+    """Yield nodes in execution preorder, including while-loop hook steps."""
     for node in nodes:
         yield node
-        yield from _iter_nodes(_child_nodes(node))
+        if isinstance(node, WhileTrueLoop):
+            yield node.init
+            yield from _iter_nodes(node.body)
+            yield node.advance
+        else:
+            yield from _iter_nodes(_child_nodes(node))
 
 
 def _iter_steps(schedule: Schedule) -> Iterator[Step]:
@@ -199,10 +237,14 @@ def validate_queue_advance_placement(
 def validate_break_placement(nodes, *, in_domain_loop=False) -> None:
     for node in nodes:
         if isinstance(node, BreakLoop) and not in_domain_loop:
-            raise ScheduleError("break_loop() must be called inside domain_loop()")
+            raise ScheduleError(
+                "break_loop() must be called inside domain_loop() or "
+                "while_true_loop()"
+            )
         validate_break_placement(
             _child_nodes(node),
-            in_domain_loop=in_domain_loop or isinstance(node, DomainLoop),
+            in_domain_loop=in_domain_loop
+            or isinstance(node, (DomainLoop, WhileTrueLoop)),
         )
 
 
@@ -215,9 +257,66 @@ def contains_break(nodes) -> bool:
     )
 
 
+def while_loop_break_clauses(
+    loop: WhileTrueLoop,
+) -> tuple[tuple[BlockGuard, ...], ...]:
+    """Return the while-loop exit formula in source order.
+
+    Each clause is the conjunction of the guards that dominate one
+    ``break_loop()``; the loop exits when any clause holds. An empty clause is
+    an unconditional break.
+    """
+    clauses = []
+
+    def walk(nodes, chain):
+        for node in nodes:
+            if isinstance(node, BreakLoop):
+                clauses.append(chain)
+            elif isinstance(node, ConditionalBlock):
+                inner = chain
+                if node.condition is not SKIPPABLE:
+                    inner = chain + (node.condition,)
+                walk(node.body, inner)
+
+    walk(loop.body, ())
+    return tuple(clauses)
+
+
+def _format_exit_formula(clauses: tuple[tuple[BlockGuard, ...], ...]) -> str:
+    if not clauses:
+        return "never"
+    rendered = [
+        " and ".join(_format_guard(guard) for guard in clause) if clause else "true"
+        for clause in clauses
+    ]
+    if len(rendered) == 1:
+        return rendered[0]
+    return " or ".join(
+        f"({clause})" if " and " in clause else clause for clause in rendered
+    )
+
+
+def _format_guard_expression(guard: BlockGuard) -> str:
+    if isinstance(guard, OpaqueCondition):
+        value = f"key={guard.key!r}"
+        return f"~({value})" if guard.negated else value
+    if isinstance(guard, (GuardAnd, GuardOr)):
+        operator = " and " if isinstance(guard, GuardAnd) else " or "
+        return (
+            "("
+            + operator.join(_format_guard_expression(item) for item in guard.operands)
+            + ")"
+        )
+    return _format_guard(guard)
+
+
 def _format_guard(guard: BlockGuard) -> str:
     if guard is SKIPPABLE:
         return "Skippable"
+    if isinstance(guard, (GuardAnd, GuardOr)):
+        return f"when_true({_format_guard_expression(guard)})"
+    if isinstance(guard, ComplementedIterationPredicate):
+        return f"~{_format_guard(guard.predicate)}"
     if guard is FIRST_ITER:
         return "FirstIter"
     if guard is LAST_ITER:
@@ -236,6 +335,18 @@ def _format_schedule(schedule: Schedule, *, show_routes: bool = True) -> str:
     )
     lines = [f"Schedule({schedule.name!r}, resources=[{resources}])"]
 
+    def emit_step(node: Step, pad: str, role: str = "") -> None:
+        label = f", label={node.label!r}" if node.label else ""
+        lines.append(
+            f"{pad}[#{node.unique_id}] {role}Step({node.memory_resource.name}, "
+            f"{node.schedule_stage.name}{label})"
+        )
+        if show_routes:
+            for argument, value in node.input_values.items():
+                lines.append(f"{pad}      {argument} <- %{value.value_id}")
+            for value in node.output_values:
+                lines.append(f"{pad}      -> %{value.value_id}")
+
     def emit(node: Node, indent: int) -> None:
         pad = " " * indent
         if isinstance(node, BreakLoop):
@@ -244,20 +355,29 @@ def _format_schedule(schedule: Schedule, *, show_routes: bool = True) -> str:
             lines.append(f"{pad}BreakLoop({suffix})")
             return
         if isinstance(node, Step):
-            label = f", label={node.label!r}" if node.label else ""
+            emit_step(node, pad)
+            return
+        if isinstance(node, WhileTrueLoop):
             lines.append(
-                f"{pad}[#{node.unique_id}] Step({node.memory_resource.name}, "
-                f"{node.schedule_stage.name}{label})"
+                f"{pad}WhileTrueLoop(init={node.init.memory_resource.name}."
+                f"{node.init.label}, advance={node.advance.memory_resource.name}."
+                f"{node.advance.label}, verify_num_iters={node.verify_num_iters}, "
+                f"exit={_format_exit_formula(while_loop_break_clauses(node))})"
             )
-            if show_routes:
-                for argument, value in node.input_values.items():
-                    lines.append(f"{pad}      {argument} <- %{value.value_id}")
-                for value in node.output_values:
-                    lines.append(f"{pad}      -> %{value.value_id}")
+            emit_step(node.init, pad + "  ", "init ")
+            for child in node.body:
+                emit(child, indent + 2)
+            emit_step(node.advance, pad + "  ", "advance ")
             return
         if isinstance(node, ConditionalBlock):
+            fires = (
+                ""
+                if node.verify_num_fires is None
+                else f", verify_num_fires={node.verify_num_fires}"
+            )
             lines.append(
-                f"{pad}ConditionalBlock(condition={_format_guard(node.condition)})"
+                f"{pad}ConditionalBlock(condition={_format_guard(node.condition)}"
+                f"{fires})"
             )
         elif isinstance(node, DomainLoop):
             carried = ", ".join(
@@ -316,9 +436,9 @@ class _WorkInfo:
 class ScheduleBuilder:
     def __init__(self, name: str, resources: list[MemoryResource]) -> None:
         self.schedule = Schedule(name=name, body=[], resources=resources)
-        self.stack: list[Schedule | ConditionalBlock | DomainLoop | WorkTileLoop] = [
-            self.schedule
-        ]
+        self.stack: list[
+            Schedule | ConditionalBlock | DomainLoop | WorkTileLoop | WhileTrueLoop
+        ] = [self.schedule]
         self.values: set[ScheduleValue] = set()
         self.next_id = 0
         self.next_value_id = 0
@@ -327,6 +447,7 @@ class ScheduleBuilder:
         self.scope_nodes: dict[int, object] = {}
         self.has_work_tile_loop = False
         self.after_work_tile_loop = False
+        self.has_while_true_loop = False
 
     def current_scope(self) -> tuple[int, ...]:
         """Return stable lexical IDs for the currently open control-flow path."""
@@ -385,7 +506,15 @@ class ScheduleBuilder:
     def _inside(self, kind: type) -> bool:
         return any(isinstance(item, kind) for item in self.stack)
 
-    def open_scope(self, node: ConditionalBlock | DomainLoop | WorkTileLoop) -> None:
+    def _in_runtime_condition(self) -> bool:
+        return any(
+            isinstance(item, ConditionalBlock) and item.condition is not SKIPPABLE
+            for item in self.stack
+        )
+
+    def open_scope(
+        self, node: ConditionalBlock | DomainLoop | WorkTileLoop | WhileTrueLoop
+    ) -> None:
         if self.after_work_tile_loop:
             raise ScheduleError("no blocks may follow work_tile_loop()")
         if isinstance(node, WorkTileLoop):
@@ -396,21 +525,60 @@ class ScheduleBuilder:
             self.has_work_tile_loop = True
         elif isinstance(node, DomainLoop) and self._inside(DomainLoop):
             raise ScheduleError("domain_loop() cannot be nested")
+        elif isinstance(node, DomainLoop) and self._inside(WhileTrueLoop):
+            raise ScheduleError("domain_loop() cannot be nested inside while_true_loop()")
+        elif isinstance(node, WhileTrueLoop):
+            if self.has_while_true_loop:
+                raise ScheduleError("at most one while_true_loop() is allowed per schedule")
+            if self._inside(DomainLoop):
+                raise ScheduleError("while_true_loop() cannot be nested inside domain_loop()")
+            if self._in_runtime_condition():
+                raise ScheduleError(
+                    "while_true_loop() cannot be nested inside a condition block"
+                )
+            loops = [item for item in self.stack if isinstance(item, WorkTileLoop)]
+            if (
+                loops
+                and loops[-1].skip_if is not None
+                and not any(
+                    isinstance(item, ConditionalBlock) and item.condition is SKIPPABLE
+                    for item in self.stack
+                )
+            ):
+                raise ScheduleError(
+                    "with work_tile_loop(skip_if=...), while_true_loop() must be "
+                    "inside wtl.skippable()"
+                )
+            self.has_while_true_loop = True
         elif isinstance(node, ConditionalBlock):
+            if node.verify_num_fires is not None:
+                count = node.verify_num_fires
+                if type(count) is not int or count < 0:
+                    raise ScheduleError(
+                        f"verify_num_fires must be a non-negative int, got {count!r}"
+                    )
+                if not self._inside(WhileTrueLoop):
+                    raise ScheduleError(
+                        "verify_num_fires= is only valid inside while_true_loop(); "
+                        "a domain_loop() already has a static trip count"
+                    )
             if node.condition is SKIPPABLE:
                 loops = [item for item in self.stack if isinstance(item, WorkTileLoop)]
                 if not loops or loops[-1].skip_if is None:
                     raise ScheduleError(
                         "skippable() requires work_tile_loop(skip_if=...)"
                     )
-            elif isinstance(node.condition, IterationPredicate) and not self._inside(
-                DomainLoop
-            ):
+            elif any(
+                isinstance(leaf, IterationPredicate)
+                for leaf in iter_leaves(node.condition)
+            ) and not self._inside(DomainLoop):
                 raise ScheduleError("iteration predicates require domain_loop()")
         self.stack[-1].body.append(node)
         self.stack.append(node)
 
-    def close_scope(self, node: ConditionalBlock | DomainLoop | WorkTileLoop) -> None:
+    def close_scope(
+        self, node: ConditionalBlock | DomainLoop | WorkTileLoop | WhileTrueLoop
+    ) -> None:
         if self.stack[-1] is not node:
             raise ScheduleError("schedule blocks closed out of order")
         self.stack.pop()
@@ -435,11 +603,36 @@ class ScheduleBuilder:
         self.stack[-1].body.append(step)
         return step
 
+    def allocate_hook_step(self, resource: MemoryResource, info: _WorkInfo) -> Step:
+        """Number a while-loop hook step without placing it in the body."""
+        step = Step(
+            memory_resource=resource,
+            schedule_stage=info.stage,
+            argument_order=info.parameter_names,
+            stage_resource=(
+                resource if resource.pipeline_config is not None else None
+            ),
+            label=info.label,
+            unique_id=self.next_id,
+        )
+        self.next_id += 1
+        return step
+
     def finalize(self) -> Schedule:
         if len(self.stack) != 1:
             raise ScheduleError("schedule ended with an unclosed block")
         validate_queue_advance_placement(self.schedule.body)
         validate_break_placement(self.schedule.body)
+        loop_kinds = {
+            type(node)
+            for node in _iter_nodes(self.schedule.body)
+            if isinstance(node, (DomainLoop, WhileTrueLoop))
+        }
+        if len(loop_kinds) > 1:
+            raise ScheduleError(
+                "domain_loop() and while_true_loop() cannot both appear in one "
+                "schedule"
+            )
 
         def freeze(node: Node) -> Node:
             if isinstance(node, BreakLoop):
@@ -449,6 +642,13 @@ class ScheduleBuilder:
                     node,
                     input_values=MappingProxyType(dict(node.input_values)),
                     constexpr_kwargs=MappingProxyType(dict(node.constexpr_kwargs)),
+                )
+            if isinstance(node, WhileTrueLoop):
+                return replace(
+                    node,
+                    init=freeze(node.init),
+                    advance=freeze(node.advance),
+                    body=tuple(freeze(child) for child in node.body),
                 )
             if isinstance(node, DomainLoop):
                 return replace(
@@ -551,6 +751,8 @@ class ResourceProxy:
                 return None
             return output_values[0] if len(output_values) == 1 else output_values
 
+        # Lets while_true_loop(init=smem.method) resolve the uncalled method.
+        record._ts_loop_hook = (self._builder, self._resource, info)
         return record
 
 
@@ -569,11 +771,52 @@ def _resolve_guard(
     cond: object,
     key: Hashable | None,
     negated: bool,
+    api: str,
+    key_from_composite: bool = False,
 ) -> BlockGuard:
-    if isinstance(cond, BlockGuard):
-        if negated and not isinstance(cond, OpaqueCondition):
-            raise ScheduleError("iteration and skippable predicates cannot be negated")
-        return replace(cond, negated=True) if negated else cond
+    """Resolve a captured condition to a guard in negation-normal form.
+
+    Composite operands resolve recursively. A ``key=`` on a composite applies
+    to each opaque leaf and leaves iteration predicates unchanged.
+    """
+    # Must precede the literal fallback below: an iteration-block context is
+    # not a guard, and would otherwise capture as a value-less opaque guard.
+    if isinstance(cond, _IterationBlockContext):
+        cond._operand_error()
+    if cond is SKIPPABLE:
+        if negated or key_from_composite:
+            raise ScheduleError(
+                "skippable() cannot be negated or combined with other conditions"
+            )
+        return cond
+    if isinstance(cond, (GuardAnd, GuardOr)):
+        if (
+            key is not None
+            and not key_from_composite
+            and all(isinstance(leaf, IterationPredicate) for leaf in iter_leaves(cond))
+        ):
+            raise ScheduleError(
+                f"{api}(): key= on a composite condition requires at least one "
+                "opaque leaf to correlate"
+            )
+        guard = type(cond)(
+            tuple(
+                _resolve_guard(
+                    builder, operand, key, False, api, key_from_composite=True
+                )
+                for operand in cond.operands
+            )
+        )
+        return ~guard if negated else guard
+    if isinstance(cond, IterationPredicate):
+        return ~cond if negated else cond
+    if isinstance(cond, OpaqueCondition):
+        if key is not None:
+            cond = replace(cond, key=key)
+        return ~cond if negated else cond
+    if isinstance(cond, _NegatedScheduleValue):
+        cond = cond.value
+        negated = not negated
     if isinstance(cond, ScheduleValue):
         builder.validate_value_use(cond, "condition")
         producer = cond.producer_step
@@ -595,6 +838,10 @@ def _resolve_guard(
             method_label=label,
             route_token=cond,
         )
+    if isinstance(cond, (BlockGuard, AbstractContextManager)):
+        raise ScheduleError(
+            f"{api}() cannot use {type(cond).__name__} as a condition operand"
+        )
     return OpaqueCondition(
         key=key if key is not None else ("__opaque__", next(_opaque_counter)),
         negated=negated,
@@ -602,10 +849,18 @@ def _resolve_guard(
 
 
 @contextmanager
-def _conditional(cond: object, key: Hashable | None, negated: bool):
-    builder = _require_active_builder("when_false()" if negated else "when_true()")
-    guard = _resolve_guard(builder, cond, key, negated)
-    node = ConditionalBlock(body=[], condition=guard)
+def _conditional(
+    cond: object,
+    key: Hashable | None,
+    negated: bool,
+    verify_num_fires: int | None = None,
+):
+    api = "when_false" if negated else "when_true"
+    builder = _require_active_builder(f"{api}()")
+    guard = _resolve_guard(builder, cond, key, negated, api)
+    node = ConditionalBlock(
+        body=[], condition=guard, verify_num_fires=verify_num_fires
+    )
     builder.open_scope(node)
     try:
         yield
@@ -613,14 +868,39 @@ def _conditional(cond: object, key: Hashable | None, negated: bool):
         builder.close_scope(node)
 
 
-def when_true(cond: object, *, key: Hashable | None = None):
-    """Capture a guarded region, evaluated only when all enclosing guards fire."""
-    return _conditional(cond, key, False)
+def when_true(
+    cond: object,
+    *,
+    key: Hashable | None = None,
+    verify_num_fires: int | None = None,
+):
+    """Capture a guarded region, evaluated only when all enclosing guards fire.
+
+    ``cond`` is a work-call output, an iteration predicate (``d.first``,
+    ``d.last``, ``d.every_pred(...)``, ``FIRST_ITER``, ``LAST_ITER``), or an
+    expression combining them with ``&``, ``|``, and ``~``. Python ``and``,
+    ``or``, and ``not`` are rejected because they cannot be captured. A
+    ``key=`` on a composite correlates every opaque leaf.
+
+    Inside ``while_true_loop()``, ``verify_num_fires=N`` asserts that the block
+    runs on exactly ``N`` of the loop's modeled rounds. The exhaustive checker
+    uses it to discard impossible opaque exit histories; it emits no code.
+    """
+    return _conditional(cond, key, False, verify_num_fires)
 
 
-def when_false(cond: object, *, key: Hashable | None = None):
-    """Capture a negated guarded region; nested values retain lexical scope."""
-    return _conditional(cond, key, True)
+def when_false(
+    cond: object,
+    *,
+    key: Hashable | None = None,
+    verify_num_fires: int | None = None,
+):
+    """Capture a negated guarded region; nested values retain lexical scope.
+
+    This is ``when_true(~cond)``; composite guards are converted to
+    negation-normal form. ``verify_num_fires`` behaves as in :func:`when_true`.
+    """
+    return _conditional(cond, key, True, verify_num_fires)
 
 
 def _require_active_domain_loop(api: str) -> None:
@@ -632,19 +912,36 @@ def _require_active_domain_loop(api: str) -> None:
 def first_iter():
     """Capture a block that runs only on the first domain-loop iteration."""
     _require_active_domain_loop("first_iter")
-    return when_true(FIRST_ITER)
+    return _IterationBlockContext(FIRST_ITER, "first_iter")
 
 
 def break_loop(*values: ScheduleValue) -> None:
-    """Exit the enclosing domain loop when execution reaches this operation.
+    """Exit the enclosing loop when execution reaches this operation.
 
     Remaining work and the functional loop's backedge are skipped. Explicit
     values become the loop's results, in carried-input order. With no arguments,
     results retain their values at entry to the interrupted iteration.
+    Inside ``while_true_loop()``, the guards that dominate this call form one
+    clause of the loop's exit formula; that loop carries no values.
     """
-    _require_active_domain_loop("break_loop")
     builder = _require_active_builder("break_loop()")
-    loop = next(node for node in reversed(builder.stack) if isinstance(node, DomainLoop))
+    loop = next(
+        (
+            node
+            for node in reversed(builder.stack)
+            if isinstance(node, (DomainLoop, WhileTrueLoop))
+        ),
+        None,
+    )
+    if loop is None:
+        raise ScheduleError(
+            "break_loop() must be called inside domain_loop() or while_true_loop()"
+        )
+    if isinstance(loop, WhileTrueLoop):
+        if values:
+            raise ScheduleError("while_true_loop() break_loop() takes no values")
+        builder.stack[-1].body.append(BreakLoop())
+        return
     if values and len(values) != len(loop.initial_values):
         raise ScheduleError(
             "break_loop() must supply one value for every carried input; "
@@ -662,13 +959,56 @@ def break_loop(*values: ScheduleValue) -> None:
 def last_iter():
     """Capture a block that runs only on the last domain-loop iteration."""
     _require_active_domain_loop("last_iter")
-    return when_true(LAST_ITER)
+    return _IterationBlockContext(LAST_ITER, "last_iter")
 
 
 def every(period: int, *, start: int = 0):
     """Capture a block that runs periodically within the current domain loop."""
     _require_active_domain_loop("every")
-    return when_true(Every(period, start))
+    return _IterationBlockContext(Every(period, start), "every")
+
+
+class _IterationBlockContext(AbstractContextManager):
+    """Context-manager spelling of a predicate, never a boolean operand."""
+
+    def __init__(self, predicate: IterationPredicate, api: str) -> None:
+        self._context = when_true(predicate)
+        self._api = api
+
+    def __enter__(self) -> None:
+        return self._context.__enter__()
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_value: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> bool | None:
+        return self._context.__exit__(exc_type, exc_value, traceback)
+
+    def _operand_error(self) -> NoReturn:
+        raise ScheduleError(
+            f"{self._api}() is a context manager, not a condition operand; use "
+            "d.first / d.last / d.every_pred(...), or FIRST_ITER / LAST_ITER"
+        )
+
+    def __and__(self, _other: object) -> NoReturn:
+        self._operand_error()
+
+    def __rand__(self, _other: object) -> NoReturn:
+        self._operand_error()
+
+    def __or__(self, _other: object) -> NoReturn:
+        self._operand_error()
+
+    def __ror__(self, _other: object) -> NoReturn:
+        self._operand_error()
+
+    def __invert__(self) -> NoReturn:
+        self._operand_error()
+
+    def __bool__(self) -> NoReturn:
+        self._operand_error()
 
 
 class DomainLoopProxy:
@@ -744,6 +1084,23 @@ class DomainLoopProxy:
     def every(self, period: int, *, start: int = 0):
         self._check()
         return every(period, start=start)
+
+    @property
+    def first(self) -> IterationPredicate:
+        """First-iteration predicate, usable in ``&`` / ``|`` / ``~``."""
+        self._check()
+        return FIRST_ITER
+
+    @property
+    def last(self) -> IterationPredicate:
+        """Last-iteration predicate, usable in ``&`` / ``|`` / ``~``."""
+        self._check()
+        return LAST_ITER
+
+    def every_pred(self, period: int, *, start: int = 0) -> IterationPredicate:
+        """Periodic predicate, usable in ``&`` / ``|`` / ``~``."""
+        self._check()
+        return Every(period, start)
 
 
 class WorkTileLoopProxy:
@@ -922,6 +1279,135 @@ def work_tile_loop(wq: object, *, skip_if: Callable[..., object] | None = None):
         yield WorkTileLoopProxy(builder, node)
     finally:
         builder.close_scope(node)
+
+
+class WhileTrueLoopProxy:
+    """Yielded by ``while_true_loop()``; records the loop's break points."""
+
+    def __init__(self, builder: ScheduleBuilder, node: WhileTrueLoop) -> None:
+        self.builder = builder
+        self.node = node
+
+    def break_loop(self) -> None:
+        if self.node not in self.builder.stack:
+            raise ScheduleError("while-true-loop handle has expired")
+        if _active_builder.get() is not self.builder:
+            raise ScheduleError("while-true-loop handle belongs to another schedule")
+        break_loop()
+
+
+def _normalize_verify_num_iters(verify_num_iters: object) -> tuple[int, ...]:
+    """Return modeled round counts; ``None`` checks 1 and 2 rounds."""
+    if verify_num_iters is None:
+        return (1, 2)
+    counts = (
+        (verify_num_iters,)
+        if type(verify_num_iters) is int
+        else verify_num_iters
+        if isinstance(verify_num_iters, tuple)
+        else None
+    )
+    if counts is None:
+        raise ScheduleError(
+            "while_true_loop() verify_num_iters must be an int, a tuple of ints, "
+            "or None"
+        )
+    if not counts:
+        raise ScheduleError("while_true_loop() verify_num_iters must be non-empty")
+    if any(type(count) is not int or count <= 0 for count in counts):
+        raise ScheduleError(
+            "while_true_loop() verify_num_iters must contain only positive ints"
+        )
+    return counts
+
+
+def _resolve_loop_hook(
+    builder: ScheduleBuilder, api: str, hook: object
+) -> tuple[MemoryResource, _WorkInfo]:
+    """Validate an uncalled traced work method used as a loop-cursor hook."""
+    traced = getattr(hook, "_ts_loop_hook", None)
+    if traced is None:
+        raise ScheduleError(
+            f"while_true_loop() {api}= must be a traced resource work method such "
+            f"as smem.retry_{api}, not {type(hook).__name__}"
+        )
+    hook_builder, resource, info = traced
+    if hook_builder is not builder:
+        raise ScheduleError(f"while_true_loop() {api}= belongs to another schedule")
+    if info.label is None or info.stage not in (
+        ScheduleStage.ConsumerWork,
+        ScheduleStage.ConsumerAuxWork,
+    ):
+        raise ScheduleError(
+            f"while_true_loop() {api}= must name a consumer work method that "
+            "returns the loop cursor"
+        )
+    if info.output_count != 1:
+        raise ScheduleError(
+            f"while_true_loop() {api}= must declare outputs=1 for the loop cursor"
+        )
+    if info.parameter_names:
+        raise ScheduleError(
+            f"while_true_loop() {api}= cannot take routed inputs; read the current "
+            "cursor from stage_info.loop_offset"
+        )
+    return resource, info
+
+
+@contextmanager
+def while_true_loop(
+    *,
+    init: Callable[..., object],
+    advance: Callable[..., object],
+    verify_num_iters: int | tuple[int, ...] | None = None,
+):
+    """Capture a dynamic loop that repeats until a ``break_loop()`` runs.
+
+    ``init`` and ``advance`` are uncalled consumer work methods declared with
+    ``outputs=1`` and no routed inputs, for example ``smem.retry_init``. Their
+    result is the loop cursor seen by device work as
+    ``stage_info.loop_offset``: ``init`` seeds it before the first round and
+    ``advance`` computes the next cursor after a round without a break.
+
+    Each ``loop.break_loop()`` contributes the conjunction of its dominating
+    ``when_true`` / ``when_false`` guards to the exit formula, and work after it
+    in the same round does not run. The exhaustive checker models each count
+    ``N`` in ``verify_num_iters`` as ``N - 1`` retry rounds followed by a
+    break round; ``None`` checks ``(1, 2)``.
+
+    A schedule may contain either a ``domain_loop()`` or a
+    ``while_true_loop()``, and neither may be nested inside the other.
+    """
+    builder = _require_active_builder("while_true_loop()")
+    init_resource, init_info = _resolve_loop_hook(builder, "init", init)
+    advance_resource, advance_info = _resolve_loop_hook(builder, "advance", advance)
+    node = WhileTrueLoop(
+        init=builder.allocate_hook_step(init_resource, init_info),
+        advance=None,
+        verify_num_iters=_normalize_verify_num_iters(verify_num_iters),
+        body=[],
+    )
+    builder.open_scope(node)
+    try:
+        yield WhileTrueLoopProxy(builder, node)
+    finally:
+        # Number the advance hook after the body to keep IDs in execution order.
+        object.__setattr__(
+            node,
+            "advance",
+            builder.allocate_hook_step(advance_resource, advance_info),
+        )
+        builder.close_scope(node)
+    clauses = while_loop_break_clauses(node)
+    if not clauses:
+        raise ScheduleError("while_true_loop() requires at least one loop.break_loop()")
+    if any(count > 1 for count in node.verify_num_iters) and any(
+        not clause for clause in clauses
+    ):
+        raise ScheduleError(
+            "while_true_loop() with verify_num_iters > 1 requires a retry "
+            "assignment, but a break_loop() is unconditional"
+        )
 
 
 def schedule(fn: Callable[..., None]) -> Callable[..., Schedule]:

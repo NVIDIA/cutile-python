@@ -66,8 +66,8 @@ _DEFAULT_TOLERANCE = 1.0e-1
 
 
 def _to_float16_vector(
-    values: cl.Vector[cl.float32], base: int, count: int
-) -> cl.Vector[cl.float16]:
+    values: cl.Vector, base: int, count: int
+) -> cl.Vector:
     return values[base:base + count].astype(cl.float16)
 
 
@@ -157,7 +157,7 @@ def _kernel(
         empty_phase = 1
         local_mask = cl.int16(1 << rank)
         sfb_mask = cl.int16(0b11)
-        leader_barrier_base = cl.map_shared_to_leader_block(
+        leader_barrier_base = cl.map_shared_to_block_pair_leader(
             ab_full.pointer()
         )
 
@@ -381,7 +381,7 @@ def _kernel(
                 column_offset=column,
             )
             accumulators = cl.tcgen05_load(
-                cl.Tcgen05LoadStoreShape.SHAPE_32X32B,
+                cl.Tcgen05LoadStoreShape.SHAPE_32x32b,
                 tmem,
                 element_count=128,
                 dtype=cl.float32,

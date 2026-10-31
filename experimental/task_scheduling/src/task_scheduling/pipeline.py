@@ -266,7 +266,7 @@ class DevicePipelineBinding:
         """
         barrier = self.full_barrier(barrier_arena, index)
         if self.kind == self.TMA_UMMA and self.uses_two_cta_group:
-            return cl.map_shared_to_leader_block(barrier)
+            return cl.map_shared_to_block_pair_leader(barrier)
         return barrier
 
     def consumer_release_barrier(self, barrier_arena, index):

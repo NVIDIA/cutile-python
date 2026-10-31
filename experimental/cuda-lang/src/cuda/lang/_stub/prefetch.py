@@ -2,12 +2,12 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-from cuda.lang._execution import stub
+from cuda.lang._execution import simt_stub
 
 from .._enums import CachePolicy, PrefetchLevel
 
 
-@stub
+@simt_stub
 def prefetch(
     address,
     /,
@@ -26,7 +26,7 @@ def prefetch(
     """
 
 
-@stub
+@simt_stub
 def prefetch_uniform(address, /) -> None:
     """Prefetch the cache line containing a generic address into uniform L1.
 
@@ -35,7 +35,7 @@ def prefetch_uniform(address, /) -> None:
     """
 
 
-@stub
+@simt_stub
 def prefetch_tensor_map(tensor_map, /) -> None:
     """Prefetch a tensor-map descriptor.
 

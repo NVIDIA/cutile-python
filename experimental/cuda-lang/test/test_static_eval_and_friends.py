@@ -10,6 +10,7 @@ import cuda.lang
 import cuda.lang as cl
 from cuda.lang import static_eval
 from cuda.tile import TileStaticAssertionError, StaticException
+from test.util import compile_kernel
 
 
 def test_cl_static_eval():
@@ -144,3 +145,95 @@ def test_static_iter_in_static_eval():
 
     cl.launch(torch.cuda.current_stream(), (1,), (1,), kernel, ())
     assert z == list(tup)
+
+
+def test_strictly_typed_constant_roundtrip():
+    def helper(x):
+        assert isinstance(x, cl.Scalar)
+        assert x.dtype == cl.int16
+        return x + 3
+
+    @cl.kernel
+    def kern():
+        x = cl.int16(5)
+        y = cl.static_eval(helper(x))
+        cl.static_assert(y.dtype == cl.int16)
+        cl.static_assert(y == 8)
+
+    cl.launch(torch.cuda.current_stream(), (1,), (1,), kern, ())
+
+
+def test_wrapping_arithmetic_in_static_eval():
+    def check_scalar(x):
+        assert isinstance(x, cl.Scalar)
+        assert x.dtype == cl.uint8
+        return x
+
+    @cl.kernel
+    def kern(inp, out):
+        a = cl.uint8(150)
+        b = cl.static_eval(check_scalar(cl.wrapping_add(a, 110)))
+        cl.static_assert(b == 4)
+        out[0] = b
+
+        value = inp[0]
+        out[1] = cl.static_eval(check_scalar(cl.wrapping_sub(value, 1)))
+        out[2] = cl.static_eval(check_scalar(cl.wrapping_mul(value, b)))
+
+        v = inp.pointer().load(count=2)
+        out.pointer(4).store(cl.static_eval(cl.wrapping_add(v, a)))
+
+    inp = torch.tensor([0, 100], dtype=torch.uint8, device="cuda:0")
+    out = torch.zeros(6, dtype=torch.uint8, device="cuda:0")
+    cl.launch(torch.cuda.current_stream(), (1,), (1,), kern, (inp, out))
+    assert out.tolist() == [4, 255, 0, 0, 150, 250]
+
+
+def test_static_eval_pointer_comparison():
+    def kern():
+        p = cl.shared_array(2, cl.int32).pointer()
+        q = p + cl.thread_index(0)
+        eq = cl.static_eval(p == q)
+        cl.static_assert(isinstance(eq, cl.Scalar) and eq.dtype == cl.bool_)
+
+    compile_kernel(kern)
+
+
+def test_static_eval_pow_and_mod():
+    @cl.kernel
+    def kern(a, n, out):
+        x = a[0]
+        y = a[1]
+        k = n[0]
+        out[0] = cl.static_eval(x ** y)
+        out[1] = cl.static_eval(x ** k)
+        out[2] = cl.static_eval(x % y)
+        v = a.pointer().load(count=2)
+        out.pointer(4).store(cl.static_eval(v % 3.0))
+
+    a = torch.tensor([-1.5, 2.0], dtype=torch.float32, device="cuda")
+    n = torch.tensor([3], dtype=torch.int32, device="cuda")
+    out = torch.zeros(6, dtype=torch.float32, device="cuda")
+    cl.launch(torch.cuda.current_stream(), (1,), (1,), kern, (a, n, out))
+    assert out.tolist() == [2.25, -3.375, 0.5, 0.0, 1.5, 2.0]
+
+
+def test_static_eval_integer_pow():
+    def kern():
+        x = cl.shared_array(1, cl.int32)[0]
+        cl.static_eval(x ** 2)
+
+    compile_kernel(kern, raises=pytest.raises(
+        StaticException, match="Exponentiation of non-constant integers is not supported"))
+
+
+def test_static_eval_opaque_value():
+    def kern():
+        value = cl.shared_array(1, cl.mbarrier)[0]
+        cl.static_assert(isinstance(value, cl.OpaqueValue))
+        cl.static_assert(value.dtype == cl.mbarrier)
+        cl.static_assert(repr(value) == "<opaque_value[mbarrier]>")
+        same = cl.static_eval(value)
+        cl.static_assert(cl.dtype_of(same) == cl.mbarrier)
+
+    compile_kernel(kern)

@@ -1,1 +1,0 @@
-- Add `raise ct.static_exception(...)` syntax for raising compile-time exceptions.

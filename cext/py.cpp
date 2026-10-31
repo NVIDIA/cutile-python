@@ -51,3 +51,28 @@ void log_python_error(const char* filename, int line, const char* level, SavedEx
 PyMutex GlobalLock::mutex_ = {0};
 #endif
 
+Result<Vec<uint8_t>> pylong_as_unsigned_bytes(PyObject* pylong) {
+#if PY_VERSION_HEX >= 0x030D0000
+    int flags = Py_ASNATIVEBYTES_LITTLE_ENDIAN
+              | Py_ASNATIVEBYTES_UNSIGNED_BUFFER
+              | Py_ASNATIVEBYTES_REJECT_NEGATIVE;
+    Py_ssize_t nbytes = PyLong_AsNativeBytes(pylong, nullptr, 0, flags);
+    if (nbytes < 0) return ErrorRaised;
+    Vec<uint8_t> ret(nbytes);
+    Py_ssize_t needed = PyLong_AsNativeBytes(pylong, ret.data(), nbytes, flags);
+    if (needed < 0) return ErrorRaised;
+    CHECK(needed <= nbytes);
+    if (ret.size() && !ret.back()) ret.pop_back();
+    return ret;
+#else
+    uint64_t nbits = pylong_num_bits(pylong);
+    size_t nbytes = (nbits + 7) / 8;
+    Vec<uint8_t> ret(nbytes);
+    if (_PyLong_AsByteArray(reinterpret_cast<PyLongObject*>(pylong),
+                            ret.data(), nbytes, 1, 0) < 0)
+        return ErrorRaised;
+    return ret;
+#endif
+}
+
+

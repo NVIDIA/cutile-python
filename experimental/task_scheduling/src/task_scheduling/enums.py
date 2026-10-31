@@ -3,16 +3,52 @@
 
 """Host-visible task-scheduling enums and conditional guards."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import Enum, IntFlag
-from typing import Hashable
+from typing import Hashable, Iterator
 
 
 _INT32_MAX = (1 << 31) - 1
 
 
 class BlockGuard:
-    """Base class for a captured conditional block guard."""
+    """Base class for a captured conditional block guard.
+
+    ``&`` and ``|`` build flattened boolean guard trees. ``~`` converts a guard
+    to negation-normal form, including first-class complements of iteration
+    predicates.
+    """
+
+    def __and__(self, other: object) -> "BlockGuard":
+        if not isinstance(other, BlockGuard):
+            return NotImplemented
+        return _combine_guard(GuardAnd, self, other)
+
+    def __rand__(self, other: object) -> "BlockGuard":
+        if not isinstance(other, BlockGuard):
+            return NotImplemented
+        return _combine_guard(GuardAnd, other, self)
+
+    def __or__(self, other: object) -> "BlockGuard":
+        if not isinstance(other, BlockGuard):
+            return NotImplemented
+        return _combine_guard(GuardOr, self, other)
+
+    def __ror__(self, other: object) -> "BlockGuard":
+        if not isinstance(other, BlockGuard):
+            return NotImplemented
+        return _combine_guard(GuardOr, other, self)
+
+    def __invert__(self) -> "BlockGuard":
+        return _negate_guard(self)
+
+    def __bool__(self) -> bool:
+        from .schedule_builder import ScheduleError
+
+        raise ScheduleError(
+            "schedule conditions cannot be converted to bool; use '&', '|', "
+            "and '~'. Python 'and', 'or', and 'not' cannot be overloaded."
+        )
 
 
 class IterationPredicate(BlockGuard):
@@ -20,6 +56,16 @@ class IterationPredicate(BlockGuard):
 
     def fires(self, iter_idx: int, num_iters: int) -> bool:
         raise NotImplementedError
+
+
+@dataclass(frozen=True)
+class ComplementedIterationPredicate(IterationPredicate):
+    """Boolean complement of an iteration predicate."""
+
+    predicate: IterationPredicate
+
+    def fires(self, iter_idx: int, num_iters: int) -> bool:
+        return not self.predicate.fires(iter_idx, num_iters)
 
 
 @dataclass(frozen=True)
@@ -83,6 +129,74 @@ class OpaqueCondition(BlockGuard):
 
 
 @dataclass(frozen=True)
+class GuardAnd(BlockGuard):
+    """Conjunction of two or more guards, flattened at construction."""
+
+    operands: tuple[BlockGuard, ...]
+
+    def __post_init__(self) -> None:
+        if len(self.operands) < 2:
+            raise ValueError("GuardAnd requires at least two operands.")
+
+
+@dataclass(frozen=True)
+class GuardOr(BlockGuard):
+    """Disjunction of two or more guards, flattened at construction."""
+
+    operands: tuple[BlockGuard, ...]
+
+    def __post_init__(self) -> None:
+        if len(self.operands) < 2:
+            raise ValueError("GuardOr requires at least two operands.")
+
+
+def _combine_guard(
+    operator: type[GuardAnd] | type[GuardOr],
+    left: BlockGuard,
+    right: BlockGuard,
+) -> BlockGuard:
+    """Build one flattened AND/OR node."""
+    operands: list[BlockGuard] = []
+    for operand in (left, right):
+        if isinstance(operand, operator):
+            operands.extend(operand.operands)
+        else:
+            operands.append(operand)
+    return operator(tuple(operands))
+
+
+def _negate_guard(guard: BlockGuard) -> BlockGuard:
+    """Return ``guard`` in negation-normal form."""
+    if isinstance(guard, OpaqueCondition):
+        return replace(guard, negated=not guard.negated)
+    if isinstance(guard, (GuardAnd, GuardOr)):
+        dual = GuardOr if isinstance(guard, GuardAnd) else GuardAnd
+        result = _negate_guard(guard.operands[0])
+        for operand in guard.operands[1:]:
+            result = _combine_guard(dual, result, _negate_guard(operand))
+        return result
+    if isinstance(guard, ComplementedIterationPredicate):
+        return guard.predicate
+    if isinstance(guard, IterationPredicate):
+        return ComplementedIterationPredicate(guard)
+    if type(guard).__invert__ is not BlockGuard.__invert__:
+        # Capture-time operands, such as a schedule value, negate themselves.
+        return ~guard
+    from .schedule_builder import ScheduleError
+
+    raise ScheduleError(f"{type(guard).__name__} guards cannot be negated")
+
+
+def iter_leaves(guard: object) -> Iterator[object]:
+    """Yield the non-composite leaves of a guard tree."""
+    if isinstance(guard, (GuardAnd, GuardOr)):
+        for operand in guard.operands:
+            yield from iter_leaves(operand)
+    else:
+        yield guard
+
+
+@dataclass(frozen=True)
 class _SkippableGuard(BlockGuard):
     pass
 
@@ -102,10 +216,6 @@ class PipelineType(Enum):
     AsyncUmma = "AsyncUmma"
     UmmaUmma = "UmmaUmma"
     ClcFetchAsync = "ClcFetchAsync"
-    DpcTmaDlc = "DpcTmaDlc"
-    DlcAsync = "DlcAsync"
-    AsyncDlc = "AsyncDlc"
-    DlcDlc = "DlcDlc"
 
 
 class TileSchedulerType(Enum):
@@ -212,7 +322,9 @@ def is_iteration_predicate(guard: object) -> bool:
 
 
 def is_loop_guard(guard: object) -> bool:
-    return isinstance(guard, (LoopGuard, IterationPredicate, OpaqueCondition))
+    return isinstance(
+        guard, (LoopGuard, IterationPredicate, OpaqueCondition, GuardAnd, GuardOr)
+    )
 
 
 def guard_fires(
@@ -233,4 +345,12 @@ def guard_fires(
     if isinstance(guard, OpaqueCondition):
         active = (opaque_assignment or {}).get(guard.key, False)
         return active != guard.negated
+    if isinstance(guard, (GuardAnd, GuardOr)):
+        combine = all if isinstance(guard, GuardAnd) else any
+        return combine(
+            guard_fires(
+                operand, iter_idx, num_iters, opaque_assignment=opaque_assignment
+            )
+            for operand in guard.operands
+        )
     raise TypeError(f"unsupported loop guard type: {type(guard).__name__}")

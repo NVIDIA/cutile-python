@@ -1722,7 +1722,7 @@ def _fmha_prefill_kernel(
                 else:
                     raw_score_chunks = tuple(
                         cl.tcgen05_load(
-                            cl.Tcgen05LoadStoreShape.SHAPE_32X32B,
+                            cl.Tcgen05LoadStoreShape.SHAPE_32x32b,
                             _tmem_pointer(row_tmem, 0, chunk * 32),
                             element_count=32,
                             dtype=cl.float32,
@@ -1797,7 +1797,7 @@ def _fmha_prefill_kernel(
                         dtype=cl.float32,
                     )
                     cl.tcgen05_store(
-                        cl.Tcgen05LoadStoreShape.SHAPE_32X32B,
+                        cl.Tcgen05LoadStoreShape.SHAPE_32x32b,
                         row_tmem,
                         stats_vec,
                     )
@@ -1980,7 +1980,7 @@ def _fmha_prefill_kernel(
                                             p_column,
                                         )
                                         cl.tcgen05_store(
-                                            cl.Tcgen05LoadStoreShape.SHAPE_32X32B,
+                                            cl.Tcgen05LoadStoreShape.SHAPE_32x32b,
                                             p_tmem,
                                             packed_values,
                                         )
@@ -2134,7 +2134,7 @@ def _fmha_prefill_kernel(
                                     + p_tmem_offset,
                                 )
                                 cl.tcgen05_store(
-                                    cl.Tcgen05LoadStoreShape.SHAPE_32X32B,
+                                    cl.Tcgen05LoadStoreShape.SHAPE_32x32b,
                                     p_tmem,
                                     packed_values,
                                 )
@@ -2216,7 +2216,7 @@ def _fmha_prefill_kernel(
                 score_column,
             )
             cl.tcgen05_store(
-                cl.Tcgen05LoadStoreShape.SHAPE_32X32B,
+                cl.Tcgen05LoadStoreShape.SHAPE_32x32b,
                 final_tmem,
                 final_vec,
             )
@@ -2334,7 +2334,7 @@ def _fmha_prefill_kernel(
                             qid * 128,
                         )
                         stats = cl.tcgen05_load(
-                            cl.Tcgen05LoadStoreShape.SHAPE_32X32B,
+                            cl.Tcgen05LoadStoreShape.SHAPE_32x32b,
                             stats_tmem,
                             element_count=2,
                             dtype=cl.float32,
@@ -2353,14 +2353,14 @@ def _fmha_prefill_kernel(
                                     TMEM_O0 + qid * 128 + column,
                                 )
                                 values = cl.tcgen05_load(
-                                    cl.Tcgen05LoadStoreShape.SHAPE_32X32B,
+                                    cl.Tcgen05LoadStoreShape.SHAPE_32x32b,
                                     output_tmem,
                                     element_count=8,
                                     dtype=cl.float32,
                                 )
                                 scaled = values * alpha
                                 cl.tcgen05_store(
-                                    cl.Tcgen05LoadStoreShape.SHAPE_32X32B,
+                                    cl.Tcgen05LoadStoreShape.SHAPE_32x32b,
                                     output_tmem,
                                     scaled,
                                 )
@@ -2395,7 +2395,7 @@ def _fmha_prefill_kernel(
                     qid * 128,
                 )
                 stats = cl.tcgen05_load(
-                    cl.Tcgen05LoadStoreShape.SHAPE_32X32B,
+                    cl.Tcgen05LoadStoreShape.SHAPE_32x32b,
                     stats_tmem,
                     element_count=2,
                     dtype=cl.float32,
@@ -2425,7 +2425,7 @@ def _fmha_prefill_kernel(
                         TMEM_O0 + qid * 128 + column,
                     )
                     values = cl.tcgen05_load(
-                        cl.Tcgen05LoadStoreShape.SHAPE_32X32B,
+                        cl.Tcgen05LoadStoreShape.SHAPE_32x32b,
                         output_tmem,
                         element_count=32,
                         dtype=cl.float32,

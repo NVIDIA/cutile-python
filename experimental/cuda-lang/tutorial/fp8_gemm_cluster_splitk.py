@@ -127,7 +127,7 @@ def _load_tmem(base, lane_offset, column_offset, element_count):
         column_offset=column_offset,
     )
     return cl.tcgen05_load(
-        cl.Tcgen05LoadStoreShape.SHAPE_16X256B,
+        cl.Tcgen05LoadStoreShape.SHAPE_16x256b,
         tmem,
         element_count=element_count,
         dtype=cl.float32,

@@ -129,6 +129,9 @@ Math
    add
    sub
    mul
+   wrapping_add
+   wrapping_sub
+   wrapping_mul
    truediv
    floordiv
    cdiv

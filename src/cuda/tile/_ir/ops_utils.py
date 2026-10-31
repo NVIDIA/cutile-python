@@ -47,7 +47,7 @@ BINOP_REGISTRY = {
     "cdiv": MathOpDef(lambda x, y: -((-x) // y)),
     "truediv": MathOpDef(lambda x, y: x / y, _RD_TRUEDIV, support_flush_to_zero=True),
     "mod": MathOpDef(lambda x, y: x % y),
-    "pow": MathOpDef(lambda x, y: x ** y),
+    "pow": MathOpDef(lambda x, y: x ** y, {RoundingMode.APPROX: None}),
     "atan2": MathOpDef(math.atan2),
     "max": MathOpDef(max, support_flush_to_zero=True),
     "min": MathOpDef(min, support_flush_to_zero=True),

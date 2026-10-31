@@ -17,7 +17,7 @@ from cuda.lang import _mlir as mlir
 from cuda.lang._exception import InternalError, TypeCheckingError
 from cuda.lang._ir import ir, ops
 from cuda.lang._ir.op_defs import KernelLaunch
-from cuda.lang._ir.type import PointerTy, ScalarTy, StreamTy
+from cuda.lang._ir.type import OpaqueTy, PointerTy, ScalarTy, StreamTy
 import cuda.lang._mlir.extras.types as T
 from cuda.lang._passes.ir2mlir.pass_definition import (
     MLIRLoweringContext,
@@ -387,7 +387,7 @@ def _materialize_array(
 def _materialize_scalar_value(
     context: HostLoweringContext,
     source: Var,
-    source_type: ScalarTy,
+    source_type: ScalarTy | OpaqueTy,
 ) -> mlir.Value:
     if source.is_constant():
         return mlir_constant_of_type(
@@ -482,7 +482,7 @@ def _materialize_kernel_argument_pointer(
     source: Var,
 ) -> mlir.Value:
     source_type = source.get_type()
-    if isinstance(source_type, ScalarTy):
+    if isinstance(source_type, ScalarTy | OpaqueTy):
         value = _materialize_scalar_value(context, source, source_type)
         value = _normalize_scalar_launch_argument(context, value, source_type, loc=source.loc)
         return _get_address_of(context, value)
@@ -498,7 +498,7 @@ def _materialize_kernel_argument_pointer(
 def _normalize_scalar_launch_argument(
     context: HostLoweringContext,
     value: mlir.Value,
-    source_type: ScalarTy,
+    source_type: ScalarTy | OpaqueTy,
     *,
     loc,
 ) -> mlir.Value:

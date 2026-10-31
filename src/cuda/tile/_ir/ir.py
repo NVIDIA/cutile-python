@@ -46,6 +46,8 @@ class TypingHooks:
 
 
 class IRContext:
+    device_execution_space = "tile"
+
     def __init__(self, log_ir_on_error: bool, tileiras_version: BytecodeVersion,
                  typing_hooks: TypingHooks, *,
                  execution_space: ExecutionSpace = "device"):
@@ -461,6 +463,10 @@ class Builder:
         ret = _current_builder.builder
         assert ret is not None, "No IR builder is currently active"
         return ret
+
+    @staticmethod
+    def have_current() -> bool:
+        return _current_builder.builder is not None
 
     @contextmanager
     def change_loc(self, loc: Loc):

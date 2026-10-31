@@ -71,6 +71,7 @@ memory:
    :maxdepth: 2
    :hidden:
 
+   language
    data
    operations
    private

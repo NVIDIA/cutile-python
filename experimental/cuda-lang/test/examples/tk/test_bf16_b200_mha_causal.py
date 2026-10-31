@@ -260,7 +260,7 @@ def mha_kernel(
 
     total_bids = batch * heads * (q_sequence // (BLOCK_M * 2))
     bid_stride = total_bids
-    if cl.static_eval(persistent):
+    if cl.ensure_constant(persistent):
         bid_stride = NUM_SMS
 
     if warp == 15 and cl.elect_sync():
@@ -275,7 +275,7 @@ def mha_kernel(
             iterations = m_base + 4
 
             for qid in cl.static_iter(range(2)):
-                if cl.static_eval(persistent):
+                if cl.ensure_constant(persistent):
                     cl.mbarrier_wait_parity(q_finished.pointer(qid), q_phase)
                 q_dst = cl.map_shared_to_cluster(
                     q_smem.pointer((qid, 0)), rank
@@ -285,7 +285,7 @@ def mha_kernel(
                     q_tmap,
                     (0, (m_base + rank * 2 + qid) * BLOCK_M, 0, head_idx, batch_idx),
                     q_dst,
-                    cl.map_shared_to_leader_block(q_bar),
+                    cl.map_shared_to_block_pair_leader(q_bar),
                     multicast_mask=cl.int16(1 << rank),
                     cta_group=cl.CTAGroup.CTA_2,
                 )
@@ -306,7 +306,7 @@ def mha_kernel(
                         batch_idx,
                     ),
                     k_dst,
-                    cl.map_shared_to_leader_block(k_bar),
+                    cl.map_shared_to_block_pair_leader(k_bar),
                     multicast_mask=cl.int16(1 << rank),
                     cta_group=cl.CTAGroup.CTA_2,
                 )
@@ -324,7 +324,7 @@ def mha_kernel(
                     v_tmap,
                     (0, key_block * BLOCK_N, rank, head_idx, batch_idx),
                     v_dst,
-                    cl.map_shared_to_leader_block(v_bar),
+                    cl.map_shared_to_block_pair_leader(v_bar),
                     multicast_mask=cl.int16(1 << rank),
                     cta_group=cl.CTAGroup.CTA_2,
                 )
@@ -509,7 +509,7 @@ def mha_kernel(
                             multicast_mask=0b11,
                             cta_group=cl.CTAGroup.CTA_2,
                         )
-                    if cl.static_eval(persistent) and key_block + 2 == iterations:
+                    if cl.ensure_constant(persistent) and key_block + 2 == iterations:
                         for qid in cl.static_iter(range(2)):
                             cl.tcgen05_commit(
                                 q_finished.pointer(qid),
@@ -560,7 +560,7 @@ def mha_kernel(
                 for quarter in cl.static_iter(range(4)):
                     column = quarter * 32
                     scores = cl.tcgen05_load(
-                        cl.Tcgen05LoadStoreShape.SHAPE_32X32B,
+                        cl.Tcgen05LoadStoreShape.SHAPE_32x32b,
                         cl.tcgen05_tmem_offset(row_tmem, column_offset=column),
                         element_count=32,
                     )
@@ -594,7 +594,7 @@ def mha_kernel(
                 for quarter in cl.static_iter(range(4)):
                     column = quarter * 32
                     scores = cl.tcgen05_load(
-                        cl.Tcgen05LoadStoreShape.SHAPE_32X32B,
+                        cl.Tcgen05LoadStoreShape.SHAPE_32x32b,
                         cl.tcgen05_tmem_offset(row_tmem, column_offset=column),
                         element_count=32,
                     )
@@ -608,19 +608,19 @@ def mha_kernel(
                         lane_in_group,
                         column,
                     )
-                    if cl.static_eval(quarter == 0):
+                    if cl.ensure_constant(quarter == 0):
                         block_sum = quarter_sum
                     else:
                         block_sum += quarter_sum
                     cl.tcgen05_store(
-                        cl.Tcgen05LoadStoreShape.SHAPE_32X32B,
+                        cl.Tcgen05LoadStoreShape.SHAPE_32x32b,
                         cl.tcgen05_tmem_offset(
                             row_tmem, column_offset=quarter * 16
                         ),
                         probabilities,
                     )
                     cl.tcgen05_wait_store()
-                    if cl.static_eval(quarter == 0):
+                    if cl.ensure_constant(quarter == 0):
                         if cl.elect_sync():
                             cl.mbarrier_arrive(
                                 cl.map_shared_to_cluster(
@@ -689,13 +689,13 @@ def mha_kernel(
                                 column_offset=qid * 256 + 128 + column,
                             )
                             values = cl.tcgen05_load(
-                                cl.Tcgen05LoadStoreShape.SHAPE_32X32B,
+                                cl.Tcgen05LoadStoreShape.SHAPE_32x32b,
                                 output_row,
                                 element_count=16,
                             )
                             cl.tcgen05_wait_load()
                             cl.tcgen05_store(
-                                cl.Tcgen05LoadStoreShape.SHAPE_32X32B,
+                                cl.Tcgen05LoadStoreShape.SHAPE_32x32b,
                                 output_row,
                                 scale_vector16(values, correction),
                             )
@@ -734,7 +734,7 @@ def mha_kernel(
                         column_offset=qid * 256 + 128 + column,
                     )
                     values = cl.tcgen05_load(
-                        cl.Tcgen05LoadStoreShape.SHAPE_32X32B,
+                        cl.Tcgen05LoadStoreShape.SHAPE_32x32b,
                         output_row,
                         element_count=16,
                     )

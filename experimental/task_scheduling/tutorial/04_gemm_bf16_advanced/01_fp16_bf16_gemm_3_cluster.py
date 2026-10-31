@@ -332,7 +332,7 @@ class TmemCResource(ts.MemoryResource):
             column_offset=subtile_idx * 32,
         )
         t2r_rmem = cl.tcgen05_load(
-            cl.Tcgen05LoadStoreShape.SHAPE_32X32B,
+            cl.Tcgen05LoadStoreShape.SHAPE_32x32b,
             tmem_subtile,
             element_count=32,
             dtype=cl.float32,

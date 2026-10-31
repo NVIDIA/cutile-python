@@ -91,3 +91,23 @@ def test_opaque_pointer_raises_on_pointee_dtype_access():
 
     with pytest.raises(TypeCheckingError, match="Opaque pointer has no pointee dtype"):
         cl.launch(torch.cuda.current_stream(), (1,), (1,), kernel, ())
+
+
+def test_pointer_value_dtype_attributes():
+    @cl.kernel
+    def kernel(a):
+        p = a.pointer()
+        # Device code
+        pointer_dtype = p.pointer_dtype
+        pointee_dtype = p.pointee_dtype
+        memory_space = p.memory_space
+        cl.static_assert(pointer_dtype == cl.pointer_dtype(cl.int32))
+        cl.static_assert(pointee_dtype == cl.int32)
+        cl.static_assert(memory_space == cl.MemorySpace.GENERIC)
+        # Static evaluation
+        cl.static_assert(p.pointer_dtype == cl.pointer_dtype(cl.int32))
+        cl.static_assert(p.pointee_dtype == cl.int32)
+        cl.static_assert(p.memory_space == cl.MemorySpace.GENERIC)
+
+    a = torch.zeros(1, dtype=torch.int32, device="cuda")
+    cl.launch(torch.cuda.current_stream(), (1,), (1,), kernel, (a,))

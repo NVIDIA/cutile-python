@@ -23,6 +23,11 @@ def scalar_type_to_mlir_type(src_type: ir_type.ScalarTy) -> mlir.Type:
 
 
 @ir_type_to_mlir_type.register
+def opaque_type_to_mlir_type(src_type: ir_type.OpaqueTy) -> mlir.Type:
+    return dtype_to_mlir_type(src_type.dtype)
+
+
+@ir_type_to_mlir_type.register
 def stream_type_to_mlir_type(src_type: ir_type.StreamTy) -> mlir.Type:
     return mlir.llvm.LLVMPointerType()
 
@@ -57,10 +62,12 @@ def dtype_to_mlir_type(dtype: datatype.DType) -> mlir.Type:
             | datatype.uint16
             | datatype.uint32
             | datatype.uint64
+            | datatype._int128
+            | datatype.float8_e4m3fn
+            | datatype.float8_e5m2
+            | datatype.float8_e8m0fnu
         ):
-            return mlir.IntegerType(
-                width=dtype.bitwidth, signedness=mlir.SignednessSemantics.SIGNLESS
-            )
+            return mlir.IntegerType.signless(width=dtype.bitwidth)
         case datatype.float16:
             return mlir.Float16Type()
         case datatype.bfloat16:

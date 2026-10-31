@@ -55,7 +55,7 @@ def store_o(stage_info, column, values):
     warp, _ = warp_and_lane(stage_info)
     for chunk in cl.static_iter(range(2)):
         cl.tcgen05_store(
-            cl.Tcgen05LoadStoreShape.SHAPE_16X256B,
+            cl.Tcgen05LoadStoreShape.SHAPE_16x256b,
             tmem_ptr(stage_info, column, warp * 32 + chunk * 16),
             cl.Vector(*tuple(values[chunk * 4 + i] for i in cl.static_iter(range(4)))),
         )
@@ -290,7 +290,7 @@ class TmemSoftmaxStatsResource(ts.MemoryResource):
     def store_stats(stage_info, values, maxima, column):
         warp, _ = warp_and_lane(stage_info)
         cl.tcgen05_store(
-            cl.Tcgen05LoadStoreShape.SHAPE_32X32B,
+            cl.Tcgen05LoadStoreShape.SHAPE_32x32b,
             tmem_ptr(stage_info, column, warp * 32),
             cl.Vector(values[0], values[1], maxima[0], maxima[1]),
         )
@@ -301,7 +301,7 @@ class TmemSoftmaxStatsResource(ts.MemoryResource):
     def load_stats(stage_info, column):
         warp, _ = warp_and_lane(stage_info)
         values = cl.tcgen05_load(
-            cl.Tcgen05LoadStoreShape.SHAPE_32X32B,
+            cl.Tcgen05LoadStoreShape.SHAPE_32x32b,
             tmem_ptr(stage_info, column, warp * 32),
             element_count=4,
             dtype=cl.float32,

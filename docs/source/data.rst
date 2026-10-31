@@ -56,13 +56,22 @@ the underlying data but creates another reference to the same array.
 Any object that implements the |DLPack| interface or the |CUDA Array Interface|
 can be passed as a kernel argument --- for example, |CuPy| arrays and |PyTorch| tensors.
 
-If two or more array arguments are passed to the kernel, their memory must not overlap.
-Otherwise, the behavior is undefined.
+When launching from Python with :py:func:`cuda.tile.launch`, distinct array arguments
+must not overlap in memory, including arrays passed inside tuples. Otherwise, the
+behavior is undefined. For ahead-of-time compilation, the permitted aliasing is
+specified by :py:class:`cuda.tile.compilation.ArrayConstraint`.
 
-An array's shape can be queried with the :py:attr:`Array.shape` attribute, which
-returns a tuple of `int32` scalars. These are non-constant, runtime values.
-Using `int32` improves performance at the cost of capping the maximum representable
-shape at 2,147,483,647 elements. This limitation will be lifted in the future.
+An array's shape and strides can be queried with :py:attr:`Array.shape` and
+:py:attr:`Array.strides`. Their scalar values use ``int32`` by default.
+For arrays whose shape or stride values exceed the range of ``int32``, use
+:py:data:`cuda.tile.IndexedWithInt64` or set ``index_dtype=ct.int64`` in an
+:py:class:`cuda.tile.ArrayAnnotation`.
+
+Shape and stride values can be runtime values or compile-time constants.
+Use ``static_shape_dims`` and ``static_stride_dims`` in
+:py:class:`cuda.tile.ArrayAnnotation` to specialize selected dimensions to their
+launch-time values. The dispatcher can also infer constant dimensions, such as
+shape or stride values equal to one.
 
 
 .. seealso::
@@ -251,7 +260,32 @@ to a common dtype as follows:
 Tuples
 ------
 
-Tuples can be used in |tile code|. They cannot be |kernel| parameters.
+Tuples can be constructed and used in |tile code| and passed as |kernel|
+arguments. Tuple arguments may be nested and contain supported argument types,
+such as scalars and arrays. Their structure is known at compile time; their
+elements need not be constants. Tuple indexing requires a compile-time constant
+index.
+
+Parameter annotations can describe individual elements, for example
+``tuple[ct.Array, ct.Constant[int]]``. A parameter annotated with
+``ct.Constant[tuple]`` makes the whole tuple constant, so every element must be
+representable as a compile-time constant.
+
+For ahead-of-time export, tuple parameters use
+:py:class:`cuda.tile.compilation.TupleConstraint` and require the
+``cutile_python_v2`` calling convention. See :ref:`compilation-callconv`.
+
+Lists of Arrays
+---------------
+
+A non-empty Python list of arrays can be passed as a kernel argument. All
+elements must have the same rank and dtype. In |tile code|, this becomes a
+list view supporting ``len`` and integer indexing, including runtime indices.
+The list structure cannot be modified, but its arrays can be loaded and stored.
+Creating or mutating ordinary Python lists in |tile code| is unsupported.
+
+Use :py:class:`cuda.tile.ListAnnotation` to configure the element arrays'
+indexing types and static dimensions.
 
 .. _data-rounding-modes:
 

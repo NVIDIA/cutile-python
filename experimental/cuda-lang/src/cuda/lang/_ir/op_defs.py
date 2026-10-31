@@ -10,6 +10,7 @@ from typing import Optional, Any, TYPE_CHECKING
 
 
 from cuda.lang._enums import (
+    AsyncCopyReportMechanism,
     CTAGroup,
     MemoryOrder,
     RoundingMode,
@@ -208,7 +209,6 @@ class MathBinaryOperation(Operation, opcode="math_binary"):
     fn: str = attribute()
     lhs: Var = operand()
     rhs: Var = operand()
-    approx: bool = attribute(default=False)
     propagate_nan: bool = attribute(default=False)
 
 
@@ -247,6 +247,9 @@ class CopyAsyncBulkTensorGlobalToShared(
     mode: TMALoadMode = attribute()
     is_cta_only: bool = attribute()
     cta_group: CTAGroup | None = attribute(default=None)
+    report_mechanism: AsyncCopyReportMechanism = attribute(
+        default=AsyncCopyReportMechanism.DISABLED
+    )
 
 
 @dataclass(eq=False)

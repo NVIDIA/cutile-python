@@ -13,7 +13,7 @@ from cuda.lang._ir.ir import Var
 from cuda.lang._ir.op_defs import RawLLVMIntrinsic
 from cuda.lang._ir.op_impl.vector_impl import (
     vector_construct,
-    vector_getitem,
+    vector_getitem_raw,
 )
 from cuda.lang._ir.type import MemorySpace, ScalarTy, VectorTy
 from cuda.lang._ir.type_checking_helpers import (
@@ -133,7 +133,7 @@ def store_matrix_impl(
     else:
         index_type = ScalarTy(datatype.int32)
         registers = tuple(
-            vector_getitem(values, strictly_typed_const(index, index_type))
+            vector_getitem_raw(values, strictly_typed_const(index, index_type))
             for index in range(register_count)
         )
 

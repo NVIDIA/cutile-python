@@ -10,6 +10,7 @@ from typing import Callable, Sequence, get_type_hints
 
 from cuda.lang._compiler_options import CompilerOptions
 from cuda.lang._enums import (
+    AsyncCopyReportMechanism,
     MemoryOrder,
     RoundingMode,
     SaturationMode,
@@ -42,6 +43,20 @@ _NVVM_ROUNDING_MODES = {
     RoundingMode.RN: mlir.nvvm.FPRoundingMode.RN,
     RoundingMode.RP: mlir.nvvm.FPRoundingMode.RP,
     RoundingMode.RZ: mlir.nvvm.FPRoundingMode.RZ,
+}
+
+_NVVM_COPY_REPORT_PATTERNS = {
+    AsyncCopyReportMechanism.DISABLED: None,
+    AsyncCopyReportMechanism.VALIDITY_PER_16_BYTES_80000000:
+        mlir.nvvm.ValidatePattern.PER_16BYTES_80000000,
+    AsyncCopyReportMechanism.VALIDITY_PER_16_BYTES_8000:
+        mlir.nvvm.ValidatePattern.PER_16BYTES_8000,
+    AsyncCopyReportMechanism.VALIDITY_PER_16_BYTES_80:
+        mlir.nvvm.ValidatePattern.PER_16BYTES_80,
+    AsyncCopyReportMechanism.VALIDITY_PER_16_BYTES_8:
+        mlir.nvvm.ValidatePattern.PER_16BYTES_8,
+    AsyncCopyReportMechanism.VALIDITY_PER_ELEMENT_FF:
+        mlir.nvvm.ValidatePattern.PER_ELEMENT_FF,
 }
 
 
@@ -220,7 +235,7 @@ def _get_mlir_op_for_op_and_dtype(
             None,
             mlir.arith.add_RemSIOp,
             mlir.arith.add_RemUIOp,
-            None,
+            mlir.arith.add_RemFOp,
         ),
     }
 
@@ -736,6 +751,18 @@ def _lower_raw_binary_arith(
     res_type = _expect_arith_type(operation.result_var.get_type())
     assert lhs_type == rhs_type == res_type
 
+    res_dtype = res_type.tensor_dtype()
+    if operation.fn == "pow" and datatype.is_float(res_dtype):
+        assert operation.rounding_mode in (None, RoundingMode.APPROX)
+        assert not operation.flush_to_zero
+        return _emit_mlir_operation(
+            context,
+            operation,
+            "math.powf",
+            (operation.lhs, operation.rhs),
+            _math_fast_attributes(operation.rounding_mode == RoundingMode.APPROX),
+        )
+
     if isinstance(operation, ops.RawBinaryArithmeticOperation) and (
         operation.rounding_mode is not None or operation.flush_to_zero
     ):
@@ -744,7 +771,6 @@ def _lower_raw_binary_arith(
             context, operation, res_type
         )
 
-    res_dtype = res_type.tensor_dtype()
     mlir_op = _get_mlir_op_for_op_and_dtype(operation.fn, res_dtype)
     if mlir_op is None:
         raise NotImplementedError(
@@ -763,6 +789,15 @@ def lower_raw_binary_arith(
     context: MLIRLoweringContext, operation: ops.RawBinaryArithmeticOperation
 ) -> Sequence[mlir.Value]:
     return _lower_raw_binary_arith(context, operation)
+
+
+@mlir_op_lowering
+def lower_raw_fpowi(
+    context: MLIRLoweringContext, operation: ops.RawFPowIOperation
+) -> Sequence[mlir.Value]:
+    return _emit_mlir_operation(
+        context, operation, "math.fpowi", (operation.base, operation.exponent)
+    )
 
 
 @mlir_op_lowering
@@ -1746,15 +1781,7 @@ def lower_math_binary(
     context: MLIRLoweringContext, operation: ops.MathBinaryOperation
 ) -> Sequence[mlir.Value]:
     dtype = operation.result_var.get_type().tensor_dtype()
-    if operation.fn == "pow":
-        exponent_dtype = operation.rhs.get_type().tensor_dtype()
-        name = (
-            "math.fpowi"
-            if datatype.is_integral(exponent_dtype)
-            else "math.powf"
-        )
-        attributes = _math_fast_attributes(operation.approx)
-    elif operation.fn == "atan2":
+    if operation.fn == "atan2":
         name = "math.atan2"
         attributes = ()
     elif operation.fn in {"min", "max"}:
@@ -1847,6 +1874,7 @@ def lower_copy_async_bulk_tensor_g2s(
         isCTAOnly=operation.is_cta_only,
         group=group,
         predicate=_optional_mlir_operand(context, operation.predicate),
+        validatePattern=_NVVM_COPY_REPORT_PATTERNS[operation.report_mechanism],
     )
     return ()
 

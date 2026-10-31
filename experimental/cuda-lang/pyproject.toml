@@ -10,10 +10,11 @@ requires = ["setuptools", "wheel"]
 name = "cuda-lang"
 dynamic = ["version"]
 description = "Experimental SIMT programming model."
-requires-python = ">=3.10, <3.15"
+requires-python = ">=3.11, <3.16"
 
 [tool.setuptools]
 package-dir = {"" = "src"}
+include-package-data = false
 
 [tool.setuptools.dynamic]
 version = {file = "src/cuda/lang/VERSION"}
@@ -27,4 +28,4 @@ include = [
 ]
 
 [tool.setuptools.package-data]
-"cuda.lang" = ["bin/*"]
+"cuda.lang" = ["VERSION", "bin/mlir2cubin"]

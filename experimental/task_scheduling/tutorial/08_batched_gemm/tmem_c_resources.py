@@ -94,13 +94,13 @@ class TmemCResource(ts.MemoryResource):
             )
             tmem1 = cl.tcgen05_tmem_offset(tmem0, lane_offset=16)
             t2r_rmem = cl.tcgen05_load(
-                cl.Tcgen05LoadStoreShape.SHAPE_16X256B,
+                cl.Tcgen05LoadStoreShape.SHAPE_16x256b,
                 tmem0,
                 element_count=swap_t2r_repx * 4,
                 dtype=cl.float32,
             )
             t2r_rmem_1 = cl.tcgen05_load(
-                cl.Tcgen05LoadStoreShape.SHAPE_16X256B,
+                cl.Tcgen05LoadStoreShape.SHAPE_16x256b,
                 tmem1,
                 element_count=swap_t2r_repx * 4,
                 dtype=cl.float32,
@@ -118,7 +118,7 @@ class TmemCResource(ts.MemoryResource):
             ),
         )
         t2r_rmem = cl.tcgen05_load(
-            cl.Tcgen05LoadStoreShape.SHAPE_32X32B,
+            cl.Tcgen05LoadStoreShape.SHAPE_32x32b,
             tmem,
             element_count=epi_t2r_repx,
             dtype=cl.float32,

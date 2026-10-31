@@ -11,8 +11,14 @@ but raise ``NotImplementedError`` at their device-lowering boundary.
 
 from . import pipeline
 from .enums import (
+    BlockGuard,
+    ComplementedIterationPredicate,
     Every,
+    FIRST_ITER,
+    GuardAnd,
+    GuardOr,
     IterationPredicate,
+    LAST_ITER,
     OpaqueCondition,
     PipelineGroupMode,
     PipelineType,
@@ -20,7 +26,13 @@ from .enums import (
     SignalingThreads,
     WorkAttr,
 )
-from .exhaustive_checker import check_all_interleavings, expand_task
+from .exhaustive_checker import (
+    OpaqueAssignmentScenario,
+    check_all_interleavings,
+    collect_guard_observations,
+    expand_task,
+    opaque_assignment_sequences,
+)
 from .ir import (
     BreakLoopIR,
     ConditionalIR,
@@ -32,6 +44,7 @@ from .ir import (
     ScheduleValue,
     StepIR,
     TaskIR,
+    WhileTrueLoopIR,
     WorkTileLoopIR,
 )
 from .memory import (
@@ -71,12 +84,14 @@ from .schedule_builder import (
     ScheduleError,
     ScheduleStageInfo,
     Step,
+    WhileTrueLoop,
     WorkTileLoop,
     domain_loop,
     dynamic_domain_bound,
     schedule,
     when_false,
     when_true,
+    while_true_loop,
     work_tile_loop,
 )
 from .task import (
@@ -115,6 +130,13 @@ __all__ = [
     "domain_loop",
     "DomainLoop",
     "DomainLoopIR",
+    "BlockGuard",
+    "collect_guard_observations",
+    "ComplementedIterationPredicate",
+    "FIRST_ITER",
+    "GuardAnd",
+    "GuardOr",
+    "LAST_ITER",
     "dynamic_domain_bound",
     "DynamicDomainBound",
     "DeviceAllocators",
@@ -133,6 +155,8 @@ __all__ = [
     "GuardIR",
     "MemoryResource",
     "MbarrierLayout",
+    "OpaqueAssignmentScenario",
+    "opaque_assignment_sequences",
     "OpaqueCondition",
     "PdlLaunchBarrier",
     "PdlWaitBarrier",
@@ -168,6 +192,9 @@ __all__ = [
     "TileSchedulerConfig",
     "when_false",
     "when_true",
+    "while_true_loop",
+    "WhileTrueLoop",
+    "WhileTrueLoopIR",
     "WorkAttr",
     "WorkTileInfo",
     "WorkQueue",

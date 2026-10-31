@@ -92,13 +92,13 @@ def _bitcast_target(pointer): return ct.bitcast(ct.uint64(0), pointer.dtype)
 @pytest.mark.parametrize(
     "operation,match",
     [
-        (_add, "non-arithmetic dtype"),
+        (_add, "Unsupported operand types for +"),
         (_astype, "is_numeric"),
         (_compare, "is_numeric"),
         (_compare_function, "is_numeric"),
-        (_dtype_constructor_source, "is_numeric"),
+        (_dtype_constructor_source, "non-numeric dtype"),
         (_logical_not, "is_numeric"),
-        (_positive, "is_numeric"),
+        (_positive, "must have an arithmetic dtype"),
         (_bitcast_source, "foreign pointer"),
         (_bitcast_target, "foreign pointer"),
     ],

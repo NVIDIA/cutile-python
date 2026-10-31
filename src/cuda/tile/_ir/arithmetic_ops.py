@@ -8,25 +8,28 @@
 # methods.
 
 
-import math
 import operator
 from dataclasses import dataclass
 from typing import Sequence, Any, Callable
 from typing_extensions import override
 
 from cuda.tile import _datatype as datatype
-from cuda.tile._datatype import numeric_dtype_category, DType, bool_, is_integral, is_boolean, \
-    int8, get_signedness, is_float, is_unrestricted_float, is_arithmetic, is_signed
-from cuda.tile._exception import TileTypeError, TypeCheckingError
+from cuda.tile._datatype import DType, bool_, is_integral, is_boolean, \
+    get_signedness, is_float, is_signed
+from cuda.tile._cext import _binary_arithmetic_tensorlike, _binary_wrapping_arithmetic_tensorlike, \
+    _comparison_tensorlike, _binary_bitwise_tensorlike, _bitwise_shift_tensorlike, \
+    _tensorlike_negative, _tensorlike_positive, _tensorlike_invert, _divmod_tensorlike, \
+    _tile_reshape, _tensorlike_astype, _dtype_constructor
+from cuda.tile._exception import TileTypeError
 from cuda.tile._numeric_semantics import RoundingMode
 from cuda.tile._ir.core_ops import loosely_typed_const, strictly_typed_const, \
-    comparison_operator_impl, build_tuple
+    comparison_operator_impl, build_tuple, sym2var
 from cuda.tile._ir.ir import operand, Operation, Var, add_operation, Builder, attribute
-from cuda.tile._ir.op_impl import ImplRegistry, ensure_scalar, ensure_tensorlike
+from cuda.tile._ir.op_impl import ImplRegistry, ensure_scalar
 from cuda.tile._ir.ops_utils import is_shape_broadcastable_to, promote_types, \
-    broadcast_shapes2, get_dtype, get_default_rounding_mode, rounding_mode_to_bytecode, \
-    reraise_tile_exception, check_rd_and_ftz, BINOP_REGISTRY, UNARYOP_REGISTRY
-from cuda.tile._ir.type import TensorLikeTy, LooselyTypedScalar, Type
+    get_dtype, get_default_rounding_mode, rounding_mode_to_bytecode, reraise_tile_exception, \
+    check_rd_and_ftz, BINOP_REGISTRY, UNARYOP_REGISTRY
+from cuda.tile._ir.type import TensorLikeTy, TileTy, LooselyTypedScalar, Type, var2sym
 from cuda.tile._ir2bytecode import BytecodeContext, convert_dtype, typeid
 import cuda.tile._bytecode as bc
 
@@ -78,37 +81,17 @@ class TileReshape(Operation, opcode="tile_reshape"):
             raise NotImplementedError(f"reshape not implemented for {x_shape} -> {res_shape}")
 
 
-def reshape(x: Var[TensorLikeTy], new_shape: Sequence[int]) -> Var:
+# Does not validate the shape, hence the name "Raw"
+def reshape_raw(x: Var[TensorLikeTy], new_shape: Sequence[int]) -> Var:
     x_ty = x.get_type()
-    x_shape = x_ty.tensor_shape()
-    numel = math.prod(x_shape)
-
-    negative_one_index = None
-    numel2 = 1
-    for i, dim_value in enumerate(new_shape):
-        if dim_value < 0:
-            if dim_value < -1:
-                raise TileTypeError(f"Dimension can only be -1 or non-negative, got {dim_value}")
-            if negative_one_index is not None:
-                raise TileTypeError(f"Only one dimension can be -1, got {new_shape}")
-            negative_one_index = i
-        else:
-            numel2 *= dim_value
-
-    if negative_one_index is not None:
-        if numel2 == 0 or numel % numel2 != 0:
-            raise TileTypeError(f"Cannot reshape {x_shape} to {new_shape}")
-        new_shape = list(new_shape)
-        new_shape[negative_one_index] = numel // numel2
-        new_shape = tuple(new_shape)
-    elif numel != numel2:
-        raise TileTypeError(f"Cannot reshape {x_shape} to {new_shape}")
-
-    if new_shape == x_shape:
+    if tuple(new_shape) == x_ty.tensor_shape():
         return x
-    else:
-        res_type = x.ctx.typing_hooks.get_tensor_like_type(x_ty.tensor_dtype(), new_shape)
-        return add_operation(TileReshape, res_type, x=x)
+    res_type = x.ctx.typing_hooks.get_tensor_like_type(x_ty.tensor_dtype(), tuple(new_shape))
+    return add_operation(TileReshape, res_type, x=x)
+
+
+def reshape(x: Var[TensorLikeTy], new_shape: Sequence[int]) -> Var[TileTy]:
+    return sym2var(_tile_reshape(var2sym(x), tuple(new_shape)))
 
 
 @dataclass(eq=False)
@@ -150,7 +133,7 @@ def broadcast_to(x: Var[TensorLikeTy], shape: Sequence[int]) -> Var[TensorLikeTy
     if len(shape) > len(old_shape):
         extra_ones = (1,) * (len(shape) - len(old_shape))
         old_shape = extra_ones + old_shape
-        x = reshape(x, old_shape)
+        x = reshape_raw(x, old_shape)
 
     if old_shape == shape:
         return x
@@ -251,32 +234,30 @@ class TileAsType(Operation, opcode="tile_astype"):
                                   f" from {from_dtype} to {to_dtype}")
 
 
-def astype(x: Var[TensorLikeTy], dtype: DType, *,
-           rounding_mode: RoundingMode | None = None) -> Var[TensorLikeTy]:
+def add_astype_operation(x: Var[TensorLikeTy], dtype: DType,
+                         rounding_mode: RoundingMode | None = None):
     x_ty = x.get_type()
-    if x_ty.tensor_dtype() == dtype:
-        return x
-
-    if x.is_constant() and rounding_mode in (None, RoundingMode.RN):
-        val = numeric_dtype_category(dtype).pytype(x.get_constant())
-        return strictly_typed_const(val, x.ctx.typing_hooks.get_tensor_like_type(dtype, ()))
-
     result_ty = x.ctx.typing_hooks.get_tensor_like_type(dtype, x_ty.tensor_shape())
     return add_operation(TileAsType, result_ty, x=x, rounding_mode=rounding_mode)
 
 
-def dtype_constructor(new_dtype: DType, x: Var) -> Var[TensorLikeTy]:
-    if x.is_constant():
-        pytype = numeric_dtype_category(new_dtype).pytype
-        try:
-            const_value = pytype(x.get_constant())
-        except (ValueError, TypeError):
-            raise TileTypeError(f"Invalid argument type for {new_dtype}")
-        ty = x.ctx.typing_hooks.get_tensor_like_type(new_dtype, ())
-        return strictly_typed_const(const_value, ty=ty)
+def astype(x: Var[TensorLikeTy], dtype: DType, *,
+           rounding_mode: RoundingMode | None = None) -> Var[TensorLikeTy]:
+    if x.get_type().tensor_dtype() == dtype:
+        return x
+    use_tile = _is_tile_dtype_result(x, dtype)
+    return sym2var(_tensorlike_astype(var2sym(x), dtype, rounding_mode, use_tile))
 
-    x = ensure_scalar(x, datatype.is_numeric)
-    return astype(x, new_dtype)
+
+# Unlike astype(), always returns a strictly typed value
+def dtype_constructor(new_dtype: DType, x: Var) -> Var[TensorLikeTy]:
+    use_tile = _is_tile_dtype_result(x, new_dtype)
+    return sym2var(_dtype_constructor(var2sym(x), new_dtype, use_tile))
+
+
+# Whether a scalar of `dtype` is represented as a 0-d tile, as opposed to a cuda.lang scalar
+def _is_tile_dtype_result(x: Var, dtype: DType) -> bool:
+    return isinstance(x.ctx.typing_hooks.get_tensor_like_type(dtype, ()), TileTy)
 
 
 @impl(bool)
@@ -361,21 +342,7 @@ def compare_tensorlike_raw(fn: str,
 
 
 def compare_tensorlike(fn: str, x: Var[TensorLikeTy], y: Var[TensorLikeTy]) -> Var[TensorLikeTy]:
-    x_ty = x.get_loose_type()
-    y_ty = y.get_loose_type()
-
-    if isinstance(x_ty, LooselyTypedScalar) and isinstance(y_ty, LooselyTypedScalar):
-        return binop_propagate_constant(fn, x_ty.value, y_ty.value, None)
-
-    common_ty = promote_types(x_ty, y_ty, Builder.get_current().ir_ctx.typing_hooks)
-    x = promote_and_broadcast_to(x, common_ty)
-    y = promote_and_broadcast_to(y, common_ty)
-
-    if x.is_constant() and y.is_constant():
-        res_ty = x.ctx.typing_hooks.get_tensor_like_type(bool_, common_ty.tensor_shape())
-        return binop_propagate_constant(fn, x.get_constant(), y.get_constant(), res_ty)
-
-    return compare_tensorlike_raw(fn, x, y)
+    return sym2var(_comparison_tensorlike(fn, var2sym(x), var2sym(y)))
 
 
 @comparison_operator_impl(_registry, TensorLikeTy, TensorLikeTy)
@@ -426,38 +393,7 @@ def binary_bitwise_tensorlike_raw(fn: str,
 def binary_bitwise_tensorlike(fn: str,
                               x: Var[TensorLikeTy],
                               y: Var[TensorLikeTy]) -> Var[TensorLikeTy]:
-    x_ty = x.get_loose_type()
-    y_ty = y.get_loose_type()
-
-    if isinstance(x_ty, LooselyTypedScalar) and isinstance(y_ty, LooselyTypedScalar):
-        return binop_propagate_constant(fn, x_ty.value, y_ty.value, None)
-
-    lhs_dtype = x_ty.tensor_dtype()
-    rhs_dtype = y_ty.tensor_dtype()
-
-    if not (is_integral(lhs_dtype) or is_boolean(lhs_dtype)) \
-            or not (is_integral(rhs_dtype) or is_boolean(rhs_dtype)):
-        raise TileTypeError("Bitwise operations require integers or booleans."
-                            " Use an explicit cuda.tile.bitcast() for non-integer operands.")
-
-    x_loose = isinstance(x_ty, LooselyTypedScalar)
-    y_loose = isinstance(y_ty, LooselyTypedScalar)
-    if x_loose == y_loose and lhs_dtype != rhs_dtype:
-        msg = "Bitwise operands must have same data type, got:"
-        msg += f" {lhs_dtype} and {rhs_dtype}"
-        raise TileTypeError(msg)
-
-    if {lhs_dtype, rhs_dtype} == {bool_, int8}:
-        raise TileTypeError("Bitwise op does not support bool and int8")
-
-    common_ty = promote_types(x_ty, y_ty, x.ctx.typing_hooks)
-    x = promote_and_broadcast_to(x, common_ty)
-    y = promote_and_broadcast_to(y, common_ty)
-
-    if x.is_constant() and y.is_constant():
-        return binop_propagate_constant(fn, x.get_constant(), y.get_constant(), common_ty)
-
-    return binary_bitwise_tensorlike_raw(fn, x, y)
+    return sym2var(_binary_bitwise_tensorlike(fn, var2sym(x), var2sym(y)))
 
 
 @impl(operator.and_, fixed_args=["and_"], overload=(TensorLikeTy, TensorLikeTy))
@@ -515,30 +451,7 @@ def bitwise_shift_tensorlike_raw(fn: str,
 def bitwise_shift_tensorlike(fn: str,
                              x: Var[TensorLikeTy],
                              y: Var[TensorLikeTy]) -> Var[TensorLikeTy]:
-    x_ty = x.get_loose_type()
-    y_ty = y.get_loose_type()
-
-    if isinstance(x_ty, LooselyTypedScalar) and isinstance(y_ty, LooselyTypedScalar):
-        return binop_propagate_constant(fn, x_ty.value, y_ty.value, None)
-
-    lhs_dtype = x_ty.tensor_dtype()
-    if not is_integral(lhs_dtype):
-        msg = f'Bitwise shift requires an integer for left-hand side, got: {lhs_dtype}'
-        raise TileTypeError(msg)
-
-    rhs_dtype = y_ty.tensor_dtype()
-    if not is_integral(rhs_dtype):
-        msg = f'Bitwise shift requires an integer for right-hand side, got: {rhs_dtype}'
-        raise TileTypeError(msg)
-
-    common_ty = promote_types(x_ty, y_ty, x.ctx.typing_hooks)
-    x = promote_and_broadcast_to(x, common_ty)
-    y = promote_and_broadcast_to(y, common_ty)
-
-    if x.is_constant() and y.is_constant():
-        return binop_propagate_constant(fn, x.get_constant(), y.get_constant(), common_ty)
-
-    return bitwise_shift_tensorlike_raw(fn, x, y)
+    return sym2var(_bitwise_shift_tensorlike(fn, var2sym(x), var2sym(y)))
 
 
 @impl(operator.lshift, fixed_args=["lshift"], overload=(TensorLikeTy, TensorLikeTy))
@@ -719,33 +632,15 @@ def binary_arithmetic_tensorlike(fn: str, x: Var[TensorLikeTy], y: Var[TensorLik
                                  rounding_mode: RoundingMode | None = None,
                                  flush_to_zero: bool = False,
                                  propagate_nan: bool = False) -> Var[TensorLikeTy]:
-    x_ty = x.get_loose_type()
-    y_ty = y.get_loose_type()
+    res = _binary_arithmetic_tensorlike(fn, var2sym(x), var2sym(y),
+                                        rounding_mode, flush_to_zero, propagate_nan)
+    return sym2var(res)
 
-    if not is_arithmetic(x_ty.tensor_dtype()):
-        raise TileTypeError(f"Left-hand side has non-arithmetic dtype {x_ty.tensor_dtype()}")
-    if not is_arithmetic(y_ty.tensor_dtype()):
-        raise TileTypeError(f"Right-hand side has non-arithmetic dtype {y_ty.tensor_dtype()}")
 
-    if isinstance(x_ty, LooselyTypedScalar) and isinstance(y_ty, LooselyTypedScalar):
-        return binop_propagate_constant(fn, x_ty.value, y_ty.value, None)
-
-    force_float = (fn == "truediv")
-    common_ty = promote_types(x_ty, y_ty, x.ctx.typing_hooks, force_float=force_float)
-
-    common_dtype = common_ty.tensor_dtype()
-    if common_dtype == bool_:
-        raise TileTypeError(f'Binary arithmetic op `{fn}` does not support bool, '
-                            f'please cast bool to int')
-
-    x = promote_and_broadcast_to(x, common_ty)
-    y = promote_and_broadcast_to(y, common_ty)
-
-    if x.is_constant() and y.is_constant():
-        return binop_propagate_constant(fn, x.get_constant(), y.get_constant(), common_ty)
-
-    return binary_arithmetic_tensorlike_raw(fn, x, y, rounding_mode, flush_to_zero,
-                                            propagate_nan=propagate_nan)
+def binary_wrapping_arithmetic_tensorlike(fn: str, x: Var[TensorLikeTy],
+                                          y: Var[TensorLikeTy]) -> Var[TensorLikeTy]:
+    res = _binary_wrapping_arithmetic_tensorlike(fn, var2sym(x), var2sym(y), True)
+    return sym2var(res)
 
 
 @dataclass(eq=False)
@@ -772,29 +667,26 @@ def _fpowi_exponent_dtype(dtype: DType) -> DType | None:
     return None
 
 
-def pow_tensorlike(x: Var[TensorLikeTy], y: Var[TensorLikeTy]) -> Var[TensorLikeTy]:
-    x_ty = x.get_loose_type()
-    y_ty = y.get_loose_type()
-
-    both_constant = isinstance(x_ty, LooselyTypedScalar) and isinstance(y_ty, LooselyTypedScalar)
-    exp_dtype = _fpowi_exponent_dtype(y_ty.tensor_dtype())
-    if not both_constant and is_unrestricted_float(x_ty.tensor_dtype()) \
-            and exp_dtype is not None \
-            and Builder.get_current().ir_ctx.tileiras_version >= bc.BytecodeVersion.V_13_4:
-        hooks = x.ctx.typing_hooks
-        shape = broadcast_shapes2(x_ty.tensor_shape(), y_ty.tensor_shape())
-        base_ty = hooks.get_tensor_like_type(x_ty.tensor_dtype(), shape)
-        exp_ty = hooks.get_tensor_like_type(exp_dtype, shape)
-        base = promote_and_broadcast_to(x, base_ty)
-        exponent = promote_and_broadcast_to(y, exp_ty)
-        return add_operation(RawFPowIOperation, base_ty, base=base, exponent=exponent)
-
-    return binary_arithmetic_tensorlike("pow", x, y)
+# Raises a non-constant float `base` to an integer `exponent` power. Does not do broadcasting:
+# the exponent must have the same shape as the base. Uses the FPowI operation if the target
+# supports it and the exponent fits in int32, and falls back to a regular power otherwise.
+def fpowi(base: Var[TensorLikeTy], exponent: Var[TensorLikeTy]) -> Var[TensorLikeTy]:
+    exp_dtype = _fpowi_exponent_dtype(exponent.get_type().tensor_dtype())
+    # tileiras_version is None when not targeting TileIR (e.g., in cuda.lang)
+    tileiras_version = Builder.get_current().ir_ctx.tileiras_version
+    if exp_dtype is not None \
+            and (tileiras_version is None or tileiras_version >= bc.BytecodeVersion.V_13_4):
+        exponent = astype(exponent, exp_dtype)
+        return add_operation(RawFPowIOperation, base.get_type(), base=base, exponent=exponent)
+    exponent = astype(exponent, base.get_type().tensor_dtype())
+    return binary_arithmetic_tensorlike_raw("pow", base, exponent)
 
 
 @impl(operator.add, fixed_args=["add"], overload=(TensorLikeTy, TensorLikeTy))
 @impl(operator.sub, fixed_args=["sub"], overload=(TensorLikeTy, TensorLikeTy))
 @impl(operator.mul, fixed_args=["mul"], overload=(TensorLikeTy, TensorLikeTy))
+@impl(operator.mod, fixed_args=["mod"], overload=(TensorLikeTy, TensorLikeTy))
+@impl(operator.pow, fixed_args=["pow"], overload=(TensorLikeTy, TensorLikeTy))
 @impl(operator.floordiv, fixed_args=["floordiv"], overload=(TensorLikeTy, TensorLikeTy))
 @impl(operator.truediv, fixed_args=["truediv"], overload=(TensorLikeTy, TensorLikeTy))
 @impl(min, fixed_args=["min"], overload=(TensorLikeTy, TensorLikeTy))
@@ -813,87 +705,35 @@ def mod_tensorlike_raw(x: Var[TensorLikeTy], y: Var[TensorLikeTy]):
     value_sign = compare_tensorlike("lt", value, zero)
     y_sign = compare_tensorlike("lt", y, zero)
 
-    # need_fix = (value_sign ^ y_sign) & (value != 0)
     sign_mismatch = binary_bitwise_tensorlike("xor", value_sign, y_sign)
-    value_not_zero = compare_tensorlike("ne", value, zero)
-    need_fix = binary_bitwise_tensorlike("and_", sign_mismatch, value_not_zero)
+    if is_float(value.get_type().tensor_dtype()):
+        # need_fix = value_sign ^ y_sign
+        # The zero case is handled below, and NaN stays NaN after the correction.
+        fixed_value = binary_arithmetic_tensorlike("add", value, y)
+        result = where(sign_mismatch, fixed_value, value)
 
-    fixed_value = binary_arithmetic_tensorlike("add", value, y)
-    return where(need_fix, fixed_value, value)
-
-
-@impl(operator.pow, overload=(TensorLikeTy, TensorLikeTy))
-def _pow_tensorlike_impl(x: Var[TensorLikeTy], y: Var[TensorLikeTy]):
-    return pow_tensorlike(x, y)
-
-
-def mod_tensorlike(x: Var[TensorLikeTy], y: Var[TensorLikeTy]) -> Var[TensorLikeTy]:
-    x_ty = x.get_loose_type()
-    y_ty = y.get_loose_type()
-    if x_ty.tensor_dtype() == y_ty.tensor_dtype() == bool_:
-        raise TileTypeError('Modulo operation does not support bool')
-
-    if isinstance(x_ty, LooselyTypedScalar) and isinstance(y_ty, LooselyTypedScalar):
-        with reraise_tile_exception():
-            res = x_ty.value % y_ty.value
-        return loosely_typed_const(res)
-
-    # Usual promote & broadcast logic
-    common_ty = promote_types(x_ty, y_ty, x.ctx.typing_hooks)
-    x = promote_and_broadcast_to(x, common_ty)
-    y = promote_and_broadcast_to(y, common_ty)
-
-    if x.is_constant() and y.is_constant():
-        with reraise_tile_exception():
-            res = x.get_constant() % y.get_constant()
-        return strictly_typed_const(res, common_ty)
-
-    return mod_tensorlike_raw(x, y)
-
-
-@impl(operator.mod, overload=(TensorLikeTy, TensorLikeTy))
-def _mod_tensorlike_impl(x: Var[TensorLikeTy], y: Var[TensorLikeTy]) -> Var[TensorLikeTy]:
-    return mod_tensorlike(
-        ensure_tensorlike(x, datatype.is_numeric),
-        ensure_tensorlike(y, datatype.is_numeric),
-    )
+        # A zero float result takes the sign of `y`, e.g. 4.0 % -2.0 == -0.0
+        negative_zero = strictly_typed_const(-0.0, value.get_type())
+        signed_zero = where(y_sign, negative_zero, zero)
+        value_is_zero = compare_tensorlike("eq", value, zero)
+        result = where(value_is_zero, signed_zero, result)
+    else:
+        # need_fix = (value_sign ^ y_sign) & (value != 0)
+        value_not_zero = compare_tensorlike("ne", value, zero)
+        need_fix = binary_bitwise_tensorlike("and_", sign_mismatch, value_not_zero)
+        fixed_value = binary_arithmetic_tensorlike("add", value, y)
+        result = where(need_fix, fixed_value, value)
+    return result
 
 
 def divmod_tensorlike(x: Var[TensorLikeTy], y: Var[TensorLikeTy]):
-    x_ty = x.get_loose_type()
-    y_ty = y.get_loose_type()
-    if x_ty.tensor_dtype() == y_ty.tensor_dtype() == bool_:
-        raise TileTypeError('divmod() operation does not support bool')
-
-    if isinstance(x_ty, LooselyTypedScalar) and isinstance(y_ty, LooselyTypedScalar):
-        with reraise_tile_exception():
-            q, r = divmod(x_ty.value, y_ty.value)
-        return build_tuple((loosely_typed_const(q), loosely_typed_const(r)))
-
-    # Usual promote & broadcast logic
-    common_ty = promote_types(x_ty, y_ty, x.ctx.typing_hooks)
-    x = promote_and_broadcast_to(x, common_ty)
-    y = promote_and_broadcast_to(y, common_ty)
-
-    if x.is_constant() and y.is_constant():
-        with reraise_tile_exception():
-            q, r = divmod(x.get_constant(), y.get_constant())
-        return build_tuple((strictly_typed_const(q, common_ty), strictly_typed_const(r, common_ty)))
-
-    if is_float(common_ty.tensor_dtype()):
-        raise TypeCheckingError("divmod() is not implemented for floating point values")
-
-    q = binary_arithmetic_tensorlike_raw("floordiv", x, y)
-    r = mod_tensorlike_raw(x, y)
-    return build_tuple((q, r))
+    q, r = _divmod_tensorlike(var2sym(x), var2sym(y))
+    return build_tuple((sym2var(q), sym2var(r)))
 
 
 @impl(divmod, overload=(TensorLikeTy, TensorLikeTy))
 def _divmod_tensorlike_impl(x: Var[TensorLikeTy], y: Var[TensorLikeTy]) -> Var[TensorLikeTy]:
-    return divmod_tensorlike(
-        ensure_tensorlike(x, datatype.is_numeric),
-        ensure_tensorlike(y, datatype.is_numeric),
-    )
+    return divmod_tensorlike(x, y)
 
 
 # Does not support broadcasting or type promotion
@@ -1098,7 +938,7 @@ UNARY_ANYTHING = UnaryBehavior(_unary_preserve, _unary_preserve, _unary_preserve
 
 
 def invert_tensorlike(x: Var[TensorLikeTy]):
-    return unary("invert", UNARY_BOOL_INT, x)
+    return sym2var(_tensorlike_invert(var2sym(x), True))
 
 
 @impl(operator.invert, overload=(TensorLikeTy,))
@@ -1108,7 +948,7 @@ def _invert_tensorlike_impl(x: Var) -> Var:
 
 @impl(operator.neg, overload=(TensorLikeTy,))
 def _neg_tensorlike_impl(x: Var) -> Var:
-    return unary("neg", UNARY_INT_FLOAT, x)
+    return sym2var(_tensorlike_negative(var2sym(x), True))
 
 
 @impl(operator.not_, overload=(TensorLikeTy,))
@@ -1126,13 +966,4 @@ def logical_not_impl(x: Var[TensorLikeTy]) -> Var[TensorLikeTy]:
 
 @impl(operator.pos, overload=(TensorLikeTy,))
 def pos_impl(x: Var[TensorLikeTy]):
-    ty = x.get_loose_type()
-
-    if isinstance(ty, LooselyTypedScalar):
-        return loosely_typed_const(+ty.value)
-
-    x = ensure_tensorlike(x, datatype.is_numeric)
-    if ty.tensor_dtype() == datatype.bool_:
-        return astype(x, datatype.default_int_type)
-    else:
-        return x
+    return sym2var(_tensorlike_positive(var2sym(x), True))

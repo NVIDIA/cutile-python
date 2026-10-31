@@ -135,7 +135,7 @@ def store_bf16_tmem_tile(dst, tmem_base, warp, column, row, output_column, n):
         column_offset=column,
     )
     values = cl.tcgen05_load(
-        cl.Tcgen05LoadStoreShape.SHAPE_32X32B,
+        cl.Tcgen05LoadStoreShape.SHAPE_32x32b,
         tmem,
         element_count=16,
         dtype=cl.float32,
@@ -156,7 +156,7 @@ def store_bf16_tmem_subtile(dst, tmem_base, warp, column, row, width):
             column_offset=column + chunk * 32,
         )
         values = cl.tcgen05_load(
-            cl.Tcgen05LoadStoreShape.SHAPE_32X32B,
+            cl.Tcgen05LoadStoreShape.SHAPE_32x32b,
             tmem,
             element_count=32,
             dtype=cl.float32,
@@ -323,7 +323,7 @@ def fp8_b200_gemm_kernel(
                 a_dst = cl.map_shared_to_cluster(a_stage, rank)
                 b_dst = cl.map_shared_to_cluster(b_stage, rank)
                 ready = load_ready.pointer(stage)
-                arrive_bar = cl.map_shared_to_leader_block(ready)
+                arrive_bar = cl.map_shared_to_block_pair_leader(ready)
                 expect_bar = cl.map_shared_to_cluster(ready, 0)
                 cl.copy_async_bulk_tensor_global_to_shared(
                     a_tmap,
@@ -447,8 +447,8 @@ def _fp8_b200_gemm_persistent_kernel(
     cta_m = 128
     consumer_tile_m = 256
     cta_n = tile_n // 2
-    acc_stages = cl.static_eval(2 if num_consumers == 1 else 1)
-    num_d_tiles = cl.static_eval(2 if epilogue_stages > 1 else 1)
+    acc_stages = cl.ensure_constant(2 if num_consumers == 1 else 1)
+    num_d_tiles = cl.ensure_constant(2 if epilogue_stages > 1 else 1)
     subtile_n = tile_n // epilogue_stages
     producer_base = num_consumers * 4
     scheduler_warp = producer_base + 2
@@ -608,7 +608,7 @@ def _fp8_b200_gemm_persistent_kernel(
                     )
                 if cl.elect_sync():
                     ready = load_ready.pointer(stage)
-                    arrive_bar = cl.map_shared_to_leader_block(ready)
+                    arrive_bar = cl.map_shared_to_block_pair_leader(ready)
                     expect_bar = cl.map_shared_to_cluster(ready, 0)
                     for consumer in cl.static_iter(range(num_consumers)):
                         a_stage = a_smem.pointer((stage, consumer, 0))

@@ -5,9 +5,6 @@
 #include "py.h"
 #include "vec.h"
 
-#include <frameobject.h>  // For PyFrame_Check on Python 3.10
-
-
 static void best_effort_cleanup_on_internal_error(Vec<PyPtr>& stack) {
     if (stack.empty())
         return;

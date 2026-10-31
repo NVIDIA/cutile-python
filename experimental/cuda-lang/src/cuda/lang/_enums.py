@@ -107,13 +107,39 @@ class Tcgen05MMACollectorOp(Enum):
 
 
 class Tcgen05LoadStoreShape(Enum):
-    """Load/store shapes supported by tcgen05 tensor memory operations."""
+    """Load/store shapes supported by tcgen05 tensor memory operations.
 
-    SHAPE_16X64B = "16x64b"
-    SHAPE_16X128B = "16x128b"
-    SHAPE_16X256B = "16x256b"
-    SHAPE_32X32B = "32x32b"
-    SHAPE_16X32BX2 = "16x32bx2"
+    NOTE: The width is measured in bits (``b``), not bytes.
+    """
+
+    SHAPE_16x64b = "16x64b"
+    SHAPE_16x128b = "16x128b"
+    SHAPE_16x256b = "16x256b"
+    SHAPE_32x32b = "32x32b"
+    SHAPE_16x32bx2 = "16x32bx2"
+
+
+class Tcgen05CopyMulticast(Enum):
+    WARPX2_02_13 = 1
+    WARPX2_01_23 = 2
+    WARPX4 = 3
+
+
+class Tcgen05CopyShape(Enum):
+    """Shapes supported by tcgen05 tensor memory copy operations.
+
+    NOTE: The width is measured in bits (``b``), not bytes.
+    """
+    SHAPE_128x256b = 0
+    SHAPE_4x256b = 1
+    SHAPE_128x128b = 2
+    SHAPE_64x128b = 3
+    SHAPE_32x128b = 4
+
+
+class Tcgen05CopySourceFormat(Enum):
+    B6x16_P32 = 0
+    B4x16_P64 = 1
 
 
 class CTAGroup(Enum):
@@ -126,25 +152,6 @@ class CTAGroup(Enum):
 class Tcgen05WaitKind(Enum):
     LOAD = 0
     STORE = 1
-
-
-class Tcgen05CopyMulticast(Enum):
-    WARPX2_02_13 = 1
-    WARPX2_01_23 = 2
-    WARPX4 = 3
-
-
-class Tcgen05CopyShape(Enum):
-    SHAPE_128x256b = 0
-    SHAPE_4x256b = 1
-    SHAPE_128x128b = 2
-    SHAPE_64x128b = 3
-    SHAPE_32x128b = 4
-
-
-class Tcgen05CopySourceFormat(Enum):
-    B6x16_P32 = 0
-    B4x16_P64 = 1
 
 
 class FenceProxyKind(Enum):
@@ -223,6 +230,15 @@ class MatrixStoreShape(Enum):
 class MatrixLoadSourceFormat(Enum):
     B6X16_P32 = "b6x16_p32"
     B4X16_P64 = "b4x16_p64"
+
+
+class AsyncCopyReportMechanism(Enum):
+    DISABLED = auto()
+    VALIDITY_PER_16_BYTES_80000000 = auto()
+    VALIDITY_PER_16_BYTES_8000 = auto()
+    VALIDITY_PER_16_BYTES_80 = auto()
+    VALIDITY_PER_16_BYTES_8 = auto()
+    VALIDITY_PER_ELEMENT_FF = auto()
 
 
 __all__ = (

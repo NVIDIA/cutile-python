@@ -110,7 +110,7 @@ def do_copy_cta2(is_cta_leader, input_tmap, smem, coords, mbar,
             input_tmap,
             coords,
             cl.map_shared_to_cluster(smem, rank),
-            cl.map_shared_to_leader_block(mbar),
+            cl.map_shared_to_block_pair_leader(mbar),
             multicast_mask=cl.int16(1 << rank),
             cta_group=cl.CTAGroup.CTA_2,
         )

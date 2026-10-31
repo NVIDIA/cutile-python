@@ -6,10 +6,10 @@
 
 #pragma once
 
+#include "dtype.h"
 #include "py.h"
 
 #include <cuda.h>
-#include <dlpack.h>
 
 #include <cstdint>
 
@@ -17,7 +17,7 @@
 inline constexpr uint32_t kTensorMapMaxRank = 5;
 
 PyPtr tensor_map_tiled(
-        DLDataType dtype,
+        DType dtype,
         void* global_address,
         size_t rank,
         const int64_t* array_dimensions,
@@ -27,8 +27,7 @@ PyPtr tensor_map_tiled(
         int interleave,
         int swizzle,
         int l2_promotion,
-        int oob_fill,
-        GlobalLock& lock);
+        int oob_fill);
 
 Result<uint32_t> tensor_map_data_type_bitwidth(CUtensorMapDataType dtype);
 

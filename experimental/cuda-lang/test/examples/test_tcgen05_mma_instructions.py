@@ -120,7 +120,7 @@ def make_tcgen05_mma_kernel(
                         column_offset=column,
                     )
                     cl.tcgen05_store(
-                        cl.Tcgen05LoadStoreShape.SHAPE_32X32B,
+                        cl.Tcgen05LoadStoreShape.SHAPE_32x32b,
                         scale_ptr,
                         scale_word,
                     )
@@ -137,7 +137,7 @@ def make_tcgen05_mma_kernel(
                         column_offset=column,
                     )
                     cl.tcgen05_store(
-                        cl.Tcgen05LoadStoreShape.SHAPE_32X32B,
+                        cl.Tcgen05LoadStoreShape.SHAPE_32x32b,
                         metadata_ptr,
                         cl.int32(0),
                     )
@@ -271,7 +271,7 @@ def make_tcgen05_mma_kernel(
                 lane_offset=warp * WARP_SIZE,
             )
             values = cl.tcgen05_load(
-                cl.Tcgen05LoadStoreShape.SHAPE_32X32B,
+                cl.Tcgen05LoadStoreShape.SHAPE_32x32b,
                 output_tmem,
                 element_count=OUTPUT_COLUMNS,
                 dtype=cl.float32,

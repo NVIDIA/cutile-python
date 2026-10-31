@@ -11,20 +11,20 @@ from cuda.tile._ir.op_impl import (
     require_constant_bool,
     require_constant_enum,
     require_dtype_spec,
-    require_constant_slice,
 )
 from cuda.tile._ir.arithmetic_ops import astype
 from cuda.tile._ir.cast_ops import implicit_cast
-from cuda.tile._ir.core_ops import bind_method, build_tuple, loosely_typed_const
+from cuda.tile._ir.core_ops import bind_method, build_tuple, loosely_typed_const, sym2var
 from cuda.tile._ir.ops import strictly_typed_const
 from cuda.tile._ir.ops_utils import promote_dtypes
-from cuda.tile._ir.type import LooselyTypedScalar
-from cuda.lang._exception import InternalError, TypeCheckingError, InvalidValueError
+from cuda.tile._ir.type import LooselyTypedScalar, var2sym
+from cuda.tile._cext import _vector_getitem, _vector_with_item
+from cuda.lang._exception import InternalError, TypeCheckingError
 import cuda.lang._datatype as datatype
 from cuda.lang._enums import VectorReduction
 from ..type_checking_helpers import require_vector_type, require_scalar_type
 from ..op_defs import VectorConstruct, VectorGetItem, VectorInsert, VectorReduce
-from ..type import PointerTy, ScalarTy, VectorTy, SliceType
+from ..type import PointerTy, ScalarTy, VectorTy
 from ..._stub.types import Vector
 from ..ir import Var, add_operation
 
@@ -47,7 +47,7 @@ def vector_construct(
     return add_operation(VectorConstruct, res_type, elements=elements)
 
 
-def vector_with_item(
+def vector_with_item_raw(
     vector: Var[VectorTy],
     key: int | Var[ScalarTy],
     value: Var[ScalarTy | PointerTy],
@@ -122,24 +122,14 @@ def vector_constructor_impl(elements: tuple[Var, ...], dtype: Var) -> Var[Vector
     return vector_construct(VectorTy(element_dtype, len(values)), values)
 
 
-@impl(operator.getitem, overload=(VectorTy, SliceType))
-def vector_slice_impl(object: Var[VectorTy], key: Var[SliceType]):
-    s = require_constant_slice(key)
-    vt = require_vector_type(object)
-
-    if s.step == 0:
-        raise InvalidValueError("Slice step cannot be zero")
-
-    start, stop, step = s.indices(vt.length)
-    indices = tuple(range(start, stop, step))
-    if len(indices) == 0:
-        raise InvalidValueError(
-            "Slice is invalid because slice would result in length-0 vector"
-        )
-
+def vector_select_elements(
+    vector: Var[VectorTy], indices: tuple[int, ...]
+) -> Var[VectorTy]:
+    """Builds a new vector from the elements of `vector` at the given constant indices."""
+    vt = require_vector_type(vector)
     new_vt = VectorTy(vt.element_dtype, length=len(indices))
     elements = tuple(
-        vector_getitem(object, loosely_typed_const(src_index))
+        vector_getitem_raw(vector, loosely_typed_const(src_index))
         for src_index in indices
     )
     return vector_construct(new_vt, elements)
@@ -149,7 +139,7 @@ def vector_slice_impl(object: Var[VectorTy], key: Var[SliceType]):
 def vector_tuple_impl(iterable: Var[VectorTy]):
     length = iterable.get_type().length
     return build_tuple(
-        vector_getitem(
+        vector_getitem_raw(
             iterable,
             strictly_typed_const(index, ScalarTy(datatype.int32)),
         )
@@ -178,7 +168,7 @@ def vector_elementwise_apply(
 
     def apply_one(i: int):
         index = strictly_typed_const(i, ScalarTy(datatype.int32))
-        operands = [vector_getitem(x, index) for x in vectors]
+        operands = [vector_getitem_raw(x, index) for x in vectors]
         element = callable(*operands)
         return element
 
@@ -226,7 +216,7 @@ def vector_with_item_impl(
     index: Var[ScalarTy],
     value: Var[ScalarTy | PointerTy],
 ) -> Var[VectorTy]:
-    return vector_with_item(self, index, value)
+    return sym2var(_vector_with_item(var2sym(self), var2sym(index), var2sym(value)))
 
 
 @impl(getattr, overload=(VectorTy, "astype"))
@@ -304,7 +294,12 @@ def vector_reduce_impl(
 
 
 @impl(operator.getitem, overload=(VectorTy, WILDCARD))
-def vector_getitem(
+def vector_getitem_impl(object: Var[VectorTy], key: Var) -> Var[ScalarTy | PointerTy | VectorTy]:
+    return sym2var(_vector_getitem(var2sym(object), var2sym(key)))
+
+
+# Does not check the index range, hence the name "Raw"
+def vector_getitem_raw(
     object: Var[VectorTy], key: Var[ScalarTy]
 ) -> Var[ScalarTy | PointerTy]:
     result_dtype = object.get_type().element_dtype

@@ -4,6 +4,54 @@
 Release Notes
 =============
 
+{#release-1-7-0}
+1.7.0 (2026-10-19)
+------------------
+
+This release adds support for Windows on arm64, with `win_arm64` wheels now
+published. It expands the supported Python subset with `str.join()`, string
+shorthands for enum arguments, dataclass comparison and operator overloads,
+and compile-time exceptions. It also adds TileIR text dumping, a `flush_l2`
+option for autotuning, and more flexible kernel export, along with fixes for
+ceiling division and `range()` with `int64` bounds.
+
+### Features
+- Add support for Windows on arm64. `win_arm64` wheels are now published.
+- Add the environment variables `CUDA_TILE_LOGS=TILEIR` and
+  `CUDA_TILE_DUMP_TILEIR` to print and save TileIR MLIR in text format. This
+  requires CUDA Toolkit 13.4 or later.
+
+### Python Features
+- Add support for `str.join()`.
+- Allow strings to be passed to built-in functions in place of enums.
+- Add `raise ct.static_exception(...)` syntax for raising compile-time
+  exceptions. See {py:func}`ct.static_exception() <cuda.tile.static_exception>`.
+- Dataclasses now support default comparisons via `==`, `!=`, `<`, `<=`, `>`,
+  and `>=`.
+- Dataclasses now support user-defined overloads of binary arithmetic operators
+  (`__add__()`, `__radd__()`, `__sub__()`, `__rsub__()`, etc.), comparison
+  operators (`__eq__()`, `__ne__()`, `__lt__()`, etc.), and `len()` (via
+  `__len__()`).
+
+### Enhancements
+- Add a `flush_l2` option to
+  {py:func}`ct.tune.exhaustive_search() <cuda.tile.tune.exhaustive_search>` to
+  control whether the L2 cache is flushed before each benchmarked kernel run.
+  It defaults to `True`.
+- Lift the restriction that exporting with
+  {py:class}`ConstantConstraint <cuda.tile.compilation.ConstantConstraint>`
+  requires the corresponding kernel parameter to have a `ct.Constant`
+  annotation.
+
+### Bug Fixes
+- Fix {py:func}`ct.cdiv() <cuda.tile.cdiv>` returning incorrect results when
+  used during constant propagation or host code with negative values. It was
+  computed using `(x + y - 1) // y` and `(x - 1) // y + 1`, which are wrong
+  when both `x` and `y` are negative.
+- Fix a compilation failure when `range()` is given an `int64` bound or step.
+  The bounds, step, and induction variable are now promoted to a common
+  integer type.
+
 {#release-1-6-0}
 1.6.0 (2026-09-09)
 ------------------

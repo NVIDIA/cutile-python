@@ -24,20 +24,23 @@ jobs:
     name: Define Base Images
     runs-on: ubuntu-latest
     outputs:
-      lint: ghcr.io/nvidia/cutile-python/lint:2026-08-17-a7628e4fb5b7
-      docs: ghcr.io/nvidia/cutile-python/docs:2026-08-17-df9e000270a6
-      build_py310: ghcr.io/nvidia/cutile-python/build_py_3.10_x86_64:2026-08-17-f50b5fae652b
-      build_py311: ghcr.io/nvidia/cutile-python/build_py_3.11_x86_64:2026-08-17-9401767e701e
-      build_py312: ghcr.io/nvidia/cutile-python/build_py_3.12_x86_64:2026-08-17-d68c73d15c0a
-      build_py313: ghcr.io/nvidia/cutile-python/build_py_3.13_x86_64:2026-08-17-e66dd3d7ef7a
-      build_py314: ghcr.io/nvidia/cutile-python/build_py_3.14_x86_64:2026-08-17-931831a8d099
-      build_py314t: ghcr.io/nvidia/cutile-python/build_py_3.14t_x86_64:2026-08-17-28bcee962449
-      test_py310: ghcr.io/nvidia/cutile-python/test_py_3.10_x86_64:2026-10-07-930ad3efefbb
-      test_py311: ghcr.io/nvidia/cutile-python/test_py_3.11_x86_64:2026-10-07-6c9a98aa0164
-      test_py312: ghcr.io/nvidia/cutile-python/test_py_3.12_x86_64:2026-10-07-e9e9091b2165
-      test_py313: ghcr.io/nvidia/cutile-python/test_py_3.13_x86_64:2026-10-07-747bd6e13da8
-      test_py314: ghcr.io/nvidia/cutile-python/test_py_3.14_x86_64:2026-10-07-014972b99f54
-      test_py314t: ghcr.io/nvidia/cutile-python/test_py_3.14t_x86_64:2026-10-07-6fc242eed61d
+      lint: ghcr.io/nvidia/cutile-python/lint:2026-10-07-b8c79b647a89
+      docs: ghcr.io/nvidia/cutile-python/docs:2026-10-07-f256039628ed
+      build_py310: ghcr.io/nvidia/cutile-python/build_py_3.10_x86_64:2026-10-07-158ed056693e
+      build_py311: ghcr.io/nvidia/cutile-python/build_py_3.11_x86_64:2026-10-07-ef8e65ad65d8
+      build_py312: ghcr.io/nvidia/cutile-python/build_py_3.12_x86_64:2026-10-07-83952eddad44
+      build_py313: ghcr.io/nvidia/cutile-python/build_py_3.13_x86_64:2026-10-07-b5c2fce6f2bc
+      build_py314: ghcr.io/nvidia/cutile-python/build_py_3.14_x86_64:2026-10-07-5eaf410714f1
+      build_py314t: ghcr.io/nvidia/cutile-python/build_py_3.14t_x86_64:2026-10-07-9a9d6569782f
+      build_py315: ghcr.io/nvidia/cutile-python/build_py_3.15_x86_64:2026-10-23-123bcc0ff029
+      build_py315t: ghcr.io/nvidia/cutile-python/build_py_3.15t_x86_64:2026-10-23-de28001c91a8
+      test_py311: ghcr.io/nvidia/cutile-python/test_py_3.11_x86_64:2026-10-28-995582b5c29e
+      test_py312: ghcr.io/nvidia/cutile-python/test_py_3.12_x86_64:2026-10-28-18896a4267a1
+      test_py313: ghcr.io/nvidia/cutile-python/test_py_3.13_x86_64:2026-10-28-05f041911f87
+      test_py314: ghcr.io/nvidia/cutile-python/test_py_3.14_x86_64:2026-10-28-3afe033a894e
+      test_py314t: ghcr.io/nvidia/cutile-python/test_py_3.14t_x86_64:2026-10-28-57c3e9b10635
+      test_py315: ghcr.io/nvidia/cutile-python/test_py_3.15_x86_64:2026-10-28-a2390350f3ef
+      test_py315t: ghcr.io/nvidia/cutile-python/test_py_3.15t_x86_64:2026-10-28-6dd9b4418c98
     steps:
       - run: echo "Defining image tags"
 
@@ -106,8 +109,6 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - python-version: "3.10"
-            image_key: build_py310
           - python-version: "3.11"
             image_key: build_py311
           - python-version: "3.12"
@@ -118,6 +119,10 @@ jobs:
             image_key: build_py314
           - python-version: "3.14t"
             image_key: build_py314t
+          - python-version: "3.15"
+            image_key: build_py315
+          - python-version: "3.15t"
+            image_key: build_py315t
     container:
       image: ${{ needs.images.outputs[matrix.image_key] }}
     steps:
@@ -148,8 +153,6 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - python-version: "3.10"
-            image_key: test_py310
           - python-version: "3.11"
             image_key: test_py311
           - python-version: "3.12"
@@ -160,6 +163,10 @@ jobs:
             image_key: test_py314
           - python-version: "3.14t"
             image_key: test_py314t
+          - python-version: "3.15"
+            image_key: test_py315
+          - python-version: "3.15t"
+            image_key: test_py315t
     container:
       image: ${{ needs.images.outputs[matrix.image_key] }}
       credentials:
@@ -195,12 +202,12 @@ jobs:
           fail-on-error: false
 
       - name: Run benchmarks
-        if: matrix.python-version == '3.10'
+        if: matrix.python-version == '3.11'
         continue-on-error: true
         run: pytest --ignore experimental --durations=10 --junitxml=benchmark-results.xml -m "benchmark" .
 
       - name: Report benchmark results
-        if: ${{ !cancelled() && matrix.python-version == '3.10' }}
+        if: ${{ !cancelled() && matrix.python-version == '3.11' }}
         uses: dorny/test-reporter@v3
         with:
           name: Benchmark Results

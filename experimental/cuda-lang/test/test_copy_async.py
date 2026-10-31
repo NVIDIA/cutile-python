@@ -2,6 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+from test.util import filecheck
 import pytest
 import torch
 
@@ -20,6 +21,7 @@ from .util import (
 
 HOPPER_TARGET = {"gpu_name": "sm_90", "arch": "compute_90"}
 SM100_TARGET = {"gpu_name": "sm_100a", "arch": "compute_100a"}
+RUBIN_TARGET = {"gpu_name": "sm_107f", "arch": "compute_107f"}
 
 
 COPY_ASYNC_ARRIVALS = {
@@ -112,6 +114,124 @@ class CopyAsyncPtxTestBase:
 
 @pytest.mark.skipif(not cconv_v3_enabled(), reason="Tensor-map arguments require cconv3")
 class TestG2S(CopyAsyncPtxTestBase):
+
+    @staticmethod
+    def make_report_kernel(report: cl.AsyncCopyReportMechanism, cluster: bool):
+        @cl.kernel
+        def k(
+            desc: cl.TensorMap,
+            _,
+            i32_0,
+            i32_1,
+            H: cl.Constant[int],
+            W: cl.Constant[int],
+        ):
+            dst = cl.shared_array(H * W, cl.int32, alignment=512).pointer()
+            mbar = cl.shared_array(1, cl.mbarrier, alignment=16).pointer()
+            if cluster:
+                dst = cl.map_shared_to_cluster(dst, 0)
+            cl.copy_async_bulk_tensor_global_to_shared(
+                desc, (i32_0, i32_1), dst, mbar, report_mechanism=report
+            )
+        return k
+
+    @pytest.mark.parametrize("target", ("90", "100a", "103f", "107", "110f", "120a"))
+    def test_copy_report_target(self, target):
+        compile_kernel(
+            TestG2S.make_report_kernel('VALIDITY_PER_ELEMENT_FF', False),
+            signature=CopyAsyncPtxTestBase.signature(),
+            gpu_name=f"sm_{target}", arch=f"compute_{target}",
+            raises=pytest.raises(UnsupportedFeatureError, match="reporting requires"),
+        )
+
+    @pytest.mark.parametrize("target", ("90", "100a", "103f", "107"))
+    @pytest.mark.parametrize("cluster", (False, True))
+    def test_copy_report_disabled_on_older_targets(self, target, cluster):
+        compile_kernel(
+            TestG2S.make_report_kernel(cl.AsyncCopyReportMechanism.DISABLED, cluster),
+            signature=self.signature(),
+            gpu_name=f"sm_{target}",
+            arch=f"compute_{target}",
+            assert_in_ptx="cp.async.bulk.tensor.2d",
+            assert_not_in_ptx="mbarrier::report",
+        )
+
+    @pytest.mark.parametrize("cluster", (False, True))
+    def test_copy_report_with_options(self, cluster):
+        @cl.kernel
+        def k(
+            desc: cl.TensorMap,
+            _,
+            i32_0,
+            i32_1,
+            H: cl.Constant[int],
+            W: cl.Constant[int],
+        ):
+            dst = cl.shared_array(H * W, cl.int32, alignment=512).pointer()
+            mbar = cl.shared_array(1, cl.mbarrier, alignment=16).pointer()
+            hint = cl.create_fractional_cache_policy(cl.CachePolicy.L2_EVICT_FIRST)
+            if cl.ensure_constant(cluster):
+                dst = cl.map_shared_to_cluster(dst, 0)
+                cl.copy_async_bulk_tensor_global_to_shared(
+                    desc, (i32_0, i32_1), dst, mbar,
+                    l2_cache_hint=hint,
+                    multicast_mask=0x3,
+                    cta_group='CTA_2',
+                    report_mechanism='VALIDITY_PER_ELEMENT_FF',
+                )
+            else:
+                cl.copy_async_bulk_tensor_global_to_shared(
+                    desc, (i32_0, i32_1), dst, mbar,
+                    l2_cache_hint=hint,
+                    report_mechanism='VALIDITY_PER_ELEMENT_FF',
+                )
+
+        compiled = compile_kernel(
+            k,
+            signature=self.signature(),
+            **RUBIN_TARGET,
+        )
+        assert compiled and compiled.ptx
+        filecheck(
+            compiled.ptx,
+            r"""
+            CHECK-NOT: cp.async.bulk.tensor
+            CHECK: {{^[ \t]*}}cp.async.bulk.tensor.2d
+            LOCAL-SAME: .shared::cta.global
+            CLUSTER-SAME: .shared::cluster.global
+            CLUSTER-SAME: .multicast::cluster
+            CHECK-SAME: .L2::cache_hint
+            CHECK-SAME: .mbarrier::report::validity::per_element::ff
+            CLUSTER-SAME: .cta_group::2
+            CHECK-NOT: cp.async.bulk.tensor
+            """,
+            check_prefixes=('CHECK', 'CLUSTER' if cluster else 'LOCAL'),
+        )
+
+    @pytest.mark.parametrize('report', tuple(cl.AsyncCopyReportMechanism))
+    @pytest.mark.parametrize('cluster', (True, False))
+    @pytest.mark.parametrize('target', ('107f', '107a'))
+    def test_report_mechanism(self, report, cluster, target):
+        k = TestG2S.make_report_kernel(report, cluster)
+        if report is cl.AsyncCopyReportMechanism.DISABLED:
+            ptx = None
+            not_ptx = '.mbarrier::report::'
+        else:
+            ptx = ".mbarrier::report::" + report.name.lower().replace(
+                "validity_", "validity::"
+            ).replace("per_16_bytes_", "per_16bytes::").replace(
+                "per_element_", "per_element::"
+            )
+            not_ptx = None
+        compile_kernel(
+            k,
+            signature=self.signature(),
+            gpu_name=f"sm_{target}",
+            arch=f"compute_{target}",
+            assert_in_ptx=ptx,
+            assert_not_in_ptx=not_ptx,
+        )
+
     def test_l2_cache_hint(self):
         @cl.kernel
         def kernel(tensor_map, i, j, H: cl.Constant[int], W: cl.Constant[int]):

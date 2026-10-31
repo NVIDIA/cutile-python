@@ -10,6 +10,7 @@ exclude =
     build,
     env,
     dist,
+    deps,
     *docs/build,
     *docs/source/generated,
     *docs/source/stubs,

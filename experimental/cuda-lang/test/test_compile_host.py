@@ -125,7 +125,7 @@ def _call(compilation, args, arg_ctypes=None):
 
 
 def test_scalar_add(capfd):
-    @cl.function(host=True, tile=False)
+    @cl.function(host=True, simt=False)
     def add(a, b):
         x = a
         for i in range(b):
@@ -139,7 +139,7 @@ def test_scalar_add(capfd):
 
 
 def test_scalar_add_constant(capfd):
-    @cl.function(host=True, tile=False)
+    @cl.function(host=True, simt=False)
     def add_const(a, x: cl.Constant[int]):
         print(a + x)
 
@@ -162,7 +162,7 @@ def test_kernel_launch(array_dtype, backing_dtype):
     def kernel(output):
         pass
 
-    @cl.function(host=True, tile=False)
+    @cl.function(host=True, simt=False)
     def launch_kernel(stream: ScalarInt64, output):
         cl.launch(
             stream,
@@ -191,7 +191,7 @@ def test_kernel_launch_passes_runtime_scalar_to_const_param():
     def kernel(value: cl.Constant[int], output):
         output[0] = value
 
-    @cl.function(host=True, tile=False)
+    @cl.function(host=True, simt=False)
     def host(value, output):
         cl.launch(None, (1,), (1,), kernel, (value, output))
 
@@ -230,7 +230,7 @@ def test_kernel_launch_passes_const_scalar_to_runtime_param():
     def kernel(value, output):
         output[0] = value
 
-    @cl.function(host=True, tile=False)
+    @cl.function(host=True, simt=False)
     def host(value: cl.Constant[int], output):
         cl.launch(None, (1,), (1,), kernel, (value, output))
 
@@ -274,7 +274,7 @@ def test_kernel_launch_rejects_invalid_runtime_grid_dim(grid_x, message):
     def kernel(output):
         output[0] = 1
 
-    @cl.function(host=True, tile=False)
+    @cl.function(host=True, simt=False)
     def host(grid_x: ScalarInt64, output):
         cl.launch(None, (grid_x,), (1,), kernel, (output,))
 
@@ -330,7 +330,7 @@ def test_kernel_launch_preserves_scalar_bits(
             cl.static_assert(cl.dtype_of(value) == kernel_dtype)
             output[0] = cl.uint64(cl.bitcast(value, cl.uint32))
 
-    @cl.function(host=True, tile=False)
+    @cl.function(host=True, simt=False)
     def host(output):
         cl.launch(None, (1,), (1,), kernel, (source_dtype(source_value), output))
 
@@ -379,7 +379,7 @@ def test_kernel_launch_scalar_overflow(
             cl.static_assert(cl.dtype_of(value) == cl.int32)
             output[0] = cl.uint64(cl.bitcast(value, cl.uint32))
 
-    @cl.function(host=True, tile=False)
+    @cl.function(host=True, simt=False)
     def host(output):
         cl.launch(None, (1,), (1,), kernel, (source_dtype(source_value), output))
 
@@ -397,7 +397,7 @@ def test_kernel_launch_tuple_argument():
     def add_pair(values: tuple[int, int], output):
         output[0] = values[0] + values[1]
 
-    @cl.function(host=True, tile=False)
+    @cl.function(host=True, simt=False)
     def host(a, b, output):
         cl.launch(None, (1,), (1,), add_pair, ((a, b), output))
 
@@ -422,7 +422,7 @@ def test_kernel_launch_dataclass_argument():
     def add_pair(values: Any, output):
         output[0] = values.x + values.y
 
-    @cl.function(host=True, tile=False)
+    @cl.function(host=True, simt=False)
     def host(a, b, output):
         cl.launch(None, (1,), (1,), add_pair, (Pair(a, b), output))
 
@@ -441,7 +441,7 @@ def test_kernel_launch_rejects_list_argument():
     def kernel(arrays):
         pass
 
-    @cl.function(host=True, tile=False)
+    @cl.function(host=True, simt=False)
     def host(arrays):
         cl.launch(None, (1,), (1,), kernel, (arrays,))
 

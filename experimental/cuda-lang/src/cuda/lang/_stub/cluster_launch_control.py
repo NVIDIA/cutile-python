@@ -6,17 +6,15 @@ from .core_api import Pointer
 from cuda.lang._datatype import (
     bool_,
     cluster_launch_control_token,
-    mbarrier,
     int32,
 )
-from cuda.tile._memory_model import MemorySpace
-from cuda.lang._execution import stub
+from cuda.lang._execution import simt_stub
 
 
-@stub
+@simt_stub
 def cluster_launch_control_try_cancel(
-    addr: "Pointer[cluster_launch_control_token, MemorySpace.SHARED]",
-    mbar: "Pointer[mbarrier, MemorySpace.SHARED]",
+    addr: Pointer,
+    mbar: Pointer,
     multicast: bool = False,
 ) -> None:
     """Try to cancel a pending block and write the response token to ``addr``.
@@ -31,7 +29,7 @@ def cluster_launch_control_try_cancel(
     ...
 
 
-@stub
+@simt_stub
 def cluster_launch_control_is_canceled(token: cluster_launch_control_token) -> "bool_":
     """Return whether ``token`` represents a canceled block.
 
@@ -44,7 +42,7 @@ def cluster_launch_control_is_canceled(token: cluster_launch_control_token) -> "
     ...
 
 
-@stub
+@simt_stub
 def cluster_launch_control_get_first_block_index(
     token: cluster_launch_control_token, axis: int | None = None
 ) -> "int32 | tuple[int32, int32, int32]":

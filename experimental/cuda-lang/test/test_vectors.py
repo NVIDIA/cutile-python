@@ -560,6 +560,17 @@ def test_vector_with_item():
     assert b.cpu().tolist() == [0, 1, 42, 3]
 
 
+def test_bool_vector_with_int_item():
+    @cl.kernel
+    def kernel(out):
+        v = cl.Vector(False, False, dtype=cl.bool_)
+        out.pointer().store(v.with_item(1, 1), alignment=2)
+
+    out = torch.zeros(2, dtype=torch.bool, device="cuda:0")
+    cl.launch(torch.cuda.current_stream(), (1,), (1,), kernel, (out,))
+    assert out.cpu().tolist() == [False, True]
+
+
 def test_vector_from_tuple():
     @cl.kernel
     def kernel(tensor):
@@ -893,6 +904,14 @@ class TestVectorSlice:
 
         self._transform_vector(f)
 
+    def test_huge_negative_step(self):
+        step = -2**63
+
+        def f(v):
+            return v[::step]
+
+        self._transform_vector(f)
+
     def test_negative_start_stop(self):
         def f(v):
             return v[-5:-1]
@@ -924,7 +943,7 @@ class TestVectorSlice:
             kernel,
             raises=pytest.raises(
                 TypeCheckingError,
-                match="Expected a slice constant, but given value is not constant"
+                match="Slice start must be constant"
             ),
         )
 
@@ -937,7 +956,7 @@ class TestVectorSlice:
             kernel,
             raises=pytest.raises(
                 TypeCheckingError,
-                match="Expected a slice constant, but given value is not constant"
+                match="Slice stop must be constant"
             ),
         )
 
@@ -950,7 +969,7 @@ class TestVectorSlice:
             kernel,
             raises=pytest.raises(
                 TypeCheckingError,
-                match="Expected a slice constant, but given value is not constant"
+                match="Slice step must be constant"
             ),
         )
 
@@ -969,7 +988,7 @@ class TestVectorSlice:
 
         compile_kernel(
             kernel,
-            raises=pytest.raises(Exception, match="slice indices must be integers"),
+            raises=pytest.raises(TypeCheckingError, match="Slice start must be an integer or None"),
         )
 
 

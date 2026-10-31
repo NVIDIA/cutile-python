@@ -4,11 +4,11 @@
 
 from typing import Literal
 
-from cuda.lang._execution import stub
+from cuda.lang._execution import simt_stub
 from .._enums import MemoryScope
 
 
-@stub
+@simt_stub
 def store_async_global(
     destination_address,
     value,
@@ -32,7 +32,7 @@ def store_async_global(
     ...
 
 
-@stub
+@simt_stub
 def store_async_cluster(
     destination_address,
     value,

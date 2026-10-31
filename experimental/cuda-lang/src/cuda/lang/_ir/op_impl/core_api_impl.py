@@ -118,9 +118,9 @@ def reinterpret_as_scalar(x: Var[VectorTy], dtype: datatype.DType):
     """Reinterpret a whole vector's bits as a single scalar of ``dtype``, whose
     bitwidth must equal the vector's total bitwidth. Bytes are packed
     little-endian."""
-    if datatype.is_pointer_dtype(dtype):
+    if not datatype.is_numeric(dtype):
         raise TypeCheckingError(
-            "reinterpret_as_scalar only accepts a scalar dtype."
+            "reinterpret_as_scalar only accepts a numeric dtype."
         )
     return reinterpret_to(x, ScalarTy(dtype))
 
@@ -189,8 +189,8 @@ def map_shared_to_cluster_impl(pointer: Var, rank: Var):
     )
 
 
-@impl(core_api.map_shared_to_leader_block)
-def map_shared_to_leader_block(pointer: Var):
+@impl(core_api.map_shared_to_block_pair_leader)
+def map_shared_to_block_pair_leader(pointer: Var):
     spaces = (MemorySpace.SHARED, MemorySpace.SHARED_CLUSTER)
     pointer_type = require_pointer_in_memory_space(pointer, spaces)
     int_value = bitcast(pointer, datatype.uint32)

@@ -217,7 +217,7 @@ def test_arith_on_bool():
         y = ct.full((1,), 0, dtype=ct.bool_)
         x + y
 
-    msg = r'Binary arithmetic op `add` does not support bool, please cast bool to int'
+    msg = r'Binary arithmetic is not supported for booleans'
     with pytest.raises(TileTypeError, match=msg):
         compile(kernel, ())
 

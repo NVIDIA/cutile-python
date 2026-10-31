@@ -167,7 +167,7 @@ def test_tmem_offset():
             column_offset=7,
         )
         cl.tcgen05_store(
-            cl.Tcgen05LoadStoreShape.SHAPE_32X32B,
+            cl.Tcgen05LoadStoreShape.SHAPE_32x32b,
             tmem,
             cl.int32(0),
         )
@@ -251,24 +251,24 @@ def test_tmem_offset_requires_tensor_pointer():
 
 
 STORE_VALID_NUMS_BY_SHAPE = {
-    cl.Tcgen05LoadStoreShape.SHAPE_16X64B: (1, 2, 4, 8, 16, 32, 64, 128),
-    cl.Tcgen05LoadStoreShape.SHAPE_16X128B: (1, 2, 4, 8, 16, 32, 64),
-    cl.Tcgen05LoadStoreShape.SHAPE_16X256B: (1, 2, 4, 8, 16, 32),
-    cl.Tcgen05LoadStoreShape.SHAPE_32X32B: (1, 2, 4, 8, 16, 32, 64, 128),
-    cl.Tcgen05LoadStoreShape.SHAPE_16X32BX2: (1, 2, 4, 8, 16, 32, 64, 128),
+    cl.Tcgen05LoadStoreShape.SHAPE_16x64b: (1, 2, 4, 8, 16, 32, 64, 128),
+    cl.Tcgen05LoadStoreShape.SHAPE_16x128b: (1, 2, 4, 8, 16, 32, 64),
+    cl.Tcgen05LoadStoreShape.SHAPE_16x256b: (1, 2, 4, 8, 16, 32),
+    cl.Tcgen05LoadStoreShape.SHAPE_32x32b: (1, 2, 4, 8, 16, 32, 64, 128),
+    cl.Tcgen05LoadStoreShape.SHAPE_16x32bx2: (1, 2, 4, 8, 16, 32, 64, 128),
 }
 
 REGISTERS_PER_REPETITION = {
-    cl.Tcgen05LoadStoreShape.SHAPE_16X64B: 1,
-    cl.Tcgen05LoadStoreShape.SHAPE_16X128B: 2,
-    cl.Tcgen05LoadStoreShape.SHAPE_16X256B: 4,
-    cl.Tcgen05LoadStoreShape.SHAPE_32X32B: 1,
-    cl.Tcgen05LoadStoreShape.SHAPE_16X32BX2: 1,
+    cl.Tcgen05LoadStoreShape.SHAPE_16x64b: 1,
+    cl.Tcgen05LoadStoreShape.SHAPE_16x128b: 2,
+    cl.Tcgen05LoadStoreShape.SHAPE_16x256b: 4,
+    cl.Tcgen05LoadStoreShape.SHAPE_32x32b: 1,
+    cl.Tcgen05LoadStoreShape.SHAPE_16x32bx2: 1,
 }
 
 
 def _offset_for_shape(shape):
-    return 1 if shape is cl.Tcgen05LoadStoreShape.SHAPE_16X32BX2 else None
+    return 1 if shape is cl.Tcgen05LoadStoreShape.SHAPE_16x32bx2 else None
 
 
 @pytest.mark.parametrize(
@@ -308,7 +308,7 @@ def test_store_accepts_typed_value():
         smem = cl.shared_array(1, tmem_dtype, alignment=4)
         cl.tcgen05_allocate(smem.pointer(), 128)
         cl.tcgen05_store(
-            cl.Tcgen05LoadStoreShape.SHAPE_16X64B,
+            cl.Tcgen05LoadStoreShape.SHAPE_16x64b,
             smem[0],
             cl.float32(0),
         )
@@ -328,7 +328,7 @@ def test_store_rejects_bool_value():
         tmem_dtype = cl.pointer_dtype(cl.int8, cl.MemorySpace.TENSOR)
         smem = cl.shared_array(1, tmem_dtype, alignment=4)
         cl.tcgen05_store(
-            cl.Tcgen05LoadStoreShape.SHAPE_16X64B,
+            cl.Tcgen05LoadStoreShape.SHAPE_16x64b,
             smem[0],
             cl.bool_(True),
         )
@@ -345,7 +345,7 @@ def test_store_rejects_pointer_value():
         tmem_dtype = cl.pointer_dtype(cl.int8, cl.MemorySpace.TENSOR)
         smem = cl.shared_array(1, tmem_dtype, alignment=4)
         cl.tcgen05_store(
-            cl.Tcgen05LoadStoreShape.SHAPE_16X64B,
+            cl.Tcgen05LoadStoreShape.SHAPE_16x64b,
             smem[0],
             smem.pointer(),
         )
@@ -368,7 +368,7 @@ def test_store_rejects_partial_register(length):
         smem = cl.shared_array(1, tmem_dtype, alignment=4)
         storage = cl.shared_array(256, cl.float16)
         value = storage.pointer(0).load(count=length)
-        cl.tcgen05_store(cl.Tcgen05LoadStoreShape.SHAPE_16X64B, smem[0], value)
+        cl.tcgen05_store(cl.Tcgen05LoadStoreShape.SHAPE_16x64b, smem[0], value)
 
     compile_kernel(
         kernel,
@@ -387,7 +387,7 @@ def test_store_rejects_invalid_register_count():
 
         # 16x128b requires 2 * num registers; three is invalid.
         cl.tcgen05_store(
-            cl.Tcgen05LoadStoreShape.SHAPE_16X128B,
+            cl.Tcgen05LoadStoreShape.SHAPE_16x128b,
             smem[0],
             value,
         )
@@ -401,8 +401,8 @@ def test_store_rejects_invalid_register_count():
 @pytest.mark.parametrize(
     "shape,offset",
     (
-        (cl.Tcgen05LoadStoreShape.SHAPE_16X32BX2, None),
-        (cl.Tcgen05LoadStoreShape.SHAPE_16X64B, 1),
+        (cl.Tcgen05LoadStoreShape.SHAPE_16x32bx2, None),
+        (cl.Tcgen05LoadStoreShape.SHAPE_16x64b, 1),
     ),
 )
 def test_store_offset_validation(shape, offset):
@@ -522,9 +522,9 @@ def test_load_default_int32(shape, num, pack, offset):
         cl.tcgen05_deallocate(tmem_ptr, 128)
 
     bad_args = (
-        offset is not None and shape is not cl.Tcgen05LoadStoreShape.SHAPE_16X32BX2
+        offset is not None and shape is not cl.Tcgen05LoadStoreShape.SHAPE_16x32bx2
     )
-    bad_args |= shape is cl.Tcgen05LoadStoreShape.SHAPE_16X256B and num not in (
+    bad_args |= shape is cl.Tcgen05LoadStoreShape.SHAPE_16x256b and num not in (
         1,
         2,
         4,
@@ -532,8 +532,8 @@ def test_load_default_int32(shape, num, pack, offset):
         16,
         32,
     )
-    bad_args |= shape is cl.Tcgen05LoadStoreShape.SHAPE_16X32BX2 and offset is None
-    bad_args |= shape is cl.Tcgen05LoadStoreShape.SHAPE_16X128B and num not in (
+    bad_args |= shape is cl.Tcgen05LoadStoreShape.SHAPE_16x32bx2 and offset is None
+    bad_args |= shape is cl.Tcgen05LoadStoreShape.SHAPE_16x128b and num not in (
         1,
         2,
         4,
@@ -618,7 +618,7 @@ def test_load_dtype_element_count(shape, dtype, num):
             offset=offset,
         )
         cl.static_assert(cl.dtype_of(values) is dtype)
-        if cl.static_eval(element_count > 1):
+        if cl.ensure_constant(element_count > 1):
             cl.static_assert(len(values) == element_count)
         cl.tcgen05_wait_load()
         cl.tcgen05_store(shape, tmem_ptr, values, offset=offset)
@@ -688,7 +688,7 @@ def test_load_rejects_unusable_dtype(dtype, element_count, match):
         tmem_dtype = cl.pointer_dtype(cl.int8, cl.MemorySpace.TENSOR)
         smem = cl.shared_array(1, tmem_dtype, alignment=4)
         cl.tcgen05_load(
-            cl.Tcgen05LoadStoreShape.SHAPE_32X32B,
+            cl.Tcgen05LoadStoreShape.SHAPE_32x32b,
             smem[0],
             element_count=element_count,
             dtype=dtype,

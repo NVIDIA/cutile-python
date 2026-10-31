@@ -305,7 +305,7 @@ class WmmaConfig:
 def wmma_gemm_kernel(cfg: WmmaConfig) -> cl.kernel:
     @cl.kernel
     def kernel(a, b, c, d):
-        config = cl.static_eval(cfg)
+        config = cl.ensure_constant(cfg)
         wmma_m, wmma_n, wmma_k = config.shape
         global_m, global_n, global_k = config.global_shape
 

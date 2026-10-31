@@ -8,34 +8,34 @@ import struct
 import pytest
 import torch
 
-from cuda.tile._bytecode import SimpleType
-from cuda.tile._bytecode.float import float_from_bits, float_to_bits
+import cuda.tile as ct
+from cuda.tile._cext import decode_float, encode_float
 
 
 def test_float64_from_bits():
     for val in [0.0, -0.0, math.inf, -math.inf, 1.0, 1.5, -1.0]:
         bits = struct.unpack("<Q", struct.pack("<d", val))[0]
-        assert val == float_from_bits(bits, SimpleType.F64)
-    assert math.isnan(float_from_bits(0xffffffffffffffff, SimpleType.F64))
+        assert val == decode_float(bits, ct.float64)
+    assert math.isnan(decode_float(0xffffffffffffffff, ct.float64))
 
 
 def test_float16_from_bits():
     for bits in range(1 << 16):
-        val = float_from_bits(bits, SimpleType.F16)
+        val = decode_float(bits, ct.float16)
         expected = struct.unpack("<e", struct.pack("<H", bits))[0]
 
         if math.isnan(expected):
             assert math.isnan(val)
         else:
             assert expected == val
-            assert float_to_bits(val, SimpleType.F16) == bits
+            assert encode_float(val, ct.float16) == bits
 
 
 def test_bfloat16_from_bits():
     bf16_tensor = torch.zeros(1, dtype=torch.bfloat16)
     u16_view = bf16_tensor.view(torch.uint16)
     for bits in range(1 << 16):
-        val = float_from_bits(bits, SimpleType.BF16)
+        val = decode_float(bits, ct.bfloat16)
         u16_view[0] = bits
         expected = bf16_tensor[0]
 
@@ -43,7 +43,7 @@ def test_bfloat16_from_bits():
             assert math.isnan(val)
         else:
             assert expected == val
-            assert float_to_bits(val, SimpleType.BF16) == bits
+            assert encode_float(val, ct.bfloat16) == bits
 
 
 f4e2m1fn_values = [
@@ -254,16 +254,50 @@ f8e5m3fnu_values = [
 
 
 @pytest.mark.parametrize("type, value_table", [
-    (SimpleType.F4E2M1FN, f4e2m1fn_values),
-    (SimpleType.F8E4M3FN, f8e4m3fn_values),
-    (SimpleType.F8E8M0FNU, f8e8m0fnu_values),
-    (SimpleType.FNV8E5M3FNU, f8e5m3fnu_values),
+    (ct.float4_e2m1fn, f4e2m1fn_values),
+    (ct.float8_e4m3fn, f8e4m3fn_values),
+    (ct.float8_e8m0fnu, f8e8m0fnu_values),
+    (ct.float8_e5m3fnu, f8e5m3fnu_values),
 ])
 def test_low_precision_float_from_bits(type, value_table):
     for bits, expected in enumerate(value_table):
-        val = float_from_bits(bits, type)
+        val = decode_float(bits, type)
         if math.isnan(expected):
             assert math.isnan(val)
         else:
             assert val == expected
-        assert bits == float_to_bits(val, type)
+        assert bits == encode_float(val, type)
+
+
+@pytest.mark.parametrize("dtype", [ct.float8_e8m0fnu, ct.float8_e5m3fnu])
+def test_encode_negative_nan_as_unsigned(dtype):
+    assert encode_float(-math.nan, dtype) == 0xff
+
+
+def test_encode_not_representable():
+    with pytest.raises(ValueError, match="Cannot represent NaN as float4_e2m1fn"):
+        encode_float(math.nan, ct.float4_e2m1fn)
+    with pytest.raises(OverflowError,
+                       match="Cannot represent negative value -1.0 as float8_e8m0fnu"):
+        encode_float(-1.0, ct.float8_e8m0fnu)
+
+
+@pytest.mark.parametrize("bits", [2**64, 2**100, -1, -2**63, -2**100])
+def test_decode_float64_bits_out_of_range(bits):
+    with pytest.raises(ValueError, match="do not fit in 64 bits"):
+        decode_float(bits, ct.float64)
+
+
+def test_invalid_arguments():
+    with pytest.raises(TypeError, match="Expected a floating-point dtype"):
+        encode_float(1.0, ct.int32)
+    with pytest.raises(TypeError, match="Expected a floating-point dtype"):
+        decode_float(0, ct.int32)
+    with pytest.raises(TypeError, match="Expected an int"):
+        decode_float(1.0, ct.float16)
+    with pytest.raises(ValueError, match="do not fit in 16 bits"):
+        decode_float(0x10000, ct.float16)
+    with pytest.raises(ValueError, match="do not fit in 16 bits"):
+        decode_float(-1, ct.float16)
+    with pytest.raises(ValueError, match="do not fit in 19 bits"):
+        decode_float(1 << 19, ct.tfloat32)

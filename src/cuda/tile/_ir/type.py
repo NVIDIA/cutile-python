@@ -7,7 +7,7 @@ import dataclasses
 import os
 from dataclasses import dataclass
 from types import ModuleType, FunctionType, BuiltinFunctionType, MethodType, MappingProxyType, \
-    CoroutineType, NotImplementedType
+    CoroutineType, NotImplementedType, MethodDescriptorType
 from typing import Any, Callable, Optional, Sequence, Tuple, Iterator, Mapping
 from functools import reduce
 import operator
@@ -16,9 +16,10 @@ from typing import TYPE_CHECKING
 
 from typing_extensions import override
 
+from cuda.tile._cext import _make_symbolic_tensor, _make_constant_0d_tensor
 from cuda.tile._exception import Loc, TileTypeError
 from cuda.tile._memory_model import MemorySpace
-from cuda.tile._stub import Tile, Array
+from cuda.tile._stub import Array
 from cuda.tile._numeric_semantics import PaddingMode
 from .aggregate_value import AggregateValue
 from cuda.tile._datatype import DType, PointerInfo
@@ -69,6 +70,10 @@ class Symbol:
 
 def var2sym(var: "Var") -> Any:
     if var.is_constant():
+        # Strictly typed scalar constants become constant tensors, so that they keep their dtype
+        ty = var.get_loose_type()
+        if isinstance(ty, TensorLikeTy) and not isinstance(ty, LooselyTypedScalar):
+            return ty.make_symbol(var)
         return var.get_constant()
     return var.get_type().make_symbol(var)
 
@@ -143,6 +148,11 @@ _NOT_IMPLEMENTED = object.__new__(NotImplementedTy)
 @dataclass(frozen=True)
 class SliceType(Type):
     item_types: tuple["Type", "Type", "Type"] | None = None
+
+    def make_symbol(self, var: "Var") -> Symbol:
+        slice_val = var.get_aggregate()
+        assert isinstance(slice_val, SliceValue)
+        return slice(*(var2sym(x) for x in slice_val.as_tuple()))
 
     def is_aggregate(self) -> bool:
         return self.item_types is not None
@@ -488,8 +498,10 @@ class TileTy(TensorLikeTy):
         return self.shape
 
     @override
-    def make_symbol(self, var: "Var") -> Symbol:
-        return SymbolicTile(var)
+    def make_symbol(self, var: "Var") -> Any:
+        if var.is_constant():
+            return _make_constant_0d_tensor(var.get_constant(), self.dtype, True)
+        return _make_symbolic_tensor(var, True)
 
     @property
     def ndim(self):
@@ -516,46 +528,6 @@ class TileTy(TensorLikeTy):
 
 
 _tile_ty_cache: dict[tuple["DType", tuple[int, ...]], TileTy] = dict()
-
-
-class SymbolicTile(Symbol, Tile):
-    def __init__(self, var: "Var"):
-        Symbol.__init__(self, var)
-
-    @property
-    def dtype(self):
-        ty = self._var.get_type()
-        assert isinstance(ty, TileTy)
-        return ty.dtype
-
-    @property
-    def shape(self) -> tuple[int, ...]:
-        ty = self._var.get_type()
-        assert isinstance(ty, TileTy)
-        return ty.shape
-
-    @property
-    def ndim(self) -> int:
-        return len(self.shape)
-
-    def __bool__(self):
-        raise ValueError("Symbolic tile has no concrete value and thus cannot be converted"
-                         " to boolean")
-
-    def __int__(self):
-        raise ValueError("Symbolic tile has no concrete value and thus cannot be converted"
-                         " to an integer")
-
-    def __float__(self):
-        raise ValueError("Symbolic tile has no concrete value and thus cannot be converted"
-                         " to a float")
-
-    def __index__(self):
-        raise ValueError("Symbolic tile has no concrete value and thus cannot be converted"
-                         " to an integer")
-
-    def __repr__(self):
-        return f"<tile[{self.dtype}, {self.shape}]>"
 
 
 # ============== Array Type ===============
@@ -955,7 +927,7 @@ class FunctionTy(Type):
 @dataclass(frozen=True)
 class BoundMethodTy(Type):
     self_ty: Type
-    func: FunctionType | BuiltinFunctionType
+    func: FunctionType | BuiltinFunctionType | MethodDescriptorType
 
     def make_symbol(self, var: "Var") -> Any:
         self_sym = var2sym(var.get_aggregate().bound_self)

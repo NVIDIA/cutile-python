@@ -356,7 +356,7 @@ def _kernel(
     elif warp == TMA_WARP:
         local_mask = cl.int16(1 << rank)
         sfb_mask = cl.int16(0b11)
-        leader_barrier_base = cl.map_shared_to_leader_block(ab_full.pointer())
+        leader_barrier_base = cl.map_shared_to_block_pair_leader(ab_full.pointer())
         tile_m, tile_n, tile_l = _initial_work_tile()
         has_work = True
         ab_tma_iteration = cl.int32(0)
@@ -650,7 +650,7 @@ def _kernel(
                     column_offset=(acc_window * ACC_WINDOW_STRIDE_COLUMNS + column),
                 )
                 accumulators = cl.tcgen05_load(
-                    cl.Tcgen05LoadStoreShape.SHAPE_32X32B,
+                    cl.Tcgen05LoadStoreShape.SHAPE_32x32b,
                     tmem,
                     element_count=EPILOGUE_CHUNK_COLUMNS,
                     dtype=cl.float32,

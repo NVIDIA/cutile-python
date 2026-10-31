@@ -267,6 +267,27 @@ def test_tuple_compare_constant_args():
     assert x.item() == -1
 
 
+def test_tuple_truthiness():
+    @ct.kernel
+    def kernel(x):
+        empty = ()
+        nonempty = (0,)
+        if nonempty:            # True
+            ct.scatter(x, 0, 1)
+        if empty:               # False
+            ct.scatter(x, 1, 1)
+        ct.scatter(x, 2, 1 if nonempty else 0)
+        ct.scatter(x, 3, 1 if empty else 0)
+        if nonempty and ct.bid(0) == 0:
+            ct.scatter(x, 4, 1)
+        if empty or ct.bid(0) == 1:
+            ct.scatter(x, 5, 1)
+
+    x = torch.zeros(6, dtype=torch.int32, device="cuda:0")
+    ct.launch(torch.cuda.current_stream(), (1,), kernel, (x,))
+    assert x.tolist() == [1, 0, 1, 0, 1, 0]
+
+
 def test_element_in_tuple():
     @ct.kernel
     def kernel(x):

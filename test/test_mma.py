@@ -11,8 +11,9 @@ import cuda.tile as ct
 from util import (
     assert_close, assert_equal, require_hopper_or_newer, torch_to_tf32, is_ampere_or_ada
 )
-from conftest import dtype_id, get_tileiras_version
+from conftest import dtype_id, get_tileiras_version, requires_tileiras
 from cuda.tile._bytecode.version import BytecodeVersion
+from cuda.tile._cext import get_compute_capability
 from cuda.tile._exception import TileTypeError, TileUnsupportedFeatureError
 
 
@@ -129,7 +130,13 @@ def mma_fast_acc_kernel(A, B, C,
     ct.store(C, index=(0, 0), tile=acc)
 
 
-@require_hopper_or_newer()
+def require_fp8_mma():
+    if get_compute_capability() == (8, 9):
+        return requires_tileiras(BytecodeVersion.V_13_5)
+    return require_hopper_or_newer()
+
+
+@require_fp8_mma()
 @pytest.mark.parametrize("tile_size", [(16, 16, 16)])
 @pytest.mark.parametrize("case", fp8_cases, ids=str)
 @pytest.mark.parametrize("use_fast_acc", [True, False])
@@ -295,7 +302,7 @@ def test_matmul(tile_size, x_dtype, y_dtype):
         assert_close(C, ref, atol=atol, rtol=rtol)
 
 
-@require_hopper_or_newer()
+@require_fp8_mma()
 @pytest.mark.parametrize("tile_size", [(16, 16, 16)])
 @pytest.mark.parametrize("dtype", [f8e4m3fn, f8e5m2], ids=dtype_id)
 def test_matmul_fp8(tile_size, dtype):

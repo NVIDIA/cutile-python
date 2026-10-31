@@ -257,7 +257,7 @@ def _kernel(c, bias, a_tmap, b_tmap, k: cl.Constant[int], has_bias: cl.Constant[
                     a_dst = cl.address_space_cast(
                         a_stage, cl.MemorySpace.SHARED_CLUSTER
                     )
-                    arrive_bar = cl.map_shared_to_leader_block(ab_full_stage)
+                    arrive_bar = cl.map_shared_to_block_pair_leader(ab_full_stage)
                     tma_mask = cl.int16(1 << rank)
                     cl.copy_async_bulk_tensor_global_to_shared(
                         a_tmap,
@@ -272,7 +272,7 @@ def _kernel(c, bias, a_tmap, b_tmap, k: cl.Constant[int], has_bias: cl.Constant[
                     b_dst = cl.address_space_cast(
                         b_stage, cl.MemorySpace.SHARED_CLUSTER
                     )
-                    arrive_bar = cl.map_shared_to_leader_block(ab_full_stage)
+                    arrive_bar = cl.map_shared_to_block_pair_leader(ab_full_stage)
                     tma_mask = cl.int16(1 << rank)
                     cl.copy_async_bulk_tensor_global_to_shared(
                         b_tmap,
@@ -453,7 +453,7 @@ def _kernel(c, bias, a_tmap, b_tmap, k: cl.Constant[int], has_bias: cl.Constant[
                     column_offset=current_acc_stage * TILE_N + column,
                 )
                 accumulators = cl.tcgen05_load(
-                    cl.Tcgen05LoadStoreShape.SHAPE_32X32B,
+                    cl.Tcgen05LoadStoreShape.SHAPE_32x32b,
                     tmem,
                     element_count=32,
                     dtype=cl.float32,

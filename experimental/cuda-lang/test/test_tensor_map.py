@@ -382,15 +382,16 @@ def test_tensor_map_tiled_invalid_order(order, error, match):
 
 
 @pytest.mark.parametrize(
-    "dtype",
+    "dtype, match",
     (
-        pytest.param(torch.int16, id="int16"),
-        pytest.param(torch.float4_e2m1fn_x2, id="float4"),
+        pytest.param(torch.int16, r"is not supported by tensor map", id="int16"),
+        pytest.param(torch.float4_e2m1fn_x2, r"Array dtypes with multiple lanes are not supported",
+                     id="float4"),
     ),
 )
-def test_tensor_map_tiled_rejects_unsupported_data_type(dtype):
+def test_tensor_map_tiled_rejects_unsupported_data_type(dtype, match):
     source = torch.empty((8, 32), dtype=dtype, device="cuda")
-    with pytest.raises(TypeError, match=r"is not supported by tensor map"):
+    with pytest.raises(TypeError, match=match):
         cl.tensor_map_tiled(source, (8, 4), order="F")
 
 

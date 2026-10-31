@@ -141,7 +141,7 @@ def load_tmem_bf16_subtile(registers, register_offset, tmem, warp, column, width
         column_offset=column,
     )
     values = cl.tcgen05_load(
-        cl.Tcgen05LoadStoreShape.SHAPE_32X32B,
+        cl.Tcgen05LoadStoreShape.SHAPE_32x32b,
         source,
         element_count=width,
         dtype=cl.float32,
@@ -408,7 +408,7 @@ def mxfp8_b200_gemm_kernel(
                     )
                 if cl.elect_sync():
                     ready = data_ready.pointer(stage)
-                    arrive = cl.map_shared_to_leader_block(ready)
+                    arrive = cl.map_shared_to_block_pair_leader(ready)
                     expect = cl.map_shared_to_cluster(ready, 0)
                     a_dst = cl.map_shared_to_cluster(
                         a_smem.pointer((stage, 0)),
@@ -462,7 +462,7 @@ def mxfp8_b200_gemm_kernel(
                     )
                 if cl.elect_sync():
                     ready = scale_ready.pointer(stage)
-                    arrive = cl.map_shared_to_leader_block(ready)
+                    arrive = cl.map_shared_to_block_pair_leader(ready)
                     expect = cl.map_shared_to_cluster(ready, 0)
                     a_dst = cl.map_shared_to_cluster(
                         a_scale_smem.pointer((stage, 0)),

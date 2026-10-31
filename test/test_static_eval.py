@@ -331,3 +331,19 @@ def test_static_eval_dispatch_binop_via_rhs():
     x = torch.zeros(4, dtype=torch.int32, device="cuda")
     ct.launch(torch.cuda.current_stream(), (4,), kern, (x,))
     assert x.tolist() == [5, 6, 7, 8]
+
+
+def test_strictly_typed_constant_roundtrip():
+    def helper(x):
+        assert isinstance(x, ct.Tile)
+        assert x.dtype == ct.int16
+        return x + 3
+
+    @ct.kernel
+    def kern():
+        x = ct.int16(5)
+        y = ct.static_eval(helper(x))
+        ct.static_assert(y.dtype == ct.int16)
+        ct.static_assert(y == 8)
+
+    ct.launch(torch.cuda.current_stream(), (1,), kern, ())

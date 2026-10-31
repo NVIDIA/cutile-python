@@ -32,8 +32,7 @@ PyObject* get_max_grid_size(PyObject *self, PyObject *args) {
     if (!PyArg_ParseTuple(args, "i", &device_id))
         return nullptr;
 
-    GlobalLock lock;
-    Result<const DriverApi*> driver = get_driver_api(lock);
+    Result<const DriverApi*> driver = get_driver_api();
     if (!driver.is_ok()) return nullptr;
 
     CUdevice dev;
@@ -119,8 +118,7 @@ PyObject* get_compute_capability(PyObject *self, PyObject *args) {
     int device_id = 0;
     if (!PyArg_ParseTuple(args, "|i", &device_id)) return nullptr;
 
-    GlobalLock lock;
-    Result<const DriverApi*> driver_result = get_driver_api(lock);
+    Result<const DriverApi*> driver_result = get_driver_api();
     if (!driver_result.is_ok()) return nullptr;
 
     Result<ComputeCapability> computeCapability =
@@ -130,8 +128,7 @@ PyObject* get_compute_capability(PyObject *self, PyObject *args) {
 }
 
 PyObject* get_driver_version(PyObject *self, PyObject *Py_UNUSED(ignored)) {
-    GlobalLock lock;
-    Result<const DriverApi*> driver_result = get_driver_api(lock);
+    Result<const DriverApi*> driver_result = get_driver_api();
     if (!driver_result.is_ok()) return nullptr;
     int version = (*driver_result)->cuda_version;
     int major = version / 1000;
@@ -142,8 +139,7 @@ PyObject* get_driver_version(PyObject *self, PyObject *Py_UNUSED(ignored)) {
 // ========== Context helpers ==========
 
 PyObject* synchronize_context(PyObject* self, PyObject* Py_UNUSED(ignored)) {
-    GlobalLock lock;
-    Result<const DriverApi*> driver_result = get_driver_api(lock);
+    Result<const DriverApi*> driver_result = get_driver_api();
     if (!driver_result.is_ok()) return nullptr;
     const DriverApi* d = *driver_result;
 
@@ -158,8 +154,7 @@ PyObject* synchronize_context(PyObject* self, PyObject* Py_UNUSED(ignored)) {
 // ========== Stream helpers ==========
 
 PyObject* create_stream(PyObject* self, PyObject* Py_UNUSED(ignored)) {
-    GlobalLock lock;
-    Result<const DriverApi*> driver_result = get_driver_api(lock);
+    Result<const DriverApi*> driver_result = get_driver_api();
     if (!driver_result.is_ok()) return nullptr;
     const DriverApi* d = *driver_result;
 
@@ -173,11 +168,10 @@ PyObject* create_stream(PyObject* self, PyObject* Py_UNUSED(ignored)) {
 }
 
 PyObject* destroy_stream(PyObject* self, PyObject* arg) {
-    GlobalLock lock;
     CUstream stream = static_cast<CUstream>(PyLong_AsVoidPtr(arg));
     if (PyErr_Occurred()) return nullptr;
 
-    Result<const DriverApi*> driver_result = get_driver_api(lock);
+    Result<const DriverApi*> driver_result = get_driver_api();
     if (!driver_result.is_ok()) return nullptr;
     const DriverApi* d = *driver_result;
 
@@ -220,7 +214,7 @@ static PyObject* spy_on_cuLaunchKernel_begin(PyObject* self, PyObject* arg) {
         return nullptr;
     }
 
-    Result<const DriverApi*> driver_result = get_driver_api(lock);
+    Result<const DriverApi*> driver_result = get_driver_api();
     if (!driver_result.is_ok()) return nullptr;
 
     DriverApi* api = const_cast<DriverApi*>(*driver_result);
@@ -238,7 +232,7 @@ static PyObject* spy_on_cuLaunchKernel_end(PyObject* self, PyObject* arg) {
         return nullptr;
     }
 
-    Result<const DriverApi*> driver_result = get_driver_api(lock);
+    Result<const DriverApi*> driver_result = get_driver_api();
     if (!driver_result.is_ok()) return nullptr;
 
     DriverApi* api = const_cast<DriverApi*>(*driver_result);

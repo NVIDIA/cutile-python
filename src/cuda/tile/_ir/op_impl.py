@@ -23,7 +23,7 @@ from cuda.tile._exception import (
 )
 from cuda.tile._ir.ops_utils import get_dtype
 
-from .typing_support import datatype, get_signature
+from .typing_support import datatype, get_parameter_names, get_signature
 from .ir import Var, Builder
 from .type import TiledViewTy, TupleTy, TileTy, DTypeSpec, EnumTy, StringTy, ArrayTy, SliceType, \
     ListTy, LooselyTypedScalar, RangeIterType, FunctionTy, ClosureTy, BoundMethodTy, \
@@ -31,15 +31,16 @@ from .type import TiledViewTy, TupleTy, TileTy, DTypeSpec, EnumTy, StringTy, Arr
     TensorLikeTy, FormattedStringTy
 
 
-def _verify_params_match(stub_sig: inspect.Signature, func_sig: inspect.Signature):
-    assert len(stub_sig.parameters) == len(func_sig.parameters), (
+def _verify_params_match(stub_param_names: tuple[str, ...], func_sig: inspect.Signature):
+    assert len(stub_param_names) == len(func_sig.parameters), (
         f"Stub and implementation must have same number of parameters."
-        f" Signatures: {stub_sig}, {func_sig}.")
-    for i, (stub_param, func_param) in enumerate(zip(stub_sig.parameters.values(),
-                                                     func_sig.parameters.values(), strict=True)):
-        assert stub_param.name == func_param.name, (
-            f"Stub and implementation have different parameter names at position {i}"
-            f" Signatures: {stub_sig}, {func_sig}.")
+        f" Stub parameters: {stub_param_names}, implementation signature: {func_sig}.")
+    for i, (stub_param_name, func_param) in enumerate(zip(stub_param_names,
+                                                          func_sig.parameters.values(),
+                                                          strict=True)):
+        assert stub_param_name == func_param.name, (
+            f"Stub and implementation have different parameter names at position {i}."
+            f" Stub parameters: {stub_param_names}, implementation signature: {func_sig}.")
 
 
 @dataclass(frozen=True)
@@ -160,7 +161,9 @@ class ImplRegistry:
     def impl(self, stub, *, fixed_args: Sequence[Any] = (),
              min_version: Optional[BytecodeVersion] = None,
              overload: tuple[Any, ...] = ()):
-        stub_sig = get_signature(stub)
+        # Default values aren't evaluated yet, since the modules that define them may still be
+        # being imported (e.g. MemoryOrder.ACQUIRE for Pointer.atomic_load)
+        stub_param_names = get_parameter_names(stub)
 
         def _check_version():
             cur_version = Builder.get_current().ir_ctx.tileiras_version
@@ -177,7 +180,7 @@ class ImplRegistry:
                 func = functools.partial(orig_func, *fixed_args)
 
             func_sig = inspect.signature(func)
-            _verify_params_match(stub_sig, func_sig)
+            _verify_params_match(stub_param_names, func_sig)
             is_coroutine = inspect.iscoroutinefunction(func)
             if is_coroutine:
                 @functools.wraps(func)
@@ -186,7 +189,7 @@ class ImplRegistry:
                     # Memorize the stub and the args so that we can automatically
                     # provide context for error messages.
                     old = _current_stub.stub_and_args
-                    _current_stub.stub_and_args = (stub, stub_sig, func_sig, args, kwargs)
+                    _current_stub.stub_and_args = (stub, func_sig, args, kwargs)
                     try:
                         return await func(*args, **kwargs)
                     finally:
@@ -198,7 +201,7 @@ class ImplRegistry:
                     # Memorize the stub and the args so that we can automatically
                     # provide context for error messages.
                     old = _current_stub.stub_and_args
-                    _current_stub.stub_and_args = (stub, stub_sig, func_sig, args, kwargs)
+                    _current_stub.stub_and_args = (stub, func_sig, args, kwargs)
                     try:
                         return func(*args, **kwargs)
                     finally:
@@ -920,7 +923,8 @@ def _recover_error_context(var: Optional[Var]) -> Optional[_ErrorContext]:
     cur_stub_and_args = _current_stub.stub_and_args
     if cur_stub_and_args is None:
         return None
-    stub, stub_sig, func_sig, args, kwargs = cur_stub_and_args
+    stub, func_sig, args, kwargs = cur_stub_and_args
+    stub_sig = get_signature(stub)
     bound_args: inspect.BoundArguments = func_sig.bind(*args, **kwargs)
     for param_name, arg in bound_args.arguments.items():
         if arg is var:

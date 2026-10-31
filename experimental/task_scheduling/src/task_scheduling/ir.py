@@ -3,20 +3,24 @@
 
 """Canonical immutable snapshot of a validated task-scheduling program."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from types import MappingProxyType
 from typing import Mapping
 
+from .enums import BlockGuard
+
 
 @dataclass(frozen=True, eq=False)
-class ScheduleValue:
+class ScheduleValue(BlockGuard):
     """One independently routed call-site SSA value.
 
     ``outputs=N`` creates ``N`` instances.  A work call returns the single
     instance directly or a tuple of instances, so ordinary Python unpacking
     works without exposing the device route stack.
 
-    Values are routed by liveness through the device value stack.
+    Values are routed by liveness through the device value stack. A value is
+    also a guard operand: ``&``, ``|``, and ``~`` build a condition that
+    ``when_true()`` resolves to opaque runtime leaves.
     """
 
     value_id: int
@@ -33,6 +37,19 @@ class ScheduleValue:
     def __getitem__(self, index: object):
         del index
         raise TypeError("a single schedule value cannot be indexed")
+
+    def __invert__(self) -> BlockGuard:
+        return _NegatedScheduleValue(self)
+
+
+@dataclass(frozen=True, eq=False)
+class _NegatedScheduleValue(BlockGuard):
+    """Capture-time negation of a value, resolved to a negated opaque leaf."""
+
+    value: ScheduleValue
+
+    def __invert__(self) -> BlockGuard:
+        return self.value
 
 
 @dataclass(frozen=True)
@@ -53,6 +70,7 @@ class GuardIR:
     negated: bool = False
     period: int = 1
     start: int = 0
+    operands: tuple["GuardIR", ...] = ()
 
 
 @dataclass(frozen=True)
@@ -79,6 +97,7 @@ class BreakLoopIR:
 class ConditionalIR:
     body: tuple["NodeIR", ...]
     guard: GuardIR
+    verify_num_fires: int | None = None
 
 
 @dataclass(frozen=True)
@@ -102,7 +121,19 @@ class WorkTileLoopIR:
     skip_if: object | None = None
 
 
-NodeIR = StepIR | BreakLoopIR | ConditionalIR | DomainLoopIR | WorkTileLoopIR
+@dataclass(frozen=True)
+class WhileTrueLoopIR:
+    """Repeat ``body`` until a BreakLoopIR runs; hooks produce the cursor."""
+
+    init: StepIR
+    advance: StepIR
+    verify_num_iters: tuple[int, ...]
+    body: tuple["NodeIR", ...]
+
+
+NodeIR = (
+    StepIR | BreakLoopIR | ConditionalIR | DomainLoopIR | WorkTileLoopIR | WhileTrueLoopIR
+)
 
 
 @dataclass(frozen=True)
@@ -143,7 +174,11 @@ class ProgramIR:
 def _iter_ir_nodes(nodes: tuple[NodeIR, ...]):
     for node in nodes:
         yield node
-        if not isinstance(node, (StepIR, BreakLoopIR)):
+        if isinstance(node, WhileTrueLoopIR):
+            yield node.init
+            yield from _iter_ir_nodes(node.body)
+            yield node.advance
+        elif not isinstance(node, (StepIR, BreakLoopIR)):
             yield from _iter_ir_nodes(node.body)
 
 
@@ -161,8 +196,24 @@ def freeze_program_ir(
 ) -> ProgramIR:
     """Normalize capture objects into an identity-free, frozen program view."""
 
-    from .enums import Every, FIRST_ITER, LAST_ITER, OpaqueCondition, SKIPPABLE
-    from .schedule_builder import BreakLoop, ConditionalBlock, DomainLoop, Step, WorkTileLoop
+    from .enums import (
+        ComplementedIterationPredicate,
+        Every,
+        FIRST_ITER,
+        GuardAnd,
+        GuardOr,
+        LAST_ITER,
+        OpaqueCondition,
+        SKIPPABLE,
+    )
+    from .schedule_builder import (
+        BreakLoop,
+        ConditionalBlock,
+        DomainLoop,
+        Step,
+        WhileTrueLoop,
+        WorkTileLoop,
+    )
 
     resource_ids = {resource: index for index, resource in enumerate(resources)}
     resource_irs = tuple(
@@ -178,6 +229,13 @@ def freeze_program_ir(
     )
 
     def freeze_guard(guard) -> GuardIR:
+        if isinstance(guard, (GuardAnd, GuardOr)):
+            return GuardIR(
+                "and" if isinstance(guard, GuardAnd) else "or",
+                operands=tuple(freeze_guard(operand) for operand in guard.operands),
+            )
+        if isinstance(guard, ComplementedIterationPredicate):
+            return replace(freeze_guard(guard.predicate), negated=True)
         if guard is FIRST_ITER:
             return GuardIR("first")
         if guard is LAST_ITER:
@@ -224,6 +282,14 @@ def freeze_program_ir(
             return ConditionalIR(
                 tuple(freeze_node(child) for child in node.body),
                 freeze_guard(node.condition),
+                node.verify_num_fires,
+            )
+        if isinstance(node, WhileTrueLoop):
+            return WhileTrueLoopIR(
+                init=freeze_node(node.init),
+                advance=freeze_node(node.advance),
+                verify_num_iters=node.verify_num_iters,
+                body=tuple(freeze_node(child) for child in node.body),
             )
         if isinstance(node, DomainLoop):
             return DomainLoopIR(

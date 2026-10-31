@@ -6,6 +6,8 @@
 
 #include "check.h"
 #include "py.h"
+#include "enums.h"
+#include "error.h"
 
 #include <cuda.h>
 #include <cstdint>
@@ -14,29 +16,6 @@
 // It may look like this file is overusing X macros, which it probably is.
 
 class StringBuilder;
-
-// ----- Memory space -----
-
-#define FOREACH_MEMORY_SPACE(X) \
-    X(GENERIC, 0, 64) \
-    X(GLOBAL, 1, 64) \
-    X(SHARED, 3, 32) \
-    X(CONSTANT, 4, 64) \
-    X(LOCAL, 5, 64) \
-    X(TENSOR, 6, 32) \
-    X(SHARED_CLUSTER, 7, 32)
-
-enum class MemorySpace : uint8_t {
-    #define MEMORY_SPACE_ENUM_ENTRY(name, id, _ptrwidth) \
-        name = id,
-    FOREACH_MEMORY_SPACE(MEMORY_SPACE_ENUM_ENTRY)
-    #undef MEMORY_SPACE_ENUM_ENTRY
-};
-
-constexpr uint8_t kMemorySpaceMax = static_cast<uint8_t>(MemorySpace::SHARED_CLUSTER);
-
-const char* memory_space_str(MemorySpace space);
-
 
 static inline uint32_t memory_space_pointer_bitwidth(MemorySpace memory_space) {
     switch (memory_space) {
@@ -50,27 +29,41 @@ static inline uint32_t memory_space_pointer_bitwidth(MemorySpace memory_space) {
 
 // ----- Integer -----
 
-struct Integer {
-    uint64_t bits;
-    bool is_signed;
+union Integer {
+    uint64_t u;
+    int64_t s;
 
-    static inline constexpr Integer from_u64(uint64_t x) {
-        return Integer{x, false};
+    PyPtr to_pylong(bool is_signed) const {
+        return steal(is_signed ? PyLong_FromLongLong(s) : PyLong_FromUnsignedLongLong(u));
     }
 
-    static inline constexpr Integer from_i64(int64_t x) {
-        return Integer{static_cast<uint64_t>(x), true};
+    void append_to(StringBuilder* sb, bool is_signed) {
+        if (is_signed)
+            sb->append(s);
+        else
+            sb->append(u);
     }
-
-    PyPtr to_pylong() const {
-        return steal(is_signed ? PyLong_FromLongLong(static_cast<int64_t>(bits))
-                        : PyLong_FromUnsignedLongLong(bits));
-    }
-
 };
 
-int append_to_string_builder(Integer integer, StringBuilder* sb);
 
+// ----- FloatFormat -----
+
+struct FloatFormat {
+    enum NonFiniteBehavior : uint8_t {
+        IEEE,
+        NanOnlyAllOnes,
+        FiniteOnly,
+    };
+
+    int16_t emin;
+    int16_t emax;
+    uint8_t bitwidth;
+    uint8_t exp_bits;
+    uint8_t precision;
+    NonFiniteBehavior non_finite_behavior;
+    bool have_sign;
+    bool have_zero_and_subnormals;
+};
 
 // ----- DType -----
 
@@ -93,6 +86,12 @@ struct DType {
         return dtype_id != other.dtype_id;
     }
 };
+
+struct DTypeObject {
+    DType dtype;
+    static PyTypeObject pytype;
+};
+
 
 
 // (name, bitwdth, signed?, docstring)
@@ -162,7 +161,8 @@ struct DType {
     X(cluster_launch_control_token, 128, false, \
             "An opaque dtype representing a cluster launch control token value.") \
     X(tensor_map_descriptor, 8 * sizeof(CUtensorMap), false, \
-            "An opaque dtype representing a tensor map descriptor.")
+            "An opaque dtype representing a tensor map descriptor.") \
+    X(_int128, 128, false, "An internal, non-arithmetic 128-bit storage dtype.")
 
 
 namespace _dtype_detail {
@@ -201,9 +201,9 @@ namespace _dtype_detail {
     extern const uint32_t basic_dtype_bitwidth[basic_last + 1];
     extern const bool basic_dtype_is_signed[basic_last + 1];
 
-    bool is_derived_dtype_pointer(DType dtype, GlobalLock& lock);
-    bool is_derived_dtype_foreign_pointer(DType dtype, GlobalLock& lock);
-    uint32_t derived_dtype_bitwidth(DType dtype, GlobalLock& lock);
+    bool is_derived_dtype_pointer(DType dtype);
+    bool is_derived_dtype_foreign_pointer(DType dtype);
+    uint32_t derived_dtype_bitwidth(DType dtype);
 } // namespace _dtype_detail
 
 // Define constants like
@@ -233,6 +233,8 @@ Integer integer_dtype_min(DType dtype);
 
 Integer integer_dtype_max(DType dtype);
 
+const FloatFormat& float_dtype_format(DType dtype);
+
 static inline bool is_unrestricted_float_dtype(DType dtype) {
     return dtype.dtype_id >= _dtype_detail::unrestricted_float_first
         && dtype.dtype_id <= _dtype_detail::unrestricted_float_last;
@@ -251,19 +253,43 @@ static inline bool is_arithmetic_numeric_dtype(DType dtype) {
     return dtype == k_bool_ || is_integer_dtype(dtype) || is_unrestricted_float_dtype(dtype);
 }
 
-static inline bool is_pointer_dtype(DType dtype, GlobalLock& lock) {
+static inline bool is_pointer_dtype(DType dtype) {
     return dtype.dtype_id >= kFirstDerivedDTypeId
-        && _dtype_detail::is_derived_dtype_pointer(dtype, lock);
+        && _dtype_detail::is_derived_dtype_pointer(dtype);
 }
 
-static inline bool is_foreign_pointer_dtype(DType dtype, GlobalLock& lock) {
+static inline bool is_foreign_pointer_dtype(DType dtype) {
     return dtype.dtype_id >= kFirstDerivedDTypeId
-        && _dtype_detail::is_derived_dtype_foreign_pointer(dtype, lock);
+        && _dtype_detail::is_derived_dtype_foreign_pointer(dtype);
 }
 
 static inline bool is_numeric_dtype(DType dtype) {
     return dtype.dtype_id >= _dtype_detail::numeric_first
         && dtype.dtype_id <= _dtype_detail::numeric_last;
+}
+
+// Basic dtypes that are not numeric, e.g. mbarrier
+static inline bool is_opaque_dtype(DType dtype) {
+    return dtype.dtype_id > _dtype_detail::numeric_last
+        && dtype.dtype_id <= _dtype_detail::basic_last;
+}
+
+enum class NumericDTypeCategory {
+    Boolean,
+    Integer,
+    Float,
+};
+
+static inline NumericDTypeCategory numeric_dtype_category(DType dtype) {
+    if (dtype == k_bool_) {
+        return NumericDTypeCategory::Boolean;
+    } else if (is_integer_dtype(dtype)) {
+        return NumericDTypeCategory::Integer;
+    } else if (is_float_dtype(dtype)) {
+        return NumericDTypeCategory::Float;
+    } else {
+        CHECK_UNREACHABLE;
+    }
 }
 
 static inline bool is_signed_numeric_dtype(DType dtype) {
@@ -272,20 +298,47 @@ static inline bool is_signed_numeric_dtype(DType dtype) {
 
 std::optional<DType> promote_dtypes(DType a, DType b);
 
-DType pointer_dtype_pointee(DType pointer_dtype, GlobalLock& lock);
+enum class DTypeConversionStatus {
+    OK,
+    NegativeNotRepresentable,
+    NanNotRepresentable,
+    InfinityNotRepresentable,
+    IntegerOutOfRange,
+};
 
-DType foreign_pointer_dtype_pointee(DType foreign_pointer_dtype, GlobalLock& lock);
+DTypeConversionStatus encode_float(double value, DType dtype, uint64_t* out);
 
-MemorySpace pointer_dtype_memory_space(DType pointer_dtype, GlobalLock& lock);
+DTypeConversionStatus encode_int_as_float(uint64_t bits, bool is_signed, DType dtype,
+                                          uint64_t* out);
 
-static inline uint32_t dtype_bitwidth(DType dtype, GlobalLock& lock) {
+Result<DTypeConversionStatus> encode_pylong_as_float(PyObject* pylong, DType dtype, uint64_t* out);
+
+double decode_float(uint64_t bits, DType dtype);
+
+DType pointer_dtype_pointee(DType pointer_dtype);
+
+DType foreign_pointer_dtype_pointee(DType foreign_pointer_dtype);
+
+MemorySpace pointer_dtype_memory_space(DType pointer_dtype);
+
+static inline uint32_t basic_dtype_bitwidth(DType dtype) {
+    CHECK(dtype && dtype.dtype_id < kFirstDerivedDTypeId);
+    return _dtype_detail::basic_dtype_bitwidth[dtype.dtype_id];
+}
+
+static inline uint32_t dtype_bitwidth(DType dtype) {
     CHECK(dtype);
     if (dtype.dtype_id < kFirstDerivedDTypeId)
         return _dtype_detail::basic_dtype_bitwidth[dtype.dtype_id];
 
-    return _dtype_detail::derived_dtype_bitwidth(dtype, lock);
+    return _dtype_detail::derived_dtype_bitwidth(dtype);
 }
 
 int append_to_string_builder(DType dtype, StringBuilder* sb);
+
+PyObject* dtype_to_pyobject(DType dtype);
+
+// Returns std::nullopt if `obj` is not a DType object
+std::optional<DType> dtype_from_pyobject(PyObject* obj);
 
 Status dtype_init(PyObject* m);

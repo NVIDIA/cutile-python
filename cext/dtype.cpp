@@ -2,79 +2,63 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
+#include "atomics.h"
 #include "dtype.h"
+#include "paged_table.h"
 #include "vec.h"
 #include "py.h"
+
+#if defined(_MSC_VER)
+#include <intrin.h>
+#endif
 
 static PyObject* g_module;
 static PyObject* g_pointee_dtype_pyunicode;
 static PyObject* g_memory_space_pyunicode;
 
 
-int append_to_string_builder(Integer integer, StringBuilder* sb) {
-    if (integer.is_signed) {
-        sb->append(static_cast<int64_t>(integer.bits));
-    } else {
-        sb->append(static_cast<uint64_t>(integer.bits));
-    }
-    return 0;
-}
+// ----- FloatFormat constants -----
+
+#define IEEE_LIKE(emin, emax, bitwidth, exp_bits, precision) \
+    { emin, emax, bitwidth, exp_bits, precision, FloatFormat::IEEE, true, true }
 
 
-// ----- Memory space implementation -----
+// The bitwidth of tfloat32 is that of its encoding (19 bits), not its 32-bit container.
+static constexpr FloatFormat
+    k_format_float16        = IEEE_LIKE(-14, 15, 16, 5, 10),
+    k_format_float32        = IEEE_LIKE(-126, 127, 32, 8, 23),
+    k_format_float64        = IEEE_LIKE(-1022, 1023, 64, 11, 52),
+    k_format_bfloat16       = IEEE_LIKE(-126, 127, 16, 8, 7),
+    k_format_tfloat32       = IEEE_LIKE(-126, 127, 19, 8, 10),
+    k_format_float8_e5m2    = IEEE_LIKE(-14, 15, 8, 5, 2),
+    k_format_float8_e4m3fn  = { -6, 8, 8, 4, 3, FloatFormat::NanOnlyAllOnes, true, true },
+    k_format_float8_e5m3fnu = { -14, 16, 8, 5, 3, FloatFormat::NanOnlyAllOnes, false, true },
+    k_format_float8_e8m0fnu = { -127, 127, 8, 8, 0, FloatFormat::NanOnlyAllOnes, false, false },
+    k_format_float4_e2m1fn  = { 0, 2, 4, 2, 1, FloatFormat::FiniteOnly, true, true },
+    k_format_float6_e2m3fn  = { 0, 2, 6, 2, 3, FloatFormat::FiniteOnly, true, true },
+    k_format_float6_e3m2fn  = { -2, 4, 6, 3, 2, FloatFormat::FiniteOnly, true, true };
 
-const char* memory_space_str(MemorySpace space) {
-    switch (space) {
-        #define MEMORY_SPACE_STR_CASE(name, _id, _ptrwidth) \
-            case MemorySpace::name: return #name;
-        FOREACH_MEMORY_SPACE(MEMORY_SPACE_STR_CASE)
-        #undef MEMORY_SPACE_STR_CASE
-    }
-    CHECK_UNREACHABLE;
-}
+#undef IEEE_LIKE
 
-static constexpr MemorySpace all_memory_spaces[] = {
-    #define MEMORY_SPACE_ENUMERATE(name, _id, _ptrwidth) \
-        MemorySpace::name,
-    FOREACH_MEMORY_SPACE(MEMORY_SPACE_ENUMERATE)
-    #undef MEMORY_SPACE_ENUMERATE
+static constexpr FloatFormat float_formats[] = {
+    #define FLOAT_FORMAT_ENTRY(name, _bitwidth, _signed, _doc) k_format_##name,
+    FOREACH_UNRESTRICTED_FLOAT_DTYPE(FLOAT_FORMAT_ENTRY)
+    FOREACH_RESTRICTED_FLOAT_DTYPE(FLOAT_FORMAT_ENTRY)
+    #undef FLOAT_FORMAT_ENTRY
 };
 
-static PyObject* const* get_memory_space_pyobjects(GlobalLock&) {
-    static bool is_cached;
-    static PyObject* cache[kMemorySpaceMax + 1];
-    if (!is_cached) {
-        PyPtr mod = steal(PyImport_ImportModule("cuda.tile._memory_model"));
-        if (!mod) return nullptr;
-        PyPtr cls = getattr(mod, "MemorySpace");
-        if (!cls) return nullptr;
+static_assert(std::extent_v<decltype(float_formats)>
+        == _dtype_detail::restricted_float_last - _dtype_detail::unrestricted_float_first + 1);
 
-        for (MemorySpace space : all_memory_spaces) {
-            uint8_t i = static_cast<uint8_t>(space);
-            if (cache[i]) continue;
-            cache[i] = getattr(cls, memory_space_str(space)).release();
-            if (!cache[i]) return nullptr;
-        }
-        is_cached = true;
+static constexpr bool float_format_bitwidths_are_consistent() {
+    for (const FloatFormat& f : float_formats) {
+        if (f.have_sign + f.exp_bits + f.precision != f.bitwidth)
+            return false;
     }
-    return cache;
+    return true;
 }
 
-static PyObject* memory_space_to_pyobject(MemorySpace space, GlobalLock& lock) {
-    PyObject* const* objects = get_memory_space_pyobjects(lock);
-    if (!objects) return nullptr;
-    return objects[static_cast<uint8_t>(space)];
-}
-
-static std::optional<MemorySpace> memory_space_from_pyobject(PyObject* space_obj,
-                                                             GlobalLock& lock) {
-    PyObject* const* objects = get_memory_space_pyobjects(lock);
-    for (MemorySpace space : all_memory_spaces) {
-        if (objects[static_cast<uint8_t>(space)] == space_obj)
-            return space;
-    }
-    return std::nullopt;
-}
+static_assert(float_format_bitwidths_are_consistent());
 
 
 // ----- DType implementation -----
@@ -107,26 +91,42 @@ struct DerivedDType {
     DType pointee_dtype;  // when kind is `Pointer` or `ForeignPointer`
 };
 
-struct DTypeRegistry {
-    Vec<DType> pointer_dtypes[kMemorySpaceMax + 1];
-    Vec<DType> foreign_pointer_dtypes;
-    Vec<DerivedDType> derived_dtypes;
-    Vec<PyObject*> names;
-    Vec<PyObject*> pyobjects;
-
-    static DTypeRegistry& get(GlobalLock& lock) {
-        DTypeRegistry*& ptr = instance_.get(lock);
-        if (!ptr) ptr = new DTypeRegistry;
-        return *ptr;
-    }
-
-    static ProtectedByGlobalLock<DTypeRegistry*> instance_;
-private:
-    DTypeRegistry() = default;
-    ~DTypeRegistry();  // DTypeRegistry is an immortal singleton
+struct DTypePyObjects {
+    OncePointer<PyObject> name;
+    OncePointer<PyObject> pyobject;
 };
 
-ProtectedByGlobalLock<DTypeRegistry*> DTypeRegistry::instance_;
+static PagedTable<DTypePyObjects> g_dtype_pyobjects;
+static uint32_t g_num_named_dtypes;  // All dtypes with lower IDs have their names set. Atomic.
+
+static PagedTable<DerivedDType> g_derived_dtypes;  // Indexed by (dtype ID - kFirstDerivedDTypeId)
+static PagedTable<uint32_t> g_pointer_dtype_ids[enum_max_value<MemorySpace> + 1];
+static PagedTable<uint32_t> g_foreign_pointer_dtype_ids;
+
+
+static const DerivedDType& get_derived_dtype(DType dtype) {
+    return g_derived_dtypes.expect(dtype.dtype_id - kFirstDerivedDTypeId);
+}
+
+static DType get_or_create_derived_dtype(PagedTable<uint32_t>* ids, DerivedDTypeKind kind,
+                                         MemorySpace memory_space, DType pointee_dtype) {
+    uint32_t* slot = &(*ids)[pointee_dtype.dtype_id];
+    if (uint32_t id = atomic_load_acquire(slot)) return DType{id};
+
+    static MaybeMutex mutex;
+    MaybeLock lock(&mutex);
+
+    // Another thread may have created it while we were waiting for the lock.
+    if (uint32_t id = atomic_load_acquire(slot)) return DType{id};
+
+    static uint32_t num_derived_dtypes;  // protected by mutex
+    uint32_t index = num_derived_dtypes++;
+    CHECK(index <= UINT32_MAX - kFirstDerivedDTypeId);
+    g_derived_dtypes[index] = DerivedDType{kind, memory_space, pointee_dtype};
+    uint32_t id = index + kFirstDerivedDTypeId;
+    atomic_store_release(slot, id);
+    return DType{id};
+}
 
 
 Integer integer_dtype_min(DType dtype) {
@@ -134,10 +134,10 @@ Integer integer_dtype_min(DType dtype) {
         uint32_t width = _dtype_detail::basic_dtype_bitwidth[dtype.dtype_id];
         CHECK(width <= 64);
         uint64_t bits = static_cast<uint64_t>(-1) << (width - 1);
-        return Integer::from_i64(static_cast<int64_t>(bits));
+        return Integer{.s = static_cast<int64_t>(bits)};
     } else {
         CHECK(is_unsigned_integer_dtype(dtype));
-        return Integer::from_u64(0);
+        return Integer{.u = 0};
     }
 }
 
@@ -146,85 +146,60 @@ Integer integer_dtype_max(DType dtype) {
     CHECK(width <= 64);
     if (is_signed_integer_dtype(dtype)) {
         uint64_t bits = (static_cast<uint64_t>(1) << (width - 1)) - 1;
-        return Integer::from_i64(static_cast<int64_t>(bits));
+        return Integer{.s = static_cast<int64_t>(bits)};
     } else {
         CHECK(is_unsigned_integer_dtype(dtype));
         uint64_t bits = (static_cast<uint64_t>(-1)) >> (64 - width);
-        return Integer::from_u64(bits);
+        return Integer{.u = bits};
     }
 }
 
-DType pointer_dtype(DType pointee_dtype, MemorySpace memory_space, GlobalLock& lock) {
+const FloatFormat& float_dtype_format(DType dtype) {
+    CHECK(is_float_dtype(dtype));
+    return float_formats[dtype.dtype_id - _dtype_detail::unrestricted_float_first];
+}
+
+DType pointer_dtype(DType pointee_dtype, MemorySpace memory_space) {
     uint32_t space_idx = static_cast<uint32_t>(memory_space);
-    CHECK(space_idx <= kMemorySpaceMax);
-    DTypeRegistry& reg = DTypeRegistry::get(lock);
-    Vec<DType>& pointer_dtypes = reg.pointer_dtypes[space_idx];
-
-    if (pointee_dtype.dtype_id >= pointer_dtypes.size())
-        pointer_dtypes.resize(pointee_dtype.dtype_id + 1);
-
-    DType& ret = pointer_dtypes[pointee_dtype.dtype_id];
-    if (!ret) {
-        uint64_t dtype_id = static_cast<uint64_t>(reg.derived_dtypes.size()) + kFirstDerivedDTypeId;
-        CHECK(dtype_id <= UINT32_MAX);
-        reg.derived_dtypes.push_back(DerivedDType{
-                DerivedDTypeKind::Pointer, memory_space, pointee_dtype});
-        ret.dtype_id = static_cast<uint32_t>(dtype_id);
-    }
-    return ret;
+    CHECK(space_idx <= enum_max_value<MemorySpace>);
+    return get_or_create_derived_dtype(&g_pointer_dtype_ids[space_idx],
+                                       DerivedDTypeKind::Pointer, memory_space, pointee_dtype);
 }
 
-DType foreign_pointer_dtype(DType pointee_dtype, GlobalLock& lock) {
-    DTypeRegistry& reg = DTypeRegistry::get(lock);
-    if (pointee_dtype.dtype_id >= reg.foreign_pointer_dtypes.size())
-        reg.foreign_pointer_dtypes.resize(pointee_dtype.dtype_id + 1);
-
-    DType& ret = reg.foreign_pointer_dtypes[pointee_dtype.dtype_id];
-    if (!ret) {
-        uint64_t dtype_id = static_cast<uint64_t>(reg.derived_dtypes.size()) + kFirstDerivedDTypeId;
-        CHECK(dtype_id <= UINT32_MAX);
-        reg.derived_dtypes.push_back(DerivedDType{
-                DerivedDTypeKind::ForeignPointer, MemorySpace::GENERIC, pointee_dtype});
-        ret.dtype_id = static_cast<uint32_t>(dtype_id);
-    }
-    return ret;
+DType foreign_pointer_dtype(DType pointee_dtype) {
+    return get_or_create_derived_dtype(&g_foreign_pointer_dtype_ids,
+                                       DerivedDTypeKind::ForeignPointer, MemorySpace::GENERIC,
+                                       pointee_dtype);
 }
 
-static const DerivedDType& get_derived_dtype(DType dtype, GlobalLock& lock) {
-    DTypeRegistry& reg = DTypeRegistry::get(lock);
-    uint32_t derived_idx = dtype.dtype_id - kFirstDerivedDTypeId;
-    CHECK(derived_idx < reg.derived_dtypes.size());
-    return reg.derived_dtypes[derived_idx];
+bool _dtype_detail::is_derived_dtype_pointer(DType dtype) {
+    return get_derived_dtype(dtype).kind == DerivedDTypeKind::Pointer;
 }
 
-bool _dtype_detail::is_derived_dtype_pointer(DType dtype, GlobalLock& lock) {
-    return get_derived_dtype(dtype, lock).kind == DerivedDTypeKind::Pointer;
+bool _dtype_detail::is_derived_dtype_foreign_pointer(DType dtype) {
+    return get_derived_dtype(dtype).kind == DerivedDTypeKind::ForeignPointer;
 }
 
-bool _dtype_detail::is_derived_dtype_foreign_pointer(DType dtype, GlobalLock& lock) {
-    return get_derived_dtype(dtype, lock).kind == DerivedDTypeKind::ForeignPointer;
-}
-
-DType pointer_dtype_pointee(DType pointer_dtype, GlobalLock& lock) {
-    const DerivedDType& derived = get_derived_dtype(pointer_dtype, lock);
+DType pointer_dtype_pointee(DType pointer_dtype) {
+    const DerivedDType& derived = get_derived_dtype(pointer_dtype);
     CHECK(derived.kind == DerivedDTypeKind::Pointer);
     return derived.pointee_dtype;
 }
 
-MemorySpace pointer_dtype_memory_space(DType pointer_dtype, GlobalLock& lock) {
-    const DerivedDType& derived = get_derived_dtype(pointer_dtype, lock);
+MemorySpace pointer_dtype_memory_space(DType pointer_dtype) {
+    const DerivedDType& derived = get_derived_dtype(pointer_dtype);
     CHECK(derived.kind == DerivedDTypeKind::Pointer);
     return derived.memory_space;
 }
 
-DType foreign_pointer_dtype_pointee(DType foreign_pointer_dtype, GlobalLock& lock) {
-    const DerivedDType& derived = get_derived_dtype(foreign_pointer_dtype, lock);
+DType foreign_pointer_dtype_pointee(DType foreign_pointer_dtype) {
+    const DerivedDType& derived = get_derived_dtype(foreign_pointer_dtype);
     CHECK(derived.kind == DerivedDTypeKind::ForeignPointer);
     return derived.pointee_dtype;
 }
 
-uint32_t _dtype_detail::derived_dtype_bitwidth(DType dtype, GlobalLock& lock) {
-    const DerivedDType& derived = get_derived_dtype(dtype, lock);
+uint32_t _dtype_detail::derived_dtype_bitwidth(DType dtype) {
+    const DerivedDType& derived = get_derived_dtype(dtype);
     switch (derived.kind) {
     case DerivedDTypeKind::Pointer:
         return memory_space_pointer_bitwidth(derived.memory_space);
@@ -258,18 +233,18 @@ static const char* basic_dtype_doc(_dtype_detail::BasicDTypeEnum basic) {
     CHECK_UNREACHABLE;
 }
 
-static PyPtr make_dtype_name(DType dtype, GlobalLock& lock) {
+static PyPtr make_dtype_name(DType dtype) {
     if (dtype.dtype_id < kFirstDerivedDTypeId) {
         return steal(PyUnicode_FromString(basic_dtype_name(
                 static_cast<_dtype_detail::BasicDTypeEnum>(dtype.dtype_id))));
     }
 
-    const DerivedDType& derived = get_derived_dtype(dtype, lock);
+    const DerivedDType& derived = get_derived_dtype(dtype);
     switch (derived.kind) {
     case DerivedDTypeKind::Pointer:
         {
             StringBuilder builder;
-            DType pointee = pointer_dtype_pointee(dtype, lock);
+            DType pointee = pointer_dtype_pointee(dtype);
             int num_params = 0;
             if (pointee) {
                 CHECK(pointee.dtype_id < dtype.dtype_id);
@@ -280,11 +255,11 @@ static PyPtr make_dtype_name(DType dtype, GlobalLock& lock) {
                 builder.append("opaque_pointer");
             }
 
-            MemorySpace space = pointer_dtype_memory_space(dtype, lock);
+            MemorySpace space = pointer_dtype_memory_space(dtype);
             if (space != MemorySpace::GENERIC) {
                 builder.append(++num_params == 1 ? "[" : ", ");
                 builder.append("MemorySpace.");
-                builder.append(memory_space_str(space));
+                builder.append(enum_str(space));
             }
 
             if (num_params) builder.append("]");
@@ -292,29 +267,42 @@ static PyPtr make_dtype_name(DType dtype, GlobalLock& lock) {
         }
     case DerivedDTypeKind::ForeignPointer:
         {
-            DType pointee = foreign_pointer_dtype_pointee(dtype, lock);
+            DType pointee = foreign_pointer_dtype_pointee(dtype);
             return to_pyunicode("foreign_pointer[", pointee, "]");
         }
     }
     CHECK_UNREACHABLE;
 }
 
-PyObject* dtype_name(DType dtype, GlobalLock& lock) {
-    DTypeRegistry& reg = DTypeRegistry::get(lock);
+// Returns a borrowed reference to an immortal string
+PyObject* dtype_name(DType dtype) {
+    OncePointer<PyObject>& cached = g_dtype_pyobjects[dtype.dtype_id].name;
+    if (PyObject* name = cached.get()) return name;
+
     // Just fill all the names sequentially up to our type ID,
     // so that we don't need to deal with recursion.
-    while (dtype.dtype_id >= reg.names.size()) {
-        uint32_t next_id = reg.names.size();
-        PyPtr name = make_dtype_name(DType{next_id}, lock);
-        if (!name) return nullptr;
-        reg.names.push_back(name.release());
+    uint32_t next_id = atomic_load_acquire(&g_num_named_dtypes);
+    while (next_id <= dtype.dtype_id) {
+        OncePointer<PyObject>& next = g_dtype_pyobjects[next_id].name;
+        if (!next.get()) {
+            PyPtr name = make_dtype_name(DType{next_id});
+            if (!name) return nullptr;
+            // If another thread has set the name first, ours is released
+            next.set(std::move(name));
+        }
+        // On failure, another thread has advanced the counter first, and `next_id`
+        // is updated to the counter's current value, which is greater
+        uint32_t expected = next_id;
+        if (atomic_compare_exchange_acq_rel(&g_num_named_dtypes, &expected, next_id + 1))
+            ++next_id;
+        else
+            next_id = expected;
     }
-    return reg.names[dtype.dtype_id];
+    return cached.get();
 }
 
 int append_to_string_builder(DType dtype, StringBuilder* sb) {
-    GlobalLock lock;
-    PyObject* name = dtype_name(dtype, lock);
+    PyObject* name = dtype_name(dtype);
     if (!name) return -1;
     sb->append(name);
     return 0;
@@ -386,13 +374,353 @@ std::optional<DType> promote_dtypes(DType a, DType b) {
 }
 
 
-// ----- DType Python wrapper object -----
+// ----- Float encoding -----
 
-struct DTypeObject {
-    DType dtype;
-    static PyTypeObject pytype;
+static int bit_length(uint64_t x) {
+#if defined(_MSC_VER)
+    unsigned long index;
+    return _BitScanReverse64(&index, x) ? int(index) + 1 : 0;
+#else
+    return x ? 64 - __builtin_clzll(x) : 0;
+#endif
+}
+
+static DTypeConversionStatus double_nonfinite_to_bits(uint64_t f64_bits, DType dtype,
+                                                      uint64_t* out) {
+    const FloatFormat& fmt = float_dtype_format(dtype);
+    uint64_t f64_sign = f64_bits & 0x8000'0000'0000'0000;
+    uint64_t sign_bit = f64_sign >> (64 - fmt.bitwidth);
+    bool is_nan = f64_bits & 0x000f'ffff'ffff'ffff;
+    if (f64_sign && !is_nan && !fmt.have_sign)
+        return DTypeConversionStatus::NegativeNotRepresentable;
+    uint64_t all_ones_but_sign = (1ull << (fmt.bitwidth - 1)) - 1;
+
+    switch (fmt.non_finite_behavior) {
+    case FloatFormat::NanOnlyAllOnes:
+        // Infinity also becomes NaN
+        *out = fmt.have_sign ? (sign_bit | all_ones_but_sign) : (1ull << fmt.bitwidth) - 1;
+        return DTypeConversionStatus::OK;
+    case FloatFormat::FiniteOnly:
+        // Infinity saturates to the largest magnitude
+        if (is_nan)
+            return DTypeConversionStatus::NanNotRepresentable;
+        *out = sign_bit | all_ones_but_sign;
+        return DTypeConversionStatus::OK;
+    case FloatFormat::IEEE:
+        {
+            // Keep the sign and the all-ones exponent, and truncate the NaN payload.
+            // A signaling NaN could lose all of its payload bits and become an infinity,
+            // so it gets a nonzero payload instead.
+            uint64_t sign_and_exp = (f64_bits >> (63 - fmt.exp_bits)) << fmt.precision;
+            uint64_t payload;
+            if (is_nan && !(f64_bits & (1ull << 51)))
+                payload = 1;
+            else
+                payload = (f64_bits >> (52 - fmt.precision)) & ((1ull << fmt.precision) - 1);
+            *out = sign_and_exp | payload;
+            return DTypeConversionStatus::OK;
+        }
+    }
+    CHECK_UNREACHABLE;
+}
+
+
+static uint64_t first_invalid_float_value(const FloatFormat& fmt) {
+    switch (fmt.non_finite_behavior) {
+    case FloatFormat::IEEE:
+        return ((1ull << fmt.exp_bits) - 1) << fmt.precision;
+    case FloatFormat::NanOnlyAllOnes:
+        return (1ull << (fmt.exp_bits + fmt.precision)) - 1;
+    case FloatFormat::FiniteOnly:
+        return 1ull << (fmt.exp_bits + fmt.precision);
+    }
+    CHECK_UNREACHABLE;
+}
+
+
+// 64-bit unsigned integer interpreted as a binary fraction in [0, 2):
+//     y.xxxxxxx xxxxxxxx xxxxxxxx xxxxxxxx xxxxxxxx xxxxxxxx xxxxxxxx xxxxxxxx
+//       `--------------------------- 63 bits --------------------------------'
+struct U64Fraction {
+    uint64_t val_;
+
+    static constexpr uint64_t kOne = 1ull << 63;
+
+    explicit U64Fraction(uint64_t val) : val_(val) {
+        CHECK(val_ >= kOne);
+    }
+
+    inline uint64_t lshift(size_t n) {
+        if (n == 0) {
+            return 0;
+        } else if (n == 64) {
+            uint64_t ret = val_;
+            val_ = 0;
+            return ret;
+        } else {
+            uint64_t ret = val_ >> (64 - n);
+            val_ <<= n;
+            return ret;
+        }
+    }
+
+    bool greater_than_one() const { return val_ > kOne; }
+    bool equals_one() const { return val_ == kOne; }
 };
 
+static uint64_t uint8_split(uint8_t* val, size_t bits_to_keep) {
+    size_t ret = (*val) >> bits_to_keep;
+    *val &= (1 << bits_to_keep) - 1;
+    return ret;
+}
+
+// Like U64Fraction, but with arbitrarily many bits
+struct LongFraction {
+    Vec<uint8_t> data_;
+    uint64_t num_bits_;
+
+    // Number of bits in data_.back(), between 1 and 8
+    size_t top_byte_bits() const {
+        return ((num_bits_ - 1) & 7) + 1;
+    }
+
+    uint64_t lshift(size_t n) {
+        if (num_bits_ == 0)
+            return 0;
+
+        if (n > num_bits_)
+            n = num_bits_;
+        size_t num_hi_bits = top_byte_bits();
+        num_bits_ -= n;
+        if (n < num_hi_bits)
+            return uint8_split(&data_.back(), num_hi_bits - n);
+
+        uint64_t ret = data_.back();
+        data_.pop_back();
+        n -= num_hi_bits;
+        while (n >= 8) {
+            ret = (ret << 8) | data_.back();
+            data_.pop_back();
+            n -= 8;
+        }
+
+        if (n > 0)
+            ret = (ret << n) | uint8_split(&data_.back(), 8 - n);
+        return ret;
+    }
+
+    bool greater_than_one() const {
+        if (!num_bits_) return false;
+        unsigned half = 1u << (top_byte_bits() - 1);
+        if (data_.back() != half) return data_.back() > half;
+        for (size_t i = 0; i + 1 < data_.size(); ++i) {
+            if (data_[i]) return true;
+        }
+        return false;
+    }
+
+    bool equals_one() const {
+        if (!num_bits_) return false;
+        for (size_t i = 0; i + 1 < data_.size(); ++i) {
+            if (data_[i]) return false;
+        }
+        return data_.back() == (1u << (top_byte_bits() - 1));
+    }
+};
+
+
+// The top bit of the significand must be explicitly set to 1.
+// Rounding mode is "to nearest, ties to even".
+template <typename Frac>
+static DTypeConversionStatus encode_float_parts(bool sign, Py_ssize_t e, Frac&& significand,
+                                                DType dtype, uint64_t* out) {
+    const FloatFormat& fmt = float_dtype_format(dtype);
+    if (sign && !fmt.have_sign)
+        return DTypeConversionStatus::NegativeNotRepresentable;
+
+    uint64_t f64_inf = (uint64_t(sign) << 63) | 0x7ff0'0000'0000'0000;
+    if (e > fmt.emax)
+        return double_nonfinite_to_bits(f64_inf, dtype, out);
+
+    // Round the significand to `fmt.precision` (plus one leading 1) bits
+    Py_ssize_t bits_to_keep = fmt.precision + 1;
+    if (e < fmt.emin) {
+        if (!fmt.have_zero_and_subnormals) {
+            *out = 0;  // round up to the smallest value
+            return DTypeConversionStatus::OK;
+        }
+        // Subnormal
+        bits_to_keep -= fmt.emin - e;
+        e = fmt.emin;
+    }
+
+    uint64_t u64_significand;
+    if (bits_to_keep < 0) {
+        u64_significand = 0;  // less than half of the smallest subnormal
+    } else {
+        u64_significand = significand.lshift(bits_to_keep);
+        // Round to nearest, ties to even
+        if (significand.greater_than_one() || (significand.equals_one() && (u64_significand & 1)))
+            ++u64_significand;
+    }
+
+    // These two lines are doing a lot of work. We intentionally encode the biased exponent
+    // as one less the actual value, so that the explicit leading 1 in the `u64_significand` will
+    // increment it by one. This automatically takes care of the subnormals, as well as the
+    // rounding to the next power of two.
+    uint64_t biased_exp_minus_one = e - fmt.emin - !fmt.have_zero_and_subnormals;
+    uint64_t enc = (biased_exp_minus_one << fmt.precision) + u64_significand;
+
+    // Check that rounding didn't overflow into the non-finite encodings
+    if (enc >= first_invalid_float_value(fmt))
+        return double_nonfinite_to_bits(f64_inf, dtype, out);
+
+    *out = (uint64_t(sign) << (fmt.bitwidth - 1)) | enc;
+    return DTypeConversionStatus::OK;
+}
+
+static double bitcast_u64_to_double(uint64_t bits) {
+    union { uint64_t u64; double dbl; } u = {.u64 = bits};
+    return u.dbl;
+}
+
+static uint64_t bitcast_double_to_u64(double val) {
+    union { double dbl; uint64_t u64; } u = {.dbl = val};
+    return u.u64;
+}
+
+DTypeConversionStatus encode_float(double value, DType dtype, uint64_t* out) {
+    uint64_t f64_bits = bitcast_double_to_u64(value);
+    if (dtype == k_float64) {
+        *out = f64_bits;
+        return DTypeConversionStatus::OK;
+    }
+
+    const FloatFormat& fmt = float_dtype_format(dtype);
+
+    int e = (f64_bits >> 52) & 0x7ff;
+    if (e == 0x7ff)
+        return double_nonfinite_to_bits(f64_bits, dtype, out);
+
+    bool sign = f64_bits >> 63;
+    if (sign && !fmt.have_sign)
+        return DTypeConversionStatus::NegativeNotRepresentable;
+
+    // Calculate a 53-bit significand with the bit #52 set
+    uint64_t significand = f64_bits & 0x000f'ffff'ffff'ffff;
+    if (e) {
+        // Normal float64: add the implicit bit
+        significand |= 0x0010'0000'0000'0000;
+        e -= 1023;
+    } else {
+        if (!significand) {
+            // Zero or negative zero. Without a zero, round up to the smallest value.
+            *out = fmt.have_zero_and_subnormals ? uint64_t(sign) << (fmt.bitwidth - 1) : 0;
+            return DTypeConversionStatus::OK;
+        }
+        // Subnormal float64: there is no implicit one, so we need to "normalize" the significand.
+        int shift = 53 - bit_length(significand);
+        significand <<= shift;
+        e = -1022 - shift;
+    }
+    // Turn the significand into a 64-bit value with the top bit set,
+    // so that it's compatible with encode_float_parts().
+    U64Fraction frac{significand << 11};
+    return encode_float_parts(sign, e, frac, dtype, out);
+}
+
+DTypeConversionStatus encode_int_as_float(uint64_t bits, bool is_signed, DType dtype,
+                                          uint64_t* out) {
+    bool negative = is_signed && int64_t(bits) < 0;
+    uint64_t significand = negative ? 0 - bits : bits;  // works for INT64_MIN
+    if (!significand) {
+        *out = 0;  // +0.0, or the smallest value in a format without a zero
+        return DTypeConversionStatus::OK;
+    }
+    int e = 63;
+
+    // Normalize the significand so that the top bit is set
+    int shift = 64 - bit_length(significand);
+    significand <<= shift;
+    e -= shift;
+    U64Fraction frac(significand);
+    return encode_float_parts(negative, e, frac, dtype, out);
+}
+
+Result<DTypeConversionStatus> encode_pylong_as_float(PyObject* pylong, DType dtype, uint64_t* out) {
+    int overflow;
+    int64_t i64_val = pylong_as_overflow_and<int64_t>(pylong, &overflow);
+    if (PyErr_Occurred()) return ErrorRaised;
+    if (!overflow)
+        return encode_int_as_float(i64_val, true, dtype, out);
+
+    PyPtr absval;
+    bool sign = false;
+    if (overflow < 0) {
+        sign = true;
+        absval = steal(PyNumber_Negative(pylong));
+        if (!absval) return ErrorRaised;
+        pylong = absval.get();
+    }
+    Result<Vec<uint8_t>> bytes_res = pylong_as_unsigned_bytes(pylong);
+    if (!bytes_res.is_ok()) return ErrorRaised;
+    uint64_t nbits = pylong_num_bits(pylong);
+    CHECK(nbits > 0);  // we wouldn't have overflown otherwise
+    LongFraction frac = { std::move(*bytes_res), nbits };
+    CHECK((nbits + 7) / 8 == frac.data_.size());
+    Py_ssize_t e = static_cast<Py_ssize_t>(nbits) - 1;
+    return encode_float_parts(sign, e, frac, dtype, out);
+}
+
+double decode_float(uint64_t bits, DType dtype) {
+    uint64_t enc = bits;
+    if (dtype == k_float64)
+        return bitcast_u64_to_double(enc);
+
+    const FloatFormat& fmt = float_dtype_format(dtype);
+    uint64_t exp_mask = (1ull << fmt.exp_bits) - 1;
+    uint64_t biased_exp = (enc >> fmt.precision) & exp_mask;
+    uint64_t mantissa_mask = (1ull << fmt.precision) - 1;
+    uint64_t mantissa = enc & mantissa_mask;
+
+    uint64_t f64_bits = fmt.have_sign ? (enc << (64 - fmt.bitwidth)) & 0x8000'0000'0000'0000 : 0;
+
+    bool nonfinite = biased_exp == exp_mask;
+    switch (fmt.non_finite_behavior) {
+    case FloatFormat::IEEE:
+        break;
+    case FloatFormat::NanOnlyAllOnes:
+        if (mantissa != mantissa_mask) nonfinite = false;
+        break;
+    case FloatFormat::FiniteOnly:
+        nonfinite = false;
+        break;
+    }
+
+    uint64_t f64_exp;
+    if (nonfinite) {
+        f64_exp = 0x7ff;
+        if (fmt.precision == 0)
+            f64_bits |= 0x0008'0000'0000'0000;
+    } else if (biased_exp == 0 && fmt.have_zero_and_subnormals) {
+        if (mantissa != 0) {
+            // Subnormal number becomes normal
+            int shift = fmt.precision - bit_length(mantissa) + 1;
+            mantissa = (mantissa << shift) & mantissa_mask;
+            f64_exp = fmt.emin + 1023 - shift;
+        } else {
+            f64_exp = 0;
+        }
+    } else {
+        f64_exp = (biased_exp - fmt.have_zero_and_subnormals) + fmt.emin + 1023;
+    }
+
+    f64_bits |= (f64_exp << 52) | (mantissa << (52 - fmt.precision));
+    return bitcast_u64_to_double(f64_bits);
+}
+
+
+// ----- DType Python wrapper object -----
 
 static PyPtr dtype_pyobject_create(DType dtype) {
     PyPtr obj = py_create_object<DTypeObject>();
@@ -401,40 +729,48 @@ static PyPtr dtype_pyobject_create(DType dtype) {
 }
 
 
-PyObject* dtype_to_pyobject(DType dtype, GlobalLock& lock) {
+PyObject* dtype_to_pyobject(DType dtype) {
     if (!dtype) {
         raise(PyExc_ValueError, "Invalid dtype");
         return nullptr;
     }
-    DTypeRegistry& reg = DTypeRegistry::get(lock);
-    if (dtype.dtype_id >= reg.pyobjects.size())
-        reg.pyobjects.resize(dtype.dtype_id + 1);
-    PyObject*& obj = reg.pyobjects[dtype.dtype_id];
-    if (!obj) obj = dtype_pyobject_create(dtype).release();
-    return obj;
+
+    OncePointer<PyObject>& cached = g_dtype_pyobjects[dtype.dtype_id].pyobject;
+    if (PyObject* obj = cached.get()) return obj;
+
+    PyPtr new_obj = dtype_pyobject_create(dtype);
+    if (!new_obj) return nullptr;
+    // If another thread has created the object first, ours is released
+    return cached.set(std::move(new_obj));
+}
+
+
+std::optional<DType> dtype_from_pyobject(PyObject* obj) {
+    if (!PyObject_TypeCheck(obj, &DTypeObject::pytype))
+        return std::nullopt;
+    return py_unwrap<DTypeObject>(obj).dtype;
 }
 
 
 static PyObject* DType_reduce(PyObject* self, PyObject*) {
-    GlobalLock lock;
     DType dtype = py_unwrap<DTypeObject>(self).dtype;
     if (dtype.dtype_id < kFirstDerivedDTypeId) {
         PyPtr func = getattr(g_module, "_unpickle_basic_dtype");
         if (!func) return nullptr;
-        PyObject* name = dtype_name(dtype, lock);
+        PyObject* name = dtype_name(dtype);
         if (!name) return nullptr;
         return Py_BuildValue("(O(O))", func.get(), name);
     } else {
-        const DerivedDType& derived = get_derived_dtype(dtype, lock);
+        const DerivedDType& derived = get_derived_dtype(dtype);
         switch (derived.kind) {
         case DerivedDTypeKind::Pointer:
             {
                 PyPtr func = getattr(g_module, "_get_pointer_dtype");
                 if (!func) return nullptr;
                 PyObject* pointee = derived.pointee_dtype
-                    ? dtype_to_pyobject(derived.pointee_dtype, lock) : Py_None;
+                    ? dtype_to_pyobject(derived.pointee_dtype) : Py_None;
                 if (!pointee) return nullptr;
-                PyObject* space = memory_space_to_pyobject(derived.memory_space, lock);
+                PyObject* space = enum_to_pyobject(derived.memory_space);
                 if (!space) return nullptr;
                 return Py_BuildValue("(O(OO))", func.get(), pointee, space);
             }
@@ -442,7 +778,7 @@ static PyObject* DType_reduce(PyObject* self, PyObject*) {
             {
                 PyPtr func = getattr(g_module, "_get_foreign_pointer_dtype");
                 if (!func) return nullptr;
-                PyObject* pointee = dtype_to_pyobject(derived.pointee_dtype, lock);
+                PyObject* pointee = dtype_to_pyobject(derived.pointee_dtype);
                 if (!pointee) return nullptr;
                 return Py_BuildValue("(O(O))", func.get(), pointee);
             }
@@ -457,8 +793,7 @@ static PyMethodDef DType_methods[] = {
 };
 
 static PyObject* DType_get_name(PyObject* self, void* closure) {
-    GlobalLock lock;
-    return Py_NewRef(dtype_name(py_unwrap<DTypeObject>(self).dtype, lock));
+    return Py_XNewRef(dtype_name(py_unwrap<DTypeObject>(self).dtype));
 }
 
 static PyObject* DType_get_module(PyObject* self, void* closure) {
@@ -466,9 +801,8 @@ static PyObject* DType_get_module(PyObject* self, void* closure) {
 }
 
 static PyObject* DType_get_bitwidth(PyObject* self, void* closure) {
-    GlobalLock lock;
     DType dtype = py_unwrap<DTypeObject>(self).dtype;
-    return PyLong_FromUnsignedLong(dtype_bitwidth(dtype, lock));
+    return PyLong_FromUnsignedLong(dtype_bitwidth(dtype));
 }
 
 static PyObject* DType_repr(PyObject* self) {
@@ -476,20 +810,22 @@ static PyObject* DType_repr(PyObject* self) {
 }
 
 static PyObject* DType_str(PyObject* self) {
-    GlobalLock lock;
-    return Py_NewRef(dtype_name(py_unwrap<DTypeObject>(self).dtype, lock));
+    return Py_XNewRef(dtype_name(py_unwrap<DTypeObject>(self).dtype));
 }
 
 static PyObject* DType_get_doc(PyObject* self, void* closure) {
-    GlobalLock lock;
     DType dtype = py_unwrap<DTypeObject>(self).dtype;
     if (is_integer_dtype(dtype)) {
         StringBuilder sb;
         const char* signedness = is_signed_integer_dtype(dtype) ? "signed" : "unsigned";
 
-        sb.append_many(dtype_bitwidth(dtype, lock), "-bit ", signedness,
-                       " |arithmetic dtype| with values on the interval [",
-                       integer_dtype_min(dtype), ", +", integer_dtype_max(dtype), "]");
+        bool is_signed = is_signed_integer_dtype(dtype);
+        sb.append_many(dtype_bitwidth(dtype), "-bit ", signedness,
+                       " |arithmetic dtype| with values on the interval [");
+        integer_dtype_min(dtype).append_to(&sb, is_signed);
+        sb.append(", +");
+        integer_dtype_max(dtype).append_to(&sb, is_signed);
+        sb.append("]");
         return sb.build().release();
     }
 
@@ -541,7 +877,6 @@ PyTypeObject DTypeObject::pytype = {
 // ----- Python wrappers for is_xxx(dtype) predicates -----
 
 using DTypePredicate = bool(DType);
-using DTypePredicateWithLock = bool(DType, GlobalLock&);
 
 template <typename P>
 static PyObject* is_whatever_impl(PyObject* dtype_obj, P&& pred) {
@@ -556,12 +891,6 @@ static PyObject* is_whatever_impl(PyObject* dtype_obj, P&& pred) {
 template <DTypePredicate P>
 static PyObject* is_whatever(PyObject* module_self, PyObject* dtype_obj) {
     return is_whatever_impl(dtype_obj, P);
-}
-
-template <DTypePredicateWithLock P>
-static PyObject* is_whatever(PyObject* module_self, PyObject* dtype_obj) {
-    GlobalLock lock;
-    return is_whatever_impl(dtype_obj, [&lock](DType x){return P(x, lock);});
 }
 
 static bool is_boolean_dtype(DType dtype) {
@@ -590,16 +919,15 @@ static PyObject* py_get_pointer_dtype(PyObject* module_self,
         return nullptr;
     }
 
-    GlobalLock lock;
-    std::optional<MemorySpace> space = memory_space_from_pyobject(py_memory_space, lock);
+    std::optional<MemorySpace> space = enum_from_pyobject<MemorySpace>(py_memory_space);
     if (!space.has_value()) {
         raise(PyExc_TypeError, "Expected a MemorySpace as the second argument, got ",
               use_repr(py_memory_space));
         return nullptr;
     }
 
-    DType res = pointer_dtype(pointee_dtype, *space, lock);
-    return Py_NewRef(dtype_to_pyobject(res, lock));
+    DType res = pointer_dtype(pointee_dtype, *space);
+    return Py_XNewRef(dtype_to_pyobject(res));
 }
 
 static PyObject* py_get_foreign_pointer_dtype(PyObject* module_self, PyObject* py_pointee) {
@@ -609,9 +937,8 @@ static PyObject* py_get_foreign_pointer_dtype(PyObject* module_self, PyObject* p
         return nullptr;
     }
     DType pointee_dtype = py_unwrap<DTypeObject>(py_pointee).dtype;
-    GlobalLock lock;
-    DType res = foreign_pointer_dtype(pointee_dtype, lock);
-    return Py_NewRef(dtype_to_pyobject(res, lock));
+    DType res = foreign_pointer_dtype(pointee_dtype);
+    return Py_XNewRef(dtype_to_pyobject(res));
 }
 
 
@@ -623,7 +950,12 @@ static PyObject* py_integer_dtype_min(PyObject* module_self, PyObject* dtype_obj
         return nullptr;
     }
     DType dtype = py_unwrap<DTypeObject>(dtype_obj).dtype;
-    return integer_dtype_min(dtype).to_pylong().release();
+    if (!is_integer_dtype(dtype)) {
+        raise(PyExc_ValueError, "Expected an integer DType, got '", dtype, "'");
+        return nullptr;
+    }
+
+    return integer_dtype_min(dtype).to_pylong(is_signed_integer_dtype(dtype)).release();
 }
 
 static PyObject* py_integer_dtype_max(PyObject* module_self, PyObject* dtype_obj) {
@@ -632,7 +964,12 @@ static PyObject* py_integer_dtype_max(PyObject* module_self, PyObject* dtype_obj
         return nullptr;
     }
     DType dtype = py_unwrap<DTypeObject>(dtype_obj).dtype;
-    return integer_dtype_max(dtype).to_pylong().release();
+    if (!is_integer_dtype(dtype)) {
+        raise(PyExc_ValueError, "Expected an integer DType, got '", dtype, "'");
+        return nullptr;
+    }
+
+    return integer_dtype_max(dtype).to_pylong(is_signed_integer_dtype(dtype)).release();
 }
 
 static PyObject* py_promote_dtypes(PyObject* module_self,
@@ -650,52 +987,48 @@ static PyObject* py_promote_dtypes(PyObject* module_self,
     std::optional<DType> res = promote_dtypes(py_unwrap<DTypeObject>(args[0]).dtype,
                                               py_unwrap<DTypeObject>(args[1]).dtype);
     if (!res.has_value()) return Py_NewRef(Py_None);
-    GlobalLock lock;
-    return Py_NewRef(dtype_to_pyobject(*res, lock));
+    return Py_XNewRef(dtype_to_pyobject(*res));
 }
 
-static Result<DType> parse_pointer_dtype(PyObject* py_pointer, GlobalLock& lock) {
+static Result<DType> parse_pointer_dtype(PyObject* py_pointer) {
     if (!PyObject_TypeCheck(py_pointer, &DTypeObject::pytype))
         return raise(PyExc_TypeError, "Expected a DType object for the first argument, got ",
                      use_repr(py_pointer));
     DType pointer_dtype = py_unwrap<DTypeObject>(py_pointer).dtype;
-    if (!is_pointer_dtype(pointer_dtype, lock))
+    if (!is_pointer_dtype(pointer_dtype))
         return raise(PyExc_ValueError, pointer_dtype, " is not a pointer dtype");
     return pointer_dtype;
 }
 
 static PyObject* py_pointer_pointee_dtype(PyObject* module_self, PyObject* py_pointer) {
-    GlobalLock lock;
-    Result<DType> pointer_dtype = parse_pointer_dtype(py_pointer, lock);
+    Result<DType> pointer_dtype = parse_pointer_dtype(py_pointer);
     if (!pointer_dtype.is_ok()) return nullptr;
-    DType pointee_dtype = pointer_dtype_pointee(*pointer_dtype, lock);
+    DType pointee_dtype = pointer_dtype_pointee(*pointer_dtype);
     if (!pointee_dtype)
         return Py_NewRef(Py_None);
-    return Py_NewRef(dtype_to_pyobject(pointee_dtype, lock));
+    return Py_XNewRef(dtype_to_pyobject(pointee_dtype));
 }
 
 static PyObject* py_pointer_memory_space(PyObject* module_self, PyObject* py_pointer) {
-    GlobalLock lock;
-    Result<DType> pointer_dtype = parse_pointer_dtype(py_pointer, lock);
+    Result<DType> pointer_dtype = parse_pointer_dtype(py_pointer);
     if (!pointer_dtype.is_ok()) return nullptr;
-    MemorySpace space = pointer_dtype_memory_space(*pointer_dtype, lock);
-    return Py_NewRef(memory_space_to_pyobject(space, lock));
+    MemorySpace space = pointer_dtype_memory_space(*pointer_dtype);
+    return Py_NewRef(enum_to_pyobject(space));
 }
 
 static PyObject* py_foreign_pointer_pointee_dtype(PyObject* module_self, PyObject* py_pointer) {
-    GlobalLock lock;
     if (!PyObject_TypeCheck(py_pointer, &DTypeObject::pytype)) {
         raise(PyExc_TypeError, "Expected a DType object for the first argument, got ",
                 use_repr(py_pointer));
         return nullptr;
     }
     DType foreign_pointer_dtype = py_unwrap<DTypeObject>(py_pointer).dtype;
-    if (!is_foreign_pointer_dtype(foreign_pointer_dtype, lock)) {
+    if (!is_foreign_pointer_dtype(foreign_pointer_dtype)) {
         raise(PyExc_ValueError, foreign_pointer_dtype, " is not a pointer dtype");
         return nullptr;
     }
-    DType pointee_dtype = foreign_pointer_dtype_pointee(foreign_pointer_dtype, lock);
-    return Py_NewRef(dtype_to_pyobject(pointee_dtype, lock));
+    DType pointee_dtype = foreign_pointer_dtype_pointee(foreign_pointer_dtype);
+    return Py_XNewRef(dtype_to_pyobject(pointee_dtype));
 }
 
 
@@ -733,14 +1066,7 @@ static PyMethodDef functions[] = {
     {}
 };
 
-#define INIT_STRING_CONSTANT(name, value) \
-    if (!(name = PyUnicode_InternFromString(value))) return ErrorRaised
-
-#define INIT_STRING_IDENT(ident) INIT_STRING_CONSTANT(g_##ident##_pyunicode, #ident)
-
 Status dtype_init(PyObject* m) {
-    GlobalLock lock;
-
     g_module = Py_NewRef(m);
 
     INIT_STRING_IDENT(pointee_dtype);
@@ -761,9 +1087,9 @@ Status dtype_init(PyObject* m) {
     // Add dtypes by name
     for (_dtype_detail::BasicDTypeEnum basic_dtype : _dtype_detail::all_basic_dtypes) {
         DType dtype = {static_cast<uint32_t>(basic_dtype)};
-        PyObject* name = dtype_name(dtype, lock);
+        PyObject* name = dtype_name(dtype);
         if (!name) return ErrorRaised;
-        PyObject* obj = dtype_to_pyobject(dtype, lock);
+        PyObject* obj = dtype_to_pyobject(dtype);
         if (!obj) return ErrorRaised;
         if (PyDict_SetItem(mod_dict, name, obj) < 0)
             return ErrorRaised;

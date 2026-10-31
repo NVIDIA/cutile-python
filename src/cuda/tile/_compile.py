@@ -922,6 +922,7 @@ _SUPPORTED_VERSIONS = [
     BytecodeVersion.V_13_2,
     BytecodeVersion.V_13_3,
     BytecodeVersion.V_13_4,
+    BytecodeVersion.V_13_5,
 ]
 
 

@@ -3,7 +3,10 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include "cuda_loader.h"
+#include "atomics.h"
 #include "cuda_helper.h"
+
+#include <memory>
 
 
 namespace {
@@ -50,14 +53,24 @@ FOREACH_CUDA_FUNCTION_TO_LOAD(DEFINE_CUDA_FUNCTION_GLOBAL)
             return ErrorRaised;
 
 
+static constexpr int MIN_DRIVER_VERSION = 13000;
+
 Status driver_api_init(DriverApi* driver_api, cuGetProcAddress_v2_t _cuGetProcAddress) {
     FOREACH_CUDA_FUNCTION_TO_LOAD(GET_PROC_ADDRESS)
-    driver_api->cuda_version = 0;
+    CUresult res = driver_api->cuInit(0);
+    if (res != CUDA_SUCCESS)
+        return raise(PyExc_RuntimeError, "cuInit: ", get_cuda_error(driver_api, res));
+    res = driver_api->cuDriverGetVersion(&driver_api->cuda_version);
+    if (res != CUDA_SUCCESS)
+        return raise(PyExc_RuntimeError, "cuDriverGetVersion: ",
+                     get_cuda_error(driver_api, res));
+    if (!check_driver_version(driver_api, MIN_DRIVER_VERSION))
+        return ErrorRaised;
     return OK;
 }
 
 std::optional<CUlaunchAttribute> DriverApi::get_shared_memory_mode_attribute() const {
-#if CUDA_VERSION >= 13040 && !defined(_WIN32)
+#if CUDA_VERSION >= 13040 && defined(CUDA_TILE_ENABLE_DEV_FEATURES)
     if (cuda_version >= 13040) {
         CUlaunchAttribute attribute = {};
         attribute.id = CU_LAUNCH_ATTRIBUTE_SHARED_MEMORY_MODE;
@@ -84,29 +97,18 @@ static Result<cuGetProcAddress_v2_t> get_cuGetProcAddress_from_python() {
 }
 
 
-static constexpr int MIN_DRIVER_VERSION = 13000;
+Result<const DriverApi*> get_driver_api() {
+    static OncePointer<DriverApi> instance;
+    if (DriverApi* api = instance.get()) return api;
 
-Result<const DriverApi*> get_driver_api(GlobalLock& lock) {
-    static bool initialized;
-    static DriverApi instance;
-    if (!initialized) {
-        Result<cuGetProcAddress_v2_t> proc_addr_res = get_cuGetProcAddress_from_python();
-        if (!proc_addr_res.is_ok())
-            return ErrorRaised;
-        if (!driver_api_init(&instance, *proc_addr_res))
-            return ErrorRaised;
-        CUresult res = instance.cuInit(0);
-        if (res != CUDA_SUCCESS)
-            return raise(PyExc_RuntimeError, "cuInit: ", get_cuda_error(&instance, res));
-        res = instance.cuDriverGetVersion(&instance.cuda_version);
-        if (res != CUDA_SUCCESS)
-            return raise(PyExc_RuntimeError, "cuDriverGetVersion: ",
-                         get_cuda_error(&instance, res));
-        if (!check_driver_version(&instance, MIN_DRIVER_VERSION))
-            return ErrorRaised;
-        initialized = true;
-    }
-    return &instance;
+    Result<cuGetProcAddress_v2_t> proc_addr_res = get_cuGetProcAddress_from_python();
+    if (!proc_addr_res.is_ok()) return ErrorRaised;
+    std::unique_ptr<DriverApi> new_instance(new DriverApi);
+    if (!driver_api_init(new_instance.get(), *proc_addr_res)) return ErrorRaised;
+
+    // Multiple threads may race to initialize, but only the first one publishes its result.
+    // This is fine because the CUDA driver API itself is thread-safe.
+    return instance.set(std::move(new_instance));
 }
 
 static Status call_library_lifecycle(PyObject* module_obj, const char* function_name,

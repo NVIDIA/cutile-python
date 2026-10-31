@@ -11,7 +11,6 @@ from enum import Enum, auto
 from functools import lru_cache, cache
 from typing import List, NamedTuple, Sequence, Optional, Any, Dict, Type, Callable, Mapping
 
-from cuda.tile import _datatype as datatype
 from cuda.tile._exception import TileSyntaxError, Loc, FunctionDesc, make_static_exception
 from cuda.tile._execution import is_function_wrapper, stub_aliases
 from cuda.tile._ir.hir import make_value, ResolvedName, UNKNOWN_NAME
@@ -1013,7 +1012,7 @@ def _static_tuple_comprehension(elt: ast.expr, generators: list[ast.comprehensio
 def _bool_expr(expr: ast.AST, ctx: _Context) -> hir.Value:
     val = _expr(expr, ctx)
     with ctx.change_loc(expr):
-        return ctx.call(datatype.bool_, (val,))
+        return ctx.call(bool, (val,))
 
 
 @_register(_stmt_handlers, ast.While)

@@ -9,7 +9,9 @@
 .. |stream| replace:: stream
 .. |Stream| replace:: stream
 .. |cudalang| replace:: ``cuda.lang``
+.. |cuda.lang| replace:: ``cuda.lang``
 .. |cuda lang| replace:: ``cuda.lang``
+.. |cuda.tile| replace:: ``cuda.tile``
 .. |cuTile| replace:: ``cuTile``
 
 .. |block| replace:: block

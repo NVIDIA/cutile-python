@@ -51,6 +51,7 @@ def {name}(x, y, TILE_0: ct.Constant[int], TILE_1: ct.Constant[int]):
      lambda x: x.unsqueeze(0).unsqueeze(0)),
     ("tx[:, None, None, :]", "(bid0, 0, 0, bid1)", lambda x: x.unsqueeze(1).unsqueeze(1)),
     ("tx[:, :]", "(bid0, bid1)", lambda x: x),
+    ("tx[:]", "(bid0, bid1)", lambda x: x),
     ("tx[..., None]", "(bid0, 0, bid1)", lambda x: x.unsqueeze(-1)),
     ("tx[None, ...]", "(0, bid0, bid1)", lambda x: x.unsqueeze(0)),
     ("tx[None, ..., None]", "(0, bid0, bid1, 0)", lambda x: x.unsqueeze(0).unsqueeze(-1)),
@@ -71,7 +72,7 @@ def test_new_axis_indexing(kernel_axes, tmp_path):
     assert_equal(y, expected_fn(x))
 
 
-@pytest.mark.parametrize("expand_expr", ["tx[0]", "tx[0, 1]", "tx[:]", "tx[::2]"])
+@pytest.mark.parametrize("expand_expr", ["tx[0]", "tx[0, 1]", "tx[::2]"])
 def test_invalid_new_axis_indexing(expand_expr, tmp_path):
     shape = (128, 128)
     tile = (128, 128)
@@ -83,7 +84,7 @@ def test_invalid_new_axis_indexing(expand_expr, tmp_path):
                                                       index_expr="(bid0, bid1)")
     kernel = jit_kernel("new_axis_indexing", source, tmp_path, {"np": np})
     error_type = TileTypeError
-    with pytest.raises(error_type, match=".*Directly indexing a tile is not supported.*"):
+    with pytest.raises(error_type, match=r"Tile index must be None, an ellipsis or a full slice"):
         ct.launch(torch.cuda.current_stream(), grid, kernel, (x, y, tile[0], tile[1]))
 
 
@@ -150,7 +151,7 @@ def test_reshape_more_than_one_negative_one():
     x = make_tensor((r_tile * c_tile,), dtype=dtype, device="cuda:0")
     y = torch.zeros((r_tile, c_tile), dtype=dtype, device=x.device)
     grid = (1, 1, 1)
-    with pytest.raises(TileTypeError, match="Only one dimension can be -1"):
+    with pytest.raises(TileTypeError, match="has more than one -1"):
         ct.launch(torch.cuda.current_stream(), grid, reshape_more_than_one_dim_negative_one,
                   (x, y, r_tile, c_tile))
 
@@ -164,3 +165,15 @@ def test_reshape_scalar():
     x = torch.zeros((1, 1, 1), device="cuda:0")
     ct.launch(torch.cuda.current_stream(), (1,), kernel, (x,))
     assert x.item() == 4
+
+
+def test_expand_dims_and_item_of_python_number():
+    @ct.kernel
+    def kernel(x):
+        a = 4
+        ct.store(x, (0,), a[None])
+        ct.scatter(x, 1, a.item() + 1)
+
+    x = torch.zeros((2,), dtype=torch.int32, device="cuda:0")
+    ct.launch(torch.cuda.current_stream(), (1,), kernel, (x,))
+    assert x.tolist() == [4, 5]

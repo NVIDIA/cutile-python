@@ -87,7 +87,7 @@ You will need:
 - A C++17-capable compiler, such as GNU C++ or MSVC;
 - CMake 3.18+;
 - GNU Make on Linux or msbuild on Windows;
-- Python 3.10+ with development headers (`venv` module is recommended but optional);
+- Python 3.11+ with development headers (`venv` module is recommended but optional);
 - [CUDA Toolkit 13.1+](https://developer.nvidia.com/cuda-downloads)
 
 On an Ubuntu system, the first four dependencies can be installed with APT:

@@ -59,7 +59,7 @@ class BuildBinaries(Command):
         for src_dir, basename, required in files:
             src_path = os.path.join(src_dir, basename)
             dst_path = os.path.join(bin_dir, basename)
-            if not required and not os.path.exists(src_path):
+            if not required and (not self.editable_mode or not os.path.exists(src_path)):
                 continue
             # Create a symlink to the build directory if in editable mode, otherwise copy
             file_util.copy_file(src_path, dst_path, update=1, link=link)

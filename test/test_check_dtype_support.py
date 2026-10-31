@@ -27,15 +27,32 @@ def compile_with(pyfunc, args, arch: str | None, version: str, output_format="cu
     torch.float8_e5m2,
     torch.float8_e8m0fnu
 ], ids=dtype_id)
-def test_fp8_not_supported_on_sm80(dtype):
+@pytest.mark.parametrize("arch,version", [
+    ("sm_80", "13.2"),
+    pytest.param("sm_80", "13.5", marks=requires_tileiras(BytecodeVersion.V_13_5)),
+    ("sm_89", "13.4"),
+])
+def test_fp8_not_supported_on_arch(dtype, arch, version):
     x = make_tensor((64,), dtype=torch.float32, device='cuda:0').to(dtype)
 
     def kernel(x):
         tx = ct.gather(x, 0)
         ct.scatter(x, 0, tx)
 
-    with pytest.raises(TileUnsupportedFeatureError, match="is not supported on sm_80"):
-        compile_with(kernel, (x,), "sm_80", "13.2")
+    with pytest.raises(TileUnsupportedFeatureError, match=f"is not supported on {arch}"):
+        compile_with(kernel, (x,), arch, version)
+
+
+@requires_tileiras(BytecodeVersion.V_13_5)
+@pytest.mark.parametrize("dtype", [torch.float8_e4m3fn, torch.float8_e5m2], ids=dtype_id)
+def test_fp8_supported_on_sm89(dtype):
+    x = make_tensor((64,), dtype=torch.float32, device='cuda:0').to(dtype)
+
+    def kernel(x):
+        tx = ct.gather(x, 0)
+        ct.scatter(x, 0, tx)
+
+    compile_with(kernel, (x,), "sm_89", "13.5")
 
 
 @requires_tileiras(BytecodeVersion.V_13_3)
@@ -107,25 +124,25 @@ def test_f8e5m3fnu_requires_rubin_13_4():
         compile_with(kernel, (), "sm_80", "13.4")
 
 
-@pytest.mark.parametrize("val", [-1.0, -0.0, float("-inf"), float("-nan")])
+@pytest.mark.parametrize("val", [-1.0, -0.0, float("-inf")])
 def test_f8e8m0fnu_rejects_negative(val):
     def kernel():
         t = ct.astile(val, dtype=ct.float8_e8m0fnu)
         ct.printf("%f", t)
 
     with pytest.raises(TileValueError,
-                       match="Negative values cannot be represented in an unsigned float format"):
+                       match="Cannot represent negative value .* as .*, which is unsigned"):
         compile_with(kernel, (), "sm_100", "13.2")
 
 
-@pytest.mark.parametrize("val", [-1.0, -0.0, float("-nan")])
+@pytest.mark.parametrize("val", [-1.0, -0.0])
 def test_f8e5m3fnu_rejects_negative(val):
     def kernel():
         t = ct.astile(val, dtype=ct.float8_e5m3fnu)
         ct.printf("%f", t)
 
     with pytest.raises(TileValueError,
-                       match="Negative values cannot be represented in an unsigned float format"):
+                       match="Cannot represent negative value .* as .*, which is unsigned"):
         compile_with(kernel, (), "sm_107", "13.4")
 
 
@@ -137,7 +154,7 @@ def test_f4e2m1fn_rejects_nan(val):
         ct.printf("%f", t)
 
     with pytest.raises(TileValueError,
-                       match="NaN cannot be represented in a finite-only float format"):
+                       match="Cannot represent NaN as float4_e2m1fn"):
         compile_with(kernel, (), "sm_100", "13.3")
 
 
