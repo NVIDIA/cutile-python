@@ -62,13 +62,14 @@ from cuda.tile._ir.ir import add_operation_variadic, make_aggregate
 from cuda.tile._ir.op_impl import (
     ImplRegistry,
     WILDCARD,
+    normalize_axis,
     require_array_type,
     require_constant_bool,
     require_constant_enum,
+    require_constant_int,
     require_constant_pointer_info,
     require_constant_str,
     require_dtype_spec,
-    require_constant_int,
 )
 from cuda.tile._ir.ops import PointerOffset
 from ..._stub import core_api
@@ -414,6 +415,31 @@ def array_getitem(object: Var, key: Var) -> Var:
         offset=offset,
     )
     return array_from_parts_impl(pointer, build_tuple(new_shape), build_tuple(new_strides))
+
+
+@impl(Array.slice)
+def array_slice(self: Var, axis: Var, start: Var, stop: Var) -> Var:
+    array_ty = require_array_type(self)
+    array_val = self.get_aggregate()
+    axis = normalize_axis(require_constant_int(axis), array_ty.ndim)
+    start = implicit_cast(start, array_ty.index_dtype, "Invalid slice start")
+    stop = implicit_cast(stop, array_ty.index_dtype, "Invalid slice stop")
+    _require_nonnegative_constant(start, "Slice start must be non-negative")
+    _require_nonnegative_constant(stop, "Slice stop must be non-negative")
+    if start.is_constant() and stop.is_constant() and stop.get_constant() < start.get_constant():
+        raise TypeCheckingError("Slice stop must be greater than or equal to start")
+
+    stride = array_val.strides[axis]
+    offset = binary_arithmetic_tensorlike(
+        "mul", astype(start, datatype.uint64), astype(stride, datatype.uint64)
+    )
+    base_ptr = _get_array_base_pointer(self)
+    pointer = add_operation(PointerOffset, base_ptr.get_type(), pointer=base_ptr, offset=offset)
+    new_shape = tuple(
+        binary_arithmetic_tensorlike("sub", stop, start) if i == axis else dim
+        for i, dim in enumerate(array_val.shape)
+    )
+    return array_from_parts_impl(pointer, build_tuple(new_shape), build_tuple(array_val.strides))
 
 
 def load_pointer(pointer: Var[PointerTy], count: int = 1, alignment: int | None = None):
