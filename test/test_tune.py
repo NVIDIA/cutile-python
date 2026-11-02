@@ -328,6 +328,45 @@ def test_ipc_export_none_falls_back(monkeypatch):
     assert tune_utils.benchmark_with_timeout(None, (1,), None, (), 5.0, True) == (123, None)
 
 
+def _fake_ipc_worker_raising(monkeypatch, error):
+    ipc_worker_calls = []
+
+    class FakeRunner:
+        def run(self, payload, timeout_sec):
+            ipc_worker_calls.append(payload)
+            raise error
+
+    monkeypatch.setattr(tune_utils, "_ipc_supported", True, raising=True)
+    monkeypatch.setattr(
+        tune_utils, "_export_ipc_benchmark_payload", lambda *args: b"x", raising=True)
+    monkeypatch.setattr(
+        tune_utils, "_get_timed_benchmark_runner", lambda: FakeRunner(), raising=True)
+    monkeypatch.setattr(tune_utils, "_benchmark", lambda *args: 123, raising=True)
+    return ipc_worker_calls
+
+
+def test_ipc_error_from_worker(monkeypatch):
+    ipc_worker_calls = _fake_ipc_worker_raising(
+        monkeypatch, tune_utils._IpcError("cuIpcOpenMemHandle: invalid resource handle"))
+
+    assert tune_utils.benchmark_with_timeout(None, (1,), None, (), 5.0, True) == (123, None)
+    assert len(ipc_worker_calls) == 1
+
+    # Skip IPC for subsequent calls.
+    assert tune_utils.benchmark_with_timeout(None, (1,), None, (), 5.0, True) == (123, None)
+    assert len(ipc_worker_calls) == 1
+
+
+def test_non_ipc_error_from_worker(monkeypatch):
+    ipc_worker_calls = _fake_ipc_worker_raising(monkeypatch, RuntimeError("some other failure"))
+
+    for _ in range(2):
+        with pytest.raises(RuntimeError, match="some other failure"):
+            tune_utils.benchmark_with_timeout(None, (1,), None, (), 5.0, True)
+    # IPC stays enabled.
+    assert len(ipc_worker_calls) == 2
+
+
 def test_ipc_skip_cache_and_recompile_kernel(monkeypatch):
     x = torch.arange(16, dtype=torch.float32, device="cuda:0")
     out = torch.empty_like(x)

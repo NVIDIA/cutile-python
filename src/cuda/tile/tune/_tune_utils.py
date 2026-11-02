@@ -26,6 +26,10 @@ class TileLaunchTimeoutError(RuntimeError):
     pass
 
 
+class _IpcError(RuntimeError):
+    pass
+
+
 _WORKER_BENCHMARK = "BENCHMARK"
 _WORKER_STOP = "STOP"
 _WORKER_START_TIMEOUT_SEC = 5.0
@@ -72,6 +76,8 @@ class _TimedBenchmarkRunner:
             )
         if not ok:
             self.terminate(graceful_shutdown=False)
+            if value == "RuntimeError" and "cuIpcOpenMemHandle" in str(details):
+                raise _IpcError(f"{value}: {details}")
             raise RuntimeError(f"{value}: {details}")
         return value, time.perf_counter() - wall_time_start
 
@@ -164,6 +170,9 @@ class _TimedBenchmarkRunner:
 _timed_benchmark_runner: _TimedBenchmarkRunner | None = None
 _timed_benchmark_lock = threading.Lock()
 
+# Used to skip IPC. Set to False when worker fails with IpcError.
+_ipc_supported = True
+
 
 def _get_timed_benchmark_runner() -> _TimedBenchmarkRunner:
     global _timed_benchmark_runner
@@ -208,11 +217,17 @@ def _benchmark_worker_main(conn):
 def benchmark_with_timeout(
         stream, grid, kernel, pyargs,
         timeout_sec: float, flush_l2: bool) -> tuple[float, float | None]:
-    serialized_payload = _export_ipc_benchmark_payload(
-        stream, grid, kernel, pyargs, flush_l2)
-    if serialized_payload is None:
-        return _benchmark(stream, grid, kernel, pyargs, flush_l2), None
+    global _ipc_supported
+    if _ipc_supported:
+        serialized_payload = _export_ipc_benchmark_payload(
+            stream, grid, kernel, pyargs, flush_l2)
+        if serialized_payload is not None:
+            with _timed_benchmark_lock:
+                runner = _get_timed_benchmark_runner()
+                try:
+                    return runner.run(serialized_payload, timeout_sec)
+                except _IpcError:
+                    _ipc_supported = False
 
-    with _timed_benchmark_lock:
-        runner = _get_timed_benchmark_runner()
-        return runner.run(serialized_payload, timeout_sec)
+    # fallback to non-IPC benchmark
+    return _benchmark(stream, grid, kernel, pyargs, flush_l2), None
