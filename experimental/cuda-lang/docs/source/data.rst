@@ -187,7 +187,7 @@ resulting immutable :class:`TensorMap` value in the ``kernel_args`` tuple of
        # Use source_map with a TMA operation.
        ...
 
-   tensor_map = cl.tensor_map_tiled(source, (32, 16), order="F")
+   tensor_map = cl.tensor_map_tiled(source, (32, 16), order=cl.AxisOrder.REVERSE)
    cl.launch(stream, grid, block, copy_kernel, (tensor_map, output))
 
 Only tiled tensor map mode is supported today. Other TMA descriptor modes are

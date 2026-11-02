@@ -259,6 +259,7 @@ TensorMap
    :template: autosummary/class_no_init.rst
 
     SwizzleMode
+    AxisOrder
 
 
 TensorMap Async Copy

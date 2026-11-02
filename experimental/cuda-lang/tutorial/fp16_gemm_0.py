@@ -6,7 +6,7 @@
 Computes ``C = A @ B.T`` with an optional FP16 row bias using a 128x128x64
 tile, one shared-memory stage, explicit TMA and mbarrier operations, tcgen05
 MMA into TMEM, FP32 accumulation, and an FP16 epilogue. A and B are row-major,
-K-contiguous tensors; ``order="F"`` expresses K as the leading TMA coordinate.
+K-contiguous tensors; ``order=cl.AxisOrder.REVERSE`` expresses K as the leading TMA coordinate.
 K and ``has_bias`` are specialization keys, while M and N remain
 runtime dimensions of C. The CLI validates inputs and checks correctness.
 """
@@ -245,19 +245,19 @@ def run(tensors: dict[str, torch.Tensor], stream=None) -> None:
         raise ValueError("C must have shape (M, N)")
     _validate_mnk((m, n, k))
 
-    # A/B are ordinary row-major (rows, K) arrays. ``order="F"`` reverses the
+    # A/B are ordinary row-major (rows, K) arrays. ``order=cl.AxisOrder.REVERSE`` reverses the
     # tensor-map modes to (K, rows), making K the contiguous TMA coordinate.
     # The explicit mode order makes K the leading tensor-map dimension.
     a_tmap = cl.tensor_map_tiled(
         a,
         (BLOCK_K, BLOCK_M),
-        order="F",
+        order=cl.AxisOrder.REVERSE,
         swizzle=cl.SwizzleMode.SWIZZLE_128B,
     )
     b_tmap = cl.tensor_map_tiled(
         b,
         (BLOCK_K, BLOCK_N),
-        order="F",
+        order=cl.AxisOrder.REVERSE,
         swizzle=cl.SwizzleMode.SWIZZLE_128B,
     )
     bias = tensors.get("bias")

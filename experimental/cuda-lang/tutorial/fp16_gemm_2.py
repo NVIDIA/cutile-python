@@ -307,12 +307,12 @@ def run(tensors: dict[str, torch.Tensor], stream=None) -> None:
     bias_arg = c.reshape(-1) if bias is None else bias
     grid_m = cl.cdiv(cl.cdiv(m, CTA_M), CLUSTER_M) * CLUSTER_M
     cuda_stream = torch.cuda.current_stream() if stream is None else stream
-    # A/B are row-major (rows, K); order="F" maps coordinates to (K, rows).
+    # A/B are row-major (rows, K); order=cl.AxisOrder.REVERSE maps coordinates to (K, rows).
     a_tmap = cl.tensor_map_tiled(
-        a, (BLOCK_K, CTA_M), order="F", swizzle=cl.SwizzleMode.SWIZZLE_128B
+        a, (BLOCK_K, CTA_M), order=cl.AxisOrder.REVERSE, swizzle=cl.SwizzleMode.SWIZZLE_128B
     )
     b_tmap = cl.tensor_map_tiled(
-        b, (BLOCK_K, CTA_N), order="F", swizzle=cl.SwizzleMode.SWIZZLE_128B
+        b, (BLOCK_K, CTA_N), order=cl.AxisOrder.REVERSE, swizzle=cl.SwizzleMode.SWIZZLE_128B
     )
     cl.launch(
         cuda_stream,

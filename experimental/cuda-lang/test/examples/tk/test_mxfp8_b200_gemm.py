@@ -713,7 +713,9 @@ def launch_mxfp8_b200_gemm(
     )
     a_scale_tmap = cl.tensor_map_tiled(a_scale_view, (16, 32, 1, 1))
     b_scale_tmap = cl.tensor_map_tiled(b_scale_view, (16, 32, 1, 1))
-    c_tmap = cl.tensor_map_tiled(c, (config.tile_n // config.epilogue_stages, CTA_M), order="F")
+    c_tmap = cl.tensor_map_tiled(
+        c, (config.tile_n // config.epilogue_stages, CTA_M), order=cl.AxisOrder.REVERSE,
+    )
     cl.launch(
         stream,
         (blocks,),

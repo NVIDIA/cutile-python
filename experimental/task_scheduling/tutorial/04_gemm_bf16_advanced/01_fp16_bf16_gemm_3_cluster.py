@@ -1279,13 +1279,13 @@ def host_function(
     tma_a_desc = cl.tensor_map_tiled(
         a,
         (mma_tiler_mnk[2], mma_tiler_mnk_per_cta[0]),
-        order="F",
+        order=cl.AxisOrder.REVERSE,
         swizzle=cl.SwizzleMode.SWIZZLE_128B,
     )
     tma_b_desc = cl.tensor_map_tiled(
         b,
         (mma_tiler_mnk[2], mma_tiler_mnk_per_cta[1]),
-        order="F",
+        order=cl.AxisOrder.REVERSE,
         swizzle=cl.SwizzleMode.SWIZZLE_128B,
     )
     cl.launch(

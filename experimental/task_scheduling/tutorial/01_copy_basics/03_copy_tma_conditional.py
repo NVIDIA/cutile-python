@@ -548,7 +548,7 @@ def run_tma_copy_conditional_kernel_prim(
     input_ = torch.randn(rows_cols, device="cuda:0", dtype=torch.float16)
     output = torch.zeros_like(input_)
     trace = torch.zeros((rows, TRACE_COLUMNS), device="cuda:0", dtype=torch.float16)
-    tensor_map = cl.tensor_map_tiled(input_, (TILE_SIZE, 1), order="F")
+    tensor_map = cl.tensor_map_tiled(input_, (TILE_SIZE, 1), order=cl.AxisOrder.REVERSE)
     cl.launch(
         torch.cuda.current_stream(),
         (columns // TILE_SIZE,),

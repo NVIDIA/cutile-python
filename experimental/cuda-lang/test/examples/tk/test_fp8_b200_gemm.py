@@ -851,7 +851,9 @@ def launch_fp8_b200_gemm(a, b, c, config, b_tma_view=None):
         b_tma_view, (128, config.tile_n // 2, config.tile_k // 128),
         swizzle=cl.SwizzleMode.SWIZZLE_128B,
     )
-    c_tmap = cl.tensor_map_tiled(c, (config.tile_n // config.epilogue_stages, 128), order="F")
+    c_tmap = cl.tensor_map_tiled(
+        c, (config.tile_n // config.epilogue_stages, 128), order=cl.AxisOrder.REVERSE,
+    )
     cl.launch(
         torch.cuda.current_stream(),
         (tasks * 2,),
@@ -940,7 +942,7 @@ def test_fp8_b200_gemm(m, n, k):
     b_tmap = cl.tensor_map_tiled(
         b_view, (128, 128, 1), swizzle=cl.SwizzleMode.SWIZZLE_128B
     )
-    c_tmap = cl.tensor_map_tiled(c, (256, 128), order="F")
+    c_tmap = cl.tensor_map_tiled(c, (256, 128), order=cl.AxisOrder.REVERSE)
 
     cl.launch(
         torch.cuda.current_stream(),

@@ -857,7 +857,7 @@ def tensor_map_tiled_impl(
     for dimension in tile_dimensions:
         require_integral_scalar_type(dimension)
     if not order.is_constant():
-        raise TypeCheckingError("Expected a constant string or integer tuple")
+        raise TypeCheckingError("Expected a constant AxisOrder or integer tuple")
     try:
         order = tensor_map._normalize_order(order.get_constant(), array_ty.ndim)
     except (TypeError, ValueError) as error:

@@ -15,6 +15,16 @@ from cuda.tile._cext import (
 )
 
 
+class AxisOrder(Enum):
+    """Ordering of array axes in a tensor-map descriptor."""
+
+    KEEP = "keep"
+    """Keep the array axes in their original order."""
+
+    REVERSE = "reverse"
+    """Reverse the order of the array axes."""
+
+
 class MemoryOrder(Enum):
     """Memory ordering semantics of a memory operation."""
 

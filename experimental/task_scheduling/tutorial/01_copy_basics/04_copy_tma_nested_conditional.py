@@ -413,7 +413,7 @@ def run_tma_copy_nested_conditional_kernel_prim(
     trace = torch.zeros((rows, TRACE_COLUMNS), device="cuda:0", dtype=torch.float16)
     # A sentinel catches missing post-loop writes even when stop_row is zero.
     copied_rows = torch.full((2,), -1, device="cuda:0", dtype=torch.int32)
-    tensor_map = cl.tensor_map_tiled(input_, (TILE_SIZE, 1), order="F")
+    tensor_map = cl.tensor_map_tiled(input_, (TILE_SIZE, 1), order=cl.AxisOrder.REVERSE)
     cl.launch(
         torch.cuda.current_stream(),
         (columns // TILE_SIZE,),
