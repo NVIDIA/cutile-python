@@ -1873,7 +1873,6 @@ def lower_copy_async_bulk_tensor_g2s(
         mode=_enum_to_nvvm_enum(operation.mode, mlir.nvvm.TMALoadMode),
         isCTAOnly=operation.is_cta_only,
         group=group,
-        predicate=_optional_mlir_operand(context, operation.predicate),
         validatePattern=_NVVM_COPY_REPORT_PATTERNS[operation.report_mechanism],
     )
     return ()
@@ -1893,7 +1892,6 @@ def lower_copy_async_bulk_tensor_s2g(
         ),
         l2CacheHint=_optional_mlir_operand(context, operation.l2_cache_hint),
         mode=_enum_to_nvvm_enum(operation.mode, mlir.nvvm.TMAStoreMode),
-        predicate=_optional_mlir_operand(context, operation.predicate),
     )
     return ()
 

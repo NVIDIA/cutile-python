@@ -40,7 +40,6 @@ def copy_async_bulk_tensor_global_to_shared(
     l2_cache_hint=None,
     mode=TMALoadMode.TILE,
     cta_group=None,
-    predicate=None,
     report_mechanism=AsyncCopyReportMechanism.DISABLED,
 ):
     """Initiate a multi-dimensional TMA copy from global to shared memory.
@@ -67,7 +66,6 @@ def copy_async_bulk_tensor_global_to_shared(
         mode (TMALoadMode): :class:`TMALoadMode` selecting the load behavior.
         cta_group (CTAGroup | None): Selects the behavior of a multi-block
             async copy.
-        predicate (bool | None):
         report_mechanism (AsyncCopyReportMechanism): Specifies the mbarrier
             reporting mechanism.
     """
@@ -82,7 +80,6 @@ def copy_async_bulk_tensor_shared_to_global(
     *,
     l2_cache_hint=None,
     mode=TMAStoreMode.TILE,
-    predicate=None,
 ):
     """Initiate a multi-dimensional TMA copy from shared to global memory.
 
@@ -101,7 +98,6 @@ def copy_async_bulk_tensor_shared_to_global(
         l2_cache_hint (int | None): Integer-encoded L2 cache policy.
         mode (TMAStoreMode): :class:`TMAStoreMode` selecting the store
             behavior.
-        predicate (bool | None):
     """
 
 

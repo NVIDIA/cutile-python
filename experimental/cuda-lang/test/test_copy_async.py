@@ -330,21 +330,16 @@ class TestG2S(CopyAsyncPtxTestBase):
             **HOPPER_TARGET,
         )
 
-    def test_shared_cluster_group_with_predicate_and_multicast(self):
+    def test_shared_cluster_group_with_multicast(self):
         @cl.kernel
         def kernel(tensor_map, pred, i, j, H: cl.Constant[int], W: cl.Constant[int]):
-            smem = cl.shared_array(shape=(H * W,), dtype=cl.int32, alignment=512)
-            smem = cl.map_shared_to_cluster(smem.pointer(), 0)
+            smem = cl.shared_array(H * W, cl.int32, alignment=512).pointer()
+            smem = cl.map_shared_to_cluster(smem, 0)
             mbar = cl.shared_array(1, cl.mbarrier, alignment=8).pointer()
-
             cl.copy_async_bulk_tensor_global_to_shared(
-                tensor_map,
-                (i, j),
-                smem,
-                mbar,
+                tensor_map, (i, j), smem, mbar,
                 multicast_mask=0x3,
                 cta_group=cl.CTAGroup.CTA_2,
-                predicate=pred,
             )
 
         compile_kernel(
@@ -353,6 +348,7 @@ class TestG2S(CopyAsyncPtxTestBase):
             assert_in_ptx=(
                 "cp.async.bulk.tensor.2d.shared::cluster.global",
                 "multicast::cluster",
+                "cta_group::2",
             ),
             **SM100_TARGET,
         )
@@ -384,18 +380,6 @@ class TestG2S(CopyAsyncPtxTestBase):
             raises=pytest.raises(TypeCheckingError, match=match),
         )
 
-    def k1(tensor_map, pred, i, j, H: cl.Constant[int], W: cl.Constant[int]):
-        smem = cl.shared_array(shape=(H * W,), dtype=cl.int32, alignment=512)
-        mbar = cl.shared_array(1, cl.mbarrier, alignment=8).pointer()
-
-        cl.copy_async_bulk_tensor_global_to_shared(
-            tensor_map,
-            (i, j),
-            smem.pointer(),
-            mbar,
-            predicate=pred,
-        )
-
     def k2(tensor_map, pred, i, j, H: cl.Constant[int], W: cl.Constant[int]):
         smem = cl.shared_array(shape=(H * W,), dtype=cl.int32, alignment=512)
         mbar = cl.shared_array(1, cl.mbarrier, alignment=8).pointer()
@@ -420,11 +404,11 @@ class TestG2S(CopyAsyncPtxTestBase):
             cta_group=cl.CTAGroup.CTA_1,
         )
 
-    @pytest.mark.parametrize("kernel", (k1, k2, k3))
+    @pytest.mark.parametrize("kernel", (k2, k3))
     def test_unsupported_kwargs_for_cta_mode(self, kernel):
         match = (
             "When the destination memory is in shared memory, the "
-            "predicate, multicast mask, and cta_group arguments are invalid."
+            "multicast mask and cta_group arguments are invalid."
         )
         compile_kernel(
             kernel,
@@ -589,25 +573,6 @@ class TestS2G(CopyAsyncPtxTestBase):
                 tensor_map,
                 (i, j),
                 l2_cache_hint=cache_hint,
-            )
-
-        compile_kernel(
-            kernel,
-            signature=self.signature(),
-            assert_in_ptx="cp.async.bulk.tensor.2d.global.shared::cta",
-            **HOPPER_TARGET,
-        )
-
-    def test_predicate(self):
-        @cl.kernel
-        def kernel(tensor_map, pred, i, j, H: cl.Constant[int], W: cl.Constant[int]):
-            smem = cl.shared_array(shape=(H * W,), dtype=cl.int32, alignment=512)
-
-            cl.copy_async_bulk_tensor_shared_to_global(
-                smem.pointer(),
-                tensor_map,
-                (i, j),
-                predicate=pred,
             )
 
         compile_kernel(

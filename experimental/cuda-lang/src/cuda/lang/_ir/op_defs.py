@@ -243,7 +243,6 @@ class CopyAsyncBulkTensorGlobalToShared(
     im2col_offsets: tuple[Var, ...] = operand()
     multicast_mask: Var | None = operand(default=None)
     l2_cache_hint: Var | None = operand(default=None)
-    predicate: Var | None = operand(default=None)
     mode: TMALoadMode = attribute()
     is_cta_only: bool = attribute()
     cta_group: CTAGroup | None = attribute(default=None)
@@ -260,7 +259,6 @@ class CopyAsyncBulkTensorSharedToGlobal(
     src_memory: Var = operand()
     coordinates: tuple[Var, ...] = operand()
     l2_cache_hint: Var | None = operand(default=None)
-    predicate: Var | None = operand(default=None)
     mode: TMAStoreMode = attribute()
 
 

@@ -693,15 +693,15 @@ def store_matmul_partition(
                 cl.FenceProxy.ASYNC,
                 restriction=cl.FenceRestriction.shared_block(),
             )
-            cl.copy_async_bulk_tensor_shared_to_global(
-                stage_smem,
-                c_tmap,
-                (
-                    pid_n * tile_n + subtile * subtile_n,
-                    pid_m * tile_m + rank * 128,
-                ),
-                predicate=valid_tile,
-            )
+            if valid_tile:
+                cl.copy_async_bulk_tensor_shared_to_global(
+                    stage_smem,
+                    c_tmap,
+                    (
+                        pid_n * tile_n + subtile * subtile_n,
+                        pid_m * tile_m + rank * 128,
+                    ),
+                )
             cl.copy_async_bulk_commit_group()
     if cl.elect_sync():
         empty_bar = cl.map_shared_to_cluster(acc_empty, 0)
