@@ -72,10 +72,9 @@ def _validate_occupancy(occupancy: None | int):
             raise ValueError(f'occupancy should be [1, 32], got {occupancy}')
 
 
-def _validate_opt_level(opt_level: None | int):
-    if opt_level is not None:
-        if opt_level < 0 or opt_level > 3:
-            raise ValueError(f'opt_level should be [0, 3], got {opt_level}')
+def _validate_opt_level(opt_level: int):
+    if not isinstance(opt_level, int) or opt_level < 0 or opt_level > 3:
+        raise ValueError(f'opt_level should be an integer in [0, 3], got {opt_level!r}')
 
 
 def _validate_num_worker_warps(num_worker_warps: None | int):
