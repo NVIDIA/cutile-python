@@ -184,6 +184,27 @@ def test_host_jit_passes_pointer_to_kernel():
     assert output.tolist() == [0, 42]
 
 
+@pytest.mark.skipif(not cconv_v3_enabled(), reason="Requires cconv3 enabled")
+def test_host_jit_array_permute():
+    @cl.kernel
+    def kernel(perm_view, out):
+        out[0] = perm_view[0, 0]
+        out[1] = perm_view[0, 1]
+        out[2] = perm_view[1, 0]
+        out[3] = perm_view[1, 1]
+
+    @cl.host_entry
+    def launcher(A, out):
+        perm_view = A.permute()
+        cl.launch(None, (1,), (1,), kernel, (perm_view, out))
+
+    A = torch.arange(4, dtype=torch.int32, device="cuda:0").reshape((2, 2))
+    out = torch.zeros((4,), dtype=torch.int32, device="cuda:0")
+    launcher(A, out)
+    torch.cuda.synchronize()
+    assert out.tolist() == [0, 2, 1, 3]
+
+
 def test_host_jit_preserves_argument_constness():
     @cl.kernel
     def kernel(value, output):

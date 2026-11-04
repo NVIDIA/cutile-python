@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-from typing import TypeVar, Generic
+from typing import TypeVar, Generic, Optional
 
 import cuda.lang as cl
 from cuda.lang._execution import simt_stub, function
@@ -125,6 +125,16 @@ class Array(TileArray, Generic[T]):
         With no index, return a pointer to the first element. With a scalar
         index or tuple of scalar indices, return a pointer to the specified
         element. This is equivalent to ``&array[index]`` in CUDA C++.
+        """
+        ...
+
+    @simt_stub(compiled_host=True)
+    def permute(self, dims: Optional[tuple[int, ...]] = None) -> "Array[T]":
+        """Return an array view with its dimensions reordered.
+
+        Args:
+            dims: Compile time constant tuple specifying the input axis for
+                  each output axis. If ``None``, reverse the order of all axes.
         """
         ...
 
