@@ -12,6 +12,7 @@ After :doc:`installation`, save this example as ``vector_add_tile.py`` and run
 
    import cuda.tile as ct
    import cupy as cp
+   import numpy as np
 
    TILE_SIZE = 128
 
@@ -25,16 +26,18 @@ After :doc:`installation`, save this example as ``vector_add_tile.py`` and run
        ct.store(out, index=(block,), tile=x + y)
 
    n = 1000
-   a = cp.arange(n, dtype=cp.float32)
-   b = cp.full_like(a, 2.0)
-   out = cp.empty_like(a)
+   rng = cp.random.default_rng()
+   a = rng.random(n, dtype=cp.float32)
+   b = rng.random(n, dtype=cp.float32)
+   out = cp.zeros_like(a)
    stream = cp.cuda.get_current_stream()
 
    grid = ((n + TILE_SIZE - 1) // TILE_SIZE,)
    ct.launch(stream, grid, vector_add, (a, b, out))
 
    stream.synchronize()
-   cp.testing.assert_allclose(out, a + b)
+   expected = cp.asnumpy(a) + cp.asnumpy(b)
+   np.testing.assert_allclose(cp.asnumpy(out), expected)
    print("Vector addition passed.")
 
 .. testoutput:: quickstart-tile

@@ -7,12 +7,13 @@ First cuda.lang Kernel
 
 After :doc:`installation`, save this example as ``vector_add_lang.py`` and run
 ``python vector_add_lang.py``. It adds two 1,000-element vectors and checks the
-result against CuPy.
+result against NumPy.
 
 .. testcode:: quickstart-lang
 
    import cuda.lang as cl
    import cupy as cp
+   import numpy as np
 
    @cl.kernel
    def vector_add(a, b, out):
@@ -21,9 +22,10 @@ result against CuPy.
            out[i] = a[i] + b[i]
 
    n = 1000
-   a = cp.arange(n, dtype=cp.float32)
-   b = cp.full_like(a, 2.0)
-   out = cp.empty_like(a)
+   rng = cp.random.default_rng()
+   a = rng.random(n, dtype=cp.float32)
+   b = rng.random(n, dtype=cp.float32)
+   out = cp.zeros_like(a)
    stream = cp.cuda.get_current_stream()
 
    threads_per_block = 128
@@ -31,7 +33,8 @@ result against CuPy.
    cl.launch(stream, (blocks,), (threads_per_block,), vector_add, (a, b, out))
 
    stream.synchronize()
-   cp.testing.assert_allclose(out, a + b)
+   expected = cp.asnumpy(a) + cp.asnumpy(b)
+   np.testing.assert_allclose(cp.asnumpy(out), expected)
    print("Vector addition passed.")
 
 .. testoutput:: quickstart-lang

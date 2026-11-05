@@ -79,7 +79,7 @@ See :doc:`/tile/debugging`.
 Correctness Checks
 ------------------
 
-The quickstart compares kernel output with a CuPy reference. To extend it to
+The quickstart compares kernel output with a NumPy reference. To extend it to
 boundary sizes and strided inputs, keep its imports and ``vector_add``
 definition and replace the input-and-launch section with:
 
@@ -87,17 +87,21 @@ definition and replace the input-and-launch section with:
 
    stream = cp.cuda.get_current_stream()
    threads_per_block = 128
+   rng = cp.random.default_rng()
    for n in (0, 1, 31, 32, 33, 127, 128, 129, 1000):
        for stride in (1, 2):
-           a = cp.arange(n * stride, dtype=cp.float32)[::stride]
-           b = cp.full_like(a, 2.0)
-           out = cp.empty_like(a)
+           a_storage = rng.random(n * stride, dtype=cp.float32)
+           a = a_storage[::stride]
+           b = rng.random(n, dtype=cp.float32)
+           out = cp.zeros_like(a)
            if n:
                blocks = cl.cdiv(n, threads_per_block)
                cl.launch(stream, (blocks,), (threads_per_block,),
                          vector_add, (a, b, out))
            stream.synchronize()
-           cp.testing.assert_allclose(out, a + b, rtol=1e-6, atol=1e-6)
+           expected = cp.asnumpy(a_storage)[::stride] + cp.asnumpy(b)
+           np.testing.assert_allclose(cp.asnumpy(out), expected,
+                                      rtol=1e-6, atol=1e-6)
    print("Boundary and stride checks passed.")
 
 Synchronization after a launch associates asynchronous CUDA errors with that
