@@ -16,7 +16,7 @@ from cuda.tile._ir.ops import LoadPointer, StorePointer
 from cuda.tile._ir.cast_ops import _is_implicit_cast_ok
 from cuda.tile._ir.typing_support import to_dtype
 from cuda.tile._compile import compile_tile
-from util import assert_equal, raises_if
+from util import assert_equal, filecheck, raises_if
 from conftest import float_dtypes, bool_dtypes, int_dtypes, dtype_id
 from torch.testing import make_tensor
 
@@ -214,6 +214,27 @@ def test_ir_checked_vs_unchecked(kernel, expected_mask):
     store_ops = [op for op in root_block.traverse() if isinstance(op, StorePointer)]
     assert len(store_ops) == 1
     assert (store_ops[0].mask is not None) == expected_mask
+
+
+@ct.kernel
+def load_offset_unmasked(x, y):
+    ind = ct.arange(8, dtype=ct.int32)
+    t = x.get_raw_memory().load_offset(ind)
+    ct.scatter(y, ind, t)
+
+
+@pytest.mark.parametrize("kernel", [copy_8_unchecked, load_offset_unmasked])
+def test_unmasked_load_has_no_padding_operand(kernel):
+    x = torch.arange(10, 18, dtype=torch.float32, device="cuda:0")
+    y = torch.zeros_like(x)
+    sig = ct.compilation.KernelSignature.from_kernel_args(
+            kernel, (x, y),
+            ct.compilation.CallingConvention.cutile_python_v1())
+    bytecode = compile_tile(kernel._pyfunc, [sig], return_bytecode=True,
+                            return_cubin=False).bytecode
+
+    # The only operand of the load is the pointer: no mask, and so no padding either
+    filecheck(bytecode, "// CHECK: load_ptr_tko weak %{{[^,]*}} token=")
 
 
 # ============================================================================
