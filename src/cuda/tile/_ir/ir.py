@@ -56,11 +56,7 @@ class IRContext:
         self._all_vars: Dict[str, str] = {}
         self._counter_by_name: Dict[str, Iterator[int]] = defaultdict(itertools.count)
         self._temp_counter = itertools.count()
-        self.typemap: Dict[str, Type] = dict()
-        self.constants: Dict[str, Any] = dict()
-        self._loose_typemap: Dict[str, Type] = dict()
         self.log_ir_on_error = log_ir_on_error
-        self._aggregate_values: Dict[str, Any] = dict()
         self.tileiras_version: BytecodeVersion = tileiras_version
         self._function_specialization_id_counter = itertools.count()
         self.typing_hooks = typing_hooks
@@ -90,14 +86,14 @@ class IRContext:
         return self._all_vars[var_name]
 
     def copy_type_information(self, src: Var, dst: Var):
-        if src.name in self.typemap:
-            self.typemap[dst.name] = self.typemap[src.name]
-        if src.name in self._loose_typemap:
-            self._loose_typemap[dst.name] = self._loose_typemap[src.name]
-        if src.name in self.constants:
-            self.constants[dst.name] = self.constants[src.name]
-        if src.name in self._aggregate_values:
-            self._aggregate_values[dst.name] = self._aggregate_values[src.name]
+        if src._type is not None:
+            dst._type = src._type
+        if src._loose_type is not None:
+            dst._loose_type = src._loose_type
+        if src.is_constant():
+            dst._constant = src._constant
+        if src._aggregate is not None:
+            dst._aggregate = src._aggregate
 
 
 class ConstantState(enum.Enum):
@@ -187,14 +183,24 @@ class PhiState:
 T = TypeVar("T", bound=Type, covariant=True)
 
 
+_UNSET_CONSTANT = object()
+
+
 class Var(Generic[T]):
     def __init__(self, name: str, loc: Loc, ctx: IRContext):
         self.name = name
         self.loc = loc
         self.ctx = ctx
+        # Type information is stored in the Var rather than in the IRContext,
+        # so that the IRContext doesn't reference the types. Otherwise, we would get
+        # reference cycles like Var -> IRContext -> Type -> Var.
+        self._type: T | InvalidType | None = None
+        self._loose_type: Type | None = None
+        self._constant: Any = _UNSET_CONSTANT
+        self._aggregate: AggregateValue | None = None
 
     def try_get_type(self) -> Optional[T]:
-        return self.ctx.typemap.get(self.name)
+        return self._type
 
     def get_type(self) -> T:
         ty = self.get_type_allow_invalid()
@@ -203,31 +209,32 @@ class Var(Generic[T]):
         return ty
 
     def get_type_allow_invalid(self) -> T | InvalidType:
-        try:
-            return self.ctx.typemap[self.name]
-        except KeyError:
+        if self._type is None:
             raise TileInternalError(f"Type of variable {self.name} not found")
+        return self._type
 
     def set_type(self, ty: Type, force: bool = False):
         assert isinstance(ty, Type)
         if not force:
-            assert self.name not in self.ctx.typemap
-        self.ctx.typemap[self.name] = ty
+            assert self._type is None
+        self._type = ty
 
     def is_constant(self) -> bool:
-        return self.name in self.ctx.constants
+        return self._constant is not _UNSET_CONSTANT
 
     def get_constant(self):
-        return self.ctx.constants[self.name]
+        if self._constant is _UNSET_CONSTANT:
+            raise KeyError(self.name)
+        return self._constant
 
     def set_constant(self, value):
-        if self.name in self.ctx.constants:
-            assert self.ctx.constants[self.name] == value
+        if self._constant is _UNSET_CONSTANT:
+            self._constant = value
         else:
-            self.ctx.constants[self.name] = value
+            assert self._constant == value
 
     def get_loose_type(self) -> T | LooselyTypedScalar:
-        ty = self.ctx._loose_typemap.get(self.name, None)
+        ty = self._loose_type
         if ty is not None:
             return ty
         ty = self.get_type()
@@ -236,26 +243,28 @@ class Var(Generic[T]):
         return ty
 
     def get_loose_type_allow_invalid(self) -> T | LooselyTypedScalar | InvalidType:
-        ty = self.ctx._loose_typemap.get(self.name, None)
+        ty = self._loose_type
         return self.get_type_allow_invalid() if ty is None else ty
 
     def set_loose_type(self, ty: Type, force: bool = False):
         assert isinstance(ty, Type)
         if not force:
-            assert self.name not in self.ctx._loose_typemap
-        self.ctx._loose_typemap[self.name] = ty
+            assert self._loose_type is None
+        self._loose_type = ty
 
     def get_original_name(self) -> str:
         return self.ctx.get_original_name(self.name)
 
     def is_aggregate(self) -> bool:
-        return self.name in self.ctx._aggregate_values
+        return self._aggregate is not None
 
     def get_aggregate(self) -> AggregateValue:
-        return self.ctx._aggregate_values[self.name]
+        if self._aggregate is None:
+            raise KeyError(self.name)
+        return self._aggregate
 
     def set_aggregate(self, agg_value: AggregateValue):
-        self.ctx._aggregate_values[self.name] = agg_value
+        self._aggregate = agg_value
 
     def flatten_aggregate(self) -> Iterator["Var"]:
         if self.is_aggregate():
