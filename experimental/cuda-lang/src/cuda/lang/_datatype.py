@@ -11,7 +11,6 @@ from cuda.tile._datatype import (
     bfloat16,
     bool_,
     float8_e8m0fnu,
-    float4_e2m1fn,
     float8_e4m3fn,
     float8_e5m2,
     float16,
@@ -48,6 +47,7 @@ from cuda.tile._datatype import (
 from cuda.tile._cext import (
     mbarrier, cluster_launch_control_token, float6_e2m3fn, float6_e3m2fn,
     tensor_map_descriptor,
+    float4_e2m1fn_x2,
 )
 
 
@@ -66,7 +66,6 @@ non_arithmetic_float_dtypes = (
     float8_e4m3fn,
     float8_e5m2,
     float8_e8m0fnu,
-    float4_e2m1fn,
     float6_e2m3fn,
     float6_e3m2fn,
 )
@@ -97,6 +96,7 @@ def to_torch_dtype(dtype: DType, /):
         return dtype_map[dtype]
 
     optional_dtype_names = {
+        float4_e2m1fn_x2: "float4_e2m1fn_x2",
         float8_e4m3fn: "float8_e4m3fn",
         float8_e5m2: "float8_e5m2",
         float8_e8m0fnu: "float8_e8m0fnu",
@@ -148,7 +148,7 @@ __all__ = [
     "float8_e4m3fn",
     "float8_e5m2",
     "float8_e8m0fnu",
-    "float4_e2m1fn",
+    "float4_e2m1fn_x2",
     "mbarrier",
     "tensor_map_descriptor",
     "cluster_launch_control_token",

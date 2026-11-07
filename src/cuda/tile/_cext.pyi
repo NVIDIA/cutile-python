@@ -76,6 +76,7 @@ float8_e5m2: DType
 float8_e8m0fnu: DType
 float8_e5m3fnu: DType
 float4_e2m1fn: DType
+float4_e2m1fn_x2: DType
 mbarrier: DType
 cluster_launch_control_token: DType
 tensor_map_descriptor: DType
@@ -646,7 +647,22 @@ class Scalar:
 
 
 class Vector:
-    """Fixed-size collection returned by vectorized pointer operations."""
+    """Fixed-size collection of values with a common element type.
+
+    Vector operations can generate instructions that process multiple elements
+    at once, including wider memory loads and stores and, where supported,
+    packed arithmetic and conversions. Expressing computations directly on
+    vectors can therefore reduce instruction count.
+
+    Integer indexing accepts both compile-time constant and runtime indices.
+    A constant index gives the compiler a fixed element position, enabling it
+    to simplify the access. Runtime indexing may require selection instructions
+    or temporary storage.
+
+    The selected instructions depend on the operation, element type, and target
+    architecture; memory operations also depend on alignment. A vector operation
+    may require several instructions.
+    """
 
     def __init__(self, *elements: _ScalarLike, dtype: DType | None = None) -> None:
         """Constructs a vector from scalar elements, optionally with an explicit dtype.

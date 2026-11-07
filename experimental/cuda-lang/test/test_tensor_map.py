@@ -20,6 +20,7 @@ pytestmark = [
     ("torch_dtype", "tile_shape"),
     (
         pytest.param(torch.uint8, (16, 4), id="uint8"),
+        (torch.float4_e2m1fn_x2, (16, 4)),
         pytest.param(torch.int8, (16, 4), id="int8"),
         pytest.param(torch.int32, (4, 4), id="int32"),
         pytest.param(torch.int64, (2, 4), id="int64"),
@@ -31,7 +32,7 @@ pytestmark = [
 )
 def test_data_type_and_tile_shape(torch_dtype, tile_shape):
     source = torch.empty((8, 32), dtype=torch_dtype, device="cuda")
-    tensor_map = cl.tensor_map_tiled(source, tile_shape, order="F")
+    tensor_map = cl.tensor_map_tiled(source, tile_shape, order=cl.AxisOrder.REVERSE)
     assert isinstance(tensor_map, cl.TensorMap)
     assert tensor_map.dtype is cl.tensor_map_descriptor
     assert len(bytes(tensor_map)) == 128
@@ -42,6 +43,22 @@ def test_single_int_tile_shape_equals_tuple():
     source = torch.empty(32, dtype=torch.float32, device="cuda")
     assert bytes(cl.tensor_map_tiled(source, 32)) == bytes(
         cl.tensor_map_tiled(source, (32,))
+    )
+
+
+@pytest.mark.parametrize("order", tuple(cl.AxisOrder))
+def test_axis_order_matches_explicit_permutation(order):
+    source = torch.empty((8, 32), dtype=torch.int32, device="cuda")
+    if order is cl.AxisOrder.REVERSE:
+        axes, tile_shape = (1, 0), (8, 4)
+    else:
+        source = source.T
+        axes, tile_shape = (0, 1), (4, 8)
+        assert bytes(cl.tensor_map_tiled(source, tile_shape)) == bytes(
+            cl.tensor_map_tiled(source, tile_shape, order=order)
+        )
+    assert bytes(cl.tensor_map_tiled(source, tile_shape, order=order)) == bytes(
+        cl.tensor_map_tiled(source, tile_shape, order=axes)
     )
 
 
@@ -64,7 +81,7 @@ _BLACKWELL_SWIZZLES = {
 @pytest.mark.parametrize("oob_fill", tuple(cl.TensorMapFloatOOBFill))
 def test_options(swizzle, l2_promotion, oob_fill):
     source = torch.empty((8, 32), dtype=torch.float32, device="cuda")
-    tensor_map = cl.tensor_map_tiled(source, (4, 4), order="F",
+    tensor_map = cl.tensor_map_tiled(source, (4, 4), order=cl.AxisOrder.REVERSE,
                                      swizzle=swizzle,
                                      l2_promotion=l2_promotion,
                                      oob_fill=oob_fill,)
@@ -97,19 +114,21 @@ def test_interleaved_tensor_map_eager_and_compiled(interleave, swizzle, tile_sha
     @cl.host_entry
     def launcher(stream, source, output):
         descriptor = cl.tensor_map_tiled(
-            source, tile_shape, order="F", interleave=interleave, swizzle=swizzle,
+            source, tile_shape, order=cl.AxisOrder.REVERSE, interleave=interleave, swizzle=swizzle,
         )
         cl.launch(stream, (1,), (128,), copy_descriptor, (descriptor, output))
 
     source = torch.empty((4, 4, 32), dtype=torch.float16, device="cuda")
     eager = cl.tensor_map_tiled(
-        source, tile_shape, order="F", interleave=interleave, swizzle=swizzle,
+        source, tile_shape, order=cl.AxisOrder.REVERSE, interleave=interleave, swizzle=swizzle,
     )
     if tile_shape[0] * source.element_size() < 16:
         with pytest.raises(ValueError, match="multiple of 128 bits"):
-            cl.tensor_map_tiled(source, tile_shape, order="F", swizzle=swizzle)
+            cl.tensor_map_tiled(source, tile_shape, order=cl.AxisOrder.REVERSE, swizzle=swizzle)
     else:
-        noninterleaved = cl.tensor_map_tiled(source, tile_shape, order="F", swizzle=swizzle)
+        noninterleaved = cl.tensor_map_tiled(
+            source, tile_shape, order=cl.AxisOrder.REVERSE, swizzle=swizzle,
+        )
         assert bytes(eager) != bytes(noninterleaved)
     output = torch.empty(128, dtype=torch.uint8, device="cuda")
     launcher(torch.cuda.current_stream(), source, output)
@@ -140,7 +159,7 @@ def test_interleaved_tensor_map_rejects_invalid_layout(
     @cl.host_entry
     def launcher(stream, source):
         descriptor = cl.tensor_map_tiled(
-            source, tile_shape, order="F", interleave=interleave, swizzle=swizzle,
+            source, tile_shape, order=cl.AxisOrder.REVERSE, interleave=interleave, swizzle=swizzle,
         )
         cl.launch(stream, (1,), (1,), prefetch, (descriptor,))
 
@@ -159,7 +178,8 @@ def test_interleaved_tensor_map_rejects_invalid_layout(
     with pytest.raises(ValueError, match=match):
         if mode == "eager":
             cl.tensor_map_tiled(
-                source, tile_shape, order="F", interleave=interleave, swizzle=swizzle,
+                source, tile_shape, order=cl.AxisOrder.REVERSE,
+                interleave=interleave, swizzle=swizzle,
             )
         else:
             launcher(torch.cuda.current_stream(), source)
@@ -168,24 +188,24 @@ def test_interleaved_tensor_map_rejects_invalid_layout(
 def test_tensor_map_tiled_rejects_invalid_interleave_type():
     source = torch.empty((4, 4, 32), dtype=torch.float16, device="cuda")
     with pytest.raises(TypeError, match="interleave must be a TensorMapInterleave"):
-        cl.tensor_map_tiled(source, (16, 4, 2), order="F", interleave="32B")
+        cl.tensor_map_tiled(source, (16, 4, 2), order=cl.AxisOrder.REVERSE, interleave="32B")
 
 
 def test_contiguous_array():
     source = torch.empty((8, 32), dtype=torch.int32, device="cuda")
-    tensor_map = cl.tensor_map_tiled(source, (8, 4), order="F")
+    tensor_map = cl.tensor_map_tiled(source, (8, 4), order=cl.AxisOrder.REVERSE)
     assert tensor_map.dtype is cl.tensor_map_descriptor
 
 
 def test_transposed_array():
     source = torch.empty((32, 8), dtype=torch.int32, device="cuda").T
-    tensor_map = cl.tensor_map_tiled(source, (4, 8), order="C")
+    tensor_map = cl.tensor_map_tiled(source, (4, 8), order=cl.AxisOrder.KEEP)
     assert tensor_map.dtype is cl.tensor_map_descriptor
 
 
 def test_padded_array():
     source = torch.empty((8, 64), dtype=torch.int32, device="cuda")[:, :32]
-    tensor_map = cl.tensor_map_tiled(source, (8, 4), order="F")
+    tensor_map = cl.tensor_map_tiled(source, (8, 4), order=cl.AxisOrder.REVERSE)
     assert tensor_map.dtype is cl.tensor_map_descriptor
 
 
@@ -203,7 +223,7 @@ def test_tensor_map_passed_to_kernel(host_mode):
         tensor_map = cl.tensor_map_tiled(
             array,
             (8, 4),
-            order="F",
+            order=cl.AxisOrder.REVERSE,
             swizzle=cl.SwizzleMode.SWIZZLE_32B,
             l2_promotion=cl.TensorMapL2Promotion.L2_128B,
             oob_fill=cl.TensorMapFloatOOBFill.NAN_REQUEST_ZERO_FMA,
@@ -349,16 +369,28 @@ def test_tensor_map_tiled_rejects_tile_wider_than_swizzle(swizzle, dtype, tile_w
     with pytest.raises(
         ValueError, match=r"first tile dimension spans .* exceeding the .* swizzle span"
     ):
-        cl.tensor_map_tiled(source, (tile_width, 4), order="F", swizzle=swizzle)
+        cl.tensor_map_tiled(source, (tile_width, 4), order=cl.AxisOrder.REVERSE, swizzle=swizzle)
 
 
 @pytest.mark.parametrize(
    ("order", "error", "match"),
    (
        pytest.param(
+           "C",
+           TypeError,
+           r"order must be an AxisOrder or an axis permutation",
+           id="legacy-C",
+       ),
+       pytest.param(
+           "F",
+           TypeError,
+           r"order must be an AxisOrder or an axis permutation",
+           id="legacy-F",
+       ),
+       pytest.param(
            "invalid",
-           ValueError,
-           r"order must be 'C', 'F', or an axis permutation",
+           TypeError,
+           r"order must be an AxisOrder or an axis permutation",
            id="invalid-string",
        ),
        pytest.param(
@@ -375,24 +407,53 @@ def test_tensor_map_tiled_rejects_tile_wider_than_swizzle(swizzle, dtype, tile_w
        ),
    ),
 )
-def test_tensor_map_tiled_invalid_order(order, error, match):
-    source = torch.empty((8, 32), dtype=torch.int32, device="cuda")
-    with pytest.raises(error, match=match):
+@pytest.mark.parametrize("mode", ["eager", "compiled"])
+def test_tensor_map_tiled_invalid_order(order, error, match, mode):
+    @cl.host_entry
+    def create_descriptor(source):
         cl.tensor_map_tiled(source, (8, 4), order=order)
+
+    source = torch.empty((8, 32), dtype=torch.int32, device="cuda")
+    with pytest.raises(error if mode == "eager" else TypeCheckingError, match=match):
+        if mode == "eager":
+            cl.tensor_map_tiled(source, (8, 4), order=order)
+        else:
+            create_descriptor(source)
 
 
 @pytest.mark.parametrize(
     "dtype, match",
     (
         pytest.param(torch.int16, r"is not supported by tensor map", id="int16"),
-        pytest.param(torch.float4_e2m1fn_x2, r"Array dtypes with multiple lanes are not supported",
-                     id="float4"),
     ),
 )
 def test_tensor_map_tiled_rejects_unsupported_data_type(dtype, match):
     source = torch.empty((8, 32), dtype=dtype, device="cuda")
     with pytest.raises(TypeError, match=match):
-        cl.tensor_map_tiled(source, (8, 4), order="F")
+        cl.tensor_map_tiled(source, (8, 4), order=cl.AxisOrder.REVERSE)
+
+
+@pytest.mark.parametrize("host_mode", ("eager", "compiled"))
+def test_packed_float4_uses_byte_dimensions(host_mode):
+    @cl.kernel
+    def copy_descriptor(descriptor, output):
+        pointer = cl.bitcast(descriptor, cl.pointer_dtype(cl.uint8))
+        i = cl.thread_index(0)
+        output[i] = pointer[i]
+
+    def launcher(stream, source, output):
+        descriptor = cl.tensor_map_tiled(source, (16, 4), order=cl.AxisOrder.REVERSE)
+        cl.launch(stream, (1,), (128,), copy_descriptor, (descriptor, output))
+
+    if host_mode == "compiled":
+        launcher = cl.host_entry(launcher)
+    source = torch.empty((8, 64), dtype=torch.uint8).cuda(0)[:, :32]
+    packed = source.view(torch.float4_e2m1fn_x2)
+    output = torch.empty(128, dtype=torch.uint8).cuda(0)
+    launcher(torch.cuda.current_stream(), packed, output)
+    assert bytes(output.cpu().tolist()) == bytes(
+        cl.tensor_map_tiled(source, (16, 4), order=cl.AxisOrder.REVERSE)
+    )
 
 
 def test_tensor_map_tiled_rejects_misaligned_global_address():
@@ -408,13 +469,13 @@ def test_tensor_map_tiled_rejects_non_unit_innermost_stride():
     with pytest.raises(
         ValueError, match=r"stride of descriptor axis zero must be 1"
     ):
-        cl.tensor_map_tiled(source, (8, 4), order="F")
+        cl.tensor_map_tiled(source, (8, 4), order=cl.AxisOrder.REVERSE)
 
 
 def test_tensor_map_tiled_rejects_misaligned_outer_stride():
     source = torch.empty((8, 31), dtype=torch.int32, device="cuda")
     with pytest.raises(ValueError, match=r"byte strides must be a multiple of 16"):
-        cl.tensor_map_tiled(source, (8, 4), order="F")
+        cl.tensor_map_tiled(source, (8, 4), order=cl.AxisOrder.REVERSE)
 
 
 def test_compiled_tensor_map_rejects_rank_mismatch():

@@ -808,6 +808,7 @@ _dtype_to_tensor_map_type = {
     datatype.float8_e4m3fn: TensorMapDataType.UINT8,
     datatype.float8_e5m2: TensorMapDataType.UINT8,
     datatype.float8_e8m0fnu: TensorMapDataType.UINT8,
+    datatype.float4_e2m1fn_x2: TensorMapDataType.UINT8,
     datatype.uint16: TensorMapDataType.UINT16,
     datatype.uint32: TensorMapDataType.UINT32,
     datatype.int32: TensorMapDataType.INT32,
@@ -857,7 +858,7 @@ def tensor_map_tiled_impl(
     for dimension in tile_dimensions:
         require_integral_scalar_type(dimension)
     if not order.is_constant():
-        raise TypeCheckingError("Expected a constant string or integer tuple")
+        raise TypeCheckingError("Expected a constant AxisOrder or integer tuple")
     try:
         order = tensor_map._normalize_order(order.get_constant(), array_ty.ndim)
     except (TypeError, ValueError) as error:

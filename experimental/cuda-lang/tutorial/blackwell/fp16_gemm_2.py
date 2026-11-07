@@ -1,17 +1,16 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Two-CTA clustered CUDA Lang FP16 GEMM tutorial.
+"""Two-CTA clustered CUDA Lang FP16 GEMM tutorial with FP32 output.
 
-Computes ``C = A @ B.T`` with an optional FP16 row bias. Two CTAs collaborate
-on each 256x256 output tile: each CTA loads one 128-row A slice and one
-128-column B slice, the leader issues CTA_2 tcgen05 MMA instructions, and both
+Computes ``C = A @ B.T`` with an optional FP32 row bias. Two CTAs collaborate
+on each 256x128 output tile: each CTA loads one 128-row A slice and one
+64-column B slice, the leader issues CTA_2 tcgen05 MMA instructions, and both
 CTAs store their 128 output rows.
 
-Cluster TMA uses a destination pointer in ``cl.MemorySpace.SHARED_CLUSTER``
-with CTA_2 multicast arguments. Completion arrives on the leader CTA's
-mbarrier, mapped with ``cl.map_shared_to_block_pair_leader``. M, N, and K remain
-runtime dimensions; only the optional-bias path is specialized.
+The collective N tile is 128 and is split across the two CTA ranks, so each CTA
+loads a 64-column B slice. C and the optional row bias are FP32; the epilogue
+stores accumulator vectors directly without an FP16 conversion.
 """
 
 from __future__ import annotations
@@ -26,25 +25,25 @@ WARP_SIZE = 32
 BLOCK_THREADS = 128
 CLUSTER_M = 2
 CTA_M = 128
-CTA_N = 128
+CTA_N = 64
 TILE_M = CLUSTER_M * CTA_M
 TILE_N = CLUSTER_M * CTA_N
 BLOCK_K = 64
 MMA_K = 16
 VEC_BYTES = 32
 
-_DEFAULT_MNK = (256, 256, 64)
+_DEFAULT_MNK = (256, 128, 64)
 _DEFAULT_TOLERANCE = 1.0e-1
 
 
-def _to_float16_vector(values, base, vsize):
-    """Convert one FP32 vector slice to FP16."""
-    return values[base:base + vsize].astype(cl.float16)
+def _slice_float32_vector(values, base, vsize):
+    """Build one FP32 vector-store slice."""
+    return values[base:base + vsize]
 
 
 @cl.kernel
 def _kernel(c, bias, a_tmap, b_tmap, k: cl.Constant[int], has_bias: cl.Constant[bool]):
-    """Two-CTA FP16 tcgen05 GEMM kernel."""
+    """Two-CTA FP16 tcgen05 GEMM kernel with FP32 output."""
     m, n = c.shape
     tid = cl.thread_index(0)
     warp = tid // WARP_SIZE
@@ -54,7 +53,7 @@ def _kernel(c, bias, a_tmap, b_tmap, k: cl.Constant[int], has_bias: cl.Constant[
     is_leader = rank == 0
 
     # Each CTA loads one half of A and one half of B. Together the pair forms
-    # the 256x256 collective tile consumed by CTA_2 MMA.
+    # the 256x128 collective tile consumed by CTA_2 MMA.
     cta_m = rank * CTA_M
     off_m = (block_m // CLUSTER_M) * TILE_M + cta_m
     off_n_b = block_n * TILE_N + rank * CTA_N
@@ -211,7 +210,7 @@ def _kernel(c, bias, a_tmap, b_tmap, k: cl.Constant[int], has_bias: cl.Constant[
 
     # Each CTA stores its own 128-row half. Its TMEM base is already the base
     # for that CTA's half of the CTA_2 allocation.
-    vsize = VEC_BYTES // 2  # sizeof(float16) == 2
+    vsize = VEC_BYTES // 4  # sizeof(float32) == 4
     row = off_m + tid
     # No partial vector stores: run() requires N to be divisible by vsize.
     for column in cl.static_iter(range(0, TILE_N, 32)):
@@ -232,7 +231,7 @@ def _kernel(c, bias, a_tmap, b_tmap, k: cl.Constant[int], has_bias: cl.Constant[
             for j in cl.static_iter(range(32 // vsize)):
                 col_j = off_n_c + column + j * vsize
                 if col_j + vsize <= n:
-                    packed = _to_float16_vector(accumulators, j * vsize, vsize)
+                    packed = _slice_float32_vector(accumulators, j * vsize, vsize)
                     dst = c.pointer((row, col_j))
                     dst.store(packed, alignment=VEC_BYTES)
 
@@ -249,7 +248,7 @@ def _validate_mnk(mnk: tuple[int, int, int]) -> None:
     m, n, k = mnk
     if min(m, n, k) <= 0:
         raise ValueError("MNK values must be positive")
-    vsize = VEC_BYTES // 2  # sizeof(float16) == 2
+    vsize = VEC_BYTES // 4  # sizeof(float32) == 4
     if n % vsize != 0:
         raise ValueError(f"N must be divisible by {vsize} (got n={n})")
     k_align_elems = 16 // 2  # 16-byte TMA stride alignment for float16
@@ -268,17 +267,20 @@ def prepare_tensors(
 ) -> dict[str, torch.Tensor]:
     _validate_mnk((m, n, k))
 
-    def _make(rows: int, cols: int) -> torch.Tensor:
+    def _make(rows: int, cols: int, dtype: torch.dtype) -> torch.Tensor:
         return (
             torch.empty(rows, cols, dtype=torch.int32)
             .random_(-2, 2)
-            .to(device="cuda:0", dtype=torch.float16)
+            .to(device="cuda:0", dtype=dtype)
         )
 
-    tensors = {"a": _make(m, k), "b": _make(n, k)}
-    tensors["c"] = torch.empty((m, n), device="cuda:0", dtype=torch.float16)
+    tensors = {
+        "a": _make(m, k, torch.float16),
+        "b": _make(n, k, torch.float16),
+    }
+    tensors["c"] = torch.empty((m, n), device="cuda:0", dtype=torch.float32)
     if has_bias:
-        tensors["bias"] = torch.randn(m, device="cuda:0", dtype=torch.float16)
+        tensors["bias"] = torch.randn(m, device="cuda:0", dtype=torch.float32)
     return tensors
 
 
@@ -290,23 +292,27 @@ def run(tensors: dict[str, torch.Tensor], stream=None) -> None:
     n = b.shape[0]
     if c.shape != (m, n):
         raise ValueError("C must have shape (M, N)")
+    if c.dtype != torch.float32:
+        raise ValueError("C must have dtype torch.float32")
     _validate_mnk((m, n, k))
 
     bias = tensors.get("bias")
     if bias is not None and bias.shape != (m,):
         raise ValueError("bias must have shape (M,)")
+    if bias is not None and bias.dtype != torch.float32:
+        raise ValueError("bias must have dtype torch.float32")
 
     # The signature always includes a tensor for bias; the bias-free
     # specialization ignores this same-device placeholder.
     bias_arg = c.reshape(-1) if bias is None else bias
     grid_m = cl.cdiv(cl.cdiv(m, CTA_M), CLUSTER_M) * CLUSTER_M
     cuda_stream = torch.cuda.current_stream() if stream is None else stream
-    # A/B are row-major (rows, K); order="F" maps coordinates to (K, rows).
+    # A/B are row-major (rows, K); order=cl.AxisOrder.REVERSE maps coordinates to (K, rows).
     a_tmap = cl.tensor_map_tiled(
-        a, (BLOCK_K, CTA_M), order="F", swizzle=cl.SwizzleMode.SWIZZLE_128B
+        a, (BLOCK_K, CTA_M), order=cl.AxisOrder.REVERSE, swizzle=cl.SwizzleMode.SWIZZLE_128B
     )
     b_tmap = cl.tensor_map_tiled(
-        b, (BLOCK_K, CTA_N), order="F", swizzle=cl.SwizzleMode.SWIZZLE_128B
+        b, (BLOCK_K, CTA_N), order=cl.AxisOrder.REVERSE, swizzle=cl.SwizzleMode.SWIZZLE_128B
     )
     cl.launch(
         cuda_stream,
@@ -326,9 +332,7 @@ def verify_output(
     bias = tensors.get("bias")
     if bias is not None:
         reference = reference + bias.float()[:, None]
-    torch.testing.assert_close(
-        c, reference.to(torch.float16), atol=tolerance, rtol=1.0e-5
-    )
+    torch.testing.assert_close(c, reference, atol=tolerance, rtol=1.0e-5)
 
 
 def verify(
@@ -360,7 +364,7 @@ def _parse_mnk(value: str) -> tuple[int, int, int]:
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
-        description="CUDA Lang two-CTA fp16 GEMM - verify correctness",
+        description="CUDA Lang two-CTA fp16 to fp32 GEMM - verify correctness",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument(

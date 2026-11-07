@@ -2,10 +2,8 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-from cuda.tile._memory_model import (
-    MemoryScope,
-    MemorySpace
-)
+from cuda.tile import MemoryScope
+from cuda.tile._memory_model import MemorySpace
 from ._execution import (
     function,
     host_entry,
@@ -40,6 +38,7 @@ from ._stub.load_store_matrix import (
     store_matrix,
 )
 from ._enums import (
+    AxisOrder,
     AsyncCopyReportMechanism,
     AtomicOp,
     MatrixLoadShape,
@@ -177,10 +176,12 @@ from ._stub.pointer import (
     atomic_load,
     atomic_store,
 )
-from cuda.tile._stub import (
+from cuda.tile import (
     ArrayAnnotation,
     Constant,
     ScalarInt64,
+)
+from cuda.tile._stub import (
     static_eval,
     static_exception,
     static_assert,
@@ -249,10 +250,16 @@ from cuda.lang._stub.mbarrier import (
     mbarrier_pending_count,
     mbarrier_test_wait,
     mbarrier_test_wait_parity,
+    mbarrier_test_wait_report,
+    mbarrier_test_wait_report_parity,
     mbarrier_try_wait,
     mbarrier_try_wait_parity,
+    mbarrier_try_wait_report,
+    mbarrier_try_wait_report_parity,
     mbarrier_wait,
     mbarrier_wait_parity,
+    mbarrier_wait_report,
+    mbarrier_wait_report_parity,
 )
 
 from cuda.lang._stub.barrier import (
@@ -286,7 +293,7 @@ from cuda.lang._stub.cluster_launch_control import (
 from ._datatype import (
     bfloat16,
     bool_,
-    float4_e2m1fn,
+    float4_e2m1fn_x2,
     float8_e4m3fn,
     float8_e5m2,
     float8_e8m0fnu,
@@ -347,7 +354,7 @@ __all__ = (
     "vote_ballot_sync",
     "bfloat16",
     "bool_",
-    "float4_e2m1fn",
+    "float4_e2m1fn_x2",
     "float8_e4m3fn",
     "float8_e5m2",
     "float8_e8m0fnu",
@@ -386,6 +393,7 @@ __all__ = (
     "MemorySpace",
     "MemoryScope",
     "MemoryOrder",
+    "AxisOrder",
     "AsyncCopyReportMechanism",
     "AtomicOp",
     "RoundingMode",
@@ -451,10 +459,16 @@ __all__ = (
     "mbarrier_pending_count",
     "mbarrier_test_wait",
     "mbarrier_test_wait_parity",
+    "mbarrier_test_wait_report",
+    "mbarrier_test_wait_report_parity",
     "mbarrier_try_wait",
     "mbarrier_try_wait_parity",
+    "mbarrier_try_wait_report",
+    "mbarrier_try_wait_report_parity",
     "mbarrier_wait",
     "mbarrier_wait_parity",
+    "mbarrier_wait_report",
+    "mbarrier_wait_report_parity",
     "barrier_sync_warp",
     "barrier_sync_block",
     "barrier_sync_block_aligned",

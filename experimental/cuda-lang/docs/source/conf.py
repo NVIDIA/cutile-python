@@ -6,6 +6,7 @@ import os
 import re
 import sys
 import cuda.lang  # noqa: F401
+import cuda.tile._datatype
 
 # Configuration file for the Sphinx documentation builder.
 #
@@ -14,7 +15,7 @@ import cuda.lang  # noqa: F401
 
 # -- Project information -----------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#project-information
-project = 'cuda.lang'
+project = 'CUDA Languages'
 copyright = '2026, NVIDIA Corporation'
 author = 'NVIDIA Corporation'
 
@@ -60,8 +61,13 @@ html_sidebars = {
 doctest_test_doctest_blocks = ""
 doctest_global_setup = """
 import torch
+from cuda.tile._cext import get_compute_capability
 
 torch.cuda.set_device(0)
+
+
+def is_blackwell_or_newer():
+    return get_compute_capability()[0] >= 10
 """
 
 # -- Generated content --------------------------------------------------------
@@ -69,37 +75,17 @@ torch.cuda.set_device(0)
 generated_includes_dir = os.path.join(os.path.dirname(__file__), 'generated', 'includes')
 os.makedirs(generated_includes_dir, exist_ok=True)
 
+for include_name in ("dtype_promotion_table", "numeric_dtypes"):
+    if include_name == "numeric_dtypes":
+        content = cuda.tile._datatype._generate_rst_numeric_dtypes(
+            namespaces=("cuda.lang", "cuda.tile")
+        )
+    else:
+        content = cuda.tile._datatype._generate_rst_dtype_promotion_table()
+        content = re.sub(r"``(\w+)``", r"``cl.\1``", content)
+    with open(os.path.join(generated_includes_dir, f"{include_name}.rst"), "w") as f:
+        f.write(content)
 
-def _generate_rst_function_index(module, currentmodule, title):
-    lines = [
-        f".. currentmodule:: {currentmodule}",
-        "",
-        title,
-        "-" * len(title),
-        "",
-        ".. autosummary::",
-        "   :nosignatures:",
-        "",
-    ]
-    lines.extend(f"   {name}" for name in module.__all__)
-    lines.append("")
-
-    return "\n".join(lines)
-
-
-with open(os.path.join(generated_includes_dir, "nvvm_intrinsics.rst"), "w") as f:
-    f.write(_generate_rst_function_index(
-        cuda.lang._nvvm,
-        "cuda.lang._nvvm",
-        "nvvm functions",
-    ))
-
-with open(os.path.join(generated_includes_dir, "libdevice_functions.rst"), "w") as f:
-    f.write(_generate_rst_function_index(
-        cuda.lang._libdevice,
-        "cuda.lang._libdevice",
-        "libdevice functions",
-    ))
 
 # Include substitutions from references.rst in all documents (including docstrings)
 with open(os.path.join(os.path.dirname(__file__), 'references.rst'), 'r') as f:
@@ -123,20 +109,13 @@ def format_dtype_signature(app, what, name, obj, options, signature, return_anno
     return signature, return_annotation
 
 
-# Make links to type aliases actually work.
-def resolve_type_aliases(app, env, node, contnode):
-    """Resolve :class: references to our type aliases as :data: instead."""
-    if (
-        node["refdomain"] == "py"
-        and node["reftype"] == "class"
-        and node["reftarget"] in autodoc_type_aliases.keys()
-    ):
-        print("Resolving type alias", node["reftarget"])
-        return app.env.get_domain("py").resolve_xref(
-            env, node["refdoc"], app.builder, "data", node["reftarget"], node, contnode
-        )
+def use_tile_doctest_templates(app, what, name, obj, options, lines):
+    """Use cuTile's launch wrappers for examples in its API docstrings."""
+    if name.startswith("cuda.tile."):
+        for i, line in enumerate(lines):
+            lines[i] = re.sub(r"(:template:\s+)(\w+\.py)", r"\1tile/\2", line)
 
 
 def setup(app):
+    app.connect("autodoc-process-docstring", use_tile_doctest_templates)
     app.connect("autodoc-process-signature", format_dtype_signature)
-    app.connect("missing-reference", resolve_type_aliases)

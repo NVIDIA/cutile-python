@@ -467,7 +467,7 @@ def test_tma_copy_program_builder(rows, columns):
         device="cuda:0",
     )
     output_tensor = torch.zeros_like(input_tensor)
-    tensor_map = cl.tensor_map_tiled(input_tensor, (TILE_SIZE, 1), order="F")
+    tensor_map = cl.tensor_map_tiled(input_tensor, (TILE_SIZE, 1), order=cl.AxisOrder.REVERSE)
 
     cl.launch(
         torch.cuda.current_stream(),

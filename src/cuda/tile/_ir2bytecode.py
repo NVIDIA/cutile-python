@@ -6,7 +6,7 @@ import functools
 import os
 import re
 from contextlib import contextmanager
-from typing import Dict, Tuple, Any, Optional, TYPE_CHECKING
+from typing import Dict, Tuple, Optional, TYPE_CHECKING
 import warnings
 
 from cuda.tile import _datatype as datatype
@@ -22,7 +22,7 @@ from cuda.tile._compiler_options import CompilerOptions
 from cuda.tile._exception import (
     TileInternalError, TileError, TileUnsupportedFeatureError, FunctionDesc)
 from cuda.tile._numeric_semantics import RoundingMode
-from cuda.tile._ir.ir import Block, Loc, Var, IRContext
+from cuda.tile._ir.ir import Block, Loc, Var
 from cuda.tile._ir.ops_utils import (
     padding_mode_to_bytecode, rounding_mode_to_bytecode,
     get_default_rounding_mode,
@@ -374,15 +374,12 @@ class BytecodeContext:
                  type_table: bc.TypeTable,
                  debug_attr_map: DebugAttrMap,
                  global_section: bc.GlobalSection,
-                 ir_ctx: IRContext,
                  dataflow_result: "DataflowResult",
                  sm_arch: str | None) -> None:
         self.builder = builder
         self.type_table = type_table
         self._debug_attr_map = debug_attr_map
         self.global_section = global_section
-        self._typemap: Dict[str, Type] = ir_ctx.typemap
-        self._constants: Dict[str, Any] = ir_ctx.constants
         self._dataflow_result = dataflow_result
         self._value_map: Dict[str, bc.Value] = {}
         self._array_base_ptr: Dict[str, bc.Value] = {}
@@ -408,19 +405,19 @@ class BytecodeContext:
             self.innermost_loop = old
 
     def typeof(self, var: Var) -> Type:
-        return self._typemap[var.name]
+        return var.get_type()
 
     def typeid_of(self, var: Var) -> bc.TypeId:
         return typeid(self.type_table, self.typeof(var))
 
     def is_constant(self, var: Var) -> bool:
-        return var.name in self._constants
+        return var.is_constant()
 
     def get_constant(self, var: Var):
-        return self._constants[var.name]
+        return var.get_constant()
 
     def get_constant_or_default(self, var: Var, default=None):
-        return self._constants.get(var.name, default)
+        return var.get_constant() if var.is_constant() else default
 
     def get_known_constant_value(self, var: Var) -> int | None:
         return self._dataflow_result.constant_value(var)
@@ -435,7 +432,7 @@ class BytecodeContext:
         return self._value_map[var.name]
 
     def get_optional_value(self, var: Var) -> Optional[bc.Value]:
-        if var.name in self._constants and self._constants[var.name] is None:
+        if var.is_constant() and var.get_constant() is None:
             return None
         else:
             return self.get_value(var)
@@ -597,7 +594,6 @@ def generate_bytecode_for_kernel(func_body: Block,
                               type_table=writer.type_table,
                               debug_attr_map=debug_attr_map,
                               global_section=writer.global_section,
-                              ir_ctx=func_body.ctx,
                               dataflow_result=dataflow_result,
                               sm_arch=sm_arch)
 

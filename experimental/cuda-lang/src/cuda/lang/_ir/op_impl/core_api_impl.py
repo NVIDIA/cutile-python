@@ -11,6 +11,7 @@ from ..type import (
     DTypeConstructor,
     MemorySpace,
     ScalarTy,
+    OpaqueTy,
     PointerTy,
     VectorTy,
     make_rank0_ty,
@@ -63,7 +64,7 @@ def read_gridlike_special_register_impl(sreg_name: str, axis: Var) -> Var:
     )
 
 
-def reinterpret_to(x: Var, result_ty: VectorTy | ScalarTy | PointerTy):
+def reinterpret_to(x: Var, result_ty: VectorTy | ScalarTy | PointerTy | OpaqueTy):
     """Reinterpret ``x``'s bits as ``result_ty``, which must have the same total
     bitwidth. Scalars, vectors, and pointers may be mixed freely on either
     side; bytes are packed and re-split little-endian."""
@@ -84,7 +85,7 @@ def reinterpret_to(x: Var, result_ty: VectorTy | ScalarTy | PointerTy):
     src_is_ptr = datatype.is_pointer_dtype(x_dtype)
     dst_is_ptr = datatype.is_pointer_dtype(dst_dtype)
 
-    def integer_type_like(ty: ScalarTy | PointerTy | VectorTy):
+    def integer_type_like(ty: ScalarTy | PointerTy | VectorTy | OpaqueTy):
         dtype = getattr(datatype, f"int{ty.tensor_dtype().bitwidth}")
         if isinstance(ty, VectorTy):
             return VectorTy(dtype, ty.length)
@@ -101,7 +102,7 @@ def reinterpret_to(x: Var, result_ty: VectorTy | ScalarTy | PointerTy):
     return add_operation(BitCast, result_ty, x=x)
 
 
-def bitcast(x: Var[ScalarTy | PointerTy | VectorTy], dtype: datatype.DType):
+def bitcast(x: Var[ScalarTy | PointerTy | VectorTy | OpaqueTy], dtype: datatype.DType):
     x_ty = x.get_type()
     if isinstance(x_ty, VectorTy):
         elem_dtype = x_ty.element_dtype
@@ -133,7 +134,7 @@ def reinterpret_as_vector(x: Var[VectorTy], dtype: datatype.DType, length: int):
 
 
 @impl(core_api.bitcast)
-def bitcast_impl(x: Var[ScalarTy | PointerTy | VectorTy], dtype: Var[DTypeConstructor]):
+def bitcast_impl(x: Var[ScalarTy | PointerTy | VectorTy | OpaqueTy], dtype: Var[DTypeConstructor]):
     return bitcast(x, require_dtype_spec(dtype))
 
 

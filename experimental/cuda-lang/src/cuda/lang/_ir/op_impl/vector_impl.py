@@ -22,9 +22,9 @@ from cuda.tile._cext import _vector_getitem, _vector_with_item
 from cuda.lang._exception import InternalError, TypeCheckingError
 import cuda.lang._datatype as datatype
 from cuda.lang._enums import VectorReduction
-from ..type_checking_helpers import require_vector_type, require_scalar_type
+from ..type_checking_helpers import require_vector_type, require_scalar_or_opaque_type
 from ..op_defs import VectorConstruct, VectorGetItem, VectorInsert, VectorReduce
-from ..type import PointerTy, ScalarTy, VectorTy
+from ..type import OpaqueTy, PointerTy, ScalarTy, VectorTy, make_rank0_ty
 from ..._stub.types import Vector
 from ..ir import Var, add_operation
 
@@ -38,7 +38,7 @@ def vector_impl_registry() -> ImplRegistry:
 
 
 def vector_construct(
-    res_type: VectorTy, elements: tuple[Var[ScalarTy | PointerTy], ...]
+    res_type: VectorTy, elements: tuple[Var[ScalarTy | PointerTy | OpaqueTy], ...]
 ) -> Var[VectorTy]:
     if len(elements) != res_type.length:
         raise InternalError(
@@ -50,7 +50,7 @@ def vector_construct(
 def vector_with_item_raw(
     vector: Var[VectorTy],
     key: int | Var[ScalarTy],
-    value: Var[ScalarTy | PointerTy],
+    value: Var[ScalarTy | PointerTy | OpaqueTy],
 ):
     ty = require_vector_type(vector)
     if isinstance(key, int):
@@ -96,7 +96,7 @@ def _optional_vector_constructor_dtype(dtype: Var) -> datatype.DType | None:
 
 def _require_vector_constructor_element(element: Var, index: int) -> None:
     try:
-        require_scalar_type(element)
+        require_scalar_or_opaque_type(element)
     except TypeCheckingError as e:
         raise TypeCheckingError(f"Vector() element {index}: {str(e)}")
 
@@ -214,7 +214,7 @@ def getattr_vector_with_item(object: Var[VectorTy], name: Var):
 def vector_with_item_impl(
     self: Var[VectorTy],
     index: Var[ScalarTy],
-    value: Var[ScalarTy | PointerTy],
+    value: Var[ScalarTy | PointerTy | OpaqueTy],
 ) -> Var[VectorTy]:
     return sym2var(_vector_with_item(var2sym(self), var2sym(index), var2sym(value)))
 
@@ -294,21 +294,19 @@ def vector_reduce_impl(
 
 
 @impl(operator.getitem, overload=(VectorTy, WILDCARD))
-def vector_getitem_impl(object: Var[VectorTy], key: Var) -> Var[ScalarTy | PointerTy | VectorTy]:
+def vector_getitem_impl(
+    object: Var[VectorTy], key: Var
+) -> Var[ScalarTy | PointerTy | OpaqueTy | VectorTy]:
     return sym2var(_vector_getitem(var2sym(object), var2sym(key)))
 
 
 # Does not check the index range, hence the name "Raw"
 def vector_getitem_raw(
     object: Var[VectorTy], key: Var[ScalarTy]
-) -> Var[ScalarTy | PointerTy]:
+) -> Var[ScalarTy | PointerTy | OpaqueTy]:
     result_dtype = object.get_type().element_dtype
     index = implicit_cast(key, datatype.int32, "vector getitem index")
-    result_ty = (
-        PointerTy(result_dtype)
-        if is_pointer_dtype(result_dtype)
-        else ScalarTy(result_dtype)
-    )
+    result_ty = make_rank0_ty(result_dtype)
     return add_operation(
         VectorGetItem,
         result_ty,

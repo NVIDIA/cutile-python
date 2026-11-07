@@ -1,10 +1,9 @@
 # SPDX-FileCopyrightText: Copyright (c) <2026> NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 #
 # SPDX-License-Identifier: Apache-2.0
-from typing import Literal
-
 from cuda.tile import _cext
 from cuda.lang._enums import (
+    AxisOrder,
     SwizzleMode,
     TensorMapInterleave,
     TensorMapFloatOOBFill,
@@ -60,15 +59,15 @@ class TensorMap:
 
 
 def _normalize_order(
-    order: tuple[int, ...] | Literal["C", "F"], rank: int
+    order: tuple[int, ...] | AxisOrder, rank: int
 ) -> tuple[int, ...]:
-    if order == "C":
+    if order is AxisOrder.KEEP:
         return tuple(range(rank))
-    if order == "F":
+    if order is AxisOrder.REVERSE:
         return tuple(range(rank - 1, -1, -1))
-    if isinstance(order, str):
-        raise ValueError("order must be 'C', 'F', or an axis permutation")
-    if not isinstance(order, tuple) or len(order) != rank:
+    if not isinstance(order, tuple):
+        raise TypeError("order must be an AxisOrder or an axis permutation")
+    if len(order) != rank:
         raise ValueError("order must be a permutation of all array axes")
 
     result = []
@@ -89,7 +88,7 @@ def _normalize_order(
 def tensor_map_tiled(array,
                      tile_shape: int | tuple[int, ...],
                      *,
-                     order: tuple[int, ...] | Literal["C", "F"] = "C",
+                     order: tuple[int, ...] | AxisOrder = AxisOrder.KEEP,
                      interleave: TensorMapInterleave = TensorMapInterleave.NONE,
                      swizzle: SwizzleMode = SwizzleMode.SWIZZLE_NONE,
                      l2_promotion: TensorMapL2Promotion =
@@ -106,13 +105,17 @@ def tensor_map_tiled(array,
     Args:
         array: Global array supplying the element type, base address, shape,
             and strides. Its rank must be between one and five.
-        tile_shape (int | tuple[int, ...]): One positive integer no greater
-            than 256 per array dimension. For a one-dimensional array, an
-            integer is equivalent to a one-element tuple. May contain runtime
+        tile_shape (int | tuple[int, ...]): Tile extents in descriptor-axis
+            order: ``tile_shape[i]`` covers array axis ``order[i]``. Each extent
+            is a positive integer no greater than 256. For a one-dimensional
+            array, an integer is equivalent to a one-element tuple. May contain runtime
             integers inside a :func:`host_entry`.
-        order (tuple[int, ...] | str): Permutation mapping descriptor axes to
-            array axes. ``"C"`` selects ``(0, 1, ..., array.ndim - 1)`` and
-            ``"F"`` reverses that order. An explicit permutation such as
+        order (tuple[int, ...] | AxisOrder): Permutation mapping descriptor axes to
+            array axes, applied to the array's shape and strides. ``tile_shape``
+            and copy coordinates are supplied in the resulting descriptor order.
+            Descriptor axis zero must have an array stride of one element.
+            ``AxisOrder.KEEP`` selects ``(0, 1, ..., array.ndim - 1)`` and
+            ``AxisOrder.REVERSE`` reverses that order. An explicit permutation such as
             ``(1, 0, 2)`` may also be used.
         interleave (TensorMapInterleave): Global-memory interleave mode.
         swizzle (SwizzleMode): Shared-memory swizzle mode.
@@ -140,6 +143,10 @@ def tensor_map_tiled(array,
         :func:`copy_async_bulk_tensor_global_to_shared` and ``dst_coordinates``
         of :func:`copy_async_bulk_tensor_shared_to_global` follow this axis
         order. Global strides describe global memory, not shared memory.
+
+        For :data:`~cuda.lang.float4_e2m1fn_x2` arrays, TMA uses byte elements.
+        ``tile_shape`` and copy coordinates count packed pairs, with two FP4
+        values per byte.
 
         For ``interleave=TensorMapInterleave.NONE``, a descriptor coordinate
         ``d`` selects the global element offset::
@@ -184,7 +191,7 @@ def tensor_map_tiled(array,
             a_map = cl.tensor_map_tiled(
                 a,
                 (BLOCK_K, BLOCK_M),
-                order=(1, 0),  # Equivalent to "F" for a rank-two array.
+                order=cl.AxisOrder.REVERSE,
             )
     """
     if not isinstance(interleave, TensorMapInterleave):

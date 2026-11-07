@@ -127,6 +127,15 @@ def require_scalar_type(var: Var,
     return ty
 
 
+def require_scalar_or_opaque_type(var: Var) -> ScalarTy | OpaqueTy:
+    ty = var.get_type()
+    if not isinstance(ty, ScalarTy | OpaqueTy):
+        raise make_type_checking_error(
+            f"Expected a scalar or opaque value, but given value has type {ty}", var
+        )
+    return ty
+
+
 def require_integral_scalar_type(var: Var, /, bitwidth: int | None = None):
     ty = require_scalar_type(var)
     if not is_integral(ty.dtype):

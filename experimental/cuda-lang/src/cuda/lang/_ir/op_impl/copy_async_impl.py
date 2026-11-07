@@ -22,10 +22,8 @@ from ..type_checking_helpers import (
     optional_cast,
     is_none,
     make_type_checking_error,
-    require_boolean_scalar_type,
     require_mbarrier_ptr,
     require_none,
-    require_optional,
     require_pointer_in_memory_space,
     require_target_greater_equal,
     require_uniform_int_tuple_type,
@@ -93,7 +91,6 @@ def copy_async_bulk_tensor_global_to_shared_impl(
     l2_cache_hint,
     mode,
     cta_group,
-    predicate,
     report_mechanism,
 ):
     src_coordinate_vars = require_uniform_int_tuple_type(src_coordinates)
@@ -129,16 +126,14 @@ def copy_async_bulk_tensor_global_to_shared_impl(
     if is_cta_only:
         message = (
             "When the destination memory is in shared memory, the "
-            "predicate, multicast mask, and cta_group arguments are invalid."
+            "multicast mask and cta_group arguments are invalid."
         )
-        require_none(predicate, message)
         require_none(multicast_mask, message)
         require_none(cta_group, message)
     else:
         multicast_mask = optional_cast(
             multicast_mask, datatype.int16, "TMA multicast mask"
         )
-        require_optional(predicate, require_boolean_scalar_type)
         cta_group_value = require_optional_constant_enum(
             cta_group, CTAGroup
         )
@@ -154,7 +149,6 @@ def copy_async_bulk_tensor_global_to_shared_impl(
             None if is_cta_only else _optional_operand(multicast_mask)
         ),
         l2_cache_hint=_optional_operand(l2_cache_hint),
-        predicate=None if is_cta_only else _optional_operand(predicate),
         mode=mode,
         is_cta_only=is_cta_only,
         cta_group=cta_group_value,
@@ -169,7 +163,6 @@ def copy_async_bulk_tensor_shared_to_global_impl(
     dst_coordinates,
     l2_cache_hint,
     mode,
-    predicate,
 ):
     require_pointer_in_memory_space(src_memory, (MemorySpace.SHARED,))
     tensor_map = tensor_map_descriptor_pointer_like(dst_tensor_map_descriptor)
@@ -180,7 +173,6 @@ def copy_async_bulk_tensor_shared_to_global_impl(
         for coord in dst_coordinate_vars
     )
     l2_cache_hint = optional_cast(l2_cache_hint, datatype.int64, "TMA L2 cache hint")
-    predicate = optional_cast(predicate, datatype.bool_, "TMA predicate")
     add_operation_variadic(
         CopyAsyncBulkTensorSharedToGlobal,
         (),
@@ -188,7 +180,6 @@ def copy_async_bulk_tensor_shared_to_global_impl(
         src_memory=src_memory,
         coordinates=dst_coordinates,
         l2_cache_hint=_optional_operand(l2_cache_hint),
-        predicate=_optional_operand(predicate),
         mode=mode,
     )
 

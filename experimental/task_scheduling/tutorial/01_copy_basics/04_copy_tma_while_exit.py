@@ -514,7 +514,7 @@ def run_tma_copy_while_exit_kernel_prim(rows_cols, highlight_row=0, *, verbose=T
     a = torch.randn(rows, cols).to(torch.float16).cuda()
     b = torch.zeros_like(a)
     trace = torch.zeros(rows, 3, dtype=torch.float16, device="cuda")
-    tensor_map = cl.tensor_map_tiled(a, (tile_size, 1), order="F")
+    tensor_map = cl.tensor_map_tiled(a, (tile_size, 1), order=cl.AxisOrder.REVERSE)
     cl.launch(
         torch.cuda.current_stream(),
         (cols // tile_size,),

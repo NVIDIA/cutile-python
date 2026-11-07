@@ -113,7 +113,7 @@ if cc.major != 10:
 
 
 def _wait_mbarrier(mbar, phase):
-    cl.mbarrier_wait_parity(mbar, phase, time_hint=10_000_000)
+    cl.mbarrier_wait_parity(mbar, phase, time_limit_hint_ns=10_000_000)
 
 
 def _fence_acq_rel_cta():

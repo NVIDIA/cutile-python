@@ -203,8 +203,8 @@ def make_tcgen05_mma_kernel(
                 else:
                     instruction_descriptor = cl.Tcgen05Mxf4InstructionDescriptor(
                         sparse=is_sparse,
-                        a_type=cl.float4_e2m1fn,
-                        b_type=cl.float4_e2m1fn,
+                        a_type=cl.float4_e2m1fn_x2,
+                        b_type=cl.float4_e2m1fn_x2,
                         n=N,
                         scale_format=(
                             cl.Tcgen05Mxf4InstructionDescriptor.ScaleFormat.UE4M3

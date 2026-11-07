@@ -4470,7 +4470,7 @@ def static_assert(condition, message=None, /):
 
 @stub(host=True, tile=True, simt=True)
 def static_iter(iterable):
-    """Iterates at compile time.
+    """Expand an iterable during compilation.
 
     Can only be used as the iterable of a `for` loop::
 
@@ -4489,8 +4489,9 @@ def static_iter(iterable):
     for a dynamic value such as a tile).
 
     Finally, for each item of the iterable, the loop body is inlined, with the induction variable(s)
-    bound to the item. The `break`, `continue`, and `return` statements are not allowed
-    inside a `static_iter` loop.
+    bound to the item. Loads, stores, and arithmetic in the body retain their runtime
+    semantics, subject to compiler optimization. The `break`, `continue`, and `return`
+    statements are not allowed inside a `static_iter` loop.
 
     .. testcode::
         :template: kernel_wrapper.py

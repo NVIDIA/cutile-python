@@ -457,8 +457,8 @@ class TmemCResource(ts.MemoryResource):
         stage_info.context.tasks_inputs.tmem
         return (
             cl.Tcgen05Mxf4InstructionDescriptor(
-                a_type=cl.float4_e2m1fn,
-                b_type=cl.float4_e2m1fn,
+                a_type=cl.float4_e2m1fn_x2,
+                b_type=cl.float4_e2m1fn_x2,
                 scale_format=cl.Tcgen05Mxf4InstructionDescriptor.ScaleFormat.UE4M3,
                 n=BLOCK_N,
                 m=BLOCK_M,
@@ -1072,7 +1072,7 @@ def make_gemm_kernel(
             cl.mbarrier_wait_parity(
                 tmem_dealloc,
                 0,
-                time_hint=10_000_000,
+                time_limit_hint_ns=10_000_000,
             )
             cl.tcgen05_deallocate(
                 tmem,
@@ -1171,17 +1171,15 @@ def prepare_tensors(m: int, n: int, k: int, batch: int = 1, **_):
         2,
         (batch, m, k // 2),
         dtype=torch.uint8,
-        device="cuda:0",
-    )
+    ).cuda(0)
     b_storage = torch.randint(
         0,
         2,
         (batch, n, k // 2),
         dtype=torch.uint8,
-        device="cuda:0",
-    )
-    a = a_storage.permute(2, 1, 0)
-    b = b_storage.permute(2, 1, 0)
+    ).cuda(0)
+    a = a_storage.view(torch.float4_e2m1fn_x2).permute(2, 1, 0)
+    b = b_storage.view(torch.float4_e2m1fn_x2).permute(2, 1, 0)
     a_ref = a_storage.view(torch.float4_e2m1fn_x2).permute(1, 2, 0)
     b_ref = b_storage.view(torch.float4_e2m1fn_x2).permute(1, 2, 0)
 
@@ -1191,8 +1189,7 @@ def prepare_tensors(m: int, n: int, k: int, batch: int = 1, **_):
     c = torch.empty(
         (batch, m, n),
         dtype=torch.float16,
-        device="cuda:0",
-    ).permute(1, 2, 0)
+    ).cuda(0).permute(1, 2, 0)
     return {
         "a": a,
         "b": b,

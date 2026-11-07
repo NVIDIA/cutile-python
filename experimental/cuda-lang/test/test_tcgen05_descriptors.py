@@ -53,8 +53,8 @@ def encode_tcgen05_mxf4_instruction_descriptor():
     return cl.Tcgen05Mxf4InstructionDescriptor(
         sparse=True,
         b_scale_id=2,
-        a_type=cl.float4_e2m1fn,
-        b_type=cl.float4_e2m1fn,
+        a_type=cl.float4_e2m1fn_x2,
+        b_type=cl.float4_e2m1fn_x2,
         negate_a=False,
         negate_b=True,
         transpose_a=True,
@@ -150,7 +150,7 @@ def test_tcgen05_dtype_formats_on_host():
     assert encode_dtype(cl.float32, DTypeFormat.Output) == 1
     assert encode_dtype(cl.float6_e2m3fn, DTypeFormat.Input) == 3
     assert encode_dtype(cl.float6_e3m2fn, DTypeFormat.Mxf8f6f4Input) == 4
-    assert encode_dtype(cl.float4_e2m1fn, DTypeFormat.Mxf4Input) == 1
+    assert encode_dtype(cl.float4_e2m1fn_x2, DTypeFormat.Mxf4Input) == 1
 
 
 def test_tcgen05_fp6_input_types():

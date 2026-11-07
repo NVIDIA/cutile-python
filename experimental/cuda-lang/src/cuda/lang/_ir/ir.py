@@ -69,9 +69,9 @@ class Builder:
 
 
 class Block(TileBlock):
-    @property
-    def _name(self) -> str:
-        return self.ctx.block_name(self)
+    def __init__(self, ctx: "IRContext", loc: Loc):
+        super().__init__(ctx, loc)
+        self._name: str | None = None
 
     def to_string(
         self,
@@ -84,7 +84,7 @@ class Block(TileBlock):
             op.to_string(indent + 4, highlight_loc, include_loc)
             for op in self.operations
         )
-        return f"{' ' * indent}^{self._name}({params}):\n{ops}"
+        return f"{' ' * indent}^{self.ctx.block_name(self)}({params}):\n{ops}"
 
 
 class IRContext(TileIRContext):
@@ -98,7 +98,6 @@ class IRContext(TileIRContext):
         target_info: TargetInfo | None = None,
     ):
         from cuda.lang._ir.type import LangTypingHooks
-        self._block_names: dict[int, str] = {}
         self._block_counter: dict[str, itertools.count] = defaultdict(itertools.count)
         super().__init__(log_ir_on_error, tileiras_version=None,
                          typing_hooks=LangTypingHooks(),
@@ -116,12 +115,13 @@ class IRContext(TileIRContext):
         block.params = params
         if (counter := next(self._block_counter[name])) > 0:
             name = f"{name}.{counter}"
-        self._block_names[block] = name
+        block._name = name
         return block
 
     def block_name(self, block: Block) -> str:
-        assert block in self._block_names, f"Block {block} not found in context"
-        return self._block_names[block]
+        assert block.ctx is self and block._name is not None, \
+            f"Block {block} not found in context"
+        return block._name
 
 
 @dataclass(eq=False)

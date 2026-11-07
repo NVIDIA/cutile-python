@@ -47,7 +47,7 @@ from .schedule_builder import (
 
 def _mbarrier_wait_parity(mbarrier, phase):
     """Wait while keeping the shared barrier address loop-invariant."""
-    cl.mbarrier_wait_parity(mbarrier, phase, time_hint=10_000_000)
+    cl.mbarrier_wait_parity(mbarrier, phase, time_limit_hint_ns=10_000_000)
 
 
 def _mbarrier_arrive_expect_transaction_cluster(mbarrier, num_bytes):

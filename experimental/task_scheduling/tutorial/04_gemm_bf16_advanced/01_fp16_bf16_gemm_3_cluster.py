@@ -1182,7 +1182,7 @@ def kernel(device_task_manager):
                 peer_dealloc, scope=cl.MbarrierScope.BLOCK
             )
             cl.mbarrier_wait_parity(
-                tmem_dealloc_mbar_ptr, 0, time_hint=10_000_000
+                tmem_dealloc_mbar_ptr, 0, time_limit_hint_ns=10_000_000
             )
             cl.tcgen05_deallocate(
                 tmem_raw_addr,
@@ -1279,13 +1279,13 @@ def host_function(
     tma_a_desc = cl.tensor_map_tiled(
         a,
         (mma_tiler_mnk[2], mma_tiler_mnk_per_cta[0]),
-        order="F",
+        order=cl.AxisOrder.REVERSE,
         swizzle=cl.SwizzleMode.SWIZZLE_128B,
     )
     tma_b_desc = cl.tensor_map_tiled(
         b,
         (mma_tiler_mnk[2], mma_tiler_mnk_per_cta[1]),
-        order="F",
+        order=cl.AxisOrder.REVERSE,
         swizzle=cl.SwizzleMode.SWIZZLE_128B,
     )
     cl.launch(

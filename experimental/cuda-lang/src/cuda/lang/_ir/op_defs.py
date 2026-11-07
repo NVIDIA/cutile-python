@@ -30,7 +30,7 @@ from cuda.tile._ir.arithmetic_ops import astype
 from cuda.lang import _datatype as datatype
 from cuda.lang._enums import VectorReduction
 from .ir import Operation, Var, attribute, operand
-from .type import Type, VectorTy, ScalarTy, PointerTy
+from .type import Type, VectorTy, ScalarTy, PointerTy, OpaqueTy
 from .. import _llvm_bitcode as llvm
 from .._passes.ir2llvm import LLVMLoweringContext, type_to_llvm
 from ...tile._datatype import is_integral, is_float
@@ -214,7 +214,7 @@ class MathBinaryOperation(Operation, opcode="math_binary"):
 
 @dataclass(eq=False)
 class VectorConstruct(Operation, opcode="vector_construct"):
-    elements: tuple[Var[ScalarTy | PointerTy], ...] = operand()
+    elements: tuple[Var[ScalarTy | PointerTy | OpaqueTy], ...] = operand()
 
     @override
     def generate_llvm(self, ctx):
@@ -228,7 +228,7 @@ class VectorConstruct(Operation, opcode="vector_construct"):
 @dataclass(eq=False)
 class VectorInsert(Operation, opcode="vector_insert"):
     vector: Var[VectorTy] = operand()
-    value: Var[ScalarTy | PointerTy] = operand()
+    value: Var[ScalarTy | PointerTy | OpaqueTy] = operand()
     index: Var[ScalarTy] = operand()
 
 
@@ -243,7 +243,6 @@ class CopyAsyncBulkTensorGlobalToShared(
     im2col_offsets: tuple[Var, ...] = operand()
     multicast_mask: Var | None = operand(default=None)
     l2_cache_hint: Var | None = operand(default=None)
-    predicate: Var | None = operand(default=None)
     mode: TMALoadMode = attribute()
     is_cta_only: bool = attribute()
     cta_group: CTAGroup | None = attribute(default=None)
@@ -260,7 +259,6 @@ class CopyAsyncBulkTensorSharedToGlobal(
     src_memory: Var = operand()
     coordinates: tuple[Var, ...] = operand()
     l2_cache_hint: Var | None = operand(default=None)
-    predicate: Var | None = operand(default=None)
     mode: TMAStoreMode = attribute()
 
 

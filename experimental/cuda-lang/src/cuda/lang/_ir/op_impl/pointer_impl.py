@@ -42,6 +42,7 @@ from cuda.lang._ir.type_checking_helpers import (
     require_array_indices,
     require_pointer_type,
     require_signed_int_scalar_or_tuple,
+    require_scalar_or_opaque_type,
     require_scalar_type, ensure_pointer,
 )
 from cuda.tile._datatype import (
@@ -70,6 +71,7 @@ from cuda.tile._ir.op_impl import (
     require_constant_pointer_info,
     require_constant_str,
     require_dtype_spec,
+    require_constant_int_tuple,
 )
 from cuda.tile._ir.ops import PointerOffset
 from ..._stub import core_api
@@ -214,6 +216,7 @@ def _array_element_pointer(array: Var, indices: tuple[Var, ...]) -> Var:
 
 
 @impl(getattr, overload=(ArrayTy, "pointer"))
+@impl(getattr, overload=(ArrayTy, "permute"))
 def getattr_array_method(object: Var, name: Var):
     name = require_constant_str(name)
     unbound_func = getattr(Array, name)
@@ -257,7 +260,7 @@ def pointer_setitem(object: Var[PointerTy], key: Var[Type], value: Var[Type]):
     elif ptr_ty.pointee_dtype is datatype.tensor_map_descriptor:
         _require_tensor_map_descriptor_value(value)
     else:
-        require_scalar_type(value)
+        require_scalar_or_opaque_type(value)
         value = astype(value, ptr_ty.pointee_dtype)
     add_operation_variadic(
         StorePointer,
@@ -277,7 +280,7 @@ def array_setitem(object: Var, key: Var, value: Var):
     elif array_ty.dtype is datatype.tensor_map_descriptor:
         _require_tensor_map_descriptor_value(value)
     else:
-        require_scalar_type(value)
+        require_scalar_or_opaque_type(value)
         value = astype(value, array_ty.dtype)
     indices = require_array_indices(object, key)
     pointer = _array_element_pointer(object, indices)
@@ -440,6 +443,40 @@ def array_slice(self: Var, axis: Var, start: Var, stop: Var) -> Var:
         for i, dim in enumerate(array_val.shape)
     )
     return array_from_parts_impl(pointer, build_tuple(new_shape), build_tuple(array_val.strides))
+
+
+@impl(Array.permute)
+def array_permute(self: Var, dims: Var) -> Var:
+    original_array_ty = require_array_type(self)
+    original_array_val = self.get_aggregate()
+
+    original_array_shape = original_array_val.shape
+    original_array_strides = original_array_val.strides
+
+    if is_none(dims):
+        dims_normalized = tuple(range(original_array_ty.ndim - 1, -1, -1))
+    else:
+        dims_val = require_constant_int_tuple(dims)
+        if len(dims_val) != original_array_ty.ndim:
+            raise TypeCheckingError(f"Premutation axes {dims_val} do not match array of "
+                                    f"shape {original_array_shape}")
+        dims_normalized = []
+        for i in dims_val:
+            dim = i if i >= 0 else original_array_ty.ndim + i
+            if not 0 <= dim < original_array_ty.ndim:
+                raise TypeCheckingError(f"axis {i} is out of bounds for array of "
+                                        f"dimension {original_array_ty.ndim}")
+            dims_normalized.append(dim)
+        if len(dims_normalized) != len(set(dims_normalized)):
+            raise TypeCheckingError("repeated axis in permute dims")
+
+    new_strides = tuple(original_array_strides[dim] for dim in dims_normalized)
+    new_shape = tuple(original_array_shape[dim] for dim in dims_normalized)
+
+    original_array_base_ptr = _get_array_base_pointer(self)
+    return array_from_parts_impl(
+        original_array_base_ptr, build_tuple(new_shape), build_tuple(new_strides)
+    )
 
 
 def load_pointer(pointer: Var[PointerTy], count: int = 1, alignment: int | None = None):
@@ -739,8 +776,11 @@ def array_from_parts_impl(pointer: Var, shape: Var, strides: Var) -> Var:
     metadata_vars = shape_vars + (() if stride_vars is None else stride_vars)
     index_dtype = (
         datatype.int64
-        if any(var.is_constant() and not -(1 << 31) <= var.get_constant() < (1 << 31)
-               for var in metadata_vars)
+        if any(
+            (var.is_constant() and not -(1 << 31) <= var.get_constant() < (1 << 31))
+            or var.get_type().dtype == datatype.int64
+            for var in metadata_vars
+        )
         else datatype.int32
     )
     shape_vars = tuple(

@@ -154,8 +154,8 @@ def test_scalar_add_constant(capfd):
     (
         (cl.int32, torch.int32),
         (cl.float8_e4m3fn, torch.uint8),
+        (cl.float4_e2m1fn_x2, torch.uint8),
     ),
-    ids=("int32", "float8_e4m3fn"),
 )
 def test_kernel_launch(array_dtype, backing_dtype):
     @cl.kernel

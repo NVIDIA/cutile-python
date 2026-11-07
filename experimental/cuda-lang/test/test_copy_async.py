@@ -16,8 +16,8 @@ from .util import (
     make_symbolic_scalar,
     make_symbolic_tensor,
     require_hopper_or_newer,
+    require_rubin_family,
 )
-
 
 HOPPER_TARGET = {"gpu_name": "sm_90", "arch": "compute_90"}
 SM100_TARGET = {"gpu_name": "sm_100a", "arch": "compute_100a"}
@@ -96,6 +96,74 @@ def test_copy_async_mbarrier_arrive_completion(arrival_operation, arrivals):
     assert torch.equal(out.cpu(), expected)
 
 
+@require_rubin_family()
+@pytest.mark.skipif(not cconv_v3_enabled(), reason="Tensor-map arguments require cconv3")
+@pytest.mark.parametrize(
+    ("report", "dtype", "pattern"),
+    (
+        (cl.AsyncCopyReportMechanism.DISABLED, torch.uint8, 0xff),
+        (cl.AsyncCopyReportMechanism.VALIDITY_PER_16_BYTES_80000000, torch.int32, -(1 << 31)),
+        (cl.AsyncCopyReportMechanism.VALIDITY_PER_16_BYTES_8000, torch.uint16, 0x8000),
+        (cl.AsyncCopyReportMechanism.VALIDITY_PER_16_BYTES_80, torch.uint8, 0x80),
+        (cl.AsyncCopyReportMechanism.VALIDITY_PER_16_BYTES_8, torch.uint8, 0x88),
+        (cl.AsyncCopyReportMechanism.VALIDITY_PER_ELEMENT_FF, torch.uint8, 0xff),
+    ),
+)
+@pytest.mark.parametrize("cluster", (False, True))
+@pytest.mark.parametrize("match_first", (False, True))
+def test_copy_report_completion(report, dtype, pattern, cluster, match_first):
+    rows, columns = 16, 32
+    transaction_bytes = rows * columns * torch.empty((), dtype=dtype).element_size()
+
+    @cl.kernel
+    def kernel(desc: cl.TensorMap, out, reports):
+        tid = cl.thread_index(0)
+        dst = cl.shared_array(rows * columns, out.dtype, alignment=512)
+        mbar = cl.shared_array(1, cl.mbarrier, alignment=8).pointer()
+        if tid == 0:
+            cl.mbarrier_initialize(mbar, 1, layout=cl.MbarrierLayout.V1)
+            cl.fence(
+                "RELEASE",
+                "CLUSTER",
+                restriction=cl.FenceRestriction.mbarrier_initialize(),
+            )
+        cl.barrier_sync_block_aligned()
+        copy_dst = dst.pointer()
+        if cl.ensure_constant(cluster):
+            copy_dst = cl.map_shared_to_cluster(copy_dst, 0)
+        for phase in range(2):
+            if tid == 0:
+                cl.mbarrier_arrive_expect_transaction(mbar, transaction_bytes)
+                cl.copy_async_bulk_tensor_global_to_shared(
+                    desc, (0, phase * rows), copy_dst, mbar, report_mechanism=report
+                )
+            report_predicate, report_value = cl.mbarrier_wait_report_parity(mbar, phase)
+            if tid == 0:
+                reports[phase, 0] = report_predicate
+                reports[phase, 1] = report_value
+            for row in range(rows):
+                out[phase * rows + row, tid] = dst[row * columns + tid]
+            cl.barrier_sync_block_aligned()
+        if tid == 0:
+            cl.mbarrier_invalidate(mbar)
+
+    src = torch.zeros((2 * rows, columns), dtype=dtype).cuda(0)
+    if match_first:
+        src[:rows] = pattern
+    else:
+        src[rows:] = pattern
+    out = torch.empty_like(src)
+    reports = torch.full((2, 2), -1, dtype=torch.int32).cuda(0)
+    desc = cl.tensor_map_tiled(src, (columns, rows), order=(1, 0))
+    cl.launch(torch.cuda.current_stream(), (1,), (columns,), kernel, (desc, out, reports))
+    assert torch.equal(out.cpu(), src.cpu())
+    enabled = report is not cl.AsyncCopyReportMechanism.DISABLED
+    assert reports.cpu().tolist() == [
+        [int(enabled and match_first), 0],
+        [int(enabled and not match_first), 0],
+    ]
+
+
 class CopyAsyncPtxTestBase:
     @staticmethod
     def signature():
@@ -116,7 +184,7 @@ class CopyAsyncPtxTestBase:
 class TestG2S(CopyAsyncPtxTestBase):
 
     @staticmethod
-    def make_report_kernel(report: cl.AsyncCopyReportMechanism, cluster: bool):
+    def make_report_kernel(report, cluster: bool):
         @cl.kernel
         def k(
             desc: cl.TensorMap,
@@ -262,21 +330,16 @@ class TestG2S(CopyAsyncPtxTestBase):
             **HOPPER_TARGET,
         )
 
-    def test_shared_cluster_group_with_predicate_and_multicast(self):
+    def test_shared_cluster_group_with_multicast(self):
         @cl.kernel
         def kernel(tensor_map, pred, i, j, H: cl.Constant[int], W: cl.Constant[int]):
-            smem = cl.shared_array(shape=(H * W,), dtype=cl.int32, alignment=512)
-            smem = cl.map_shared_to_cluster(smem.pointer(), 0)
+            smem = cl.shared_array(H * W, cl.int32, alignment=512).pointer()
+            smem = cl.map_shared_to_cluster(smem, 0)
             mbar = cl.shared_array(1, cl.mbarrier, alignment=8).pointer()
-
             cl.copy_async_bulk_tensor_global_to_shared(
-                tensor_map,
-                (i, j),
-                smem,
-                mbar,
+                tensor_map, (i, j), smem, mbar,
                 multicast_mask=0x3,
                 cta_group=cl.CTAGroup.CTA_2,
-                predicate=pred,
             )
 
         compile_kernel(
@@ -285,6 +348,7 @@ class TestG2S(CopyAsyncPtxTestBase):
             assert_in_ptx=(
                 "cp.async.bulk.tensor.2d.shared::cluster.global",
                 "multicast::cluster",
+                "cta_group::2",
             ),
             **SM100_TARGET,
         )
@@ -316,18 +380,6 @@ class TestG2S(CopyAsyncPtxTestBase):
             raises=pytest.raises(TypeCheckingError, match=match),
         )
 
-    def k1(tensor_map, pred, i, j, H: cl.Constant[int], W: cl.Constant[int]):
-        smem = cl.shared_array(shape=(H * W,), dtype=cl.int32, alignment=512)
-        mbar = cl.shared_array(1, cl.mbarrier, alignment=8).pointer()
-
-        cl.copy_async_bulk_tensor_global_to_shared(
-            tensor_map,
-            (i, j),
-            smem.pointer(),
-            mbar,
-            predicate=pred,
-        )
-
     def k2(tensor_map, pred, i, j, H: cl.Constant[int], W: cl.Constant[int]):
         smem = cl.shared_array(shape=(H * W,), dtype=cl.int32, alignment=512)
         mbar = cl.shared_array(1, cl.mbarrier, alignment=8).pointer()
@@ -352,11 +404,11 @@ class TestG2S(CopyAsyncPtxTestBase):
             cta_group=cl.CTAGroup.CTA_1,
         )
 
-    @pytest.mark.parametrize("kernel", (k1, k2, k3))
+    @pytest.mark.parametrize("kernel", (k2, k3))
     def test_unsupported_kwargs_for_cta_mode(self, kernel):
         match = (
             "When the destination memory is in shared memory, the "
-            "predicate, multicast mask, and cta_group arguments are invalid."
+            "multicast mask and cta_group arguments are invalid."
         )
         compile_kernel(
             kernel,
@@ -521,25 +573,6 @@ class TestS2G(CopyAsyncPtxTestBase):
                 tensor_map,
                 (i, j),
                 l2_cache_hint=cache_hint,
-            )
-
-        compile_kernel(
-            kernel,
-            signature=self.signature(),
-            assert_in_ptx="cp.async.bulk.tensor.2d.global.shared::cta",
-            **HOPPER_TARGET,
-        )
-
-    def test_predicate(self):
-        @cl.kernel
-        def kernel(tensor_map, pred, i, j, H: cl.Constant[int], W: cl.Constant[int]):
-            smem = cl.shared_array(shape=(H * W,), dtype=cl.int32, alignment=512)
-
-            cl.copy_async_bulk_tensor_shared_to_global(
-                smem.pointer(),
-                tensor_map,
-                (i, j),
-                predicate=pred,
             )
 
         compile_kernel(

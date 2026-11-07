@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 from distutils import file_util
-from setuptools import setup
+from setuptools import setup, find_namespace_packages, Distribution
 from setuptools.command.build_ext import build_ext
 from setuptools.extension import Extension
 import os
@@ -11,6 +11,29 @@ import sys
 
 project_root = os.path.dirname(os.path.abspath(__file__))
 is_windows = sys.platform == "win32"
+
+
+class CudaTileDistribution(Distribution):
+    global_options = Distribution.global_options + [
+        ('include-cuda-lang', None, 'Include cuda.lang and its native compiler'),
+    ]
+
+    def __init__(self, attrs=None):
+        self.include_cuda_lang = False
+        super().__init__(attrs)
+
+    def parse_command_line(self):
+        result = super().parse_command_line()
+        # Configure packages and extensions before any build commands are finalized.
+        if self.include_cuda_lang:
+            lang_src = os.path.join("experimental", "cuda-lang", "src")
+            self.packages = [*self.packages, *find_namespace_packages(
+                where=lang_src, include=["cuda.lang", "cuda.lang.*"])]
+            self.package_dir = dict(self.package_dir, **{
+                "cuda.lang": os.path.join(lang_src, "cuda", "lang"),
+            })
+            self.ext_modules.append(Extension("cuda.lang._host_jit", []))
+        return result
 
 
 class BuildExtWithCmake(build_ext):
@@ -94,14 +117,26 @@ class BuildExtWithCmake(build_ext):
             link = "sym" if self.editable_mode else None
             file_util.copy_file(ext_build_path, ext_path, update=1, link=link)
 
+        if self.distribution.include_cuda_lang:
+            bin_dir = os.path.join(os.path.dirname(
+                self.get_ext_fullpath("cuda.lang._host_jit")), "bin")
+            os.makedirs(bin_dir, exist_ok=True)
+            file_util.copy_file(os.path.join(build_dir, "internal", "mlir2cubin", "mlir2cubin"),
+                                os.path.join(bin_dir, "mlir2cubin"),
+                                update=1, link="sym" if self.editable_mode else None)
+
 
 def _get_csrc_dir(ext_name: str):
+    if ext_name == "cuda.lang._host_jit":
+        return os.path.join("internal", "host_jit")
     prefix = "cuda.tile._"
     assert ext_name.startswith(prefix)
     return ext_name[len(prefix):]
 
 
 def _get_build_lib_filename(ext_name: str):
+    if ext_name == "cuda.lang._host_jit":
+        return "_host_jit.so"
     name = ext_name.split(".")[-1]
     if is_windows:
         return f"{name}.dll"
@@ -110,6 +145,7 @@ def _get_build_lib_filename(ext_name: str):
 
 
 setup(
+    distclass=CudaTileDistribution,
     ext_modules=[
         Extension("cuda.tile._cext", []),
     ],

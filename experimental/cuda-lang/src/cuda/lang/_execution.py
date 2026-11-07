@@ -84,7 +84,7 @@ def launch(
             :func:`cuda.lang.kernel`.
         kernel_args (tuple[Any, ...]): Positional arguments passed to
             ``kernel``. Their number and order must match the kernel parameters,
-            and each value must be a supported kernel argument type.
+            and each value must satisfy :ref:`language-entry-arguments`.
         cooperative (bool): Whether to use a cooperative grid launch.
         block_in_cluster_count (Dim3 | None): Thread-block cluster dimensions,
             measured in blocks.Each grid dimension must be divisible by
@@ -121,6 +121,8 @@ def launch(
 
 class host_entry(_cext.HostDispatcher):
     """Compile and cache a native host entry specialization when called.
+
+    See :ref:`language-entry-arguments` for supported Python arguments.
 
     Array arguments specialize by dtype and rank. Explicit annotations such as
     :class:`cuda.lang.Constant` and static-shape annotations add the requested

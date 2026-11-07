@@ -611,34 +611,6 @@ def test_array_from_parts_uses_pointer_dtype():
     assert array.cpu().item() == 0x3FC00000
 
 
-def test_array_from_parts_rejects_int64_shape():
-    def kernel(array):
-        cl.Array.from_parts(array.pointer(), (cl.int64(2), 2))
-
-    compile_kernel(
-        kernel,
-        signature=KernelSignature((make_symbolic_tensor(4, cl.int32),)),
-        raises=pytest.raises(
-            TypeCheckingError,
-            match="Invalid array shape: cannot implicitly cast int64 to int32",
-        ),
-    )
-
-
-def test_array_from_parts_rejects_int64_stride():
-    def kernel(array):
-        cl.Array.from_parts(array.pointer(), (2, 2), (cl.int64(2), 1))
-
-    compile_kernel(
-        kernel,
-        signature=KernelSignature((make_symbolic_tensor(4, cl.int32),)),
-        raises=pytest.raises(
-            TypeCheckingError,
-            match="Invalid array strides: cannot implicitly cast int64 to int32",
-        ),
-    )
-
-
 def test_array_from_parts_rejects_stride_rank_mismatch():
     def kernel(array):
         cl.Array.from_parts(array.pointer(), (2, 2), (1,))

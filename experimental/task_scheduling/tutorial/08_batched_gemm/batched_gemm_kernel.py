@@ -302,11 +302,11 @@ def make_tensor_maps(a, b, cfg):
     tma_a_desc = cl.tensor_map_tiled(
         a_kbox,
         (64, cfg.tile_m, cfg.tile_k // 64, 1),
-        order="F",
+        order=cl.AxisOrder.REVERSE,
         swizzle=cl.SwizzleMode.SWIZZLE_128B,
     )
     tma_b_desc = cl.tensor_map_tiled(
-        b, (64, cfg.tile_n, 1), order="F", swizzle=cl.SwizzleMode.SWIZZLE_128B
+        b, (64, cfg.tile_n, 1), order=cl.AxisOrder.REVERSE, swizzle=cl.SwizzleMode.SWIZZLE_128B
     )
     return tma_a_desc, tma_b_desc
 

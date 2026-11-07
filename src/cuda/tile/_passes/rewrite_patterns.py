@@ -31,17 +31,11 @@ class MatchContext:
         self._matches = [dict() for _ in _patterns]
         self._ir_ctx = ir_ctx
 
-    # FIXME: remove this after moving operands to attributes
-    @property
-    def _constants(self):
-        return self._ir_ctx.constants
-
     def typeof(self, var: Var) -> Type:
         return var.get_type()
 
     def set_type(self, var: Var, ty: Type):
-        assert var.name not in self._ir_ctx.typemap
-        self._ir_ctx.typemap[var.name] = ty
+        var.set_type(ty)
 
     def get_match(self, var: Var, pattern: "Pattern", default=None):
         return self._matches[pattern.pattern_id].get(var.name, default)

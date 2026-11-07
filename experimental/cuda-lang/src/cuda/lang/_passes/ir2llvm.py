@@ -32,7 +32,7 @@ def dtype_to_llvm(dtype: datatype.DType, tt: llvm.TypeTable,
         return tt.pointer(info.memory_space._value_)
     elif dtype == datatype.bool_:
         return tt.integer(8 if storage else 1)
-    elif is_integral(dtype):
+    elif is_integral(dtype) or dtype == datatype.float4_e2m1fn_x2:
         return tt.integer(dtype.bitwidth)
     elif (kind := DIRECTLY_SUPPORTED_FLOATS.get(dtype)) is not None:
         return tt.float(kind)

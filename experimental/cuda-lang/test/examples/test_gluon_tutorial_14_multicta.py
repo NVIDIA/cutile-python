@@ -232,8 +232,8 @@ def test_tma_multicast_copy():
     torch.manual_seed(0)
     inp = torch.randn((tile_m, tile_n), dtype=torch.float16, device="cuda:0")
     out = torch.empty_like(inp)
-    in_tmap = cl.tensor_map_tiled(inp, (tile_n, tile_m), order="F")
-    out_tmap = cl.tensor_map_tiled(out, (tile_n, tile_m), order="F")
+    in_tmap = cl.tensor_map_tiled(inp, (tile_n, tile_m), order=cl.AxisOrder.REVERSE)
+    out_tmap = cl.tensor_map_tiled(out, (tile_n, tile_m), order=cl.AxisOrder.REVERSE)
     cl.launch(
         torch.cuda.current_stream(),
         (num_ctas,),
@@ -415,7 +415,7 @@ def test_two_cta_tcgen05():
     b_view = make_3d_view(b_rows)
     a_tmap = cl.tensor_map_tiled(a_view, (64, 128, 1), swizzle=cl.SwizzleMode.SWIZZLE_128B)
     b_tmap = cl.tensor_map_tiled(b_view, (64, 64, 1), swizzle=cl.SwizzleMode.SWIZZLE_128B)
-    c_tmap = cl.tensor_map_tiled(c, (128, 128), order="F")
+    c_tmap = cl.tensor_map_tiled(c, (128, 128), order=cl.AxisOrder.REVERSE)
     cl.launch(
         torch.cuda.current_stream(),
         (2,),
@@ -579,7 +579,7 @@ def test_tma_tcgen05():
     b_view = make_3d_view(b_rows)
     a_tmap = cl.tensor_map_tiled(a_view, (64, 128, 1), swizzle=cl.SwizzleMode.SWIZZLE_128B)
     b_tmap = cl.tensor_map_tiled(b_view, (64, 64, 1), swizzle=cl.SwizzleMode.SWIZZLE_128B)
-    c_tmap = cl.tensor_map_tiled(c, (128, 128), order="F")
+    c_tmap = cl.tensor_map_tiled(c, (128, 128), order=cl.AxisOrder.REVERSE)
     cl.launch(
         torch.cuda.current_stream(),
         (4,),
@@ -693,15 +693,15 @@ def store_matmul_partition(
                 cl.FenceProxy.ASYNC,
                 restriction=cl.FenceRestriction.shared_block(),
             )
-            cl.copy_async_bulk_tensor_shared_to_global(
-                stage_smem,
-                c_tmap,
-                (
-                    pid_n * tile_n + subtile * subtile_n,
-                    pid_m * tile_m + rank * 128,
-                ),
-                predicate=valid_tile,
-            )
+            if valid_tile:
+                cl.copy_async_bulk_tensor_shared_to_global(
+                    stage_smem,
+                    c_tmap,
+                    (
+                        pid_n * tile_n + subtile * subtile_n,
+                        pid_m * tile_m + rank * 128,
+                    ),
+                )
             cl.copy_async_bulk_commit_group()
     if cl.elect_sync():
         empty_bar = cl.map_shared_to_cluster(acc_empty, 0)
@@ -1051,7 +1051,7 @@ def test_matmul_multicta():
     b_view = make_3d_view(b_rows)
     a_tmap = cl.tensor_map_tiled(a_view, (64, 128, 1), swizzle=cl.SwizzleMode.SWIZZLE_128B)
     b_tmap = cl.tensor_map_tiled(b_view, (64, 128, 1), swizzle=cl.SwizzleMode.SWIZZLE_128B)
-    c_tmap = cl.tensor_map_tiled(c, (32, 128), order="F")
+    c_tmap = cl.tensor_map_tiled(c, (32, 128), order=cl.AxisOrder.REVERSE)
     cl.launch(
         torch.cuda.current_stream(),
         (tiles * 2,),

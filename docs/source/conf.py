@@ -16,7 +16,7 @@ import cuda.tile._datatype
 # -- Project information -----------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#project-information
 project = 'cuTile Python'
-copyright = '2025, NVIDIA Corporation'
+copyright = '2026, NVIDIA Corporation'
 author = 'NVIDIA Corporation'
 
 # -- General configuration ---------------------------------------------------

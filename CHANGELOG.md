@@ -4,6 +4,68 @@
 Release Notes
 =============
 
+{#release-1-8-0}
+1.8.0 (2026-11-04)
+------------------
+
+This release adds support for CTK 13.5 features, including a preview of foreign
+calls into TileIR libraries (`.tilelib`), FP8 on Ada GPUs, and a wider range of
+`num_worker_warps` values. It adds Python 3.15 and 3.15t (free-threading)
+support and drops Python 3.10. It also adds explicit wrap-around integer
+arithmetic with `ct.wrapping_add()`, `ct.wrapping_sub()` and
+`ct.wrapping_mul()`, and makes integer overflow on strictly typed scalar
+constants a compile-time error.
+
+### CTK 13.5 features
+- Add a preview of foreign calls API, available in the new
+  [`cuda-tile-preview`](https://pypi.org/project/cuda-tile-preview/) package
+  for public preview features. Install it separately alongside `cuda-tile`
+  via `pip install cuda-tile-preview`. Tile kernels can call SIMT functions
+  supplied by TileIR libraries (`.tilelib`). This requires TileIR bytecode
+  version 13.5 or later.
+  - Add a foreign-pointer dtype that exposes an array's base pointer to foreign
+    calls. An array can be reconstructed from a foreign pointer together with
+    its shape and stride metadata.
+  - Automatically initialize and finalize the loaded CUDA library when a kernel
+    contains foreign calls whose symbols start with `nvshmem_` or `nvshmemx_`.
+- Enable `float8_e4m3fn` and `float8_e5m2` on Ada GPUs (SM89) with tileiras
+  13.5 or later.
+- Expand the `num_worker_warps` compiler option to accept powers of two from 1
+  through 32 with CTK 13.5 or later. CTK 13.3 and 13.4 continue to support 4
+  and 8.
+
+### Supported libraries for foreign calls
+The following NVIDIA libraries are supported providers of callable tilelibs.
+See each library's documentation for downloads, installation instructions,
+APIs, and usage guides.
+
+- [MathDx](https://docs.nvidia.com/cuda/mathdx/) Tile v0.5+ (tilelib upcoming).
+  Fast device-side MathDx routines, including FFT, linear algebra, and
+  compression.
+- [NVSHMEM](https://developer.nvidia.com/nvshmem) v3.9+.
+  Fine-grained GPU-to-GPU communication and synchronization.
+- CCCL Coop (tilelib upcoming). Fast cooperative CUB primitives (such as scan,
+  sort, and top-k).
+
+### Python Features
+- Add support for Python 3.15 and 3.15t (free-threading).
+- Add {py:func}`ct.wrapping_add() <cuda.tile.wrapping_add>`,
+  {py:func}`ct.wrapping_sub() <cuda.tile.wrapping_sub>`, and
+  {py:func}`ct.wrapping_mul() <cuda.tile.wrapping_mul>` for explicit
+  wrap-around integer arithmetic.
+- Add support for strictly typed constants in `ct.static_eval()`,
+  `ct.static_assert()`, and other statically evaluated expressions. Previously,
+  a strictly typed scalar constant decayed to a Python `int` inside such
+  expressions. It is now represented as a `ct.Tile` instance.
+
+### Breaking Changes
+- Drop support for Python 3.10.
+- Integer overflow in arithmetic on strictly typed scalar constants is now a
+  compile-time error. Previously, an expression like
+  `ct.uint8(255) + ct.uint8(3)` silently wrapped around to 2. To get
+  wrap-around behavior, use `ct.wrapping_add()`, `ct.wrapping_sub()`, or
+  `ct.wrapping_mul()` instead.
+
 {#release-1-7-0}
 1.7.0 (2026-10-19)
 ------------------

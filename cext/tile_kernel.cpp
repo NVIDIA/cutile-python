@@ -698,6 +698,9 @@ static constexpr int u8_pair(uint8_t x, uint8_t y) {
 }
 
 static Result<DType> dtype_from_dlpack(DLDataType dtype) {
+    if (dtype.code == kDLFloat4_e2m1fn && dtype.bits == 4 && dtype.lanes == 2)
+        return k_float4_e2m1fn_x2;
+
     if (dtype.lanes != 1)
         return raise(PyExc_TypeError, "Array dtypes with multiple lanes are not supported");
 
@@ -730,7 +733,8 @@ static Result<DType> dtype_from_dlpack(DLDataType dtype) {
 }
 
 static bool is_array_dtype(DType dtype) {
-    return is_numeric_dtype(dtype) && basic_dtype_bitwidth(dtype) % BYTE_BITWIDTH == 0;
+    return dtype == k_float4_e2m1fn_x2
+        || (is_numeric_dtype(dtype) && basic_dtype_bitwidth(dtype) % BYTE_BITWIDTH == 0);
 }
 
 
@@ -741,7 +745,7 @@ enum ForeignDtypeKind {
 };
 
 static constexpr
-struct { char name[16]; DType dtype; int lib_mask; } foreign_dtype_table[] = {
+struct { char name[24]; DType dtype; int lib_mask; } foreign_dtype_table[] = {
     {"bool", k_bool_, kTorch },
     {"bool_", k_bool_, kNumpy },
     {"uint8", k_uint8, kTorch | kNumpy },
@@ -758,7 +762,8 @@ struct { char name[16]; DType dtype; int lib_mask; } foreign_dtype_table[] = {
     {"bfloat16", k_bfloat16, kTorch | kMlDTypes},
     {"float8_e4m3fn", k_float8_e4m3fn, kTorch | kMlDTypes},
     {"float8_e5m2", k_float8_e5m2, kTorch | kMlDTypes},
-    {"float8_e8m0fnu", k_float8_e8m0fnu, kTorch | kMlDTypes}
+    {"float8_e8m0fnu", k_float8_e8m0fnu, kTorch | kMlDTypes},
+    {"float4_e2m1fn_x2", k_float4_e2m1fn_x2, kTorch}
 };
 
 

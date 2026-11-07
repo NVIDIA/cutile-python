@@ -64,7 +64,7 @@ class MemorySpace(Enum):
     """Global memory address space."""
 
     SHARED = 3
-    """CTA-local shared memory address space."""
+    """Shared memory address space local to a thread block."""
 
     CONSTANT = 4
     """Constant memory address space."""

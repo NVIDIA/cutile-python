@@ -587,10 +587,10 @@ def run(tensors: dict[str, torch.Tensor], stream=None, *, verbose=False) -> None
         program.manager.print_verbose_report()
     gemm_kernel = make_gemm_kernel(program.device_manager)
     a_map = cl.tensor_map_tiled(
-        a, (BLOCK_K, BLOCK_M), order="F", swizzle=cl.SwizzleMode.SWIZZLE_128B
+        a, (BLOCK_K, BLOCK_M), order=cl.AxisOrder.REVERSE, swizzle=cl.SwizzleMode.SWIZZLE_128B
     )
     b_map = cl.tensor_map_tiled(
-        b, (BLOCK_K, BLOCK_N), order="F", swizzle=cl.SwizzleMode.SWIZZLE_128B
+        b, (BLOCK_K, BLOCK_N), order=cl.AxisOrder.REVERSE, swizzle=cl.SwizzleMode.SWIZZLE_128B
     )
     cl.launch(
         torch.cuda.current_stream() if stream is None else stream,

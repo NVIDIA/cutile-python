@@ -27,14 +27,17 @@ def load(
 
     Args:
         pointer: Typed pointer to read from.
-        count: Compile-time number of values to load. ``1``
+        count (const int): Number of values to load. ``1``
             returns a scalar. A value greater than ``1`` returns a vector.
             For best performance, align a vector load to the total size of
             the vector in bytes.
-        alignment: Minimum byte alignment that the compiler can assume.
+        alignment (const int | None): Minimum byte alignment that the compiler can assume.
             The value must be a positive power of two. The address must
             have this alignment. If the value is ``None``, the compiler
             does not get an alignment hint.
+
+    :Participation: :ref:`Per-thread <api-participation>`.
+    :Completion: Synchronous.
     """
     ...
 
@@ -56,10 +59,13 @@ def store(
         pointer: Typed pointer to write to.
         value: Scalar or vector to store. The value must be compatible with
             the pointee data type.
-        alignment: Minimum byte alignment that the compiler can assume.
+        alignment (const int | None): Minimum byte alignment that the compiler can assume.
             The value must be a positive power of two. The address must
             have this alignment. If the value is ``None``, the compiler
             does not get an alignment hint.
+
+    :Participation: :ref:`Per-thread <api-participation>`.
+    :Completion: Synchronous.
     """
     ...
 
@@ -83,18 +89,24 @@ def atomic_load(
 
     Args:
         pointer: Typed pointer to read from.
-        count: Compile-time number of values to load. ``1``
+        count (const int): Number of values to load. ``1``
             returns a scalar. A value greater than ``1`` returns a vector.
-        memory_order: Memory order for the load. Supported values are
+        memory_order (MemoryOrder): Memory order for the load. Supported values are
             ``MemoryOrder.RELAXED`` and ``MemoryOrder.ACQUIRE``.
-        memory_scope: Scope of threads that participate in memory ordering.
-        mmio: Whether to use a memory-mapped I/O access. MMIO requires
+        memory_scope (MemoryScope): Scope of threads that participate in memory ordering.
+        mmio (const bool): Whether to use a memory-mapped I/O access. MMIO requires
             ``MemoryOrder.RELAXED`` or ``MemoryOrder.ACQUIRE`` and
             ``MemoryScope.SYS``. The pointer must refer to global memory.
-        alignment: Minimum byte alignment that the compiler can assume.
+        alignment (const int | None): Minimum byte alignment that the compiler can assume.
             The value must be a positive power of two. The address must
             have at least this alignment. If the value is ``None``, the
             total access size is used as the alignment.
+
+    :Memory: The total access size is at most 16 bytes; a 16-byte access
+        requires SM90 or newer. The address must have at least the total access
+        size's alignment, including when an explicit alignment hint is supplied.
+    :Participation: :ref:`Per-thread <api-participation>`.
+    :Completion: Synchronous.
     """
     ...
 
@@ -120,16 +132,22 @@ def atomic_store(
         pointer: Typed pointer to write to.
         value: Scalar or vector to store. The element data type must be
             compatible with the pointee data type.
-        memory_order: Memory order for the store. Supported values are
+        memory_order (MemoryOrder): Memory order for the store. Supported values are
             ``MemoryOrder.RELAXED`` and ``MemoryOrder.RELEASE``.
-        memory_scope: Scope of threads that participate in memory ordering.
-        mmio: Whether to use a memory-mapped I/O access. MMIO requires
+        memory_scope (MemoryScope): Scope of threads that participate in memory ordering.
+        mmio (const bool): Whether to use a memory-mapped I/O access. MMIO requires
             ``MemoryOrder.RELAXED`` or ``MemoryOrder.RELEASE`` and
             ``MemoryScope.SYS``. The pointer must refer to global memory.
-        alignment: Minimum byte alignment that the compiler can assume.
+        alignment (const int | None): Minimum byte alignment that the compiler can assume.
             The value must be a positive power of two. The address must
             have at least this alignment. If the value is ``None``, the
             total access size is used as the alignment.
+
+    :Memory: The total access size is at most 16 bytes; a 16-byte access
+        requires SM90 or newer. The address must have at least the total access
+        size's alignment, including when an explicit alignment hint is supplied.
+    :Participation: :ref:`Per-thread <api-participation>`.
+    :Completion: Synchronous.
     """
     ...
 
