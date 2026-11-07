@@ -20,7 +20,7 @@ import tempfile
 import threading
 import time
 from types import FunctionType, ModuleType
-from typing import Optional, Sequence
+from typing import Mapping, Optional, Sequence
 import zipfile
 
 from cuda.tile import ArrayAnnotation
@@ -729,11 +729,13 @@ class _CompilerBinary:
     bin_path: str
     ld_path: str
     pass_cuda_home_var: bool
+    is_pip: bool = False
 
     def run(self,
             args: list[str],
             flags: list[str],
-            timeout_sec: float | None = None):
+            timeout_sec: float | None = None,
+            extra_env: Mapping[str, str] | None = None):
         command = [self.path, *args]
 
         logger.debug(f"Invoke tile compiler: {' '.join(command + flags)}\n"
@@ -746,6 +748,8 @@ class _CompilerBinary:
             if not self.pass_cuda_home_var:
                 for key in {"CUDA_HOME", "CUDA_PATH"}:
                     env.pop(key, None)
+            if extra_env:
+                env.update(extra_env)
             subprocess.run(command + flags, env=env, check=True, capture_output=True,
                            timeout=timeout_sec)
         except subprocess.CalledProcessError as e:
@@ -855,7 +859,7 @@ def _find_compiler_bin() -> _CompilerBinary:
     logger.debug("Searching tileiras from nvidia pip package")
     res = _find_pip_tileiras()
     if res is not None:
-        return _CompilerBinary(res, bin_path, ld_path, pass_cuda_home_var=False)
+        return _CompilerBinary(res, bin_path, ld_path, pass_cuda_home_var=False, is_pip=True)
 
     # search under PATH
     logger.debug(f"Searching tileiras: {bin_path}")
@@ -1065,5 +1069,13 @@ def compile_cubin(
             f"--remarks-output-file={remarks_output_file}",
         ])
 
-    binary.run(args, flags, timeout_sec)
+    env_context = contextlib.nullcontext({})
+    if linker_inputs and binary.is_pip:
+        from cuda.tile._preview_loader import get_preview_linker_env_hook
+        hook = get_preview_linker_env_hook()
+        if hook is not None:
+            env_context = hook(compiler_path=binary.path,
+                               version_output=_get_compiler_version_string())
+    with env_context as extra_env:
+        binary.run(args, flags, timeout_sec, extra_env=extra_env)
     return fname_cubin

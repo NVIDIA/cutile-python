@@ -15,3 +15,14 @@ def get_preview_foreign_call_type():
             raise
         return None
     return preview.PreviewForeignCall
+
+
+@cache
+def get_preview_linker_env_hook():
+    try:
+        preview = importlib.import_module("cuda.tile_preview")
+    except ModuleNotFoundError as exc:
+        if exc.name != "cuda.tile_preview":
+            raise
+        return None
+    return getattr(preview, "_tileiras_linker_env", None)

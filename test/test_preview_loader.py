@@ -66,3 +66,21 @@ def test_import_fails_when_type_missing(monkeypatch):
             get_type()
     finally:
         get_type.cache_clear()
+
+
+def _hook(**kwargs):
+    pass
+
+
+@pytest.mark.parametrize("preview,expected", [
+    (types.SimpleNamespace(_tileiras_linker_env=_hook), _hook),
+    (types.SimpleNamespace(), None),
+])
+def test_linker_env_hook(monkeypatch, preview, expected):
+    get_hook = _preview_loader.get_preview_linker_env_hook
+    get_hook.cache_clear()
+    monkeypatch.setattr(_preview_loader.importlib, "import_module", lambda name: preview)
+    try:
+        assert get_hook() is expected
+    finally:
+        get_hook.cache_clear()

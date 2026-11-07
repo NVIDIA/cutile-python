@@ -5,6 +5,7 @@
 from ._stub import foreign_call
 from ._types import Tilelib
 from ._ops import PreviewForeignCall  # noqa: F401
+from ._compiler_hook import _tileiras_linker_env  # noqa: F401
 
 __all__ = [
     "Tilelib",

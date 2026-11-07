@@ -30,6 +30,9 @@ classifiers = [
     "Topic :: Software Development :: Compilers",
 ]
 
+[project.optional-dependencies]
+tileiras = [ "cuda-toolkit[tileiras]>=13.5.0,<13.6" ]
+
 [project.urls]
 Homepage = "https://github.com/nvidia/cutile-python"
 Repository = "https://github.com/nvidia/cutile-python"
