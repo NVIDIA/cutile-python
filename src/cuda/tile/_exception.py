@@ -299,6 +299,7 @@ class CompilerExecutionError(InternalCompilerError):
                  loc: Loc,
                  compiler_flags: str,
                  compiler_version: Optional[str]):
+        self.return_code = return_code
         super().__init__(f"Return code {return_code}\n{message}", loc,
                          compiler_flags, compiler_version)
 
