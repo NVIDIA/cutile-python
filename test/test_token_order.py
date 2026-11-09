@@ -308,6 +308,26 @@ ForLoopOneParallelOneSerialStoreCheckDirective = """\
 """
 
 
+ForLoopParallelStoreAfterOverlappingStoreCheckDirective = """\
+// CHECK: %[[TOKEN0:.*]] = make_token
+// CHECK: %[[Z_TOKEN:.*]] = store_view_tko {{.*}} token = %[[TOKEN0]]
+// CHECK: %[[JOINT:.*]] = join_tokens %[[TOKEN0]], %[[Z_TOKEN]]
+// CHECK: for %loopIdx in
+// CHECK:     store_view_tko {{.*}} token = %[[JOINT]]
+"""
+
+
+ForLoopParallelStoreAfterAcquireInLoopCheckDirective = """\
+// CHECK: %[[TOKEN0:.*]] = make_token
+// CHECK: for %loopIdx in
+// CHECK:     %[[SPIN:.*]]:2 = loop
+// CHECK:       %{{.*}}, %[[CAS_TOKEN:.*]] = atomic_cas_tko acquire
+// CHECK:         break %[[CAS_TOKEN]], %[[CAS_TOKEN]]
+// CHECK:     %[[JOINT:.*]] = join_tokens %[[TOKEN0]], %[[SPIN]]#1
+// CHECK:     store_view_tko weak {{.*}} token = %[[JOINT]]
+"""
+
+
 class TestForLoopParallelStoreMLIR(MLIRTestBase):
 
     def parallel_store(X, _Y, n: int, TILE: ct.Constant[int]):
@@ -339,6 +359,24 @@ class TestForLoopParallelStoreMLIR(MLIRTestBase):
             # serial store
             ct.store(Y, index=(i,), tile=ty)
 
+    def parallel_store_after_overlapping_store(X, Y, n: int, TILE: ct.Constant[int]):
+        if n > 5:
+            Z = X
+        else:
+            Z = Y
+        ct.store(Z, index=(0,), tile=ct.full((TILE,), 7, dtype=ct.int32))
+        for i in range(n):
+            # Must be token ordered after the store to Z
+            ct.store(X, index=(i,), tile=ct.full((TILE,), 1, dtype=ct.int32))
+
+    def parallel_store_after_acquire_in_loop(X, F, n: int, TILE: ct.Constant[int]):
+        for i in range(n):
+            while ct.atomic_cas(F, i, 1, 0, memory_order=ct.MemoryOrder.ACQUIRE,
+                                memory_scope=ct.MemoryScope.DEVICE) != 1:
+                pass
+            # Must be ordered after this iteration's acquire
+            ct.store(X, index=(i,), tile=ct.full((TILE,), 1, dtype=ct.int32))
+
     @override
     def compile_kernel(self, kernel):
         tile_size = 1024
@@ -355,6 +393,10 @@ class TestForLoopParallelStoreMLIR(MLIRTestBase):
          ForLoopTwoParallelStoresNestedCheckDirective),
         (one_parallel_one_serial_store,
          ForLoopOneParallelOneSerialStoreCheckDirective),
+        (parallel_store_after_overlapping_store,
+         ForLoopParallelStoreAfterOverlappingStoreCheckDirective),
+        (parallel_store_after_acquire_in_loop,
+         ForLoopParallelStoreAfterAcquireInLoopCheckDirective),
     ))
     @override
     def test_mlir(self, kernel, check_directive):

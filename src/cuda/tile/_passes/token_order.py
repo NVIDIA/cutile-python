@@ -592,19 +592,20 @@ def _try_loop_parallel_store(
     last_op_key = _last_op_key(alias_set)
     last_store_key = _last_store_key(alias_set)
 
-    # Convert to parallellized store
+    # Convert to parallelized store.
     parent_token_map = innermost_loop_info.parent_token_map
-    before_loop_last_op_tok = parent_token_map[last_op_key]
-
+    tokens_to_join = _collect_join_tokens(last_op_key, parent_token_map, None)
     if (ACQUIRE_TOKEN_KEY in token_map and
-            before_loop_last_op_tok is not token_map[ACQUIRE_TOKEN_KEY]):
-        input_tok = _make_token_var(ctx, store_op.loc)
-        maybe_input_tok_join_op = JoinTokens(
-            tokens=(before_loop_last_op_tok, token_map[ACQUIRE_TOKEN_KEY]),
-            result_vars=(input_tok,), loc=store_op.loc)
+            token_map[ACQUIRE_TOKEN_KEY] not in tokens_to_join):
+        # The loop body has an acquire newer than the pre-loop one in parent_token_map.
+        tokens_to_join.append(token_map[ACQUIRE_TOKEN_KEY])
+
+    if len(tokens_to_join) == 1:
+        input_tok, maybe_input_tok_join_op = tokens_to_join[0], None
     else:
-        input_tok = before_loop_last_op_tok
-        maybe_input_tok_join_op = None
+        input_tok = _make_token_var(ctx, store_op.loc)
+        maybe_input_tok_join_op = JoinTokens(tokens=tuple(tokens_to_join),
+                                             result_vars=(input_tok,), loc=store_op.loc)
 
     [result_tok] = store_op.result_vars
     tko_store_op = dataclasses.replace(store_op, token=input_tok)
