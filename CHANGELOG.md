@@ -4,6 +4,19 @@
 Release Notes
 =============
 
+{#release-1-8-1}
+1.8.1 (2026-11-12)
+------------------
+
+This release fixes linking of tile libraries (`.tilelib`) for the foreign call
+preview feature in environments where the CUDA toolkit is installed only from
+pip wheels. On Linux and Windows x64, `tileiras` 13.5 could not find nvJitLink
+in the layout of the CUDA pip wheels. The `cuda-tile-preview` package now works
+around this by pointing `tileiras` at a temporary mirror of the toolkit for each
+compilation that links tile libraries. The package also gains a `tileiras`
+extra (`pip install cuda-tile-preview[tileiras]`) that installs the CUDA 13.5
+`tileiras` toolchain from pip.
+
 {#release-1-8-0}
 1.8.0 (2026-11-04)
 ------------------
