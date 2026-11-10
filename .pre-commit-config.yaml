@@ -3,6 +3,11 @@
 # SPDX-License-Identifier: Apache-2.0
 
 repos:
+  - repo: https://github.com/NVIDIA/security-workflows
+    rev: 0659a2e36defdf66209a135d216f40a63b7aec94  # frozen: v0.5.0
+    hooks:
+      - id: guardwords-scan-code-scanning
+
   - repo: https://github.com/pycqa/flake8
     rev: 7.0.0
     hooks:
