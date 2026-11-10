@@ -123,6 +123,9 @@ This makes sure that the `pip install -e .` command above is needed only once, a
 the extension after making changes to the C++ code can be done with `make -C build`
 which is much faster. This logic is defined in [setup.py](./setup.py).
 
+With the internal overlay available on Linux, this command also installs `cuda.lang`
+and links its compiler tools from the build directory.
+
 Preview Features (Optional)
 --------------------------------
 cuTile provides a preview package containing APIs that are still under active development.

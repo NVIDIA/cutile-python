@@ -95,24 +95,10 @@ include(cmake/FetchXLAHeaders.cmake)
 fetch_xla_headers()
 
 
-set(CUSTOM_STATIC_LIBNVVM "" CACHE FILEPATH "Custom NVVM static library to include in the package")
-if (CUSTOM_STATIC_LIBNVVM)
-    message(STATUS "Using custom NVVM static library at ${CUSTOM_STATIC_LIBNVVM}")
-endif()
-
-set(CUSTOM_LIBDEVICE "" CACHE FILEPATH "Custom libdevice object to include in the package")
-if (CUSTOM_LIBDEVICE)
-    message(STATUS "Using custom libdevice at ${CUSTOM_LIBDEVICE}")
-endif()
-
-set(CUSTOM_PTXAS "" CACHE FILEPATH "Custom ptxas binary to include in the package")
-if (CUSTOM_PTXAS)
-    message(STATUS "Using custom ptxas binary at ${CUSTOM_PTXAS}")
-endif()
+set(CUDA_LANG_COMPILER_LIBS "" CACHE PATH "Compiler libraries and tools for cuda-lang")
 
 
 add_subdirectory(cext)
-add_subdirectory(experimental/cuda-lang/)
 
 
 option(DISABLE_INTERNAL "disable internal" OFF)
@@ -125,3 +111,7 @@ if (NOT DISABLE_INTERNAL)
         message(STATUS "Building without internal/")
     endif()
 endif()
+
+# This goes after the internal overlay
+# which supplies the default CUDA_LANG_COMPILER_LIBS path.
+add_subdirectory(experimental/cuda-lang)

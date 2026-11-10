@@ -24,6 +24,9 @@ class CudaTileDistribution(Distribution):
 
     def parse_command_line(self):
         result = super().parse_command_line()
+        if ("editable_wheel" in self.commands and not is_windows
+                and os.path.isfile(os.path.join(project_root, "internal", "CMakeLists.txt"))):
+            self.include_cuda_lang = True
         # Configure packages and extensions before any build commands are finalized.
         if self.include_cuda_lang:
             lang_src = os.path.join("experimental", "cuda-lang", "src")
@@ -31,6 +34,9 @@ class CudaTileDistribution(Distribution):
                 where=lang_src, include=["cuda.lang", "cuda.lang.*"])]
             self.package_dir = dict(self.package_dir, **{
                 "cuda.lang": os.path.join(lang_src, "cuda", "lang"),
+            })
+            self.package_data = dict(self.package_data, **{
+                "cuda.lang": ["bin/mlir2cubin"],
             })
             self.ext_modules.append(Extension("cuda.lang._host_jit", []))
         return result
@@ -41,9 +47,7 @@ class BuildExtWithCmake(build_ext):
         ('disable-internal', None, 'Disable building internal extension'),
         ('minimal-internal', None, 'Enable building minimal internal extension'),
         ('enable-dev-features', None, 'Enable development-only features'),
-        ('custom-static-libnvvm=', None, 'Include a custom NVVM built from a static library'),
-        ('custom-libdevice=', None, 'Include a custom libdevice object'),
-        ('custom-ptxas=', None, 'Include a custom ptxas binary'),
+        ('cuda-lang-compiler-libs=', None, 'Compiler libraries and tools for cuda-lang'),
     ]
 
     def initialize_options(self):
@@ -51,9 +55,7 @@ class BuildExtWithCmake(build_ext):
         self.disable_internal = False
         self.minimal_internal = False
         self.enable_dev_features = False
-        self.custom_static_libnvvm = None
-        self.custom_libdevice = None
-        self.custom_ptxas = None
+        self.cuda_lang_compiler_libs = None
 
     def finalize_options(self):
         super().finalize_options()
@@ -82,13 +84,15 @@ class BuildExtWithCmake(build_ext):
             cmake_cmd.append("-DMINIMAL_INTERNAL=1")
         if self.enable_dev_features:
             cmake_cmd.append("-DENABLE_DEV_FEATURES=1")
-        if self.custom_static_libnvvm is not None:
-            cmake_cmd.append(f"-DCUSTOM_STATIC_LIBNVVM={self.custom_static_libnvvm}")
-        if self.custom_libdevice is not None:
-            cmake_cmd.append(f"-DCUSTOM_LIBDEVICE={self.custom_libdevice}")
-        if self.custom_ptxas is not None:
-            cmake_cmd.append(f"-DCUSTOM_PTXAS={self.custom_ptxas}")
+        if self.cuda_lang_compiler_libs is not None:
+            cmake_cmd.append(f"-DCUDA_LANG_COMPILER_LIBS={self.cuda_lang_compiler_libs}")
         self.spawn(cmake_cmd)
+
+    def _install_file(self, src: str, dst: str):
+        link = "sym" if self.editable_mode else None
+        if self.editable_mode and os.path.lexists(dst):
+            os.unlink(dst)
+        file_util.copy_file(os.path.abspath(src), dst, update=1, link=link)
 
     def run(self):
         build_dir = os.getenv("CUDA_TILE_CEXT_BUILD_DIR")
@@ -113,17 +117,21 @@ class BuildExtWithCmake(build_ext):
             else:
                 ext_build_path = os.path.join(build_dir, src_dir, ext_name)
             ext_path = self.get_ext_fullpath(ext.name)
-            # Create a symlink to the build directory if in editable mode, otherwise copy
-            link = "sym" if self.editable_mode else None
-            file_util.copy_file(ext_build_path, ext_path, update=1, link=link)
+            self._install_file(ext_build_path, ext_path)
 
         if self.distribution.include_cuda_lang:
             bin_dir = os.path.join(os.path.dirname(
                 self.get_ext_fullpath("cuda.lang._host_jit")), "bin")
             os.makedirs(bin_dir, exist_ok=True)
-            file_util.copy_file(os.path.join(build_dir, "internal", "mlir2cubin", "mlir2cubin"),
-                                os.path.join(bin_dir, "mlir2cubin"),
-                                update=1, link="sym" if self.editable_mode else None)
+            binaries = [("internal/mlir2cubin", "mlir2cubin")]
+            if self.editable_mode:
+                for name in ("libnvvm.so", "libdevice.10.bc", "ptxas"):
+                    src_dir = os.path.join("experimental", "cuda-lang")
+                    if os.path.isfile(os.path.join(build_dir, src_dir, name)):
+                        binaries.append((src_dir, name))
+            for src_dir, name in binaries:
+                self._install_file(os.path.join(build_dir, src_dir, name),
+                                   os.path.join(bin_dir, name))
 
 
 def _get_csrc_dir(ext_name: str):
