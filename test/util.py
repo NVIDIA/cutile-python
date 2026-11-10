@@ -7,6 +7,7 @@ import os
 import re
 import shutil
 import subprocess
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from io import BytesIO
 import sys
@@ -391,7 +392,14 @@ class FdCaptureRunner:
             buf += struct.pack("!I", len(encoded)) + encoded
         self._proc.stdin.write(buf)
         self._proc.stdin.flush()
-        return self._read_response(self._proc.stdout), self._read_response(self._proc.stderr)
+
+        # Read stdout and stderr concurrently: on WoA, FlushFileBuffers doesn't
+        # return until the stream it writes to is drained, so reading them one
+        # after another can deadlock.
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            err_future = pool.submit(self._read_response, self._proc.stderr)
+            out = self._read_response(self._proc.stdout)
+            return out, err_future.result()
 
     @staticmethod
     def get_cmd_args(stdin) -> list[str] | None:
