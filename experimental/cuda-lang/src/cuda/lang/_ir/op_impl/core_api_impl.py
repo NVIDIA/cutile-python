@@ -43,6 +43,19 @@ def core_api_impl_registry() -> ImplRegistry:
     return _registry
 
 
+@impl(core_api.environment_register)
+def environment_register_impl(register: Var) -> Var:
+    register = require_constant_int(register)
+    if not 0 <= register < 32:
+        raise InvalidValueError("Environment register index must be from 0 through 31")
+    return add_operation(
+        RawLLVMIntrinsic,
+        ScalarTy(datatype.uint32),
+        intrinsic=f"llvm.nvvm.read.ptx.sreg.envreg{register}",
+        operands_=(),
+    )
+
+
 @impl(core_api.thread_index, fixed_args=["tid"])
 @impl(core_api.thread_count, fixed_args=["ntid"])
 @impl(core_api.block_index, fixed_args=["ctaid"])

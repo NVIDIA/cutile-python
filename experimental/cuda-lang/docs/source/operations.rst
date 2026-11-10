@@ -134,6 +134,7 @@ SIMT Model
     lane_count
     warp_index
     warp_count
+    environment_register
     full_mask
     elect_sync
 

@@ -3,6 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 from typing import TypeVar, Generic, Optional
+from dataclasses import dataclass
 
 import cuda.lang as cl
 from cuda.lang._execution import simt_stub, function
@@ -15,7 +16,7 @@ from cuda.tile._stub import (
 )
 from cuda.lang._enums import AtomicOp, MemoryOrder, ShuffleKind
 from cuda.tile._memory_model import MemoryScope, MemorySpace
-from cuda.lang._datatype import DType, uint32, uint64
+from cuda.lang._datatype import DType, bool_, uint32, uint64
 from .types import OpaqueValue, Pointer, Scalar, Vector
 from cuda.tile._cext import _tensor_to_ir_var
 
@@ -173,6 +174,44 @@ def dtype_of(value, /) -> DType:
 
 
 FULL_MASK = 0xFFFFFFFF
+
+
+@simt_stub
+def environment_register(register: int, /) -> uint32:
+    """Read a driver environment register as a ``uint32``.
+
+    Args:
+        register (const int): Register index, from 0 through 31.
+
+    The semantics of these registers is defined in the driver documentation
+    """
+
+
+@dataclass(frozen=True)
+class _GridWorkspace:
+    """
+    ``valid`` is true when the workspace pointer is nonnull. Only then are
+    ``workspace_size`` and ``barrier`` valid. ``barrier`` points to the shared
+    counter. When invalid, the size is zero and the barrier pointer is null.
+    """
+    valid: bool_
+    workspace_size: uint32
+    barrier: Pointer
+
+
+@function()
+def _driver_grid_workspace() -> _GridWorkspace:
+    """Read the CUDA driver's grid-wide workspace.
+
+    This uses the driver's internal workspace layout for cooperative launches.
+    """
+    high = uint64(environment_register(1))
+    low = uint64(environment_register(2))
+    address = (high << 32) | low
+    workspace = cl.bitcast(address, cl.pointer_dtype(uint32, MemorySpace.GLOBAL))
+    if address == 0:
+        return _GridWorkspace(bool_(False), uint32(0), workspace)
+    return _GridWorkspace(bool_(True), workspace[0], workspace + 1)
 
 
 @function(host=True)

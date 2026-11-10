@@ -129,6 +129,8 @@ from ._stub.store_async import (
     store_async_global,
 )
 from ._stub.core_api import (
+    environment_register,
+    _driver_grid_workspace,
     cdiv,
     dtype_of,
     full_mask,
@@ -329,6 +331,8 @@ __all__ = (
     "static_def",
     "kernel",
     "launch",
+    "environment_register",
+    "_driver_grid_workspace",
     "full_mask",
     "thread_index",
     "thread_count",

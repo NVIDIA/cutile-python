@@ -6,8 +6,67 @@ import cuda.lang as cl
 from cuda.lang._exception import CompilerExecutionError
 from .util import compile_kernel
 import pytest
+import torch
 
 HOPPER_TARGET = {"gpu_name": "sm_90", "arch": "compute_90"}
+
+
+@pytest.mark.parametrize("block_count, thread_count", ((1, 32), (4, 64)))
+def test_driver_grid_sync(block_count, thread_count):
+    """One thread per block updates the driver counter and waits for its phase bit
+    to flip, with block barriers before and after. Check repeated grid barriers
+    by reading the opposite thread's writes from the previous phase.
+    Only handles 1d grid/block.
+    Taken from /path/to/cuda/include/cooperative_groups/details/sync.h.
+    """
+    @cl.function
+    def grid_sync(barrier):
+        cl.syncthreads()
+        if cl.thread_index(0) == 0:
+            increment = cl.uint32(1)
+            if cl.block_index(0) == 0:
+                increment = cl.uint32(0x80000000) - cl.uint32(cl.block_count(0) - 1)
+            previous = cl.atomic_rmw(
+                cl.AtomicOp.ADD, barrier, increment,
+                memory_order=cl.MemoryOrder.RELEASE,
+                memory_scope=cl.MemoryScope.DEVICE,
+            )
+            while ((cl.atomic_load(barrier) ^ previous) & cl.uint32(0x80000000)) == 0:
+                pass
+        cl.syncthreads()
+
+    @cl.kernel
+    def kernel(out, invalid):
+        workspace = cl._driver_grid_workspace()
+        if not workspace.valid:
+            invalid[0] = True
+            return
+        index = cl.block_index(0) * cl.thread_count(0) + cl.thread_index(0)
+        opposite = out.shape[1] - index - 1
+        for row in range(1, out.shape[0]):
+            out[row, index] = out[row - 1, opposite] + 1
+            grid_sync(workspace.barrier)
+
+    # Each phase reads values written by other blocks in the preceding phase.
+    # An odd number of phases also exercises both states of the barrier bit.
+    rows = 18
+    out = torch.full((rows, block_count * thread_count), -1, dtype=torch.int32).cuda(0)
+    out[0].zero_()
+    invalid = torch.tensor([False], dtype=torch.bool).cuda(0)
+    cl.launch(
+        torch.cuda.current_stream(),
+        (block_count,),
+        (thread_count,),
+        kernel,
+        (out, invalid),
+        cooperative=True,
+    )
+    actual = out.cpu()
+    assert not invalid.cpu()[0]
+    expected = torch.tensor(
+        [[row] * (block_count * thread_count) for row in range(rows)], dtype=torch.int32
+    )
+    torch.testing.assert_close(actual, expected)
 
 
 def barrier_sync_block_cases():
