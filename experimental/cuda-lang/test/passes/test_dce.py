@@ -70,12 +70,28 @@ class TestOpsSurviveDCE:
 
         assert kernel.has_op(AtomicLoad)
 
-    def test_unused_relaxed_load_is_removed(self):
+    def test_unused_relaxed_load_is_kept(self):
         @ir_wrapper
         def kernel(A, n):
             A.pointer(0).atomic_load(memory_order=cl.MemoryOrder.RELAXED)
 
-        assert not kernel.has_op(AtomicLoad)
+        assert kernel.has_op(AtomicLoad)
+
+    def test_relaxed_polling_loop_is_kept(self):
+        @ir_wrapper
+        def kernel(A, n):
+            while A.pointer(0).atomic_load(memory_order=cl.MemoryOrder.RELAXED) != 1:
+                pass
+
+        assert kernel.has_op(AtomicLoad)
+
+    def test_acquire_polling_loop_is_kept(self):
+        @ir_wrapper
+        def kernel(A, n):
+            while A.pointer(0).atomic_load(memory_order=cl.MemoryOrder.ACQUIRE) != 1:
+                pass
+
+        assert kernel.has_op(AtomicLoad)
 
     def test_unused_mmio_load_is_kept(self):
         @ir_wrapper

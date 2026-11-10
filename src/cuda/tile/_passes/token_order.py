@@ -27,13 +27,19 @@ from cuda.tile._passes.dataflow_analysis import ALIAS_UNIVERSE, DataflowResult, 
 class MemoryEffects:
     def __init__(self,
                  array_mem_effects: OrderedDict[AliasSet, MemoryEffect],
-                 has_acquire_order: bool):
+                 has_acquire_order: bool,
+                 has_strong_op: bool):
         self._array_mem_effects = MappingProxyType(array_mem_effects)
         self._has_acquire_order = has_acquire_order
+        self._has_strong_op = has_strong_op
 
     @property
     def has_acquire_order(self) -> bool:
         return self._has_acquire_order
+
+    @property
+    def has_strong_op(self) -> bool:
+        return self._has_strong_op
 
     def items(self):
         return self._array_mem_effects.items()
@@ -48,10 +54,12 @@ class MemoryEffects:
         union_effects = OrderedDict(self._array_mem_effects)
         for a in other._array_mem_effects.keys():
             union_effects[a] = max(self[a], other[a])
-        return MemoryEffects(union_effects, self.has_acquire_order | other.has_acquire_order)
+        return MemoryEffects(union_effects,
+                             self.has_acquire_order | other.has_acquire_order,
+                             self.has_strong_op | other.has_strong_op)
 
 
-EMPTY_MEMORY_EFFECTS = MemoryEffects(OrderedDict(), False)
+EMPTY_MEMORY_EFFECTS = MemoryEffects(OrderedDict(), False, False)
 
 
 class AcquireTokenKeyClass:
@@ -60,6 +68,36 @@ class AcquireTokenKeyClass:
 
 
 ACQUIRE_TOKEN_KEY = AcquireTokenKeyClass()
+
+
+class StrongTokenKeyClass:
+    def __repr__(self):
+        return "STRONG_TOKEN_KEY"
+
+
+# Token of the most recent strong op. Each strong op waits on it and then replaces it, so
+# strong ops keep their program order even across different arrays, which the per-array
+# alias tokens alone don't guarantee. Weak ops don't use it.
+#
+# Flags, barriers and locks depend on this order. For example, in a two-block handshake
+# with all ops relaxed and device-scoped:
+#
+#     block 0:  A = 1;  while B != 1: pass
+#     block 1:  B = 1;  while A != 1: pass
+#
+# if either store were moved below its spin loop, both blocks would wait forever.
+STRONG_TOKEN_KEY = StrongTokenKeyClass()
+
+
+def _is_strong_order(memory_order: MemoryOrder | None) -> bool:
+    return memory_order is not None and memory_order != MemoryOrder.WEAK
+
+
+def _is_strong_op(op: Operation) -> bool:
+    # A memory operation or fence whose memory order is not WEAK (relaxed, acquire, release or
+    # acq_rel). This follows PTX's "strong operation", and extends to .acquire/.release
+    # proxy fences, which PTX uses in release and acquire patterns.
+    return _is_strong_order(getattr(op, "memory_order", None))
 
 
 class TokenRole(Enum):
@@ -73,7 +111,7 @@ class AliasTokenKey:
     role: TokenRole
 
 
-TokenKey = AliasTokenKey | AcquireTokenKeyClass
+TokenKey = AliasTokenKey | AcquireTokenKeyClass | StrongTokenKeyClass
 
 
 @dataclass(frozen=True)
@@ -135,25 +173,24 @@ def _get_block_memory_effects(block: Block,
             return EMPTY_MEMORY_EFFECTS
 
         if isinstance(cur_op, TilePrintf):
-            return MemoryEffects(OrderedDict([(ALIAS_UNIVERSE, effect)]), False)
+            return MemoryEffects(OrderedDict([(ALIAS_UNIVERSE, effect)]), False, False)
 
         if isinstance(cur_op, GridDependencyControlWait):
-            return MemoryEffects(OrderedDict([(ALIAS_UNIVERSE, MemoryEffect.STORE)]), True)
+            return MemoryEffects(OrderedDict([(ALIAS_UNIVERSE, MemoryEffect.STORE)]), True, False)
 
         if isinstance(cur_op, GridDependencyControlLaunchDependents):
-            return MemoryEffects(OrderedDict([(ALIAS_UNIVERSE, MemoryEffect.STORE)]), False)
+            return MemoryEffects(OrderedDict([(ALIAS_UNIVERSE, MemoryEffect.STORE)]), False, False)
 
         if (preview_foreign_call_type is not None
                 and isinstance(cur_op, preview_foreign_call_type)):
-            return MemoryEffects(OrderedDict([(ALIAS_UNIVERSE, MemoryEffect.STORE)]), True)
+            return MemoryEffects(OrderedDict([(ALIAS_UNIVERSE, MemoryEffect.STORE)]), True, False)
 
         has_acquire_order = False
-        if isinstance(cur_op, (TileAtomicCAS, TileAtomicRMW, TileAtomicRedView,
-                               TileLoad, TileStore)):
+        if hasattr(cur_op, "memory_order"):
             has_acquire_order = memory_order_has_acquire(cur_op.memory_order)
 
         return MemoryEffects({dataflow_result[_get_input_var(cur_op).name].alias_set: effect},
-                             has_acquire_order)
+                             has_acquire_order, _is_strong_op(cur_op))
 
     blk_mem_effects = EMPTY_MEMORY_EFFECTS
     for op in block.operations:
@@ -207,6 +244,9 @@ def _to_token_order_in_block(block: Block,
             if isinstance(op, TileLoad) and memory_order_has_acquire(op.memory_order):
                 token_map[ACQUIRE_TOKEN_KEY] = result_tok
 
+            if _is_strong_op(op):
+                token_map[STRONG_TOKEN_KEY] = result_tok
+
         elif isinstance(op, (TileStore, StorePointer)):
             # Try to parallelize the store in the innermost loop if possible
             if (
@@ -233,6 +273,8 @@ def _to_token_order_in_block(block: Block,
 
             token_map[last_op_key] = result_tok
             token_map[last_store_key] = result_tok
+            if _is_strong_op(op):
+                token_map[STRONG_TOKEN_KEY] = result_tok
 
         elif isinstance(op, (TileAtomicCAS, TileAtomicRMW, TileAtomicRedView)):
             alias_set = context.dataflow_result[_get_input_var(op).name].alias_set
@@ -256,6 +298,9 @@ def _to_token_order_in_block(block: Block,
 
             if memory_order_has_acquire(op.memory_order):
                 token_map[ACQUIRE_TOKEN_KEY] = result_tok
+
+            if _is_strong_op(op):
+                token_map[STRONG_TOKEN_KEY] = result_tok
 
         elif isinstance(op, Loop):
             body_mem_effects = context.block_memory_effects[op.body]
@@ -294,6 +339,10 @@ def _to_token_order_in_block(block: Block,
             if body_mem_effects.has_acquire_order:
                 body_token_map[ACQUIRE_TOKEN_KEY], result_token_map[ACQUIRE_TOKEN_KEY] = \
                     append_new_carried_var(token_map[ACQUIRE_TOKEN_KEY])
+
+            if body_mem_effects.has_strong_op:
+                body_token_map[STRONG_TOKEN_KEY], result_token_map[STRONG_TOKEN_KEY] = \
+                    append_new_carried_var(token_map[STRONG_TOKEN_KEY])
 
             # Get parallel stores in the body block
             parallel_stores = _get_parallel_stores(op, context)
@@ -353,6 +402,9 @@ def _to_token_order_in_block(block: Block,
 
             if merged_mem_effects.has_acquire_order:
                 result_token_map[ACQUIRE_TOKEN_KEY] = add_new_ifelse_result()
+
+            if merged_mem_effects.has_strong_op:
+                result_token_map[STRONG_TOKEN_KEY] = add_new_ifelse_result()
 
             # Branch to then and else blocks
             for nested_block in op.nested_blocks:
@@ -439,6 +491,10 @@ def _collect_join_tokens(token_key: TokenKey,
         if other_key == ACQUIRE_TOKEN_KEY:
             return True
 
+        if other_key == STRONG_TOKEN_KEY:
+            # Join strong token if the current op is a strong op
+            return _is_strong_order(memory_order)
+
         assert isinstance(other_key, AliasTokenKey)
 
         mem_order_release_join = (memory_order is not None and
@@ -491,6 +547,9 @@ def _get_cf_exit_tokens(cf_mem_effects: MemoryEffects,
     if cf_mem_effects.has_acquire_order:
         tokens.append(token_map[ACQUIRE_TOKEN_KEY])
 
+    if cf_mem_effects.has_strong_op:
+        tokens.append(token_map[STRONG_TOKEN_KEY])
+
     return tuple(tokens)
 
 
@@ -535,6 +594,9 @@ def _get_parallel_stores(
             continue
         elif not isinstance(mem_ops[0], TileStore):
             # The memory op on array is not TileStore
+            continue
+        elif _is_strong_op(mem_ops[0]):
+            # A strong store
             continue
         elif nested_mem_effects[alias_set] != MemoryEffect.NONE:
             # The nested blocks / func calls have memory effects on array

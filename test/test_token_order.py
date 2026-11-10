@@ -320,9 +320,9 @@ ForLoopParallelStoreAfterOverlappingStoreCheckDirective = """\
 ForLoopParallelStoreAfterAcquireInLoopCheckDirective = """\
 // CHECK: %[[TOKEN0:.*]] = make_token
 // CHECK: for %loopIdx in
-// CHECK:     %[[SPIN:.*]]:2 = loop
+// CHECK:     %[[SPIN:.*]]:3 = loop
 // CHECK:       %{{.*}}, %[[CAS_TOKEN:.*]] = atomic_cas_tko acquire
-// CHECK:         break %[[CAS_TOKEN]], %[[CAS_TOKEN]]
+// CHECK:         break %[[CAS_TOKEN]], %[[CAS_TOKEN]], %[[CAS_TOKEN]]
 // CHECK:     %[[JOINT:.*]] = join_tokens %[[TOKEN0]], %[[SPIN]]#1
 // CHECK:     store_view_tko weak {{.*}} token = %[[JOINT]]
 """
@@ -653,11 +653,12 @@ RelaxedForLoopCheckDirective = """\
 // CHECK: %[[TOKEN0:.*]] = make_token
 // CHECK: %[[VAL1:.*]], %[[X_TOKEN1:.*]] = load_view_tko weak {{.*}} token = %[[TOKEN0]]
 // CHECK: %[[X_TOKEN2:.*]] = join_tokens %[[TOKEN0]], %[[X_TOKEN1]]
-// CHECK: %[[LOOP_TOK:.*]] = for {{.*}} iter_values(
-// CHECK-SAME: %[[TKNARG0:.*]] = %[[TOKEN0]])
-// CHECK:     %[[VAL2:.*]], %[[Y_TOKEN1:.*]] = atomic_rmw_tko relaxed {{.*}} token=%[[TKNARG0]]
+// CHECK: %[[TOKENTUPLE:.*]]:2 = for {{.*}} iter_values(
+// CHECK-SAME: %[[TKNARG0:.*]] = %[[TOKEN0]], %[[STRONGARG:.*]] = %[[TOKEN0]])
+// CHECK:     %[[JOINT_Y_TOKEN:.*]] = join_tokens %[[TKNARG0]], %[[STRONGARG]]
+// CHECK:     %[[VAL2:.*]], %[[Y_TOKEN1:.*]] = atomic_rmw_tko relaxed {{.*}} token=%[[JOINT_Y_TOKEN]]
 // CHECK:     %[[Y_TOKEN2:.*]] = store_ptr_tko weak {{.*}} token=%[[Y_TOKEN1]]
-// CHECK:     continue %[[Y_TOKEN2]]
+// CHECK:     continue %[[Y_TOKEN2]], %[[Y_TOKEN1]]
 // CHECK: %[[X_TOKEN3:.*]] = store_view_tko weak {{.*}} token = %[[X_TOKEN2]]
 """  # noqa: E501
 
@@ -666,12 +667,12 @@ AcquireForLoopCheckDirective = """\
 // CHECK: %[[TOKEN0:.*]] = make_token
 // CHECK: %[[VAL1:.*]], %[[X_TOKEN1:.*]] = load_view_tko weak {{.*}} token = %[[TOKEN0]]
 // CHECK: %[[X_TOKEN2:.*]] = join_tokens %[[TOKEN0]], %[[X_TOKEN1]]
-// CHECK: %[[TOKENTUPLE:.*]]:2 = for {{.*}} iter_values(
-// CHECK-SAME: %[[TKNARG0:.*]] = %[[TOKEN0]], %[[TKNARG2:.*]] = %[[TOKEN0]])
-// CHECK:     %[[JOINT_Y_TOKEN:.*]] = join_tokens %[[TKNARG0]], %[[TKNARG2]]
+// CHECK: %[[TOKENTUPLE:.*]]:3 = for {{.*}} iter_values(
+// CHECK-SAME: %[[TKNARG0:.*]] = %[[TOKEN0]], %[[TKNARG2:.*]] = %[[TOKEN0]], %[[STRONGARG:.*]] = %[[TOKEN0]])
+// CHECK:     %[[JOINT_Y_TOKEN:.*]] = join_tokens %[[TKNARG0]], %[[TKNARG2]], %[[STRONGARG]]
 // CHECK:     %[[VAL2:.*]], %[[Y_TOKEN1:.*]] = atomic_rmw_tko acquire {{.*}} token=%[[JOINT_Y_TOKEN]]
 // CHECK:     %[[Y_TOKEN2:.*]] = store_ptr_tko weak {{.*}} token=%[[Y_TOKEN1]]
-// CHECK:     continue %[[Y_TOKEN2]], %[[Y_TOKEN1]]
+// CHECK:     continue %[[Y_TOKEN2]], %[[Y_TOKEN1]], %[[Y_TOKEN1]]
 // CHECK: %[[X_TOKEN3:.*]] = join_tokens %[[X_TOKEN2]], %[[TOKENTUPLE]]#1
 // CHECK: %[[X_TOKEN4:.*]] = store_view_tko weak {{.*}} token = %[[X_TOKEN3]]
 """  # noqa: E501
@@ -681,12 +682,12 @@ ReleaseForLoopCheckDirective = """\
 // CHECK: %[[TOKEN0:.*]] = make_token
 // CHECK: %[[VAL1:.*]], %[[X_TOKEN1:.*]] = load_view_tko weak {{.*}} token = %[[TOKEN0]]
 // CHECK: %[[X_TOKEN2:.*]] = join_tokens %[[TOKEN0]], %[[X_TOKEN1]]
-// CHECK: %[[LOOP_TOK:.*]] = for {{.*}} iter_values(
-// CHECK-SAME: %[[TKNARG0:.*]] = %[[TOKEN0]])
-// CHECK:     %[[JOINT_Y_TOKEN:.*]] = join_tokens %[[TKNARG0]], %[[X_TOKEN2]]
+// CHECK: %[[TOKENTUPLE:.*]]:2 = for {{.*}} iter_values(
+// CHECK-SAME: %[[TKNARG0:.*]] = %[[TOKEN0]], %[[STRONGARG:.*]] = %[[TOKEN0]])
+// CHECK:     %[[JOINT_Y_TOKEN:.*]] = join_tokens %[[TKNARG0]], %[[X_TOKEN2]], %[[STRONGARG]]
 // CHECK:     %[[VAL2:.*]], %[[Y_TOKEN1:.*]] = atomic_rmw_tko release {{.*}} token=%[[JOINT_Y_TOKEN]]
 // CHECK:     %[[Y_TOKEN2:.*]] = store_ptr_tko weak {{.*}} token=%[[Y_TOKEN1]]
-// CHECK:     continue %[[Y_TOKEN2]]
+// CHECK:     continue %[[Y_TOKEN2]], %[[Y_TOKEN1]]
 // CHECK: %[[X_TOKEN3:.*]] = store_view_tko weak {{.*}} token = %[[X_TOKEN2]]
 """  # noqa: E501
 
@@ -695,12 +696,12 @@ AcqRelForLoopCheckDirective = """\
 // CHECK: %[[TOKEN0:.*]] = make_token
 // CHECK: %[[VAL1:.*]], %[[X_TOKEN1:.*]] = load_view_tko weak {{.*}} token = %[[TOKEN0]]
 // CHECK: %[[X_TOKEN2:.*]] = join_tokens %[[TOKEN0]], %[[X_TOKEN1]]
-// CHECK: %[[TOKENTUPLE:.*]]:2 = for {{.*}} iter_values(
-// CHECK-SAME: %[[TKNARG0:.*]] = %[[TOKEN0]], %[[TKNARG1:.*]] = %[[TOKEN0]])
-// CHECK:     %[[JOINT_Y_TOKEN:.*]] = join_tokens %[[TKNARG0]], %[[X_TOKEN2]], %[[TKNARG1]]
+// CHECK: %[[TOKENTUPLE:.*]]:3 = for {{.*}} iter_values(
+// CHECK-SAME: %[[TKNARG0:.*]] = %[[TOKEN0]], %[[TKNARG1:.*]] = %[[TOKEN0]], %[[STRONGARG:.*]] = %[[TOKEN0]])
+// CHECK:     %[[JOINT_Y_TOKEN:.*]] = join_tokens %[[TKNARG0]], %[[X_TOKEN2]], %[[TKNARG1]], %[[STRONGARG]]
 // CHECK:     %[[VAL2:.*]], %[[Y_TOKEN1:.*]] = atomic_rmw_tko acq_rel {{.*}} token=%[[JOINT_Y_TOKEN]]
 // CHECK:     %[[Y_TOKEN2:.*]] = store_ptr_tko weak {{.*}} token=%[[Y_TOKEN1]]
-// CHECK:     continue %[[Y_TOKEN2]], %[[Y_TOKEN1]]
+// CHECK:     continue %[[Y_TOKEN2]], %[[Y_TOKEN1]], %[[Y_TOKEN1]]
 // CHECK: %[[X_TOKEN3:.*]] = join_tokens %[[X_TOKEN2]], %[[TOKENTUPLE]]#1
 // CHECK: %[[X_TOKEN4:.*]] = store_view_tko weak {{.*}} token = %[[X_TOKEN3]]
 """  # noqa: E501
@@ -711,13 +712,14 @@ RelaxedWhileLoopCheckDirective = """\
 // CHECK: %[[VAL1:.*]], %[[X_TOKEN1:.*]] = load_view_tko weak {{.*}} token = %[[TOKEN0]]
 // CHECK: %[[X_TOKEN2:.*]] = join_tokens %[[TOKEN0]], %[[X_TOKEN1]]
 // CHECK: %[[VAL2:.*]], %[[X_TOKEN3:.*]] = atomic_rmw_tko relaxed {{.*}} token=%[[X_TOKEN2]]
-// CHECK: %[[TOKENTUPLE:.*]]:2 = loop iter_values(
-// CHECK-SAME: {{.*}}, %[[TKNARG0:.*]] = %[[TOKEN0]])
+// CHECK: %[[TOKENTUPLE:.*]]:3 = loop iter_values(
+// CHECK-SAME: {{.*}}, %[[TKNARG0:.*]] = %[[TOKEN0]], %[[STRONGARG:.*]] = %[[X_TOKEN3]])
 // CHECK:     else
-// CHECK:         break {{.*}}, %[[TKNARG0]]
-// CHECK:     %[[VAL3:.*]], %[[Y_TOKEN1:.*]] = atomic_rmw_tko relaxed {{.*}} token=%[[TKNARG0]]
+// CHECK:         break {{.*}}, %[[TKNARG0]], %[[STRONGARG]]
+// CHECK:     %[[JOINT_Y_TOKEN:.*]] = join_tokens %[[TKNARG0]], %[[STRONGARG]]
+// CHECK:     %[[VAL3:.*]], %[[Y_TOKEN1:.*]] = atomic_rmw_tko relaxed {{.*}} token=%[[JOINT_Y_TOKEN]]
 // CHECK:     %[[Y_TOKEN2:.*]] = store_ptr_tko weak {{.*}} token=%[[Y_TOKEN1]]
-// CHECK:     continue {{.*}}, %[[Y_TOKEN2]]
+// CHECK:     continue {{.*}}, %[[Y_TOKEN2]], %[[Y_TOKEN1]]
 // CHECK: %[[X_TOKEN4:.*]] = store_view_tko weak {{.*}} token = %[[X_TOKEN3]]
 """  # noqa: E501
 
@@ -727,14 +729,14 @@ AcquireWhileLoopCheckDirective = """\
 // CHECK: %[[VAL1:.*]], %[[X_TOKEN1:.*]] = load_view_tko weak {{.*}} token = %[[TOKEN0]]
 // CHECK: %[[X_TOKEN2:.*]] = join_tokens %[[TOKEN0]], %[[X_TOKEN1]]
 // CHECK: %[[VAL2:.*]], %[[X_TOKEN3:.*]] = atomic_rmw_tko acquire {{.*}} token=%[[X_TOKEN2]]
-// CHECK: %[[TOKENTUPLE:.*]]:3 = loop iter_values(
-// CHECK-SAME: {{.*}}, %[[TKNARG0:.*]] = %[[TOKEN0]], %[[TKNARG1:.*]] = %[[X_TOKEN3]])
+// CHECK: %[[TOKENTUPLE:.*]]:4 = loop iter_values(
+// CHECK-SAME: {{.*}}, %[[TKNARG0:.*]] = %[[TOKEN0]], %[[TKNARG1:.*]] = %[[X_TOKEN3]], %[[STRONGARG:.*]] = %[[X_TOKEN3]])
 // CHECK:     else
-// CHECK:         break {{.*}}, %[[TKNARG0]], %[[TKNARG1]]
-// CHECK:     %[[JOINT_Y_TOKEN:.*]] = join_tokens %[[TKNARG0]], %[[TKNARG1]]
+// CHECK:         break {{.*}}, %[[TKNARG0]], %[[TKNARG1]], %[[STRONGARG]]
+// CHECK:     %[[JOINT_Y_TOKEN:.*]] = join_tokens %[[TKNARG0]], %[[TKNARG1]], %[[STRONGARG]]
 // CHECK:     %[[VAL3:.*]], %[[Y_TOKEN1:.*]] = atomic_rmw_tko acquire {{.*}} token=%[[JOINT_Y_TOKEN]]
 // CHECK:     %[[Y_TOKEN2:.*]] = store_ptr_tko weak {{.*}} token=%[[Y_TOKEN1]]
-// CHECK:     continue {{.*}}, %[[Y_TOKEN2]], %[[Y_TOKEN1]]
+// CHECK:     continue {{.*}}, %[[Y_TOKEN2]], %[[Y_TOKEN1]], %[[Y_TOKEN1]]
 // CHECK: %[[X_TOKEN4:.*]] = join_tokens %[[X_TOKEN3]], %[[TOKENTUPLE]]#2
 // CHECK: %[[X_TOKEN5:.*]] = store_view_tko weak {{.*}} token = %[[X_TOKEN4]]
 """  # noqa: E501
@@ -745,14 +747,14 @@ ReleaseWhileLoopCheckDirective = """\
 // CHECK: %[[VAL1:.*]], %[[X_TOKEN1:.*]] = load_view_tko weak {{.*}} token = %[[TOKEN0]]
 // CHECK: %[[X_TOKEN2:.*]] = join_tokens %[[TOKEN0]], %[[X_TOKEN1]]
 // CHECK: %[[VAL2:.*]], %[[X_TOKEN3:.*]] = atomic_rmw_tko release {{.*}} token=%[[X_TOKEN2]]
-// CHECK: %[[TOKENTUPLE:.*]]:2 = loop iter_values(
-// CHECK-SAME: {{.*}}, %[[TKNARG0:.*]] = %[[TOKEN0]])
+// CHECK: %[[TOKENTUPLE:.*]]:3 = loop iter_values(
+// CHECK-SAME: {{.*}}, %[[TKNARG0:.*]] = %[[TOKEN0]], %[[STRONGARG:.*]] = %[[X_TOKEN3]])
 // CHECK:     else
-// CHECK:         break {{.*}}, %[[TKNARG0]]
-// CHECK:     %[[JOINT_Y_TOKEN:.*]] = join_tokens %[[TKNARG0]], %[[X_TOKEN3]]
+// CHECK:         break {{.*}}, %[[TKNARG0]], %[[STRONGARG]]
+// CHECK:     %[[JOINT_Y_TOKEN:.*]] = join_tokens %[[TKNARG0]], %[[X_TOKEN3]], %[[STRONGARG]]
 // CHECK:     %[[VAL3:.*]], %[[Y_TOKEN1:.*]] = atomic_rmw_tko release {{.*}} token=%[[JOINT_Y_TOKEN]]
 // CHECK:     %[[Y_TOKEN2:.*]] = store_ptr_tko weak {{.*}} token=%[[Y_TOKEN1]]
-// CHECK:     continue {{.*}}, %[[Y_TOKEN2]]
+// CHECK:     continue {{.*}}, %[[Y_TOKEN2]], %[[Y_TOKEN1]]
 // CHECK: %[[X_TOKEN4:.*]] = store_view_tko weak {{.*}} token = %[[X_TOKEN3]]
 """  # noqa: E501
 
@@ -762,14 +764,14 @@ AcqRelWhileLoopCheckDirective = """\
 // CHECK: %[[VAL1:.*]], %[[X_TOKEN1:.*]] = load_view_tko weak {{.*}} token = %[[TOKEN0]]
 // CHECK: %[[X_TOKEN2:.*]] = join_tokens %[[TOKEN0]], %[[X_TOKEN1]]
 // CHECK: %[[VAL2:.*]], %[[X_TOKEN3:.*]] = atomic_rmw_tko acq_rel {{.*}} token=%[[X_TOKEN2]]
-// CHECK: %[[TOKENTUPLE:.*]]:3 = loop iter_values(
-// CHECK-SAME: {{.*}}, %[[TKNARG0:.*]] = %[[TOKEN0]], %[[TKNARG1:.*]] = %[[X_TOKEN3]])
+// CHECK: %[[TOKENTUPLE:.*]]:4 = loop iter_values(
+// CHECK-SAME: {{.*}}, %[[TKNARG0:.*]] = %[[TOKEN0]], %[[TKNARG1:.*]] = %[[X_TOKEN3]], %[[STRONGARG:.*]] = %[[X_TOKEN3]])
 // CHECK:     else
-// CHECK:         break {{.*}}, %[[TKNARG0]], %[[TKNARG1]]
-// CHECK:     %[[JOINT_Y_TOKEN:.*]] = join_tokens %[[TKNARG0]], %[[X_TOKEN3]], %[[TKNARG1]]
+// CHECK:         break {{.*}}, %[[TKNARG0]], %[[TKNARG1]], %[[STRONGARG]]
+// CHECK:     %[[JOINT_Y_TOKEN:.*]] = join_tokens %[[TKNARG0]], %[[X_TOKEN3]], %[[TKNARG1]], %[[STRONGARG]]
 // CHECK:     %[[VAL3:.*]], %[[Y_TOKEN1:.*]] = atomic_rmw_tko acq_rel {{.*}} token=%[[JOINT_Y_TOKEN]]
 // CHECK:     %[[Y_TOKEN2:.*]] = store_ptr_tko weak {{.*}} token=%[[Y_TOKEN1]]
-// CHECK:     continue {{.*}}, %[[Y_TOKEN2]], %[[Y_TOKEN1]]
+// CHECK:     continue {{.*}}, %[[Y_TOKEN2]], %[[Y_TOKEN1]], %[[Y_TOKEN1]]
 // CHECK: %[[X_TOKEN4:.*]] = join_tokens %[[X_TOKEN3]], %[[TOKENTUPLE]]#2
 // CHECK: %[[X_TOKEN5:.*]] = store_view_tko weak {{.*}} token = %[[X_TOKEN4]]
 """  # noqa: E501
@@ -1218,7 +1220,8 @@ LoadRelaxedStoreRelaxedCheckDirective = """\
 // CHECK: %[[TOKEN0:.*]] = make_token
 // CHECK: %[[VAL1:.*]], %[[X_TOKEN1:.*]] = load_view_tko relaxed device {{.*}} token = %[[TOKEN0]]
 // CHECK: %[[TOKEN1:.*]] = join_tokens %[[TOKEN0]], %[[X_TOKEN1]]
-// CHECK: %[[TOKEN2:.*]] = store_view_tko relaxed device {{.*}} token = %[[TOKEN1]]
+// CHECK: %[[TOKEN2:.*]] = join_tokens %[[TOKEN1]], %[[X_TOKEN1]]
+// CHECK: %[[TOKEN3:.*]] = store_view_tko relaxed device {{.*}} token = %[[TOKEN2]]
 """  # noqa: E501
 
 LoadAcquireStoreWeakCheckDirective = """\
@@ -1418,7 +1421,7 @@ TVAtomicCheckDirective = """\
 // CHECK: %[[Y_TOKEN2:.*]] = join_tokens %[[TOKEN0]], %[[Y_TOKEN1]]
 // CHECK: %[[X_TOKEN1:.*]] = join_tokens %[[TOKEN0]], %[[Y_TOKEN1]]
 // CHECK: %[[X_TOKEN2:.*]] = atomic_red_view_tko relaxed device {{.*}} token = %[[X_TOKEN1]]
-// CHECK: %[[Y_TOKEN3:.*]] = join_tokens %[[Y_TOKEN2]], %[[Y_TOKEN1]]
+// CHECK: %[[Y_TOKEN3:.*]] = join_tokens %[[Y_TOKEN2]], %[[Y_TOKEN1]], %[[X_TOKEN2]]
 // CHECK: %[[Y_TOKEN4:.*]] = atomic_red_view_tko relaxed device {{.*}} token = %[[Y_TOKEN3]]
 // CHECK: %[[Y_TOKEN5:.*]] = join_tokens %[[Y_TOKEN4]], %[[Y_TOKEN1]], %[[X_TOKEN2]]
 // CHECK: %[[Y_TOKEN6:.*]] = store_view_tko release device {{.*}} token = %[[Y_TOKEN5]]
@@ -1447,6 +1450,128 @@ class TestTiledViewAtomicTokenOrderMLIR(MLIRTestBase):
     @requires_tileiras(BytecodeVersion.V_13_3)
     @pytest.mark.parametrize("kernel, check_directive", make_cases(
         (tv_atomic, TVAtomicCheckDirective),
+    ))
+    @override
+    def test_mlir(self, kernel, check_directive):
+        super().test_mlir(kernel, check_directive)
+
+
+SignalThenWaitCheckDirective = """\
+// CHECK: %[[TOKEN0:.*]] = make_token
+// CHECK: %{{.*}}, %[[X_TOKEN:.*]] = atomic_rmw_tko release device {{.*}} token=%[[TOKEN0]]
+// CHECK: = loop iter_values(%[[Y_ARG:.*]] = %[[TOKEN0]], %[[ACQ_ARG:.*]] = %[[TOKEN0]],
+// CHECK-SAME: %[[STRONG_ARG:.*]] = %[[X_TOKEN]])
+// CHECK:     %[[CAS_IN:.*]] = join_tokens %[[Y_ARG]], %[[STRONG_ARG]], %[[ACQ_ARG]]
+// CHECK:     %{{.*}}, %[[CAS_TOKEN:.*]] = atomic_cas_tko acquire device {{.*}} token=%[[CAS_IN]]
+// CHECK:     if %{{.*}} {
+// CHECK:     } else {
+// CHECK:       break %[[CAS_TOKEN]], %[[CAS_TOKEN]], %[[CAS_TOKEN]]
+// CHECK:     }
+// CHECK:     continue %[[CAS_TOKEN]], %[[CAS_TOKEN]], %[[CAS_TOKEN]]
+"""
+
+RelaxedSignalThenRelaxedPollCheckDirective = """\
+// CHECK: %[[TOKEN0:.*]] = make_token
+// CHECK: %{{.*}}, %[[X_TOKEN:.*]] = atomic_rmw_tko relaxed device {{.*}} token=%[[TOKEN0]]
+// CHECK: = loop iter_values(%[[STRONG_ARG:.*]] = %[[X_TOKEN]])
+// CHECK:     %[[LOAD_IN:.*]] = join_tokens %[[TOKEN0]], %[[STRONG_ARG]]
+// CHECK:     %{{.*}}, %[[Y_TOKEN:.*]] = load_view_tko relaxed device {{.*}} token = %[[LOAD_IN]]
+// CHECK:     if %{{.*}} {
+// CHECK:     } else {
+// CHECK:       break %[[Y_TOKEN]]
+// CHECK:     }
+// CHECK:     continue %[[Y_TOKEN]]
+"""
+
+RelaxedWaitThenRelaxedSignalCheckDirective = """\
+// CHECK: %[[TOKEN0:.*]] = make_token
+// CHECK: %[[SPIN:.*]]:2 = loop iter_values(
+// CHECK-SAME: %[[X_ARG:.*]] = %[[TOKEN0]], %[[STRONG_ARG:.*]] = %[[TOKEN0]])
+// CHECK:     %[[CAS_IN:.*]] = join_tokens %[[X_ARG]], %[[STRONG_ARG]]
+// CHECK:     %{{.*}}, %[[CAS_TOKEN:.*]] = atomic_cas_tko relaxed device {{.*}} token=%[[CAS_IN]]
+// CHECK:     if %{{.*}} {
+// CHECK:     } else {
+// CHECK:       break %[[CAS_TOKEN]], %[[CAS_TOKEN]]
+// CHECK:     }
+// CHECK:     continue %[[CAS_TOKEN]], %[[CAS_TOKEN]]
+// CHECK: %[[SIGNAL_IN:.*]] = join_tokens %[[TOKEN0]], %[[SPIN]]#1
+// CHECK: atomic_rmw_tko relaxed device {{.*}} token=%[[SIGNAL_IN]]
+"""
+
+# The release flag store on Y waits for the same iteration's data store on X, so it does
+# not take the parallel-store shortcut. The weak data store still does: its token comes
+# from before the loop.
+ReleaseStoreInLoopCheckDirective = """\
+// CHECK: %[[TOKEN0:.*]] = make_token
+// CHECK: for %loopIdx in
+// CHECK-SAME: iter_values(%[[X_ARG:.*]] = %[[TOKEN0]], %[[Y_ARG:.*]] = %[[TOKEN0]],
+// CHECK-SAME: %[[STRONG_ARG:.*]] = %[[TOKEN0]])
+// CHECK:     %[[DATA:.*]] = store_view_tko weak {{.*}}[%loopIdx] token = %[[TOKEN0]]
+// CHECK:     %[[X_LAST:.*]] = join_tokens %[[X_ARG]], %[[DATA]]
+// CHECK:     %[[FLAG_IN:.*]] = join_tokens %[[Y_ARG]], %[[X_LAST]], %[[STRONG_ARG]]
+// CHECK:     %[[FLAG:.*]] = store_view_tko release device {{.*}} token = %[[FLAG_IN]]
+// CHECK:     continue %[[X_LAST]], %[[FLAG]], %[[FLAG]]
+"""
+
+ReleaseStoreAfterWeakStoreOnOtherArrayCheckDirective = """\
+// CHECK: %[[TOKEN0:.*]] = make_token
+// CHECK: %[[Y_STORE:.*]] = store_view_tko weak {{.*}} token = %[[TOKEN0]]
+// CHECK: for %loopIdx in
+// CHECK-SAME: iter_values(%[[X_ARG:.*]] = %[[TOKEN0]], %[[STRONG_ARG:.*]] = %[[TOKEN0]])
+// CHECK:     %[[RELEASE_IN:.*]] = join_tokens %[[X_ARG]], %[[Y_STORE]], %[[STRONG_ARG]]
+// CHECK:     %[[RELEASE:.*]] = store_view_tko release device {{.*}}[%loopIdx] token = %[[RELEASE_IN]]
+// CHECK:     continue %[[RELEASE]], %[[RELEASE]]
+"""  # noqa: E501
+
+
+class TestStrongOpOrderingMLIR(MLIRTestBase):
+
+    def signal_then_wait(X, Y, _n: int, _TILE: ct.Constant[int]):
+        ct.atomic_add(X, 0, 1, memory_order=ct.MemoryOrder.RELEASE,
+                      memory_scope=ct.MemoryScope.DEVICE)
+        while ct.atomic_cas(Y, 0, 1, 0, memory_order=ct.MemoryOrder.ACQUIRE,
+                            memory_scope=ct.MemoryScope.DEVICE) != 1:
+            pass
+
+    def relaxed_signal_then_relaxed_poll(X, Y, _n: int, _TILE: ct.Constant[int]):
+        ct.atomic_add(X, 0, 1, memory_order=ct.MemoryOrder.RELAXED,
+                      memory_scope=ct.MemoryScope.DEVICE)
+        while ct.load(Y, (0,), (1,), memory_order=ct.MemoryOrder.RELAXED,
+                      memory_scope=ct.MemoryScope.DEVICE).item() != 1:
+            pass
+
+    def relaxed_wait_then_relaxed_signal(X, Y, _n: int, _TILE: ct.Constant[int]):
+        while ct.atomic_cas(X, 0, 1, 0, memory_order=ct.MemoryOrder.RELAXED,
+                            memory_scope=ct.MemoryScope.DEVICE) != 1:
+            pass
+        ct.atomic_add(Y, 0, 1, memory_order=ct.MemoryOrder.RELAXED,
+                      memory_scope=ct.MemoryScope.DEVICE)
+
+    def release_store_in_loop(X, Y, n: int, TILE: ct.Constant[int]):
+        for i in range(n):
+            ct.store(X, (i,), ct.full((TILE,), 1, dtype=ct.int32))
+            ct.store(Y, (i,), ct.full((TILE,), 1, dtype=ct.int32),
+                     memory_order=ct.MemoryOrder.RELEASE, memory_scope=ct.MemoryScope.DEVICE)
+
+    def release_store_after_weak_store_on_other_array(X, Y, n: int, TILE: ct.Constant[int]):
+        tile = ct.full((TILE,), 1, dtype=ct.int32)
+        ct.store(Y, (0,), tile)
+        for i in range(n):
+            ct.store(X, (i,), tile,
+                     memory_order=ct.MemoryOrder.RELEASE, memory_scope=ct.MemoryScope.DEVICE)
+
+    @override
+    def compile_kernel(self, kernel):
+        X, Y = (torch.zeros(1024, device="cuda:0", dtype=torch.int32) for _ in range(2))
+        return get_bytecode(kernel, (X, Y, 4, 128))
+
+    @pytest.mark.parametrize("kernel, check_directive", make_cases(
+        (signal_then_wait, SignalThenWaitCheckDirective),
+        (relaxed_signal_then_relaxed_poll, RelaxedSignalThenRelaxedPollCheckDirective),
+        (relaxed_wait_then_relaxed_signal, RelaxedWaitThenRelaxedSignalCheckDirective),
+        (release_store_in_loop, ReleaseStoreInLoopCheckDirective),
+        (release_store_after_weak_store_on_other_array,
+         ReleaseStoreAfterWeakStoreOnOtherArrayCheckDirective),
     ))
     @override
     def test_mlir(self, kernel, check_directive):

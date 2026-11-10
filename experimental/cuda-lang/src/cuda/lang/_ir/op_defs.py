@@ -502,7 +502,7 @@ class AtomicLoad(Operation, opcode="atomic_load", memory_effect=MemoryEffect.LOA
 
     @property
     def has_observable_effect(self) -> bool:
-        return self.mmio or self.memory_order is MemoryOrder.ACQUIRE
+        return True
 
 
 @dataclass(eq=False)

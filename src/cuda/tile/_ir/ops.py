@@ -1037,7 +1037,9 @@ class TileLoad(Operation, opcode="tile_load", memory_effect=MemoryEffect.LOAD):
 
     @property
     def has_observable_effect(self) -> bool:
-        return self.memory_order in (MemoryOrder.ACQUIRE,)
+        # A non-weak load may be a poll of a flag that another block or device updates,
+        # so it must not be dead code eliminated or hoisted out of its loop.
+        return self.memory_order != MemoryOrder.WEAK
 
     @override
     def generate_bytecode(self, ctx: BytecodeContext) -> tuple[bc.Value, bc.Value]:
