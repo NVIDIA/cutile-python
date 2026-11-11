@@ -127,6 +127,19 @@ def truediv(x, y, /, *, approx=False):
     """
 
 
+@simt_stub
+def reciprocal(x, /, *, rounding_mode: RoundingMode = RoundingMode.RN,
+               flush_to_zero: bool = False):
+    """Compute ``1 / x`` for float32 or float64 scalars and vectors.
+
+    Args:
+        rounding_mode: RN, RZ, RM, RP, or APPROX.
+        flush_to_zero: Whether to flush subnormal inputs and results to
+            sign-preserving zero.
+    """
+    ...
+
+
 @simt_stub(static_eval_ok=True, compiled_host=True)
 def floordiv(x, y, /):
     """Compute ``x // y``."""
@@ -442,6 +455,7 @@ __all__ = (
     "wrapping_mul",
     "fma",
     "truediv",
+    "reciprocal",
     "floordiv",
     "mod",
     "integer_remainder",

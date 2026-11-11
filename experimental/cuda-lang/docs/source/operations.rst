@@ -176,6 +176,7 @@ Math
     wrapping_mul
     fma
     truediv
+    reciprocal
     floordiv
     mod
     integer_remainder

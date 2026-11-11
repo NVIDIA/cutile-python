@@ -1875,3 +1875,104 @@ def test_math_where_invalid(invalid):
     inp = torch.ones(4, device="cuda")
     with pytest.raises(TypeCheckingError):
         cl.launch(torch.cuda.current_stream(), (1,), (1,), kernel, (inp, inp))
+
+
+@pytest.mark.parametrize("vector", (False, True))
+@pytest.mark.parametrize("dtype", (cl.float32, cl.float64))
+@pytest.mark.parametrize("flush_to_zero", (False, True))
+@pytest.mark.parametrize(
+    "rounding_mode",
+    (
+        cl.RoundingMode.RN, cl.RoundingMode.RZ, cl.RoundingMode.RM,
+        cl.RoundingMode.RP, cl.RoundingMode.APPROX,
+    ),
+)
+def test_reciprocal(dtype, rounding_mode, flush_to_zero, vector):
+    if dtype == cl.float64 and flush_to_zero != (rounding_mode == cl.RoundingMode.APPROX):
+        pytest.skip("float64 reciprocal requires flush_to_zero only with APPROX")
+
+    def recip(x):
+        return cl.reciprocal(
+            x, rounding_mode=rounding_mode, flush_to_zero=flush_to_zero
+        )
+
+    @cl.kernel
+    def kernel(inp, out):
+        if vector:
+            value = inp.pointer().load(count=2)
+            out.pointer().store(recip(value))
+        else:
+            for i in range(2):
+                out[i] = recip(inp[i])
+
+    torch_dtype = datatype.to_torch_dtype(dtype)
+    inp = torch.tensor([3.0, -3.0], dtype=torch_dtype).cuda(0)
+    out = torch.empty_like(inp)
+    mode = rounding_mode.name.lower()
+    ftz = ".ftz" if flush_to_zero else ""
+    compile_kernel(
+        kernel,
+        KernelSignature([make_symbolic_tensor(2, dtype)] * 2),
+        assert_in_ptx=f"rcp.{mode}{ftz}.f{dtype.bitwidth}",
+    )
+    cl.launch(torch.cuda.current_stream(), (1,), (1,), kernel, (inp, out))
+    tolerance = 1e-6 if rounding_mode == cl.RoundingMode.APPROX else 1e-15
+    if dtype == cl.float32:
+        tolerance = 1e-6
+    torch.testing.assert_close(out, inp.reciprocal(), rtol=tolerance, atol=0)
+
+
+@pytest.mark.parametrize(
+    "dtype,rounding_mode,flush_to_zero,message",
+    (
+        (cl.float16, cl.RoundingMode.RN, False, "requires float32 or float64"),
+        (cl.float64, cl.RoundingMode.RN, True, "requires flush_to_zero only with APPROX"),
+        (cl.float64, cl.RoundingMode.APPROX, False, "requires flush_to_zero only with APPROX"),
+        (cl.float32, cl.RoundingMode.FULL, False, "does not support"),
+    ),
+)
+def test_reciprocal_invalid_options(dtype, rounding_mode, flush_to_zero, message):
+    def kernel():
+        values = cl.shared_array(1, dtype)
+        values[0] = cl.reciprocal(
+            values[0], rounding_mode=rounding_mode, flush_to_zero=flush_to_zero,
+        )
+
+    compile_kernel(kernel, raises=pytest.raises(TypeCheckingError, match=message))
+
+
+@pytest.mark.parametrize("dtype", (cl.float32, cl.float64))
+@pytest.mark.parametrize("rounding_mode", (cl.RoundingMode.RN, cl.RoundingMode.APPROX))
+@pytest.mark.parametrize("flush_to_zero", (False, True))
+@pytest.mark.parametrize(
+    "value", ("subnormal", "max", 0.0, -0.0, float("inf"), -float("inf"), float("nan")),
+)
+def test_reciprocal_special_values(dtype, rounding_mode, flush_to_zero, value):
+    if dtype == cl.float64 and flush_to_zero != (rounding_mode == cl.RoundingMode.APPROX):
+        pytest.skip("float64 reciprocal requires flush_to_zero only with APPROX")
+
+    @cl.kernel
+    def kernel(inp, out):
+        out[0] = cl.reciprocal(
+            inp[0], rounding_mode=rounding_mode, flush_to_zero=flush_to_zero,
+        )
+
+    torch_dtype = datatype.to_torch_dtype(dtype)
+    limits = torch.finfo(torch_dtype)
+    if value == "subnormal":
+        input_value = limits.tiny / 2
+    elif value == "max":
+        input_value = limits.max
+    else:
+        input_value = value
+    inp = torch.tensor([input_value], dtype=torch_dtype).cuda(0)
+    out = torch.empty_like(inp)
+    expected = inp.reciprocal()
+    if flush_to_zero and value == "subnormal":
+        expected[0] = float("inf")
+    elif flush_to_zero and value == "max":
+        expected[0] = 0.0
+    cl.launch(torch.cuda.current_stream(), (1,), (1,), kernel, (inp, out))
+    torch.testing.assert_close(out, expected, rtol=1e-6, atol=0, equal_nan=True)
+    if value not in ("subnormal", "max"):
+        assert_special_float_values(out, expected.tolist())

@@ -13,6 +13,7 @@ import cuda.lang._datatype as datatype
 from cuda.lang._exception import TypeCheckingError
 from cuda.lang._ir.ir import Var, add_operation
 from .vector_impl import vector_elementwise_apply
+from .inline_ptx_impl import inline_ptx
 from cuda.lang._ir.type import (
     ScalarTy,
     TensorLikeTy,
@@ -191,6 +192,32 @@ def math_truediv_impl(x: Var, y: Var, approx: Var):
 
     value = vector_elementwise_apply(fast_fdividef, x, y)
     return astype(value, dtype)
+
+
+@impl(cl_math.reciprocal)
+def math_reciprocal_impl(x: Var, rounding_mode: Var, flush_to_zero: Var):
+    ty = require_scalar_or_vector_float_type(x)
+    dtype = ty.tensor_dtype()
+    if dtype not in (datatype.float32, datatype.float64):
+        raise TypeCheckingError("reciprocal requires float32 or float64 operands")
+    rounding_mode = require_constant_enum(rounding_mode, RoundingMode)
+    flush_to_zero = require_constant_bool(flush_to_zero)
+    if rounding_mode not in (
+        RoundingMode.RN, RoundingMode.RZ, RoundingMode.RM, RoundingMode.RP,
+        RoundingMode.APPROX,
+    ):
+        raise TypeCheckingError(f"reciprocal does not support {rounding_mode}")
+    if dtype == datatype.float64 and flush_to_zero != (rounding_mode == RoundingMode.APPROX):
+        raise TypeCheckingError("float64 reciprocal requires flush_to_zero only with APPROX")
+
+    mode = rounding_mode.name.lower()
+    ftz = ".ftz" if flush_to_zero else ""
+    instruction = f"rcp.{mode}{ftz}.f{dtype.bitwidth} %0, %1;"
+
+    def scalar_reciprocal(value):
+        return inline_ptx(instruction, dtype, value)[0]
+
+    return vector_elementwise_apply(scalar_reciprocal, x)
 
 
 @impl(cl_math.bitwise_and, fixed_args=["and_"])
