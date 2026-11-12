@@ -7,6 +7,7 @@ from tempfile import NamedTemporaryFile
 import torch.cuda
 
 import cuda.tile._bytecode as bc
+from cuda.tile._bytecode.attribute import encode_ap_int
 from cuda.tile._compiler_options import CompilerOptions
 from cuda.tile._compile import compile_cubin, get_sm_arch
 from cuda.tile import _cext
@@ -125,3 +126,18 @@ class _HackKernel(_cext.TileDispatcher):
             assert x.ndim == 1
             assert x.dtype == ct.float32
         return self._cubin, self._func_name, None, ()
+
+
+def test_encode_f64_max_identity():
+    bits = _cext.encode_float(-float("inf"), ct.float64)
+    assert bits == 0xFFF0000000000000
+    buf = bytearray()
+    encode_ap_int(bits, 64, buf)
+
+    # TileIR encodes this raw word as a signed int64, then applies zigzag:
+    #   0xFFF0000000000000 - 2**64 = -2**52
+    #   zigzag(-2**52) = 2**53 - 1 (53 one bits).
+    # Varints store seven payload bits per byte, least significant first.
+    # Seven full groups use 0x7f | 0x80 (continuation); the final four bits
+    # use 0x0f without a continuation bit.
+    assert buf == bytes.fromhex("ff ff ff ff ff ff ff 0f")

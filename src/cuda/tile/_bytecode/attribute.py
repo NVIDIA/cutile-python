@@ -166,6 +166,9 @@ def encode_ap_int(val: int, bit_width: int, buf: bytearray):
     if bit_width <= 8:
         buf.append(val)
     elif bit_width <= 64:
+        # interpret the raw word as int64 before zigzag encoding.
+        if bit_width == 64 and val >= (1 << 63):
+            val -= 1 << 64
         encode_signed_varint(val, buf)
     else:
         raise NotImplementedError()
