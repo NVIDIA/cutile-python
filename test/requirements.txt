@@ -2,10 +2,32 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Maintain a separate file for free-threading version. This can be removed when ABI environment markers are supported.(PEP 780)
--r requirements-common.txt
+setuptools==84.0.0
+pytest==9.0.3
+pytest-benchmark==5.1.0
+pytest-cov==6.2.1
+pytest-env==1.2.0
+flake8==7.3.0
+pytest-cov==6.2.1
 
-# numba-cuda publishes no cp315 wheel. The tests skip the import.
-numba-cuda[cu13]==0.30.0; python_version < "3.15"
-# numba-cuda is what installs cuda-core before 3.15, and it requires cuda-core < 1.0.
-cuda-core[cu13]==1.2.2; python_version >= "3.15"
+# 2.5.4 publishes no cp311 wheel.
+numpy==2.4.4; python_version == "3.11"
+numpy==2.5.4; python_version >= "3.12"
+
+# 0.12.0.1 requires Python >=3.12.
+jax[cuda13]==0.10.0; sys_platform == 'linux' and python_version < "3.12"
+jax[cuda13]==0.12.0.1; sys_platform == 'linux' and python_version >= "3.12"
+flatbuffers==25.12.19; sys_platform == 'linux'
+
+
+# 2.14.1's Windows cp315 wheels crash on tensor ops outside the main thread
+# (pytorch/pytorch#200779). 2.15.0 publishes its CUDA wheels on cu132 only.
+--extra-index-url https://download.pytorch.org/whl/cu130
+--extra-index-url https://download.pytorch.org/whl/cu132
+torch==2.14.1+cu130; python_version < "3.15"
+torch==2.15.0+cu132; python_version >= "3.15"
+
+# cupy-cuda13x publishes no cp315 wheel. The tests skip the import.
+cupy-cuda13x==14.2.0; python_version < "3.15"
+
+cuda-core[cu13]==1.3.0

@@ -149,15 +149,8 @@ Running Tests
 -------------
 cuTile uses the [pytest](https://pytest.org) framework for testing.
 Tests have extra dependencies, such as PyTorch, which can be installed with
-
-For Python non-free-threading build:
 ```
 pip install -r test/requirements.txt
-```
-
-Or for Python free-threading build:
-```
-pip install -r test/requirements-ft.txt
 ```
 
 The tests are located in the [test/](test/) directory. To run a specific test file,

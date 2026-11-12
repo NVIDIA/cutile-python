@@ -6,7 +6,6 @@ import torch
 import pytest
 import inspect
 import subprocess
-import sys
 import math
 import tempfile
 from functools import cache, partial
@@ -345,21 +344,6 @@ def pytest_benchmark_update_json(config, benchmarks, output_json):
             extra["throughput_TFps"] = None
 
         bench["extra_info"] = extra
-
-
-@pytest.fixture(scope="session")
-def numba_cuda():
-    smoke_test = """
-import numpy
-from numba import cuda
-cuda.to_device(numpy.ones(10))
-"""
-    result = subprocess.run([sys.executable, "-c", smoke_test],
-                            capture_output=True)
-    if result.returncode != 0:
-        pytest.xfail(f"Numba smoke test failed {result.returncode}. Skip.")
-    import numba.cuda
-    return numba.cuda
 
 
 def get_cupy_or_skip():
