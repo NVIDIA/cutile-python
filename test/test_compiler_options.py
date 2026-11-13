@@ -85,6 +85,13 @@ def test_opt_level_for_target_default():
     assert CompilerOptions().opt_level_for_target("sm_100") == 3
 
 
+@pytest.mark.parametrize("opt_level", [None, -1, 4, ct.ByTarget(sm_100=None),
+                                       ct.ByTarget(default=None)])
+def test_opt_level_rejects_invalid(opt_level):
+    with pytest.raises(ValueError, match=r"opt_level should be an integer in \[0, 3\]"):
+        CompilerOptions(opt_level=opt_level)
+
+
 def _tensor():
     return torch.zeros(64, dtype=torch.float32, device='cuda:0')
 
