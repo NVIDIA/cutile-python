@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-from cuda.lang._exception import UnsupportedFeatureError
+from cuda.lang._exception import UnsupportedFeatureError, TypeCheckingError
 from cuda.lang._target import TargetInfo
 from cuda.lang._ir.op_defs import RawLLVMIntrinsic
 from cuda.tile._ir.op_impl import require_constant_int
@@ -11,8 +11,9 @@ from cuda.tile._ir.ir import Var
 from cuda.tile._ir.op_impl import ImplRegistry
 from cuda.tile._ir.ops import implicit_cast
 from cuda.tile._ir.ir import add_operation_variadic
+from cuda.tile._ir.cast_ops import address_space_cast
 import cuda.lang._datatype as datatype
-from cuda.lang._enums import MemorySpace, AsyncCopyReportMechanism, CTAGroup
+from cuda.lang._enums import MemorySpace, AsyncCopyReportMechanism, CTAGroup, CacheHint
 from cuda.lang._ir.op_defs import (
     CopyAsyncBulkTensorGlobalToShared,
     CopyAsyncBulkTensorSharedToGlobal,
@@ -28,6 +29,8 @@ from ..type_checking_helpers import (
     require_target_greater_equal,
     require_uniform_int_tuple_type,
     tensor_map_descriptor_pointer_like,
+    require_integral_scalar_type,
+    require_pointer_type,
 )
 from cuda.tile._ir.op_impl import require_constant_enum, require_optional_constant_enum
 
@@ -42,6 +45,67 @@ def copy_async_impl_registry() -> ImplRegistry:
 
 def _optional_operand(value):
     return None if value is None or is_none(value) else value
+
+
+@impl(copy_async.copy_async_global_to_shared)
+def copy_async_global_to_shared_impl(src: Var, dst: Var, cache_hint: Var,
+                                     dst_size: Var, src_size: Var):
+    require_target_greater_equal(8, 0, " does not support copy_async_global_to_shared")
+    require_pointer_in_memory_space(dst, (MemorySpace.SHARED,))
+
+    src = address_space_cast(src, MemorySpace.GLOBAL) if \
+        require_pointer_type(src).memory_space == MemorySpace.GENERIC else src
+    require_pointer_in_memory_space(src, (MemorySpace.GLOBAL,))
+
+    cache_hint_val = require_constant_enum(cache_hint, CacheHint)
+    dst_size_val = require_constant_int(dst_size)
+
+    if cache_hint_val not in (CacheHint.CA, CacheHint.CG):
+        raise TypeCheckingError(f"cache_hint must be CA or CG, got {cache_hint_val}")
+    if cache_hint_val == CacheHint.CA and dst_size_val not in (16, 8, 4):
+        raise TypeCheckingError(f"dst_size must be 4, 8, or 16 for CA, "
+                                f"got {dst_size_val}")
+    if cache_hint_val == CacheHint.CG and dst_size_val != 16:
+        raise TypeCheckingError(f"dst_size must be 16 for CG, got {dst_size_val}")
+
+    intrinsic = f"llvm.nvvm.cp.async.{cache_hint_val.value}.shared.global.{dst_size_val}"
+    args = (dst, src)
+    if not is_none(src_size):
+        require_integral_scalar_type(src_size, bitwidth=32)
+        intrinsic += ".s"
+        args += (src_size,)
+    add_operation_variadic(
+        RawLLVMIntrinsic,
+        (),
+        intrinsic=intrinsic,
+        operands_=args,
+    )
+
+
+@impl(copy_async.copy_async_commit_group)
+def copy_async_commit_group_impl():
+    require_target_greater_equal(8, 0, " does not support copy_async_commit_group_impl")
+    intrinsic = "llvm.nvvm.cp.async.commit.group"
+    add_operation_variadic(
+        RawLLVMIntrinsic,
+        (),
+        intrinsic=intrinsic,
+        operands_=(),
+    )
+
+
+@impl(copy_async.copy_async_wait_groups)
+def copy_async_wait_groups_impl(count: Var):
+    require_target_greater_equal(8, 0, " does not support copy_async_wait_groups")
+    require_constant_int(count)
+    require_integral_scalar_type(count, bitwidth=32)
+    intrinsic = "llvm.nvvm.cp.async.wait.group"
+    add_operation_variadic(
+        RawLLVMIntrinsic,
+        (),
+        intrinsic=intrinsic,
+        operands_=(count,),
+    )
 
 
 @impl(copy_async.copy_async_mbarrier_arrive, fixed_args=["arrive"])

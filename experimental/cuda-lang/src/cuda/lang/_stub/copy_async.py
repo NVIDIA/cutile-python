@@ -3,8 +3,86 @@
 # SPDX-License-Identifier: Apache-2.0
 
 from cuda.lang._execution import simt_stub, function
-from .._enums import TMALoadMode, TMAStoreMode, AsyncCopyReportMechanism
+from .._enums import TMALoadMode, TMAStoreMode, AsyncCopyReportMechanism, CacheHint
 from . import nvvm as _nvvm
+
+
+@simt_stub
+def copy_async_global_to_shared(src, dst, *, cache_hint: CacheHint = CacheHint.CA,
+                                dst_size: int = 16, src_size: int | None = None):
+    """Start an asynchronous copy from global to shared memory.
+
+    Args:
+        src: Source pointer in global memory or a generic pointer addressing
+            global memory.
+        dst: Destination pointer in block local shared memory.
+        cache_hint (const CacheHint): ``CacheHint.CA`` permits L1/L2 caching,
+            ``CacheHint.CG`` bypasses L1.
+        dst_size (const int): Destination byte count. Must be 4, 8, or 16 with
+            ``CacheHint.CA``, and 16 with ``CacheHint.CG``.
+        src_size (int | None): Source byte count satisfying
+            ``0 <= src_size <= dst_size``. Remaining destination bytes are
+            zero filled. ``None`` copies all ``dst_size`` bytes.
+
+    :Target: SM80 or newer.
+    :Memory: Both pointers must be aligned to ``dst_size`` bytes. The
+        destination must have room for ``dst_size`` bytes. Keep the source
+        bytes being copied unchanged and both allocations valid until the
+        copy completes.
+    :Participation: :ref:`Per-thread <api-participation>`; each caller issues
+        its own copy.
+    :Completion: Asynchronous; call :func:`copy_async_commit_group`, then
+        :func:`copy_async_wait_groups` to observe completion. Alternatively,
+        track the copies with :func:`copy_async_mbarrier_arrive` or
+        :func:`copy_async_mbarrier_arrive_no_increment` and observe completion
+        of the tracked mbarrier phase.
+    :Ordering: Weak memory operation. Wait for completion before accessing
+        the destination. Synchronize consumers before they read data copied
+        by other threads, and finish those consumers before reusing the
+        destination buffer.
+    """
+    ...
+
+
+@simt_stub
+def copy_async_commit_group():
+    """Group previously uncommitted copy_async instructions.
+
+    :Target: SM80 or newer.
+    :Memory: Destinations of copies in the same group must not overlap.
+    :Participation: :ref:`Per-thread <api-participation>`; call from the thread
+        that issued the copies.
+    :Completion: Synchronous group creation; returns without waiting for the
+        copies. Observe their completion with :func:`copy_async_wait_groups`.
+    :Ordering: Copies within a group are unordered. Committing does not make
+        their results available or synchronize threads.
+    """
+
+
+@simt_stub
+def copy_async_wait_groups(count: int = 0):
+    """Wait until at most count of the newest committed groups remain pending.
+
+    Args:
+        count (const int): Number of the most recent committed groups allowed
+            to remain pending. A count of zero waits for all of
+            that thread's previously committed copy groups. If at most ``count``
+            groups are pending already, the call returns without waiting.
+
+    :Target: SM80 or newer.
+    :Memory: Do not reuse source or destination ranges belonging to groups
+        that remain pending.
+    :Participation: :ref:`Per-thread <api-participation>`; call from the thread
+        that issued and committed the copies.
+    :Completion: Synchronous; waits for the selected committed groups.
+        Uncommitted copies are not included; call :func:`copy_async_commit_group`
+        first.
+    :Ordering: Completed copies are visible to the calling thread. Synchronize
+        consumers, for example with :func:`syncthreads`, before they read data
+        copied by other threads. This wait does not order unrelated memory
+        accesses.
+    """
+    ...
 
 
 @simt_stub

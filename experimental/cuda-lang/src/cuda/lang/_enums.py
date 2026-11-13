@@ -83,6 +83,29 @@ class MbarrierScope(Enum):
     CLUSTER = "cluster"
 
 
+class CacheHint(Enum):
+    CA = "ca"
+    """Cache at all levels"""
+
+    CG = "cg"
+    """Bypass L1"""
+
+    CS = "cs"
+    """Streaming"""
+
+    LU = "lu"
+    """Last use"""
+
+    CV = "cv"
+    """Refetch system memory data"""
+
+    WB = "wb"
+    """Write back"""
+
+    WT = "wt"
+    """Write through"""
+
+
 class Tcgen05MMAKind(Enum):
     """MMA operation families for :func:`~cuda.lang.tcgen05_mma`.
 

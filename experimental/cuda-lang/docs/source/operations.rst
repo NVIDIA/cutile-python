@@ -300,6 +300,19 @@ TensorMap
     AxisOrder
 
 
+Async Copy
+----------
+Global to shared copies require SM80 or newer. Each thread issues and commits its own copies.
+
+.. autosummary::
+   :toctree: generated
+   :nosignatures:
+
+    copy_async_global_to_shared
+    copy_async_commit_group
+    copy_async_wait_groups
+
+
 TensorMap Async Copy
 --------------------
 TMA requires SM90 or newer; individual modes and modifiers can require a
@@ -333,6 +346,7 @@ Cache Control
    :nosignatures:
    :template: autosummary/class_no_init.rst
 
+    CacheHint
     CachePolicy
     PrefetchLevel
 

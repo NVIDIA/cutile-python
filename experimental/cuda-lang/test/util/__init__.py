@@ -46,6 +46,13 @@ def require_hopper_or_newer():
     )
 
 
+def require_Ampere_or_newer():
+    return pytest.mark.skipif(
+        get_compute_capability() < (8, 0),
+        reason="feature requires Ampere or newer",
+    )
+
+
 def compile_kernel(
     kernel,
     signature=KernelSignature([]),

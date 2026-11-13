@@ -39,6 +39,7 @@ from ._stub.load_store_matrix import (
 )
 from ._enums import (
     AxisOrder,
+    CacheHint,
     AsyncCopyReportMechanism,
     AtomicOp,
     MatrixLoadShape,
@@ -118,6 +119,9 @@ from ._enums import VectorReduction
 from ._stub.copy_async import (
     TMALoadMode,
     TMAStoreMode,
+    copy_async_global_to_shared,
+    copy_async_commit_group,
+    copy_async_wait_groups,
     copy_async_mbarrier_arrive,
     copy_async_mbarrier_arrive_no_increment,
     copy_async_bulk_tensor_shared_to_global,
@@ -399,6 +403,7 @@ __all__ = (
     "MemoryScope",
     "MemoryOrder",
     "AxisOrder",
+    "CacheHint",
     "AsyncCopyReportMechanism",
     "AtomicOp",
     "RoundingMode",
@@ -500,6 +505,9 @@ __all__ = (
     "grid_dependency_control_wait",
     "grid_dependency_control_launch_dependents",
     "bitcast",
+    "copy_async_global_to_shared",
+    "copy_async_commit_group",
+    "copy_async_wait_groups",
     "copy_async_mbarrier_arrive",
     "copy_async_mbarrier_arrive_no_increment",
     "copy_async_bulk_tensor_shared_to_global",

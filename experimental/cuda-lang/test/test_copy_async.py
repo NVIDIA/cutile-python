@@ -17,6 +17,7 @@ from .util import (
     make_symbolic_tensor,
     require_hopper_or_newer,
     require_rubin_family,
+    require_Ampere_or_newer,
 )
 
 HOPPER_TARGET = {"gpu_name": "sm_90", "arch": "compute_90"}
@@ -704,3 +705,153 @@ def test_copy_async_bulk_wait_group_non_immediate_read():
         signature=KernelSignature([make_symbolic_tensor(1, dtype=cl.int32)]),
         raises=pytest.raises(Exception, match="Expected a boolean constant"),
     )
+
+
+@require_Ampere_or_newer()
+def test_copy_async_global_to_shared():
+    @cl.kernel
+    def kernel(x, out):
+        tid = cl.thread_index(0)
+        smem = cl.shared_array(256, cl.int32, alignment=16)
+        index = tid * 4
+        dst = smem.pointer(index)
+        src = x.pointer(index)
+
+        cl.copy_async_global_to_shared(src, dst, dst_size=16, cache_hint=cl.CacheHint.CA)
+        cl.copy_async_commit_group()
+        cl.copy_async_wait_groups(0)
+        cl.syncthreads()
+
+        index_from_end = 255 - index
+        for i in range(4):
+            out[index + i] = smem[index_from_end - i]
+
+    x = torch.arange(256, dtype=torch.int32, device="cuda:0")
+    out = torch.empty_like(x)
+    cl.launch(torch.cuda.current_stream(), (1,), (64,), kernel, (x, out))
+    assert out.tolist() == x.tolist()[::-1]
+
+
+@require_Ampere_or_newer()
+def test_copy_async_global_to_shared_wait():
+    @cl.kernel
+    def kernel(x, out):
+        tid = cl.thread_index(0)
+        smem = cl.shared_array(8, cl.int32, alignment=4)
+        index = tid * 2
+        dst = smem.pointer(index)
+        src = x.pointer(index)
+
+        cl.copy_async_global_to_shared(src, dst, dst_size=4)
+        cl.copy_async_commit_group()
+
+        cl.copy_async_global_to_shared(src + 1, dst + 1, dst_size=4)
+        cl.copy_async_commit_group()
+
+        cl.copy_async_wait_groups(1)
+
+        smem[index] = 99
+
+        cl.copy_async_wait_groups(0)
+        cl.syncthreads()
+
+        index_from_end = 7 - index
+        out[index] = smem[index_from_end]
+        out[index + 1] = smem[index_from_end - 1]
+
+    x = torch.arange(8, dtype=torch.int32, device="cuda:0")
+    out = torch.empty_like(x)
+    cl.launch(torch.cuda.current_stream(), (1,), (4,), kernel, (x, out))
+    assert out.tolist() == [7, 99, 5, 99, 3, 99, 1, 99]
+
+
+@require_Ampere_or_newer()
+@pytest.mark.parametrize(
+    "bytes_to_copy,result",
+    [(None, [7, 6, 5, 4, 3, 2, 1, 0]), (0, [0, 0, 0, 0, 0, 0, 0, 0]),
+     (4, [0, 6, 0, 4, 0, 2, 0, 0]), (8, [7, 6, 5, 4, 3, 2, 1, 0])]
+)
+def test_copy_async_global_to_shared_src_size_constant(bytes_to_copy, result):
+    @cl.kernel
+    def kernel(x, out, bytes_to_copy: cl.Constant[int | None]):
+        tid = cl.thread_index(0)
+        smem = cl.shared_array(8, cl.int32, alignment=8)
+        index = tid * 2
+        dst = smem.pointer(index)
+        src = x.pointer(index)
+
+        cl.copy_async_global_to_shared(src, dst, dst_size=8, src_size=bytes_to_copy)
+        cl.copy_async_commit_group()
+        cl.copy_async_wait_groups(0)
+        cl.syncthreads()
+
+        index_from_end = 7 - index
+        out[index] = smem[index_from_end]
+        out[index + 1] = smem[index_from_end - 1]
+
+    x = torch.arange(8, dtype=torch.int32, device="cuda:0")
+    out = torch.empty_like(x)
+    cl.launch(torch.cuda.current_stream(), (1,), (4,), kernel, (x, out, bytes_to_copy))
+    assert out.tolist() == result
+
+
+@require_Ampere_or_newer()
+@pytest.mark.parametrize(
+    "bytes_to_copy,result",
+    [(0, [0, 0, 0, 0, 0, 0, 0, 0]), (4, [0, 6, 0, 4, 0, 2, 0, 0]), (8, [7, 6, 5, 4, 3, 2, 1, 0])]
+)
+def test_copy_async_global_to_shared_src_size_runtime(bytes_to_copy, result):
+    @cl.kernel
+    def kernel(x, out, bytes_to_copy):
+        tid = cl.thread_index(0)
+        smem = cl.shared_array(8, cl.int32, alignment=8)
+        index = tid * 2
+        dst = smem.pointer(index)
+        src = x.pointer(index)
+
+        cl.copy_async_global_to_shared(src, dst, dst_size=8, src_size=bytes_to_copy)
+        cl.copy_async_commit_group()
+        cl.copy_async_wait_groups(0)
+        cl.syncthreads()
+
+        index_from_end = 7 - index
+        out[index] = smem[index_from_end]
+        out[index + 1] = smem[index_from_end - 1]
+
+    x = torch.arange(8, dtype=torch.int32, device="cuda:0")
+    out = torch.empty_like(x)
+    cl.launch(torch.cuda.current_stream(), (1,), (4,), kernel, (x, out, bytes_to_copy))
+    assert out.tolist() == result
+
+
+@require_Ampere_or_newer()
+def test_copy_async_global_to_shared_reject_src_mem():
+    @cl.kernel
+    def kernel(x):
+        tid = cl.thread_index(0)
+        smem = cl.shared_array(8, cl.int32, alignment=8)
+        dst = smem.pointer(tid)
+        src = x.pointer(tid)
+
+        cl.copy_async_global_to_shared(dst, src, dst_size=8)
+
+    x = torch.arange(8, dtype=torch.int32, device="cuda:0")
+    with pytest.raises(TypeCheckingError, match="Expected pointer memory space to be "
+                                                "MemorySpace.SHARED but got MemorySpace.GENERIC"):
+        cl.launch(torch.cuda.current_stream(), (1,), (4,), kernel, (x,))
+
+
+@require_Ampere_or_newer()
+def test_copy_async_global_to_shared_reject_bytes():
+    @cl.kernel
+    def kernel(x):
+        tid = cl.thread_index(0)
+        smem = cl.shared_array(8, cl.int32, alignment=8)
+        dst = smem.pointer(tid)
+        src = x.pointer(tid)
+
+        cl.copy_async_global_to_shared(src, dst, dst_size=8, cache_hint=cl.CacheHint.CG)
+
+    x = torch.arange(8, dtype=torch.int32, device="cuda:0")
+    with pytest.raises(TypeCheckingError, match="dst_size must be 16 for CG, got 8"):
+        cl.launch(torch.cuda.current_stream(), (1,), (4,), kernel, (x,))
