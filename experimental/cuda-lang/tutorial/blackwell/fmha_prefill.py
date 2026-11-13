@@ -402,6 +402,7 @@ def _store_output_global(
     else:
         dst = output.pointer((column, head, query_row, batch))
 
+    dst = cl.address_space_cast(dst, cl.MemorySpace.GLOBAL)
     if output_kind == ELEMENT_E4M3:
         dst_u8 = cl.bitcast(
             dst,

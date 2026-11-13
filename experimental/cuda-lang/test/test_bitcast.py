@@ -9,7 +9,7 @@ import pytest
 import torch
 
 from cuda.tile._cext import cconv_v3_enabled
-from cuda.lang._exception import CompilerExecutionError, TypeCheckingError
+from cuda.lang._exception import TypeCheckingError
 from cuda.lang.compilation import KernelSignature
 from .util import filecheck, make_symbolic_tensor
 
@@ -18,8 +18,6 @@ MEMORY_SPACE_32B = (
     cl.MemorySpace.SHARED_CLUSTER,
     cl.MemorySpace.TENSOR,
 )
-
-HOPPER_TARGET = {"gpu_name": "sm_90", "arch": "compute_90"}
 
 
 @pytest.mark.parametrize(
@@ -146,49 +144,74 @@ def test_bitcast_in_host_entry():
     assert output.item() == 0x1234
 
 
+@pytest.mark.parametrize("direct_nvvm", (False, True))
+@pytest.mark.parametrize("vector", (False, True))
+@pytest.mark.parametrize("opaque", (False, True))
 @pytest.mark.parametrize("from_mspace", cl.MemorySpace._member_map_.values())
 @pytest.mark.parametrize("to_mspace", cl.MemorySpace._member_map_.values())
-def test_pointer_address_space_bitcast_compile_only(from_mspace, to_mspace):
+def test_pointer_address_space_bitcast_compile_only(
+    from_mspace, to_mspace, opaque, vector, direct_nvvm
+):
     from_32b = from_mspace in MEMORY_SPACE_32B
     to_32b = to_mspace in MEMORY_SPACE_32B
+    src_dtype = (cl.opaque_pointer_dtype(from_mspace) if opaque
+                 else cl.pointer_dtype(cl.float32, from_mspace))
+    dst_dtype = (cl.opaque_pointer_dtype(to_mspace) if opaque
+                 else cl.pointer_dtype(cl.uint16, to_mspace))
 
     @cl.kernel
     def kernel(out):
-        i1 = cl.int32(0) if from_32b else cl.int64(0)
-        p1 = cl.bitcast(i1, cl.opaque_pointer_dtype(from_mspace))
-        p2 = cl.bitcast(p1, cl.opaque_pointer_dtype(to_mspace))
-        i2 = cl.bitcast(p2, (cl.int32 if to_32b else cl.int64))
+        i1 = cl.int32(out[0]) if from_32b else cl.int64(out[0])
+        if vector:
+            p1 = cl.bitcast(cl.Vector(i1, i1), src_dtype)
+            p2 = p1.bitcast(dst_dtype)
+            i2 = cl.bitcast(p2, cl.int32 if to_32b else cl.int64)[0]
+        else:
+            p1 = cl.bitcast(i1, src_dtype)
+            p2 = cl.bitcast(p1, dst_dtype)
+            i2 = cl.bitcast(p2, cl.int32 if to_32b else cl.int64)
         out[0] = i2
 
     if from_32b != to_32b:
-        # If bitwidth is not the same, we expect an error
-        from_bw = "32" if from_32b else "64"
-        to_bw = "32" if to_32b else "64"
-        match = (
-            "bitcast requires input value's type and output type to have "
-            f"the same bitwidth, but input type is {from_bw} bits and output "
-            f"dtype has {to_bw} bits"
-        )
+        match = ("Vector element and target dtype must have the same bitwidth" if vector
+                 else "bitcast requires input value's type and output type to have "
+                      "the same bitwidth")
         cm = pytest.raises(TypeCheckingError, match=match)
-    elif [from_mspace, to_mspace].count(cl.MemorySpace.TENSOR) == 1:
-        # if bitwidth IS the same but one address is in tensor memory, we'll
-        # get an error from codegen
+    elif from_mspace != to_mspace:
         cm = pytest.raises(
-            CompilerExecutionError, match="Bad address space in addrspacecast"
+            TypeCheckingError,
+            match="bitcast cannot change pointer memory space .*use address_space_cast",
         )
     else:
-        # otherwise we should be able to compile
         cm = contextlib.nullcontext()
 
     with cm:
         cl.compile_simt(
             kernel,
-            [
-                KernelSignature(
-                    [make_symbolic_tensor(1, cl.int32 if to_32b else cl.int64)]
-                )
-            ],
-            **({} if from_32b != to_32b else HOPPER_TARGET),
+            [KernelSignature([make_symbolic_tensor(1, cl.int32 if to_32b else cl.int64)])],
+            gpu_name="sm_100a",
+            arch="compute_100a",
+            direct_nvvm=direct_nvvm,
+        )
+
+
+@pytest.mark.parametrize("direct_nvvm", (False, True))
+def test_pointer_reinterpret_as_vector_rejects_memory_space_change(direct_nvvm):
+    @cl.kernel
+    def kernel(out):
+        pointers = cl.bitcast(cl.Vector(cl.int64(0)), cl.pointer_dtype(cl.int8))
+        # The total width stays 64 bits, even though the element widths and
+        # vector lengths change. Check memory spaces before splitting into integers.
+        pointers.reinterpret_as_vector(cl.pointer_dtype(cl.int8, "SHARED"), 2)
+
+    with pytest.raises(
+        TypeCheckingError,
+        match="bitcast cannot change pointer memory space .*use address_space_cast",
+    ):
+        cl.compile_simt(
+            kernel,
+            [KernelSignature([make_symbolic_tensor(1, cl.int8)])],
+            direct_nvvm=direct_nvvm,
         )
 
 

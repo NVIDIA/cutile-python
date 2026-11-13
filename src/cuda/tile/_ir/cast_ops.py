@@ -50,6 +50,12 @@ def reinterpret_pointer(pointer: Var[TensorLikeTy], target_ptr_dtype: DType) -> 
 class AddrSpaceCast(Operation, opcode="address_space_cast"):
     pointer: Var = operand()
 
+    @override
+    def generate_llvm(self, ctx):
+        from cuda.lang._llvm_bitcode import Cast
+        return ctx.builder.cast(ctx.typeof(self.result_var), Cast.ADDRSPACECAST,
+                                ctx.value(self.pointer))
+
 
 def address_space_cast(value: Var[TensorLikeTy], memory_space: MemorySpace) -> Var:
     src_ty = value.get_type()

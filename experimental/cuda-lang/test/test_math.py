@@ -4,6 +4,7 @@
 
 from test.util import compile_kernel
 from dataclasses import replace
+from fractions import Fraction
 import cuda.lang as cl
 import cuda.lang._datatype as datatype
 import builtins
@@ -18,7 +19,7 @@ from cuda.lang._compile import get_compute_capability
 from cuda.lang._stub import math as device_math
 from cuda.lang.compilation import KernelSignature
 from cuda.lang._exception import CompilerExecutionError, TypeCheckingError
-from cuda.lang._fp_utils import _FLOAT_SMALLEST_NORMAL, isnormal
+from cuda.lang._fp_utils import isnormal
 from cuda.lang._target import TargetInfo
 from cuda.lang._passes.ir2mlir import pass_definition
 from .util import make_symbolic_tensor
@@ -27,11 +28,13 @@ from .util import make_symbolic_tensor
 rng = torch.Generator().manual_seed(0)
 FLOAT_TYPES = (
     cl.float16,
+    cl.bfloat16,
     cl.float32,
     cl.float64,
 )
 FLOAT_TOLERANCES = {
     cl.float16: dict(rel=1e-2, abs=1e-2),
+    cl.bfloat16: dict(rel=1e-2, abs=1e-2),
     cl.float32: dict(rel=1e-5, abs=1e-5),
     cl.float64: dict(rel=1e-10, abs=1e-10),
 }
@@ -120,6 +123,26 @@ def assert_special_float_values(actual, expected):
                 assert host_math.copysign(1.0, got) == host_math.copysign(1.0, want)
 
 
+def _assert_binary_vector_matches_scalar(device_op, lhs, rhs):
+    count = lhs.numel()
+    assert rhs.numel() == count
+
+    @cl.kernel
+    def kernel(a, b, scalar_out, vector_out):
+        i = cl.thread_index(0)
+        scalar_out[i] = device_op(a[i], b[i])
+        if i == 0:
+            x = a.pointer().load(count=count)
+            y = b.pointer().load(count=count)
+            vector_out.pointer().store(device_op(x, y))
+
+    scalar_out = torch.empty_like(lhs)
+    vector_out = torch.empty_like(lhs)
+    cl.launch(torch.cuda.current_stream(), (1,), (count,), kernel,
+              (lhs, rhs, scalar_out, vector_out))
+    assert_special_float_values(vector_out.cpu(), scalar_out.cpu().tolist())
+
+
 @pytest.mark.parametrize("dtype", FLOAT_TYPES)
 @pytest.mark.parametrize("device_op, host_op", FPCLASS_OPS)
 @pytest.mark.parametrize(
@@ -135,10 +158,11 @@ def assert_special_float_values(actual, expected):
 )
 @pytest.mark.parametrize("vector", (True, False))
 def test_math_fpclass(dtype, device_op, host_op, input, vector):
+    torch_dt = datatype.to_torch_dtype(dtype)
+    smallest_normal = torch.finfo(torch_dt).tiny
     subnormal = input == "subnormal"
     if subnormal:
-        smallest = _FLOAT_SMALLEST_NORMAL[dtype.bitwidth]
-        input = smallest / 2
+        input = smallest_normal / 2
 
     @cl.kernel
     def kernel(out, inp):
@@ -149,10 +173,10 @@ def test_math_fpclass(dtype, device_op, host_op, input, vector):
             out[0] = device_op(inp[0])
 
     out = torch.zeros(1, dtype=torch.bool).cuda(0)
-    inp = torch.tensor([input, input], dtype=datatype.to_torch_dtype(dtype)).cuda(0)
+    inp = torch.tensor([input, input], dtype=torch_dt).cuda(0)
     cl.launch(torch.cuda.current_stream(), (1,), (1,), kernel, (out, inp))
     if host_op == isnormal:
-        expect = host_op(input, dtype.bitwidth)
+        expect = host_op(input, dtype=dtype)
     else:
         expect = host_op(input)
     got = out.cpu().item()
@@ -180,8 +204,8 @@ def test_math_unary_float(dtype, device_op, host_op):
 
     torch_dt = datatype.to_torch_dtype(dtype)
     host_inp = torch.rand((), generator=rng).item() + 0.5
-    expected = host_op(host_inp)
     inp = torch.tensor([host_inp], dtype=torch_dt, device="cuda:0")
+    expected = host_op(inp[0].item())
     out = torch.tensor([0.0], dtype=torch_dt, device="cuda:0")
     cl.launch(torch.cuda.current_stream(), (1,), (1,), kernel, (inp, out))
     assert out[0].item() == approx_float(expected, dtype)
@@ -230,6 +254,27 @@ def test_math_sincos_approx_fastmath(approx):
         signature=KernelSignature([inp, sin_out, cos_out]),
         assert_in_nvvm=f"call void @__nv{approx_suffix}_sincosf(",
     )
+
+
+@pytest.mark.parametrize("dtype", FLOAT_TYPES)
+@pytest.mark.parametrize("approx", (False, True))
+def test_math_sincos_values(dtype, approx):
+    @cl.kernel
+    def kernel(inp, sin_out, cos_out):
+        i = cl.thread_index(0)
+        sin, cos = cl.sincos(inp[i], approx=approx)
+        sin_out[i] = sin
+        cos_out[i] = cos
+
+    values = [-1.5, -0.0, 0.5, 1.5]
+    torch_dtype = datatype.to_torch_dtype(dtype)
+    inp = torch.tensor(values, dtype=torch_dtype, device="cuda:0")
+    sin_out = torch.empty_like(inp)
+    cos_out = torch.empty_like(inp)
+    cl.launch(torch.cuda.current_stream(), (1,), (len(values),), kernel, (inp, sin_out, cos_out))
+    for out, host_op in ((sin_out, host_math.sin), (cos_out, host_math.cos)):
+        expected = torch.tensor([host_op(value) for value in values], dtype=torch_dtype)
+        assert_close_float(out.cpu(), expected, dtype)
 
 
 @pytest.mark.parametrize("approx", (False, True))
@@ -373,6 +418,65 @@ def test_pow(lhs_dt, rhs_dt, result_dt, vector):
     assert_close_float(operator_out.cpu(), expected, result_dt)
 
 
+def _powi_inputs(dtype, exponent_dtype):
+    bases = [-2.0, -2.0, 0.5, 1.25]
+    if exponent_dtype == cl.bool_:
+        exponents = [True, False, True, False]
+    else:
+        exponents = [-3, 4, -2, 0] if datatype.is_signed(exponent_dtype) else [3, 4, 2, 0]
+    return (torch.tensor(bases, dtype=datatype.to_torch_dtype(dtype), device="cuda:0"),
+            torch.tensor(exponents, dtype=datatype.to_torch_dtype(exponent_dtype), device="cuda:0"))
+
+
+@pytest.mark.parametrize("dtype", FLOAT_TYPES)
+@pytest.mark.parametrize("exponent_dtype", (cl.bool_, cl.int8, cl.int16, cl.int32,
+                                            cl.uint8, cl.uint16))
+def test_powi_integer_exponents(dtype, exponent_dtype):
+    @cl.kernel
+    def kernel(base, exponent, out):
+        i = cl.thread_index(0)
+        out[i] = cl.pow(base[i], exponent[i])
+
+    base, exponent = _powi_inputs(dtype, exponent_dtype)
+    out = torch.empty_like(base)
+    cl.launch(torch.cuda.current_stream(), (1,), (base.numel(),), kernel, (base, exponent, out))
+    pairs = zip(base.cpu().tolist(), exponent.cpu().tolist(), strict=True)
+    expected = torch.tensor([x ** y for x, y in pairs], dtype=out.dtype)
+    assert_close_float(out.cpu(), expected, dtype)
+
+
+@pytest.mark.parametrize("dtype,exponent_dtype", (
+    (cl.float16, cl.int32), (cl.bfloat16, cl.int32),
+    (cl.float32, cl.bool_), (cl.float32, cl.int8), (cl.float64, cl.int16),
+    (cl.float32, cl.uint8), (cl.float64, cl.uint16),
+))
+def test_powi_vector_matches_scalar(dtype, exponent_dtype):
+    # Cover both libdevice signatures, half conversions, and exponent conversion categories.
+    base, exponent = _powi_inputs(dtype, exponent_dtype)
+    if exponent_dtype in (cl.uint8, cl.uint16):
+        high = 1 << (exponent_dtype.bitwidth - 1)
+        base = torch.tensor([1.0, 0.5, 0.5, 1.0], dtype=base.dtype, device="cuda:0")
+        exponent = torch.tensor([0, 1, high, 2 * high - 1], dtype=exponent.dtype, device="cuda:0")
+    _assert_binary_vector_matches_scalar(cl.pow, base, exponent)
+
+
+@pytest.mark.parametrize("exponent_dtype,values", (
+    (cl.uint8, [128, 255]),
+    (cl.uint16, [32768, 65535]),
+))
+def test_powi_unsigned_exponents_keep_high_bit(exponent_dtype, values):
+    @cl.kernel
+    def kernel(base, exponent, out):
+        i = cl.thread_index(0)
+        out[i] = cl.pow(base[i], exponent[i])
+
+    base = torch.full((2,), 0.5, dtype=torch.float64, device="cuda")
+    exponent = torch.tensor(values, dtype=datatype.to_torch_dtype(exponent_dtype), device="cuda")
+    out = torch.empty_like(base)
+    cl.launch(torch.cuda.current_stream(), (1,), (2,), kernel, (base, exponent, out))
+    assert out.cpu().tolist() == [0.5**value for value in values]
+
+
 @pytest.mark.parametrize("dtype", (cl.int32, cl.uint32))
 @pytest.mark.parametrize("vector", (False, True))
 @pytest.mark.parametrize("use_operator", (False, True))
@@ -456,7 +560,7 @@ def test_pow_scalar_vector_broadcast(lhs_dt, rhs_dt, result_dt, vector_side):
         # Integer exponent without promotion.
         (datatype.float32, datatype.int32, "math.fpowi", "__nv_powif"),
         (datatype.float64, datatype.int32, "math.fpowi", "__nv_powi"),
-        # Integer exponent cast to i32.
+        # Narrow integer exponent widened to i32 during lowering.
         (datatype.float64, datatype.int8, "math.fpowi", "__nv_powi"),
         (datatype.float64, datatype.int16, "math.fpowi", "__nv_powi"),
         # Integer exponent that may not fit in i32 is cast to float.
@@ -595,20 +699,30 @@ def test_math_vector_splat():
 @pytest.mark.parametrize("dtype", FLOAT_TYPES)
 @pytest.mark.parametrize("device_op, host_op", BINARY_FLOAT_OPS)
 def test_math_binary_float(dtype, device_op, host_op):
-
     @cl.kernel
     def kernel(lhs, rhs, out):
-        out[0] = device_op(lhs[0], rhs[0])
+        i = cl.thread_index(0)
+        out[i] = device_op(lhs[i], rhs[i])
 
     torch_dt = datatype.to_torch_dtype(dtype)
-    host_lhs = torch.rand((), generator=rng).item() + 0.5
-    host_rhs = torch.rand((), generator=rng).item() + 0.5
-    expected = host_op(host_lhs, host_rhs)
-    lhs = torch.tensor([host_lhs], dtype=torch_dt, device="cuda:0")
-    rhs = torch.tensor([host_rhs], dtype=torch_dt, device="cuda:0")
-    out = torch.tensor([0.0], dtype=torch_dt, device="cuda:0")
-    cl.launch(torch.cuda.current_stream(), (1,), (1,), kernel, (lhs, rhs, out))
-    assert out[0].item() == approx_float(expected, dtype)
+    host_lhs = [-1.5, -0.0, 1.5, 0.0]
+    host_rhs = [-2.5, -1.0, 0.0, 2.0]
+    expected = [host_op(x, y) for x, y in zip(host_lhs, host_rhs, strict=True)]
+    lhs = torch.tensor(host_lhs, dtype=torch_dt, device="cuda:0")
+    rhs = torch.tensor(host_rhs, dtype=torch_dt, device="cuda:0")
+    out = torch.empty_like(lhs)
+    cl.launch(torch.cuda.current_stream(), (1,), (lhs.numel(),), kernel, (lhs, rhs, out))
+    assert_close_float(out.cpu(), torch.tensor(expected, dtype=torch_dt), dtype)
+
+
+@pytest.mark.parametrize("dtype", (cl.float32, cl.float64))
+@pytest.mark.parametrize("device_op, host_op", BINARY_FLOAT_OPS)
+def test_math_binary_float_vector_matches_scalar(dtype, device_op, host_op):
+    # Odd vector length exercises the scalar libdevice call wrapper.
+    torch_dt = datatype.to_torch_dtype(dtype)
+    lhs = torch.tensor([-1.5, -0.0, 1.5], dtype=torch_dt, device="cuda:0")
+    rhs = torch.tensor([-2.5, -1.0, 0.0], dtype=torch_dt, device="cuda:0")
+    _assert_binary_vector_matches_scalar(device_op, lhs, rhs)
 
 
 def test_math_binary_float_promotion():
@@ -1441,30 +1555,39 @@ MINMAX_OPS = (
 MINMAX_DTYPES = (*FLOAT_TYPES, *SIGNED_INT_TYPES, *UNSIGNED_INT_TYPES)
 
 
+def _minmax_inputs(dtype):
+    if datatype.is_integral(dtype):
+        signed = datatype.is_signed(dtype)
+        high = (1 << (dtype.bitwidth - int(signed))) - 1
+        low = -high - 1 if signed else 0
+    else:
+        low, high = -8, 8
+    torch_dt = datatype.to_torch_dtype(dtype)
+    return (torch.tensor([1, high, 3, low], dtype=torch_dt, device="cuda:0"),
+            torch.tensor([high, 2, low, high], dtype=torch_dt, device="cuda:0"))
+
+
 @pytest.mark.parametrize("dtype", MINMAX_DTYPES)
 @pytest.mark.parametrize("device_op, host_op", MINMAX_OPS)
-@pytest.mark.parametrize("vector", (False, True))
-def test_minmax_basic(dtype, device_op, host_op, vector):
-    count = 4 if vector else 1
-    lhs_vals = [1, 5, 3, 8][:count]
-    rhs_vals = [4, 2, 3, 6][:count]
-
+def test_minmax_basic(dtype, device_op, host_op):
     @cl.kernel
     def kernel(lhs, rhs, out):
-        if vector:
-            lhs_v = lhs.pointer().load(count=4)
-            rhs_v = rhs.pointer().load(count=4)
-            out.pointer().store(device_op(lhs_v, rhs_v))
-        else:
-            out[0] = device_op(lhs[0], rhs[0])
+        i = cl.thread_index(0)
+        out[i] = device_op(lhs[i], rhs[i])
 
-    torch_dt = datatype.to_torch_dtype(dtype)
-    lhs = torch.tensor(lhs_vals, dtype=torch_dt, device="cuda:0")
-    rhs = torch.tensor(rhs_vals, dtype=torch_dt, device="cuda:0")
-    out = torch.zeros(count, dtype=torch_dt, device="cuda:0")
-    cl.launch(torch.cuda.current_stream(), (1,), (1,), kernel, (lhs, rhs, out))
-    expected = [host_op(a, b) for a, b in zip(lhs_vals, rhs_vals, strict=True)]
+    lhs, rhs = _minmax_inputs(dtype)
+    out = torch.empty_like(lhs)
+    cl.launch(torch.cuda.current_stream(), (1,), (lhs.numel(),), kernel, (lhs, rhs, out))
+    expected = [host_op(a, b) for a, b in zip(lhs.cpu().tolist(), rhs.cpu().tolist(), strict=True)]
     assert out.cpu().tolist() == expected
+
+
+@pytest.mark.parametrize("dtype,device_op", [
+    (dtype, op) for dtype in (cl.int32, cl.uint32) for op, _ in MINMAX_OPS
+] + [(cl.float32, builtins.max), (cl.float32, builtins.min)])
+def test_minmax_vector_matches_scalar(dtype, device_op):
+    lhs, rhs = _minmax_inputs(dtype)
+    _assert_binary_vector_matches_scalar(device_op, lhs, rhs)
 
 
 @pytest.mark.parametrize("dtype", FLOAT_TYPES)
@@ -1473,30 +1596,71 @@ def test_minmax_basic(dtype, device_op, host_op, vector):
 def test_minmax_nan(dtype, device_op, propagate_nan):
     @cl.kernel
     def kernel(lhs, rhs, out):
-        out[0] = device_op(lhs[0], rhs[0], propagate_nan=propagate_nan)
+        i = cl.thread_index(0)
+        out[i] = device_op(lhs[i], rhs[i], propagate_nan=propagate_nan)
+
+    nan = float("nan")
+    torch_dt = datatype.to_torch_dtype(dtype)
+    lhs = torch.tensor([3.0, nan, 3.0, nan], dtype=torch_dt, device="cuda:0")
+    rhs = torch.tensor([nan, 3.0, 3.0, nan], dtype=torch_dt, device="cuda:0")
+    out = torch.empty_like(lhs)
+    cl.launch(torch.cuda.current_stream(), (1,), (lhs.numel(),), kernel, (lhs, rhs, out))
+    expected = [nan, nan, 3.0, nan] if propagate_nan else [3.0, 3.0, 3.0, nan]
+    assert_special_float_values(out.cpu(), expected)
+
+
+@pytest.mark.parametrize("dtype", FLOAT_TYPES)
+@pytest.mark.parametrize("device_op, expected_zero",
+                         ((device_math.maximum, 0.0), (device_math.minimum, -0.0)))
+def test_minmax_signed_zero(dtype, device_op, expected_zero):
+    @cl.kernel
+    def kernel(lhs, rhs, out):
+        i = cl.thread_index(0)
+        out[i] = device_op(lhs[i], rhs[i], propagate_nan=True)
 
     torch_dt = datatype.to_torch_dtype(dtype)
-    lhs = torch.tensor([float("nan")], dtype=torch_dt, device="cuda:0")
-    rhs = torch.tensor([3.0], dtype=torch_dt, device="cuda:0")
-    out = torch.zeros(1, dtype=torch_dt, device="cuda:0")
-    cl.launch(torch.cuda.current_stream(), (1,), (1,), kernel, (lhs, rhs, out))
-    got = out.cpu().item()
+    lhs = torch.tensor([-0.0, 0.0], dtype=torch_dt, device="cuda:0")
+    rhs = torch.tensor([0.0, -0.0], dtype=torch_dt, device="cuda:0")
+    out = torch.empty_like(lhs)
+    cl.launch(torch.cuda.current_stream(), (1,), (lhs.numel(),), kernel, (lhs, rhs, out))
+    assert_special_float_values(out.cpu(), [expected_zero, expected_zero])
+
+
+@pytest.mark.parametrize("dtype", FLOAT_TYPES)
+@pytest.mark.parametrize("device_op", (device_math.maximum, device_math.minimum))
+@pytest.mark.parametrize("propagate_nan", (False, True))
+def test_minmax_special_vector_matches_scalar(dtype, device_op, propagate_nan):
+    def operation(x, y):
+        return device_op(x, y, propagate_nan=propagate_nan)
+
+    nan = float("nan")
+    lhs_values = [3.0, nan, nan, 0.0, 0.0, 7.0, -5.0, 3.0]
+    rhs_values = [nan, 3.0, nan, 0.0, 0.0, -5.0, 7.0, 3.0]
+    # minimum/maximum specify zero signs; minnum/maxnum permit either sign on ties.
     if propagate_nan:
-        assert host_math.isnan(got), f"expected NaN, got {got}"
-    else:
-        assert got == 3.0, f"expected 3.0, got {got}"
+        lhs_values[3], rhs_values[4] = -0.0, -0.0
+    torch_dt = datatype.to_torch_dtype(dtype)
+    lhs = torch.tensor(lhs_values, dtype=torch_dt, device="cuda:0")
+    rhs = torch.tensor(rhs_values, dtype=torch_dt, device="cuda:0")
+    _assert_binary_vector_matches_scalar(operation, lhs, rhs)
 
 
-def test_bitwise_not():
+@pytest.mark.parametrize("dtype", (torch.int32, torch.bool))
+@pytest.mark.parametrize("vector", (False, True))
+def test_bitwise_not(dtype, vector):
     @cl.kernel
     def kernel(inp, out):
-        tid = cl.thread_index(0)
-        out[tid] = cl.bitwise_not(inp[tid])
+        if vector:
+            out.pointer().store(cl.bitwise_not(inp.pointer().load(count=5)))
+        else:
+            tid = cl.thread_index(0)
+            out[tid] = cl.bitwise_not(inp[tid])
 
-    input = torch.tensor([0, 1, 0xffff, 13, -1], dtype=torch.int32, device="cuda:0")
+    input = torch.tensor([0, 1, 0xffff, 13, -1], dtype=dtype, device="cuda:0")
     expected = torch.bitwise_not(input)
     output = torch.zeros_like(input)
-    cl.launch(torch.cuda.current_stream(), (1,), (len(input),), kernel, (input, output))
+    cl.launch(torch.cuda.current_stream(), (1,), (1 if vector else len(input),),
+              kernel, (input, output))
     assert expected.tolist() == output.tolist()
 
 
@@ -1682,6 +1846,127 @@ def test_arith_f32x2_modes(op_name, device_op, rounding_mode, flush_to_zero):
         gpu_name="sm_100a",
         arch="compute_100a",
     )
+
+
+# TODO: Add cl.mul coverage when its API supports rounding_mode and flush_to_zero.
+@pytest.mark.parametrize("op_name,device_op", (("add", cl.add), ("sub", cl.sub)))
+@pytest.mark.parametrize("rounding_mode,flush_to_zero",
+                         (*itertools.product(_ROUNDING_MODES, (False, True)), (None, True)))
+def test_arith_f32x2_direct_nvvm_modes(op_name, device_op, rounding_mode, flush_to_zero):
+    _check_arith_f32x2_direct_nvvm(
+        op_name, device_op, rounding_mode, flush_to_zero,
+        vector_length=2, arch="compute_100a",
+    )
+
+
+@pytest.mark.parametrize("op_name,device_op", (("add", cl.add), ("sub", cl.sub)))
+@pytest.mark.parametrize("arch,vector_length", (
+    ("compute_100a", 3), ("compute_100a", 4), ("compute_100a", 6),
+    ("compute_90", 2), ("compute_90", 3),
+))
+def test_arith_f32x2_direct_nvvm_shapes(op_name, device_op, arch, vector_length):
+    _check_arith_f32x2_direct_nvvm(
+        op_name, device_op, cl.RoundingMode.RZ, True, vector_length, arch,
+    )
+
+
+def _check_arith_f32x2_direct_nvvm(
+    op_name, device_op, rounding_mode, flush_to_zero, vector_length, arch,
+):
+    def kernel():
+        values = cl.shared_array(vector_length, cl.float32)
+        ptr = values.pointer()
+        value = ptr.load(count=vector_length)
+        result = device_op(value, value, rounding_mode=rounding_mode,
+                           flush_to_zero=flush_to_zero)
+        ptr.store(result)
+
+    rnd = (rounding_mode or cl.RoundingMode.RN).name.lower()
+    ftz = ".ftz" if flush_to_zero else ""
+    packed = arch == "compute_100a" and vector_length % 2 == 0
+    count = vector_length // 2 if packed else vector_length
+    ptx_type = "f32x2" if packed else "f32"
+    # NVVM may keep scalar subtraction as neg + add or fold it back to sub.
+    ptx_op = "{{(add|sub)}}" if op_name == "sub" and not packed else op_name
+    compile_kernel(
+        kernel,
+        filecheck_ptx=f"CHECK-COUNT-{count}: {ptx_op}.{rnd}{ftz}.{ptx_type}",
+        direct_nvvm=True,
+        gpu_name="sm_100a",
+        arch=arch,
+    )
+
+
+@pytest.mark.parametrize("device_op, host_op", ((cl.add, operator.add), (cl.sub, operator.sub)))
+@pytest.mark.parametrize("rounding_mode", (*_ROUNDING_MODES, None))
+@pytest.mark.parametrize("dtype", (cl.float32, cl.float64))
+def test_arithmetic_rounding_values(device_op, host_op, rounding_mode, dtype):
+    @cl.kernel
+    def kernel(lhs, rhs, out):
+        i = cl.thread_index(0)
+        out[i] = device_op(lhs[i], rhs[i], rounding_mode=rounding_mode)
+
+    torch_dt = datatype.to_torch_dtype(dtype)
+    # Test both sides of the rounding boundary for positive and negative values.
+    half_ulp = torch.finfo(torch_dt).eps / 2
+    lhs_values = [1.0, -1.0, 1.0, -1.0]
+    rhs_values = [half_ulp, -half_ulp, -half_ulp, half_ulp]
+    lhs = torch.tensor(lhs_values, dtype=torch_dt, device="cuda:0")
+    rhs = torch.tensor(rhs_values, dtype=torch_dt, device="cuda:0")
+    out = torch.empty_like(lhs)
+    cl.launch(torch.cuda.current_stream(), (1,), (lhs.numel(),), kernel, (lhs, rhs, out))
+
+    expected = []
+    for x, y in zip(lhs_values, rhs_values, strict=True):
+        exact = host_op(Fraction(x), Fraction(y))
+        rounded = torch.tensor(float(exact), dtype=torch_dt)
+        rounding = rounding_mode or cl.RoundingMode.RN
+        if rounding == cl.RoundingMode.RZ:
+            rounding = cl.RoundingMode.RM if exact >= 0 else cl.RoundingMode.RP
+        if rounding == cl.RoundingMode.RM and Fraction(rounded.item()) > exact:
+            rounded = torch.nextafter(rounded, torch.tensor(-float("inf"), dtype=torch_dt))
+        elif rounding == cl.RoundingMode.RP and Fraction(rounded.item()) < exact:
+            rounded = torch.nextafter(rounded, torch.tensor(float("inf"), dtype=torch_dt))
+        expected.append(rounded.item())
+    assert out.cpu().tolist() == expected
+
+
+@pytest.mark.parametrize("device_op, rhs_sign", ((cl.add, -1.0), (cl.sub, 1.0)))
+@pytest.mark.parametrize("flush_to_zero", (False, True))
+def test_arithmetic_flush_subnormals(device_op, rhs_sign, flush_to_zero):
+    @cl.kernel
+    def kernel(lhs, rhs, out):
+        i = cl.thread_index(0)
+        out[i] = device_op(lhs[i], rhs[i], flush_to_zero=flush_to_zero)
+
+    normal, subnormal = 2.0**-126, 2.0**-149
+    lhs = torch.tensor([normal + subnormal, subnormal, -normal - subnormal, -subnormal],
+                       dtype=torch.float32, device="cuda:0")
+    rhs = torch.tensor([rhs_sign * normal, 0.0, -rhs_sign * normal, 0.0],
+                       dtype=torch.float32, device="cuda:0")
+    out = torch.empty_like(lhs)
+    cl.launch(torch.cuda.current_stream(), (1,), (lhs.numel(),), kernel, (lhs, rhs, out))
+    expected = [0.0] * 4 if flush_to_zero else [subnormal, subnormal, -subnormal, -subnormal]
+    assert out.cpu().tolist() == expected
+
+
+@pytest.mark.parametrize("device_op, rhs_sign", ((cl.add, -1.0), (cl.sub, 1.0)))
+@pytest.mark.parametrize("rounding_mode", (*_ROUNDING_MODES, None))
+@pytest.mark.parametrize("flush_to_zero", (False, True))
+def test_arithmetic_vector_modifiers(device_op, rhs_sign, rounding_mode, flush_to_zero):
+    # Packed FP32 uses different intrinsics, so test every modifier combination here.
+    def operation(x, y):
+        return device_op(x, y, rounding_mode=rounding_mode, flush_to_zero=flush_to_zero)
+
+    half_ulp = torch.finfo(torch.float32).eps / 2
+    normal, subnormal = 2.0**-126, 2.0**-149
+    lhs = torch.tensor([1.0, -1.0, 1.0, -1.0,
+                        normal + subnormal, subnormal, -normal - subnormal, -subnormal],
+                       dtype=torch.float32, device="cuda:0")
+    rhs = torch.tensor([half_ulp, -half_ulp, -half_ulp, half_ulp,
+                        rhs_sign * normal, 0.0, -rhs_sign * normal, 0.0],
+                       dtype=torch.float32, device="cuda:0")
+    _assert_binary_vector_matches_scalar(operation, lhs, rhs)
 
 
 @pytest.mark.parametrize(

@@ -23,7 +23,6 @@ from cuda.lang._ir.op_defs import (
     RawLLVMIntrinsic,
     ForeignFunction,
     FmaOperation,
-    MathBinaryOperation,
     MathUnaryOperation,
 )
 from cuda.lang._ir.type_checking_helpers import (
@@ -416,16 +415,7 @@ def math_pow_impl(x: Var, y: Var, approx: Var):
 def math_float_binary_impl(fn: str, x: Var, y: Var):
     require_scalar_or_vector_float_type(x)
     require_scalar_or_vector_float_type(y)
-    ty = common_type(x, y)
-    x = promote_and_broadcast_to(x, ty)
-    y = promote_and_broadcast_to(y, ty)
-    return add_operation(
-        MathBinaryOperation,
-        ty,
-        fn=fn,
-        lhs=x,
-        rhs=y,
-    )
+    return binary_arithmetic_tensorlike(fn, x, y)
 
 
 def minmax_impl(
@@ -445,14 +435,7 @@ def minmax_impl(
     if not (datatype.is_float(dtype) or datatype.is_integral(dtype)):
         raise TypeCheckingError(f"{fn}() expects arithmetic operands, got {ty}")
 
-    return add_operation(
-        MathBinaryOperation,
-        ty,
-        fn=fn,
-        lhs=x,
-        rhs=y,
-        propagate_nan=propagate_nan,
-    )
+    return binary_arithmetic_tensorlike_raw(fn, x, y, propagate_nan=propagate_nan)
 
 
 @impl(cl_math.maximum, fixed_args=["max"])

@@ -786,6 +786,28 @@ def test_array_scalar_pow(shape, tile, float_dtype, tmp_path):
     torch.testing.assert_close(z, (x.to(res_dtype) ** y))
 
 
+@pytest.mark.parametrize("constant", (False, True))
+@pytest.mark.parametrize("exponent", (False, True))
+def test_pow_boolean_exponent(shape, tile, constant, exponent):
+    @ct.kernel
+    def kernel(x, y, z, TILE: ct.Constant[int], constant: ct.Constant[bool],
+               exponent: ct.Constant[bool]):
+        bid = ct.bid(0)
+        base = ct.load(x, index=(bid,), shape=(TILE,))
+        if constant:
+            result = ct.pow(base, exponent)
+        else:
+            result = ct.pow(base, ct.load(y, index=(bid,), shape=(TILE,)))
+        ct.store(z, index=(bid,), tile=result)
+
+    x = torch.full(shape, 2.0, dtype=torch.float32, device="cuda")
+    y = torch.full(shape, exponent, dtype=torch.bool, device="cuda")
+    z = torch.empty_like(x)
+    ct.launch(torch.cuda.current_stream(), (shape[0] // tile,), kernel,
+              (x, y, z, tile, constant, exponent))
+    torch.testing.assert_close(z, x if exponent else torch.ones_like(x))
+
+
 @pytest.mark.use_mlir
 @pytest.mark.parametrize("x_dtype,version,expect_op", [
     (torch.float16, BytecodeVersion.V_13_4, "fpowi"),
@@ -805,6 +827,7 @@ def test_pow_int_exponent_lowering(shape, tile, x_dtype, version, expect_op, tmp
 
 @pytest.mark.use_mlir
 @pytest.mark.parametrize("y_dtype,check", [
+    (torch.bool, "// CHECK: fpowi {{.*}}, tile<{{[0-9]+}}xi8>"),
     (torch.int8, "// CHECK: fpowi {{.*}}, tile<{{[0-9]+}}xi8>"),
     (torch.int16, "// CHECK: fpowi {{.*}}, tile<{{[0-9]+}}xi16>"),
     (torch.int32, "// CHECK: fpowi {{.*}}, tile<{{[0-9]+}}xi32>"),
@@ -813,7 +836,7 @@ def test_pow_int_exponent_lowering(shape, tile, x_dtype, version, expect_op, tmp
     (torch.int64, "// CHECK: fpowf "),
     (torch.uint32, "// CHECK: fpowf "),
     (torch.uint64, "// CHECK: fpowf "),
-], ids=["i8", "i16", "i32", "u8", "u16", "i64", "u32", "u64"])
+], ids=["bool", "i8", "i16", "i32", "u8", "u16", "i64", "u32", "u64"])
 def test_pow_int_exponent_dtype_restriction(shape, tile, y_dtype, check, tmp_path):
     x = torch.rand(shape, dtype=torch.float32, device='cuda:0') + 0.5
     y = torch.randint(0, 5, shape, device='cuda:0').to(y_dtype)

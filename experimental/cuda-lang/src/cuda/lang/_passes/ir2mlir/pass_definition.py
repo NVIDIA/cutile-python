@@ -752,6 +752,24 @@ def _lower_raw_binary_arith(
     assert lhs_type == rhs_type == res_type
 
     res_dtype = res_type.tensor_dtype()
+    if operation.fn == "atan2":
+        return _emit_mlir_operation(
+            context, operation, "math.atan2", (operation.lhs, operation.rhs)
+        )
+    if operation.fn in {"min", "max"}:
+        assert operation.rounding_mode is None and not operation.flush_to_zero
+        if datatype.is_float(res_dtype):
+            if operation.propagate_nan:
+                name = "arith.maximumf" if operation.fn == "max" else "arith.minimumf"
+            else:
+                name = "arith.maxnumf" if operation.fn == "max" else "arith.minnumf"
+        elif datatype.is_signed(res_dtype):
+            name = "arith.maxsi" if operation.fn == "max" else "arith.minsi"
+        else:
+            name = "arith.maxui" if operation.fn == "max" else "arith.minui"
+        return _emit_mlir_operation(
+            context, operation, name, (operation.lhs, operation.rhs)
+        )
     if operation.fn == "pow" and datatype.is_float(res_dtype):
         assert operation.rounding_mode in (None, RoundingMode.APPROX)
         assert not operation.flush_to_zero
@@ -795,9 +813,21 @@ def lower_raw_binary_arith(
 def lower_raw_fpowi(
     context: MLIRLoweringContext, operation: ops.RawFPowIOperation
 ) -> Sequence[mlir.Value]:
-    return _emit_mlir_operation(
-        context, operation, "math.fpowi", (operation.base, operation.exponent)
+    exponent_type = operation.exponent.get_type()
+    i32_type = operation.exponent.ctx.typing_hooks.get_tensor_like_type(
+        datatype.int32, exponent_type.tensor_shape()
     )
+    exponent = context.get_var(operation.exponent)
+    i32_mlir_type = ir_type_to_mlir_type(i32_type)
+    if exponent.type != i32_mlir_type:
+        exponent = mlir.arith.add_ExtSIOp(out_type=i32_mlir_type, in_=exponent)
+    return [mlir.add_operation(
+        name="math.fpowi",
+        result_type=ir_type_to_mlir_type(operation.result_var.get_type()),
+        operands=(context.get_var(operation.base), exponent),
+        attributes=(),
+        properties=(),
+    )]
 
 
 @mlir_op_lowering
@@ -1777,32 +1807,6 @@ def lower_math_unary(
 
 
 @mlir_op_lowering
-def lower_math_binary(
-    context: MLIRLoweringContext, operation: ops.MathBinaryOperation
-) -> Sequence[mlir.Value]:
-    dtype = operation.result_var.get_type().tensor_dtype()
-    if operation.fn == "atan2":
-        name = "math.atan2"
-        attributes = ()
-    elif operation.fn in {"min", "max"}:
-        if datatype.is_float(dtype):
-            if operation.propagate_nan:
-                name = "arith.maximumf" if operation.fn == "max" else "arith.minimumf"
-            else:
-                name = "arith.maxnumf" if operation.fn == "max" else "arith.minnumf"
-        elif datatype.is_signed(dtype):
-            name = "arith.maxsi" if operation.fn == "max" else "arith.minsi"
-        else:
-            name = "arith.maxui" if operation.fn == "max" else "arith.minui"
-        attributes = ()
-    else:
-        raise NotImplementedError(f"Unknown math binary operation {operation.fn}")
-    return _emit_mlir_operation(
-        context, operation, name, (operation.lhs, operation.rhs), attributes
-    )
-
-
-@mlir_op_lowering
 def lower_vector_construct(
     context: MLIRLoweringContext, operation: ops.VectorConstruct
 ) -> Sequence[mlir.Value]:
@@ -2108,8 +2112,6 @@ def lower_bitcast(
     dst_dtype = dst_ty.tensor_dtype()
     src_is_ptr = datatype.is_pointer_dtype(src_dtype)
     dst_is_ptr = datatype.is_pointer_dtype(dst_dtype)
-    if src_is_ptr and dst_is_ptr:
-        return [mlir.llvm.add_AddrSpaceCastOp(res_type=dst_mlir_ty, arg=x)]
     if src_is_ptr:
         if not datatype.is_integral(dst_dtype):
             raise InternalError("bitcast from pointer must go through integer")

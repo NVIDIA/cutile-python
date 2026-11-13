@@ -807,6 +807,9 @@ def grid_dependency_control_launch_dependents() -> None:
 @simt_stub(compiled_host=True)
 def bitcast(x, /, dtype):
     """Reinterpret a value as being of specified data type.
+
+    Pointer-to-pointer bitcasts must preserve the memory space. Use
+    :func:`address_space_cast` to convert a pointer to another memory space.
     """
 
 

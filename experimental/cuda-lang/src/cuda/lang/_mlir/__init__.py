@@ -550,27 +550,28 @@ class FloatAttr(Attribute, TypedAttr):
     def _print_mlir_unqualified(self, p):
         import math
         import struct
+        from .. import _datatype as datatype
         from .._fp_utils import isnormal
 
         value = float(self.value)
         match self.type:
             case Float16Type():
-                if isnormal(value, 16):
+                if isnormal(value, datatype.float16):
                     return p(self.value)
                 bits = struct.unpack(">H", struct.pack(">e", value))[0]
                 p(f"0x{bits:04X}")
             case BFloat16Type():
-                if isnormal(value, 32):
+                if isnormal(value, datatype.bfloat16):
                     return p(self.value)
                 bits = struct.unpack(">I", struct.pack(">f", value))[0] >> 16
                 p(f"0x{bits:04X}")
             case Float32Type():
-                if isnormal(value, 32):
+                if isnormal(value, datatype.float32):
                     return p(self.value)
                 bits = struct.unpack(">I", struct.pack(">f", value))[0]
                 p(f"0x{bits:08X}")
             case Float64Type():
-                if isnormal(value, 64):
+                if isnormal(value, datatype.float64):
                     return p(self.value)
                 bits = struct.unpack(">Q", struct.pack(">d", value))[0]
                 p(f"0x{bits:016X}")

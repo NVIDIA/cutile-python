@@ -7,6 +7,8 @@ import torch
 
 import cuda.lang as cl
 from cuda.lang._compile import get_compute_capability
+from cuda.lang.compilation import KernelSignature
+from test.util import compile_kernel, make_symbolic_tensor
 
 __doc__ = """
 Simple ptx verification of tcgen05 mma instructions is tested elsewhere, but
@@ -16,8 +18,7 @@ instructions.
 """
 
 cc = get_compute_capability()
-if tuple(cc) != (10, 0):
-    pytest.skip("requires tcgen05", allow_module_level=True)
+requires_tcgen05 = pytest.mark.skipif(tuple(cc) != (10, 0), reason="requires tcgen05")
 
 
 WARP_SIZE = 32
@@ -302,6 +303,23 @@ def run_tcgen05_mma_kernel(kernel, expected):
     torch.testing.assert_close(output, torch.full_like(output, expected))
 
 
+@pytest.mark.parametrize("entrypoint", (
+    cl.tcgen05_mma, cl.tcgen05_mma_block_scale, cl.tcgen05_mma_weight_stationary,
+))
+@pytest.mark.parametrize("is_sparse", (False, True))
+def test_tcgen05_mma_direct_nvvm_compile(entrypoint, is_sparse):
+    kernel = make_tcgen05_mma_kernel(entrypoint, is_sparse)
+    compile_kernel(
+        kernel,
+        signature=KernelSignature([make_symbolic_tensor(M * OUTPUT_COLUMNS, cl.float32)]),
+        assert_in_ptx=("tcgen05.alloc", "tcgen05.mma", "tcgen05.ld", "tcgen05.dealloc"),
+        direct_nvvm=True,
+        gpu_name="sm_100a",
+        arch="compute_100a",
+    )
+
+
+@requires_tcgen05
 @pytest.mark.parametrize(
     "entrypoint,is_sparse,expected",
     (
@@ -321,6 +339,7 @@ def test_tcgen05_mma_instruction(entrypoint, is_sparse, expected):
     run_tcgen05_mma_kernel(kernel, expected)
 
 
+@requires_tcgen05
 def test_tcgen05_f8_mma_instruction():
     """Exercise the unscaled E4M3 MMA used by the FP8 GEMM."""
     kernel = make_tcgen05_mma_kernel(
@@ -331,6 +350,7 @@ def test_tcgen05_f8_mma_instruction():
     run_tcgen05_mma_kernel(kernel, 32.0)
 
 
+@requires_tcgen05
 @pytest.mark.parametrize(
     "block_scale_kind,scale_vector_size,expected",
     (

@@ -26,7 +26,6 @@ from cuda.tile._memory_model import MemoryScope
 from cuda.tile._ir.ir import MemoryEffect, add_operation_variadic
 from cuda.tile._ir.type import TensorLikeTy
 from cuda.tile._ir.core_ops import loosely_typed_const
-from cuda.tile._ir.arithmetic_ops import astype
 from cuda.lang import _datatype as datatype
 from cuda.lang._enums import VectorReduction
 from .ir import Operation, Var, attribute, operand
@@ -129,6 +128,7 @@ class MathUnaryOperation(Operation, opcode="math_unary"):
         from cuda.lang._passes.ir2llvm import DIRECTLY_SUPPORTED_FLOATS
         from cuda.lang._stub import llvm
         from cuda.lang._llvm_bitcode import FPClass
+        from cuda.lang._passes.ir2llvm import libdevice_math, libdevice_sincos
 
         if self.flush_to_zero:
             return NotImplemented
@@ -149,67 +149,15 @@ class MathUnaryOperation(Operation, opcode="math_unary"):
             case "abs" if is_integral(input_dtype):
                 return call_intrinsic(llvm.abs, x, loosely_typed_const(False))
             case "abs" if is_float(input_dtype):
-                return _apply_libdevice_func(x, "fabs", fast=False)
+                return libdevice_math("fabs", input_dtype, x)
             case "sqrt" | "rsqrt" | "exp2" | "tanh" | "cosh" | "sinh":
-                return _apply_libdevice_func(x, self.fn, fast=False)
+                return libdevice_math(self.fn, input_dtype, x)
             case "exp" | "log" | "log2" | "sin" | "cos" | "tan":
-                return _apply_libdevice_func(x, self.fn, fast=self.approx)
+                return libdevice_math(self.fn, input_dtype, x, fast=self.approx)
             case "sincos":
-                return _apply_libdevice_func(x, self.fn, fast=self.approx, return_via_args=2)
+                return libdevice_sincos(x, input_dtype, fast=self.approx)
 
         return NotImplemented
-
-
-def _apply_libdevice_func(x, base_name: str, fast: bool, *, return_via_args: int = 0):
-    from cuda.lang._stub import _libdevice
-    from cuda.lang._ir.op_impl.vector_impl import vector_elementwise_apply
-    from cuda.lang._ir.op_impl.pointer_impl import load_pointer
-    from cuda.lang._ir.ops import alloc_local_memory
-
-    dtype = x.get_type().tensor_dtype()
-    f32_fallback = False
-    if dtype == datatype.float64:
-        full_name = base_name
-    else:
-        full_name = f"fast_{base_name}f" if fast else f"{base_name}f"
-        if dtype != datatype.float32:
-            x = astype(x, datatype.float32)
-        f32_fallback = True
-
-    func = getattr(_libdevice, "__nv_" + full_name)
-
-    def call(t):
-        bufs = [alloc_local_memory(dtype, 1) for _ in range(return_via_args)]
-        libdevice_ret = call_libdevice_function(func, t, *bufs)
-        ret = []
-        if isinstance(libdevice_ret, Var):
-            ret.append(libdevice_ret)
-        elif isinstance(libdevice_ret, tuple):
-            ret.extend(libdevice_ret)
-        else:
-            assert libdevice_ret is None
-        ret.extend([load_pointer(t) for t in bufs])
-        return ret[0] if len(ret) == 1 else tuple(ret)
-
-    x = vector_elementwise_apply(call, x)
-    if f32_fallback:
-        x = tuple_itemwise_apply(lambda t: astype(t, dtype), x)
-    return x
-
-
-def tuple_itemwise_apply(fn, x):
-    if isinstance(x, tuple):
-        return tuple(tuple_itemwise_apply(fn, item) for item in x)
-    else:
-        return fn(x)
-
-
-@dataclass(eq=False)
-class MathBinaryOperation(Operation, opcode="math_binary"):
-    fn: str = attribute()
-    lhs: Var = operand()
-    rhs: Var = operand()
-    propagate_nan: bool = attribute(default=False)
 
 
 @dataclass(eq=False)
@@ -426,6 +374,24 @@ class VectorReduce(Operation, opcode="vector_reduce"):
 @dataclass(eq=False)
 class BitCast(Operation, opcode="bitcast"):
     x: Var = operand()
+
+    @override
+    def generate_llvm(self, ctx: LLVMLoweringContext):
+        value = ctx.value(self.x)
+        result_type = ctx.typeof(self.result_var)
+        if value.type == result_type:
+            return value
+
+        src_is_ptr = datatype.is_pointer_dtype(self.x.get_type().tensor_dtype())
+        dst_is_ptr = datatype.is_pointer_dtype(self.result_var.get_type().tensor_dtype())
+        assert not (src_is_ptr and dst_is_ptr), "pointer bitcast must preserve memory space"
+        if src_is_ptr:
+            cast = llvm.Cast.PTRTOINT
+        elif dst_is_ptr:
+            cast = llvm.Cast.INTTOPTR
+        else:
+            cast = llvm.Cast.BITCAST
+        return ctx.builder.cast(result_type, cast, value)
 
 
 @dataclass(eq=False)

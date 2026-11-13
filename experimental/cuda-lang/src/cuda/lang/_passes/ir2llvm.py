@@ -237,6 +237,47 @@ def _try_rewrite_before_llvm_gen(ctx: LLVMLoweringContext, op: ir.Operation) -> 
     return True
 
 
+def libdevice_math(base_name: str, result_dtype: datatype.DType, *operands: ir.Var,
+                   fast: bool = False) -> ir.Var:
+    """Call a scalar-result math function using its declared argument types."""
+    from cuda.lang._ir.op_defs import call_libdevice_function
+    from cuda.lang._ir.op_impl.vector_impl import vector_elementwise_apply
+    from cuda.lang._stub import _libdevice
+    from cuda.tile._ir.arithmetic_ops import astype
+
+    if result_dtype == datatype.float64:
+        name = base_name
+    else:
+        name = f"fast_{base_name}f" if fast else f"{base_name}f"
+    stub = getattr(_libdevice, "__nv_" + name)
+    result = vector_elementwise_apply(
+        lambda *args: call_libdevice_function(stub, *args), *operands)
+    return astype(result, result_dtype)
+
+
+def libdevice_sincos(x: ir.Var, result_dtype: datatype.DType, *,
+                     fast: bool = False) -> tuple[ir.Var, ir.Var]:
+    """Lower scalar sincos with output buffers matching the libdevice signature."""
+    from cuda.lang._ir.op_defs import call_libdevice_function
+    from cuda.lang._ir.op_impl.pointer_impl import load_pointer
+    from cuda.lang._ir.ops import alloc_local_memory
+    from cuda.lang._stub import _libdevice
+    from cuda.tile._ir.arithmetic_ops import astype
+
+    if result_dtype == datatype.float64:
+        stub = _libdevice.__nv_sincos
+        compute_dtype = datatype.float64
+    else:
+        stub = _libdevice.__nv_fast_sincosf if fast else _libdevice.__nv_sincosf
+        compute_dtype = datatype.float32
+
+    sin_ptr = alloc_local_memory(compute_dtype, 1)
+    cos_ptr = alloc_local_memory(compute_dtype, 1)
+    call_libdevice_function(stub, x, sin_ptr, cos_ptr)
+    return (astype(load_pointer(sin_ptr), result_dtype),
+            astype(load_pointer(cos_ptr), result_dtype))
+
+
 @dataclass(frozen=True)
 class _Predecessor:
     incoming_block_id: int

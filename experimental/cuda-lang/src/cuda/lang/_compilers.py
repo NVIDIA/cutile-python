@@ -51,6 +51,24 @@ class PtxCompiler:
                 return f.read()
 
 
+def compile_nvvm(bitcode: bytes, arch: str) -> bytes:
+    nvvm, libdevice = get_nvvm_and_libdevice()
+    options = ["-arch=" + arch]
+    try:
+        program = nvvm.create_program()
+        program.add_module(bitcode, "main")
+        program.add_module(libdevice, "libdevice")
+        return program.compile(options)
+    except RuntimeError as e:
+        raise CompilerExecutionError(
+            return_code=None,
+            message=str(e),
+            loc=Loc.unknown(),
+            compiler_flags=" ".join(options),
+            compiler_version=None,
+        ) from e
+
+
 # TODO: isolate in a subprocess
 @cache
 def get_nvvm_and_libdevice() -> tuple[NVVM, bytes]:
@@ -60,8 +78,24 @@ def get_nvvm_and_libdevice() -> tuple[NVVM, bytes]:
     return NVVM(nvvm_so_path), libdevice
 
 
+def _find_nvvm_compiler_file(name: str) -> str | None:
+    compiler_dir = os.environ.get("CUDA_LANG_NVVM_COMPILER_DIR")
+    if not compiler_dir:
+        return None
+    path = os.path.join(compiler_dir, name)
+    if not os.path.isfile(path):
+        raise FileNotFoundError(
+            f"CUDA_LANG_NVVM_COMPILER_DIR is missing required file: {path}")
+    return path
+
+
 def _find_nvvm_and_libdevice() -> tuple[str, str]:
-    # Included libnvvm trumps any other option
+    nvvm_name = "nvvm.dll" if is_windows() else "libnvvm.so"
+    nvvm_path = _find_nvvm_compiler_file(nvvm_name)
+    if nvvm_path is not None:
+        return nvvm_path, _find_nvvm_compiler_file("libdevice.10.bc")
+
+    # Prefer bundled libnvvm when no compiler directory is configured.
     included_lib_name = "nvvm.dll" if is_windows() else "libnvvm.so"
     bin_path = os.path.join(os.path.dirname(os.path.realpath(__file__)), "bin")
     included_path = os.path.join(bin_path, included_lib_name)
@@ -100,7 +134,12 @@ def _find_nvvm_and_libdevice() -> tuple[str, str]:
 
 
 def _find_ptxas() -> str:
-    # Included ptxas trumps any other option
+    binary_name = "ptxas.exe" if is_windows() else "ptxas"
+    path = _find_nvvm_compiler_file(binary_name)
+    if path is not None:
+        return path
+
+    # Prefer bundled ptxas when no compiler directory is configured.
     included_lib_name = "ptxas.exe" if is_windows() else "ptxas"
     included_path = os.path.join(os.path.dirname(os.path.realpath(__file__)),
                                  "bin", included_lib_name)

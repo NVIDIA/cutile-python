@@ -1185,9 +1185,9 @@ def test_vector_of_pointer_bitcast():
         vector = pointers.pointer().load(count=N)
         integers = vector.bitcast(cl.uint64)
         generic = integers.bitcast(cl.pointer_dtype(cl.int8))
-        global_ = generic.bitcast(cl.pointer_dtype(cl.int8, "GLOBAL"))
         for i in range(N):
-            global_[i][0] = i
+            global_pointer = cl.address_space_cast(generic[i], cl.MemorySpace.GLOBAL)
+            global_pointer[0] = i
 
     N = 4
     out = torch.zeros(N, dtype=torch.int8, device="cuda")

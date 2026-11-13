@@ -297,14 +297,15 @@ TileCompilerError = InternalCompilerError
 
 
 class CompilerExecutionError(InternalCompilerError):
-    """Exception when compiler throws an error."""
+    """Compiler failure; return_code is None when no process exit code is available."""
     def __init__(self,
-                 return_code: int,
+                 return_code: Optional[int],
                  message: str,
                  loc: Loc,
                  compiler_flags: str,
                  compiler_version: Optional[str]):
-        super().__init__(f"Return code {return_code}\n{message}", loc,
+        prefix = f"Return code {return_code}\n" if return_code is not None else ""
+        super().__init__(prefix + message, loc,
                          compiler_flags, compiler_version)
 
 

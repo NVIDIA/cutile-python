@@ -417,6 +417,7 @@ class TmemOResource(ts.MemoryResource):
         if q_valid:
             packed = smem.pointer(load_offset // 4).load(count=4, alignment=16)
             dst = inputs.o.pointer((batch, kv_head * inputs.head_ratio + head, column))
+            dst = cl.address_space_cast(dst, cl.MemorySpace.GLOBAL)
             cl.bitcast(dst, cl.pointer_dtype(cl.int32, cl.MemorySpace.GLOBAL)).store(
                 packed, alignment=16
             )

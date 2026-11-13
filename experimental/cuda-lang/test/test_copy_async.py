@@ -81,7 +81,7 @@ def test_copy_async_mbarrier_arrive_completion(arrival_operation, arrivals):
 
         if tid == 0:
             for i in range(arrivals):
-                ptr = src.pointer(4 * i)
+                ptr = cl.address_space_cast(src.pointer(4 * i), cl.MemorySpace.GLOBAL)
                 ptr = cl.bitcast(ptr, cl.opaque_pointer_dtype('GLOBAL'))
                 cl._nvvm.cp_async_ca_shared_global_16(memory.pointer(4 * i), ptr)
                 arrival_operation(mbar)

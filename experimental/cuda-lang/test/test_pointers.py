@@ -600,7 +600,7 @@ def test_array_from_parts_uses_pointer_dtype():
     def kernel(array):
         pointer = cl.bitcast(
             array.pointer(),
-            cl.pointer_dtype(cl.float32, cl.MemorySpace.GLOBAL),
+            cl.pointer_dtype(cl.float32, array.pointer().memory_space),
         )
         view = cl.Array.from_parts(pointer, 1)
         cl.static_assert(view.dtype == cl.float32)

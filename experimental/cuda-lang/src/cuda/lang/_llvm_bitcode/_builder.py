@@ -575,7 +575,7 @@ class BitcodeBuilder:
     def select(self, cond: Value, true_value: Value, false_value: Value) -> Value:
         return self._instruction(
             true_value.type,
-            codes.FUNC_CODE_INST_SELECT,
+            codes.FUNC_CODE_INST_VSELECT,
             "VvV",
             true_value, false_value, cond
         )

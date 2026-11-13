@@ -45,7 +45,7 @@ from cuda.lang.compilation import (
 )
 from cuda.lang._exception import CompilerExecutionError
 from cuda.lang._target import TargetInfo
-from ._compilers import get_nvvm_and_libdevice, PtxCompiler
+from ._compilers import compile_nvvm, PtxCompiler
 from ._execution import kernel
 from cuda.lang._ir.ops import cuda_lang_impl_registry
 from ._ir._host_program import HostProgram, get_host_programs_by_var
@@ -374,11 +374,7 @@ def compile_simt(
         bitcode = ir2llvm.generate_nvvm_bitcode_for_kernel(
                 flattened_ir, signature.symbol, target_info)
 
-        nvvm, libdevice = get_nvvm_and_libdevice()
-        program = nvvm.create_program()
-        program.add_module(bitcode, "main")
-        program.add_module(libdevice, "libdevice")
-        ptx = program.compile(["-arch=" + arch])
+        ptx = compile_nvvm(bitcode, arch)
 
         ptx_compiler: PtxCompiler = PtxCompiler.get()
         cubin = ptx_compiler.compile(ptx, gpu_name)

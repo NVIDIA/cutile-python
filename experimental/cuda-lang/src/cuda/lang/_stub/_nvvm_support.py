@@ -63,7 +63,7 @@ def match_intrinsic_signature(stub, args: tuple[Var, ...]) -> MatchedSignature:
     stub_sig = inspect.signature(stub)
 
     prepared_operands = []
-    type_arguments = []
+    type_arguments: list[TypeArgument | None] = []
     metadata_args = []
     for param_idx, (arg, param) in enumerate(zip(args, stub_sig.parameters.values(), strict=True)):
         ann = _get_annotation(param.annotation)
@@ -78,7 +78,7 @@ def match_intrinsic_signature(stub, args: tuple[Var, ...]) -> MatchedSignature:
             actual_ty = require_scalar_or_vector_type(arg)
             arg = _implicit_cast_with_fallback(arg, ann.dtype, f"Invalid argument #{param_idx}")
 
-            ref_ty = type_arguments[ann.index]
+            ref_ty = type_arguments[ann.index].ty
             if ref_ty.tensor_shape() != actual_ty.tensor_shape():
                 raise make_type_checking_error(
                         f"Argument shape mismatch:"
@@ -93,7 +93,7 @@ def match_intrinsic_signature(stub, args: tuple[Var, ...]) -> MatchedSignature:
                 else:
                     match ann.vector_kind:
                         case _IntrinsicVectorKind.Any:
-                            dtype = require_scalar_or_vector_type(arg).dtype
+                            dtype = require_scalar_or_vector_type(arg).tensor_dtype()
                         case _IntrinsicVectorKind.Scalar:
                             dtype = require_scalar_type(arg).tensor_dtype()
                         case _IntrinsicVectorKind.Vector:
@@ -121,7 +121,7 @@ def match_intrinsic_signature(stub, args: tuple[Var, ...]) -> MatchedSignature:
             else:
                 while len(type_arguments) <= ann.index:
                     type_arguments.append(None)
-                type_arguments[ann.index] = arg.get_type()
+                type_arguments[ann.index] = TypeArgument(param_idx, arg.get_type())
         elif isinstance(ann, _IntrinsicMetadataAnnotation):
             meta = require_llvm_metadata(arg)
             metadata_args.append(meta)
@@ -150,9 +150,10 @@ def match_intrinsic_signature(stub, args: tuple[Var, ...]) -> MatchedSignature:
             else:
                 ty = VectorTy(ann.dtype, ann.vector_length)
         elif isinstance(ann, _IntrinsicSameShapeAnnotation):
-            ty = type_arguments[ann.index]
-            if ty is None:
+            type_arg = type_arguments[ann.index]
+            if type_arg is None:
                 raise TypeCheckingError("Failed to infer return type of intrinsic")
+            ty = type_arg.ty
 
             if isinstance(ty, ScalarTy):
                 ty = ScalarTy(ann.dtype)
@@ -160,9 +161,10 @@ def match_intrinsic_signature(stub, args: tuple[Var, ...]) -> MatchedSignature:
                 assert isinstance(ty, VectorTy)
                 ty = VectorTy(ann.dtype, ty.length)
         elif isinstance(ann, _IntrinsicGenericAnnotation):
-            ty = type_arguments[ann.index]
-            if ty is None:
+            type_arg = type_arguments[ann.index]
+            if type_arg is None:
                 raise TypeCheckingError("Failed to infer return type of intrinsic")
+            ty = type_arg.ty
         else:
             assert False
         result_types.append(ty)

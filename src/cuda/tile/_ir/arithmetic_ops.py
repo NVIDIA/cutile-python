@@ -552,6 +552,10 @@ class RawBinaryArithmeticOperation(Operation, opcode="raw_binary_arith"):
 
     @override
     def rewrite_before_llvm_gen(self):
+        from cuda.lang._ir.op_defs import call_intrinsic
+        from cuda.lang._passes.ir2llvm import libdevice_math
+        from cuda.lang._stub import llvm
+
         ty = self.result_var.get_type()
         dtype = ty.tensor_dtype()
         match self.fn:
@@ -574,9 +578,12 @@ class RawBinaryArithmeticOperation(Operation, opcode="raw_binary_arith"):
                 correction_const = strictly_typed_const(correction, ty)
                 q_minus_one = binary_arithmetic_tensorlike_raw("add", q, correction_const)
                 return where_raw(cond, q_minus_one, q)
-            case "floordiv" if datatype.is_float(dtype):
-                tmp = binary_arithmetic_tensorlike_raw("truediv", self.lhs, self.rhs)
-                return unary_raw("floor", tmp)
+            case "floordiv" if is_float(dtype):
+                # Modifiers belong on the division when decomposing floor division.
+                quotient = binary_arithmetic_tensorlike_raw(
+                    "truediv", self.lhs, self.rhs, rounding_mode=self.rounding_mode,
+                    flush_to_zero=self.flush_to_zero)
+                return call_intrinsic(llvm.floor, quotient)
             case "cdiv" if is_integral(dtype) and not datatype.is_signed(dtype):
                 # 0 if lhs == 0 else floordiv(lhs - 1, m) + 1
                 zero = strictly_typed_const(0, ty)
@@ -586,8 +593,72 @@ class RawBinaryArithmeticOperation(Operation, opcode="raw_binary_arith"):
                 q = binary_arithmetic_tensorlike_raw("floordiv", lhs_minus_one, self.rhs)
                 res = binary_arithmetic_tensorlike_raw("add", q, one)
                 return where_raw(is_zero, zero, res)
-            case _:
-                return NotImplemented
+            case "pow" if is_float(dtype) and not self.flush_to_zero and (
+                    self.rounding_mode in (None, RoundingMode.APPROX)):
+                return libdevice_math(
+                    "pow", dtype, self.lhs, self.rhs,
+                    fast=self.rounding_mode == RoundingMode.APPROX)
+            case "atan2" if is_float(dtype) and not self.flush_to_zero:
+                return libdevice_math("atan2", dtype, self.lhs, self.rhs)
+            case "min" | "max" if not self.flush_to_zero:
+                return self._rewrite_minmax()
+            case "add" | "sub" | "mul" | "truediv" if is_float(dtype) and (
+                    self.rounding_mode is not None or self.flush_to_zero):
+                return self._rewrite_float_with_modifiers()
+
+        return NotImplemented
+
+    def _rewrite_minmax(self):
+        from cuda.lang._ir.op_defs import call_intrinsic
+        from cuda.lang._stub import llvm
+
+        dtype = self.result_var.get_type().tensor_dtype()
+        if is_float(dtype):
+            if self.propagate_nan:
+                intrinsic = llvm.maximum if self.fn == "max" else llvm.minimum
+            else:
+                intrinsic = llvm.maxnum if self.fn == "max" else llvm.minnum
+        elif is_signed(dtype):
+            intrinsic = llvm.smax if self.fn == "max" else llvm.smin
+        else:
+            intrinsic = llvm.umax if self.fn == "max" else llvm.umin
+        return call_intrinsic(intrinsic, self.lhs, self.rhs)
+
+    def _rewrite_float_with_modifiers(self):
+        from cuda.lang._ir.op_defs import call_intrinsic
+        from cuda.lang._ir.op_impl.vector_impl import vector_elementwise_apply
+        from cuda.lang._ir.type import VectorTy
+        from cuda.lang._stub import nvvm
+        from cuda.lang._target import TargetInfo
+
+        ty = self.result_var.get_type()
+        dtype = ty.tensor_dtype()
+        rounding_mode = self.rounding_mode or RoundingMode.RN
+        if dtype not in (datatype.float32, datatype.float64):
+            if rounding_mode == RoundingMode.RN and not self.flush_to_zero:
+                return binary_arithmetic_tensorlike_raw(self.fn, self.lhs, self.rhs)
+            return NotImplemented
+
+        ftz = "_ftz" if self.flush_to_zero else ""
+        if (self.fn in ("add", "sub", "mul") and dtype == datatype.float32
+                and isinstance(ty, VectorTy) and ty.length % 2 == 0
+                and TargetInfo.get_current().major >= 10):
+            # The intrinsic accepts <N x float>; the backend splits it into pairs.
+            intrinsic = getattr(nvvm, f"{self.fn}{ftz}_packed_f32x2")
+            # The low three bits of nvvm::MathFlag encode its RoundingMode.
+            flags = {RoundingMode.RN: 1, RoundingMode.RM: 2,
+                     RoundingMode.RP: 3, RoundingMode.RZ: 4}[rounding_mode]
+            return call_intrinsic(intrinsic, loosely_typed_const(flags), self.lhs, self.rhs)
+
+        fn = {"sub": "add", "truediv": "div"}.get(self.fn, self.fn)
+        suffix = "d" if dtype == datatype.float64 else "f"
+        name = f"{fn}_{rounding_mode.name.lower()}{ftz}_{suffix}"
+        if fn == "div" and rounding_mode == RoundingMode.FULL:
+            name = f"div_full{ftz}"
+        intrinsic = getattr(nvvm, name)
+        rhs = unary_raw("neg", self.rhs) if self.fn == "sub" else self.rhs
+        return vector_elementwise_apply(
+            lambda x, y: call_intrinsic(intrinsic, x, y), self.lhs, rhs)
 
     @override
     def generate_llvm(self, ctx):
@@ -646,6 +717,8 @@ def binary_wrapping_arithmetic_tensorlike(fn: str, x: Var[TensorLikeTy],
 
 @dataclass(eq=False)
 class RawFPowIOperation(Operation, opcode="raw_fpowi"):
+    """Floating-point power with signed i8/i16/i32 exponents."""
+
     base: Var[TensorLikeTy] = operand()
     exponent: Var[TensorLikeTy] = operand()
 
@@ -656,8 +729,18 @@ class RawFPowIOperation(Operation, opcode="raw_fpowi"):
         exponent = ctx.get_value(self.exponent)
         return bc.encode_FPowIOp(ctx.builder, res_typeid, base, exponent)
 
+    @override
+    def rewrite_before_llvm_gen(self):
+        from cuda.lang._passes.ir2llvm import libdevice_math
+
+        dtype = self.result_var.get_type().tensor_dtype()
+        exponent = astype(self.exponent, datatype.int32)
+        return libdevice_math("powi", dtype, self.base, exponent)
+
 
 def _fpowi_exponent_dtype(dtype: DType) -> DType | None:
+    if is_boolean(dtype):
+        return datatype.int8
     if not is_integral(dtype):
         return None
     info = datatype.IntegerInfo(dtype)
@@ -673,10 +756,9 @@ def _fpowi_exponent_dtype(dtype: DType) -> DType | None:
 # supports it and the exponent fits in int32, and falls back to a regular power otherwise.
 def fpowi(base: Var[TensorLikeTy], exponent: Var[TensorLikeTy]) -> Var[TensorLikeTy]:
     exp_dtype = _fpowi_exponent_dtype(exponent.get_type().tensor_dtype())
-    # tileiras_version is None when not targeting TileIR (e.g., in cuda.lang)
     tileiras_version = Builder.get_current().ir_ctx.tileiras_version
-    if exp_dtype is not None \
-            and (tileiras_version is None or tileiras_version >= bc.BytecodeVersion.V_13_4):
+    if exp_dtype is not None and (
+            tileiras_version is None or tileiras_version >= bc.BytecodeVersion.V_13_4):
         exponent = astype(exponent, exp_dtype)
         return add_operation(RawFPowIOperation, base.get_type(), base=base, exponent=exponent)
     exponent = astype(exponent, base.get_type().tensor_dtype())
@@ -848,6 +930,10 @@ class Unary(Operation, opcode="unaryop"):
         input_ty = x.get_type()
         input_dtype = input_ty.tensor_dtype()
         match self.fn:
+            case "invert" | "bitwise_not" if is_integral(input_dtype) or is_boolean(input_dtype):
+                all_ones = -1 if is_signed(input_dtype) else (1 << input_dtype.bitwidth) - 1
+                mask = strictly_typed_const(all_ones, input_ty)
+                return binary_bitwise_tensorlike_raw("xor", x, mask)
             case "neg" if is_integral(input_dtype):
                 zero = strictly_typed_const(0, input_ty)
                 return binary_arithmetic_tensorlike_raw("sub", zero, x)

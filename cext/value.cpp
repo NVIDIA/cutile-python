@@ -2630,7 +2630,8 @@ static Expected<Value> binary_arithmetic_tensorlike(
     // which doesn't support rounding modes
     if (op == B::Pow && !rounding_mode.has_value()
             && ((x_tensor && x_tensor->is_symbolic()) || (y_tensor && y_tensor->is_symbolic()))
-            && x.is_unrestricted_float_tensor_like() && y.is_integer_tensor_like()) {
+            && x.is_unrestricted_float_tensor_like()
+            && (y.is_integer_tensor_like() || y.is_boolean_tensor_like())) {
         Expected<RefPtr<TensorBase>> res = fpowi_tensorlike(x, y, x_tensor, y_tensor);
         if (!res.is_ok()) return std::move(res.error());
         return Value::from_tensor(std::move(*res));

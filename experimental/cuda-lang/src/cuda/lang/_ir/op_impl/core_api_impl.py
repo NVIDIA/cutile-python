@@ -80,7 +80,8 @@ def read_gridlike_special_register_impl(sreg_name: str, axis: Var) -> Var:
 def reinterpret_to(x: Var, result_ty: VectorTy | ScalarTy | PointerTy | OpaqueTy):
     """Reinterpret ``x``'s bits as ``result_ty``, which must have the same total
     bitwidth. Scalars, vectors, and pointers may be mixed freely on either
-    side; bytes are packed and re-split little-endian."""
+    side; bytes are packed and re-split little-endian. Pointer-to-pointer
+    reinterpretation must preserve the memory space."""
     x_ty = x.get_type()
     x_dtype = x_ty.tensor_dtype()
     dst_dtype = result_ty.tensor_dtype()
@@ -97,6 +98,14 @@ def reinterpret_to(x: Var, result_ty: VectorTy | ScalarTy | PointerTy | OpaqueTy
 
     src_is_ptr = datatype.is_pointer_dtype(x_dtype)
     dst_is_ptr = datatype.is_pointer_dtype(dst_dtype)
+    if src_is_ptr and dst_is_ptr:
+        src_space = datatype.PointerInfo(x_dtype).memory_space
+        dst_space = datatype.PointerInfo(dst_dtype).memory_space
+        if src_space != dst_space:
+            raise TypeCheckingError(
+                f"bitcast cannot change pointer memory space from {src_space._name_} "
+                f"to {dst_space._name_}; use address_space_cast instead"
+            )
 
     def integer_type_like(ty: ScalarTy | PointerTy | VectorTy | OpaqueTy):
         dtype = getattr(datatype, f"int{ty.tensor_dtype().bitwidth}")
