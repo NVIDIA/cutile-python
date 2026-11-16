@@ -16,7 +16,7 @@ def flatten_aggregates(vars: Sequence[Var], types: Sequence[Type]) -> tuple[Var,
         x_ty = x.get_type_allow_invalid()
         if isinstance(x_ty, InvalidType):
             for _ in item_types:
-                t = x.ctx.make_temp(x.loc)
+                t = x.ctx.make_temp()
                 t.set_type(x_ty)
                 ret.append(t)
         else:
@@ -49,7 +49,7 @@ def _maybe_unflatten_aggregate(flattened_iter: Iterator[Var], nominal: Type, act
 
 def expand_aggregate_var(var: Var) -> tuple[Var, ...]:
     item_types = tuple(var.get_type().flatten_aggregate())
-    ret = tuple(var.ctx.make_var(f"{var.get_original_name()}_{i}", var.loc)
+    ret = tuple(var.ctx.make_var(f"{var.name}_{i}")
                 for i in range(len(item_types)))
     for item, item_ty in zip(ret, item_types, strict=True):
         item.set_type(item_ty)
@@ -79,7 +79,7 @@ def _unflatten_proper_aggregate(flattened_iter: Iterator[Var], nominal: Type, ac
         for _ in nominal_item_types:
             next(flattened_iter)
         builder = Builder.get_current()
-        t = builder.ir_ctx.make_temp(builder.loc)
+        t = builder.ir_ctx.make_temp()
         t.set_type(actual)
         return t
 

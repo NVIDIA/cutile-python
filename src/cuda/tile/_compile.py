@@ -152,11 +152,9 @@ class _KernelParameters:
 def _create_kernel_parameters(parameter_constraints: Sequence[ParameterConstraint],
                               parameter_annotations: Sequence[ParameterAnnotationNode],
                               parameter_names: Sequence[str],
-                              parameter_locations: Sequence[Loc],
                               ir_ctx: ir.IRContext) -> _KernelParameters:
     nonconstant_flat_vars = []
-    parameter_vars = tuple(ir_ctx.make_var(name, loc)
-                           for name, loc in zip(parameter_names, parameter_locations, strict=True))
+    parameter_vars = tuple(ir_ctx.make_var(name) for name in parameter_names)
 
     for pos, (constraint, annotation, name, var) in enumerate(
             zip(parameter_constraints, parameter_annotations,
@@ -215,7 +213,7 @@ def _create_parameter(
 
         item_vars = []
         for i, (item, node) in enumerate(zip(constraint.items, item_nodes, strict=True)):
-            item_var = var.ctx.make_var(var.name + f"_{i}", var.loc)
+            item_var = var.ctx.make_var(var.name + f"_{i}")
             _create_parameter(item, node, path.with_item(i), item_var, nonconstant_flat_vars)
             item_vars.append(item_var)
         build_tuple(item_vars, result_var=var)
@@ -229,7 +227,7 @@ def _create_parameter(
         field_vars = []
         for i, (field_constraint, field_name) in enumerate(zip(
                 constraint.fields, info.field_names, strict=True)):
-            field_var = var.ctx.make_var(var.name + f"_{i}", var.loc)
+            field_var = var.ctx.make_var(var.name + f"_{i}")
             _create_parameter(field_constraint, annotation, path.with_item(field_name), field_var,
                               nonconstant_flat_vars)
             field_vars.append(field_var)
@@ -439,7 +437,6 @@ class _IrKeeper:
                     params = _create_kernel_parameters(sig.parameters,
                                                        self.ann_func.parameter_annotations,
                                                        param_names,
-                                                       self._func_hir.param_locs,
                                                        ir_ctx)
                     hir2ir(self._func_hir, params.aggregate_vars, ir_ctx)
 

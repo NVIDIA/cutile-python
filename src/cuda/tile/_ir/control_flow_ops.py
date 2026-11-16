@@ -13,7 +13,7 @@ from cuda.tile._ir.aggregate_support import flatten_block_parameters, expand_agg
     flatten_aggregate_types, flatten_aggregates, unflatten_aggregates
 from cuda.tile._ir.core_ops import store_var, store_invalid
 from cuda.tile._ir.ir import Operation, Var, operand, Block, nested_block, Builder, LoopVarState, \
-    PhiState, ConstantState, enter_nested_block, add_operation_variadic, add_operation
+    PhiState, ConstantState, enter_nested_block, add_operation_variadic, add_operation, TrackedVar
 from cuda.tile._ir.op_impl import ImplRegistry, require_optional_range_type, \
     require_bool_scalar_type
 from cuda.tile._ir.scope import Scope, ControlFlowInfo, JumpInfo
@@ -104,11 +104,11 @@ class Loop(Operation, opcode="loop"):
         return f"{header_str} (with {carried_vars_str})"
 
 
-def _undefined_retval(var: Var) -> bool:
+def _undefined_retval(var: TrackedVar) -> bool:
     # A helper may first assign `$retval` inside a loop so we ignore undefined paths when merging it
-    ty = var.get_type_allow_invalid()
+    ty = var.var.get_type_allow_invalid()
     return (isinstance(ty, InvalidType) and
-            var.get_original_name() == "$retval" and
+            var.name == "$retval" and
             ty.reason is InvalidReason.UNDEFINED)
 
 
@@ -130,8 +130,9 @@ async def loop_impl(body: hir.Block, iterable: Var):
     builder = Builder.get_current()
     stored_locals = tuple(sorted(body.stored_indices))
     var_states = tuple(LoopVarState(PhiState(initial_constant_state=ConstantState.NONCONSTANT),
-                                    PhiState())
-                       for _ in stored_locals)
+                                    PhiState(),
+                                    scope.local.local_variable_name(local_idx))
+                       for local_idx in stored_locals)
     initial_values = tuple(scope.local.get(index, builder.loc) for index in stored_locals)
     body_params = []
 
@@ -143,7 +144,7 @@ async def loop_impl(body: hir.Block, iterable: Var):
             if not _undefined_retval(initial_var):
                 state.result_phi.propagate(initial_var)
         # Create an induction variable
-        induction_var = builder.ir_ctx.make_temp(builder.loc)
+        induction_var = builder.ir_ctx.make_temp()
         induction_var.set_type(builder.ir_ctx.typing_hooks.get_tensor_like_type(range_ty.dtype, ()))
         scope.hir2ir_varmap[body.params[0].id] = induction_var
         body_params.append(induction_var)
@@ -159,8 +160,9 @@ async def loop_impl(body: hir.Block, iterable: Var):
         for local_idx, initial_var, state in zip(
                 stored_locals, initial_values, var_states, strict=True):
             state.body_phi.propagate(initial_var, allow_loose_typing=False)
-            body_var = scope.local.redefine(local_idx, state.body_phi.last_loc)
+            body_var = builder.ir_ctx.make_var(scope.local.local_variable_name(local_idx))
             body_var.set_type(state.body_phi.ty)
+            scope.local.store_local_variable(local_idx, body_var, state.body_phi.last_loc)
             body_vars.append(body_var)
 
         flat_body_vars = flatten_block_parameters(body_vars)
@@ -212,7 +214,7 @@ async def loop_impl(body: hir.Block, iterable: Var):
 
     # Update Continue/Break statements
     for jump_info in loop_info.jumps:
-        values = tuple(out
+        values = tuple(out.var
                        for out, is_valid in zip(jump_info.outputs, mask, strict=True)
                        if is_valid)
         flat_values = flatten_aggregates(values, valid_var_types)
@@ -222,7 +224,7 @@ async def loop_impl(body: hir.Block, iterable: Var):
         jump_info.jump_op.values = flat_values
 
     # Create the loop Operation
-    valid_initial_values = tuple(v for v, is_valid
+    valid_initial_values = tuple(v.var for v, is_valid
                                  in zip(initial_values, mask, strict=True)
                                  if is_valid)
     flat_initial_values = flatten_aggregates(valid_initial_values, valid_var_types)
@@ -372,7 +374,7 @@ async def if_else_impl(cond: Var, then_block: hir.Block, else_block: hir.Block) 
 
     # Update the EndBranch operations by setting the outputs
     for jump_info in info.jumps:
-        outputs = tuple(v for v, is_valid in zip(jump_info.outputs, mask, strict=True)
+        outputs = tuple(v.var for v, is_valid in zip(jump_info.outputs, mask, strict=True)
                         if is_valid)
         flat_outputs = flatten_aggregates(outputs, valid_result_types)
         jump_info.jump_op.outputs = flat_outputs
@@ -401,10 +403,10 @@ async def if_else_impl(cond: Var, then_block: hir.Block, else_block: hir.Block) 
         ret = all_results[0]
         if ret is None:
             assert isinstance(result_phis[0].ty, InvalidType)
-            ret = builder.ir_ctx.make_temp(builder.loc)
+            ret = builder.ir_ctx.make_temp()
             ret.set_type(result_phis[0].ty)
 
-    # Update the scope for stored named
+    # Update the scope for stored names
     for res_var, phi, local_idx in zip(all_results[num_explicit_results:],
                                        result_phis[num_explicit_results:],
                                        stored_locals, strict=True):
@@ -438,7 +440,7 @@ async def _flatten_branch(branch: hir.Block) -> Var | None:
         assert len(info.jumps) == 1
         jump = info.jumps[0]
         assert len(jump.outputs) in (0, 1)
-        return None if len(jump.outputs) == 0 else jump.outputs[0]
+        return None if len(jump.outputs) == 0 else jump.outputs[0].var
 
 
 # Maps to ContinueOp in TileIR
@@ -512,7 +514,8 @@ async def break_():
         builder = Builder.get_current()
         builder.add_operation_variadic(Break, (), dict(values=()))
         op = builder.ops[-1]
-        outputs = tuple(scope.local.get(local_idx, builder.loc) for local_idx in info.stored_locals)
+        outputs = tuple(scope.local.get(local_idx, builder.loc)
+                        for local_idx in info.stored_locals)
         info.jumps.append(JumpInfo(op, outputs))
 
 
@@ -535,11 +538,11 @@ class EndBranch(Operation, opcode="end_branch", terminator=True):
 def end_branch(output: Var | None):
     scope = Scope.get_current()
     info = scope.if_else_info
-    outputs = () if output is None else (output,)
+    builder = Builder.get_current()
+    outputs = () if output is None else (TrackedVar(output, builder.loc, None),)
     if info.flatten:
         op = None
     else:
-        builder = Builder.get_current()
         builder.add_operation_variadic(EndBranch, (), dict(outputs=()))
         op = builder.ops[-1]
         outputs += tuple(scope.local.get(local_idx, builder.loc)

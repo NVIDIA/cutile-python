@@ -236,7 +236,6 @@ def get_function_ir(
             signature.parameters,
             parameter_annotations,
             parameter_names,
-            function.param_locs,
             ctx,
         )
         hir2ir(function, params.aggregate_vars, ctx)

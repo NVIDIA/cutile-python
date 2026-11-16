@@ -35,7 +35,7 @@ from cuda.tile._ir.type import Type, DTypeSpec, TensorLikeTy, TupleTy, TupleValu
     RangeIterType, RangeValue, TypeTy, ModuleTy, NONE, SliceType, StringTy, FormattedStringTy, \
     StringFormat, FormattedStringValue, FormattedPiece, DictTy, DictValue, EnumTy, TokenTy, \
     FunctionTy, GeneratorContextManagerTy, ContextManagerState, GeneratorContextManagerValue, \
-    NotImplementedTy, SliceValue
+    NotImplementedTy, SliceValue, StringFormatWithLocations
 from cuda.tile._ir.typing_support import type_of_constant_python_value, \
     loose_type_of_constant_python_value, get_dataclass_info, \
     create_dataclass_instance, find_method, dataclass_has_default_repr, dataclass_has_default_cmp
@@ -1013,22 +1013,24 @@ def identity_impl(x: Var) -> Var:
         return x
 
 
-def assign(value: Var, res: Var) -> None:
-    Builder.get_current().append_verbatim(Assign(value=value, result_vars=(res,), loc=res.loc))
+def assign(value: Var, res: Var, loc: Loc) -> None:
+    Builder.get_current().append_verbatim(Assign(value=value, result_vars=(res,), loc=loc))
     res.ctx.copy_type_information(value, res)
 
 
 def store_var(local_idx: int, value: Var, loc: Loc | None = None):
     scope = Scope.get_current()
-    new_var = scope.local.redefine(local_idx, loc or Builder.get_current().loc)
-    assign(value, new_var)
+    scope.local.store_local_variable(local_idx, value, loc or Builder.get_current().loc)
 
 
 def store_invalid(local_idx: int, ty: Type, loc: Loc | None = None):
     assert isinstance(ty, InvalidType)
-    scope = Scope.get_current()
-    new_var = scope.local.redefine(local_idx, loc or Builder.get_current().loc)
-    new_var.set_type(ty)
+    local_scope = Scope.get_current().local
+    if loc is None:
+        loc = Builder.get_current().loc
+    var = local_scope._ir_ctx.make_var(local_scope.local_variable_name(local_idx))
+    var.set_type(ty)
+    local_scope.store_local_variable(local_idx, var, loc)
 
 
 @impl(hir_stubs.store_var)
@@ -1070,7 +1072,7 @@ def make_closure_impl(func_hir: hir.Function, default_values: tuple[Var, ...]):
     for depth, (local_scope, captured_indices) in (enumerate(
             zip(scope.local_scopes, func_hir.captures_by_depth, strict=True))):
         if local_scope.frozen:
-            frozen_vars = tuple(local_scope.get(idx, builder.loc) for idx in captured_indices)
+            frozen_vars = tuple(local_scope.get(idx, builder.loc).var for idx in captured_indices)
             frozen_captures_by_depth.append(frozen_vars)
             frozen_types = tuple(v.get_type_allow_invalid() for v in frozen_vars)
             frozen_capture_types_by_depth.append(frozen_types)
@@ -1373,10 +1375,10 @@ def str_join_impl(self: Var, iterable: Var):
 
 
 @impl(hir_stubs.build_formatted_string)
-async def build_formatted_string(format: StringFormat, values: tuple[Var, ...]) -> Var:
+async def build_formatted_string(format: StringFormatWithLocations, values: tuple[Var, ...]) -> Var:
     builder = FormattedStringBuilder()
 
-    for piece in format.pieces:
+    for piece, piece_loc in zip(format.format.pieces, format.piece_locs, strict=True):
         if isinstance(piece, str):
             builder.append_literal_piece(piece)
             continue
@@ -1397,7 +1399,7 @@ async def build_formatted_string(format: StringFormat, values: tuple[Var, ...]) 
         if piece.format_spec is not None:
             raise TileTypeError(
                 f"f-string: cannot apply format spec to a value of type {val_ty}",
-                value.loc)
+                piece_loc)
 
         from cuda.tile._passes.hir2ir import call_function
         value = await call_function(str, value)

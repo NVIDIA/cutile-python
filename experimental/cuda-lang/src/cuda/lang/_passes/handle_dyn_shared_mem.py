@@ -48,7 +48,7 @@ def handle_dynamic_shared_memory(kernel_body: ir.Block,
 
         for op, ptr in zip(alloc_ops, array_pointers, strict=True):
             ptr = reinterpret_pointer(ptr, op.result_var.get_type().pointer_dtype)
-            assign(ptr, op.result_var)
+            assign(ptr, op.result_var, op.loc)
 
     # Remove AllocDynSharedMemory operations
     removed_count = kernel_body.remove_if(lambda op: isinstance(op, AllocDynSharedMemory))
@@ -98,7 +98,7 @@ def _build_host_program(alloc_op: AllocDynSharedMemory,
         if var_prog is None:
             raise TypeCheckingError(
                 "Size of shared array must be either a constant"
-                " or a kernel parameter", loc=size_var.loc
+                " or a kernel parameter", loc=alloc_op.loc
             )
         const_val = var_prog.as_const()
         if const_val is None:
@@ -106,7 +106,7 @@ def _build_host_program(alloc_op: AllocDynSharedMemory,
                 raise TypeCheckingError(
                     f"Kernel parameter used as shared array size must be int32,"
                     f" got {size_var.get_type()}",
-                    loc=size_var.loc
+                    loc=alloc_op.loc
                 )
             individual_size_programs.append(var_prog)
         else:

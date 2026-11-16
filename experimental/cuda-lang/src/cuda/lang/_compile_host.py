@@ -274,7 +274,6 @@ def _compile(
             constraints,
             annotated.parameter_annotations,
             parameter_names,
-            host_hir.param_locs,
             ctx,
         )
         hir2ir(host_hir, parameters.aggregate_vars, ctx)

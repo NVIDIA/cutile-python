@@ -7,7 +7,6 @@ from dataclasses import dataclass
 from typing import Callable, Any, Dict, Sequence, List, Mapping, Set
 
 from cuda.tile import _datatype as datatype
-from cuda.tile._exception import Loc
 from cuda.tile._ir.ir import Operation, Var, Block, IRContext
 from cuda.tile._ir.arithmetic_ops import RawBinaryArithmeticOperation, Unary
 from cuda.tile._ir.ops import FusedMulAddOperation
@@ -43,8 +42,8 @@ class MatchContext:
     def add_rewrite(self, to_remove: Sequence[Operation], to_add: Sequence[Operation]):
         self._rewrites.append(Rewrite(to_remove, to_add))
 
-    def make_temp_var(self, loc: Loc) -> Var:
-        return self._ir_ctx.make_temp(loc)
+    def make_temp_var(self) -> Var:
+        return self._ir_ctx.make_temp()
 
 
 Predicate = Callable[[Operation, MatchContext], Any]
@@ -112,7 +111,7 @@ def fuse_mul_addsub(op: RawBinaryArithmeticOperation, ctx: MatchContext):
     mul_lhs = mul_op.lhs
     if op.fn == "sub":
         neg_target = mul_op.lhs if rhs_is_mul else acc
-        negated = ctx.make_temp_var(op.loc)
+        negated = ctx.make_temp_var()
         ctx.set_type(negated, ctx.typeof(neg_target))
         new_ops.append(Unary(fn="neg", operand=neg_target,
                              result_vars=(negated,), loc=op.loc))

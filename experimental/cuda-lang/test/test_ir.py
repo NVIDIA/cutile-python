@@ -29,9 +29,7 @@ def test_branch_ir_construction(builder):
     ctx = builder.ctx
     loc = builder.loc
 
-    x, y, phi, cond = (
-        ctx.make_var(name=name, loc=loc) for name in ["x", "y", "phi", "cond"]
-    )
+    x, y, phi, cond = (ctx.make_var(name=name) for name in ["x", "y", "phi", "cond"])
 
     entry = ctx.make_block("entry", loc, params=(cond, x, y))
     then = ctx.make_block("then", loc)
@@ -73,9 +71,7 @@ def test_branch_loc_propagation():
     region = Region(ctx)
 
     with Builder(region, loc) as builder:
-        x, y, phi, cond = (
-            ctx.make_var(name=name, loc=loc) for name in ["x", "y", "phi", "cond"]
-        )
+        x, y, phi, cond = (ctx.make_var(name=name) for name in ["x", "y", "phi", "cond"])
 
         # CHECK: ^entry(cond, x, y):
         with builder.block_builder(ctx.make_block("entry", loc, params=(cond, x, y))):

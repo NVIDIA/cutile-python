@@ -97,21 +97,21 @@ def _split_loop(loop: Loop, cond: _Condition, if_ops_to_flatten: Set[IfElse], ne
     split_value = cond.rhs
     loc = loop.loc
     if _NEED_TO_ADJUST_RANGE[cond.cmp]:
-        one_var = new_block.make_temp_var(loc)
+        one_var = new_block.make_temp_var()
         new_block.append(TypedConst(value=1, result_vars=(one_var,), loc=loc))
         one_var.set_type(range_dtype)
-        plus_one_var = new_block.make_temp_var(loc)
+        plus_one_var = new_block.make_temp_var()
         new_block.append(RawBinaryArithmeticOperation(fn="add", lhs=split_value, rhs=one_var,
                                                       result_vars=(plus_one_var,),
                                                       loc=loc))
         plus_one_var.set_type(range_dtype)
         split_value = plus_one_var
 
-    first_loop_stop = new_block.make_temp_var(loc)
+    first_loop_stop = new_block.make_temp_var()
     new_block.append(RawBinaryArithmeticOperation(fn="min", lhs=loop.stop, rhs=split_value,
                                                   result_vars=(first_loop_stop,), loc=loc))
 
-    second_loop_start = new_block.make_temp_var(loc)
+    second_loop_start = new_block.make_temp_var()
     new_block.append(RawBinaryArithmeticOperation(fn="max", lhs=loop.start, rhs=split_value,
                                                   result_vars=(second_loop_start,), loc=loc))
 

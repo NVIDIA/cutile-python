@@ -484,7 +484,7 @@ def _materialize_kernel_argument_pointer(
     source_type = source.get_type()
     if isinstance(source_type, ScalarTy | OpaqueTy):
         value = _materialize_scalar_value(context, source, source_type)
-        value = _normalize_scalar_launch_argument(context, value, source_type, loc=source.loc)
+        value = _normalize_scalar_launch_argument(context, value, source_type)
         return _get_address_of(context, value)
 
     if source.is_constant():
@@ -499,8 +499,6 @@ def _normalize_scalar_launch_argument(
     context: HostLoweringContext,
     value: mlir.Value,
     source_type: ScalarTy | OpaqueTy,
-    *,
-    loc,
 ) -> mlir.Value:
     del context
     dtype = source_type.dtype
@@ -523,10 +521,7 @@ def _normalize_scalar_launch_argument(
             return value
         assert dtype.bitwidth == 32
         return mlir.arith.add_ExtFOp(out_type=T.f64(), in_=value)
-    raise TypeCheckingError(
-        f"kernel launch scalar dtype {dtype} is not supported",
-        loc=loc,
-    )
+    raise TypeCheckingError(f"kernel launch scalar dtype {dtype} is not supported")
 
 
 def _optional_dim3(

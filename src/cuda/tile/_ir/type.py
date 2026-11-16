@@ -431,6 +431,12 @@ class StringFormat:
 
 
 @dataclass(frozen=True)
+class StringFormatWithLocations:
+    format: StringFormat
+    piece_locs: tuple[Loc, ...]
+
+
+@dataclass(frozen=True)
 class FormattedStringTy(Type):
     format: "StringFormat"
     value_types: tuple

@@ -11,14 +11,14 @@ from typing import TypeVar, Generic, Callable
 
 from cuda.tile._exception import Loc, FunctionDesc, TileSyntaxError
 from cuda.tile._ir import hir
-from cuda.tile._ir.ir import Operation, Var, IRContext
+from cuda.tile._ir.ir import Operation, Var, IRContext, TrackedVar
 from cuda.tile._ir.type import InvalidType, ContextManagerState, InvalidReason
 
 
 @dataclass(frozen=True)
 class JumpInfo:
     jump_op: Operation | None
-    outputs: tuple[Var, ...]
+    outputs: tuple[TrackedVar, ...]
 
 
 @dataclass
@@ -33,6 +33,7 @@ class LocalScope:
         self._local_names = local_names
         self._ir_ctx = ir_ctx
         self._map: list[Var | None] = [None] * len(local_names)
+        self._last_store_loc = [Loc.unknown()] * len(local_names)
         self.frozen = False
         self._dead = False
 
@@ -50,13 +51,20 @@ class LocalScope:
     def mark_dead(self):
         self._dead = True
 
-    def redefine(self, index: int, loc: Loc) -> Var:
+    def local_variable_name(self, index: int) -> str:
+        assert index >= 0
+        return self._local_names[index]
+
+    def store_local_variable(self, index: int, value: Var, loc: Loc):
         assert not self._dead
         assert not self.frozen
         assert index >= 0
-        var = self._ir_ctx.make_var(self._local_names[index], loc)
-        self._map[index] = var
-        return var
+        self._map[index] = value
+        self._last_store_loc[index] = loc
+
+    def last_store_location(self, index: int) -> Loc:
+        assert index >= 0
+        return self._last_store_loc[index]
 
     def __getitem__(self, index: int) -> Var:
         assert not self._dead
@@ -66,21 +74,18 @@ class LocalScope:
             raise TileSyntaxError(f"Undefined variable {self._local_names[index]} used")
         return var
 
-    def __setitem__(self, index: int, var: Var):
-        assert not self._dead
-        assert index >= 0
-        self._map[index] = var
-
-    def get(self, index: int, loc: Loc):
+    def get(self, index: int, loc: Loc) -> TrackedVar:
         assert not self._dead
         assert index >= 0
         var = self._map[index]
+        name = self._local_names[index]
         if var is None:
-            name = self._local_names[index]
-            var = self._ir_ctx.make_var(name, loc)
+            var = self._ir_ctx.make_var(name)
             var.set_type(InvalidType(f"Use of potentially undefined variable `{name}`", loc=loc,
                                      reason=InvalidReason.UNDEFINED))
-        return var
+        else:
+            loc = self._last_store_loc[index]
+        return TrackedVar(var, loc, name)
 
     def map_all_vars(self, func: Callable[[Var], Var]):
         for i in range(len(self._map)):
@@ -92,11 +97,14 @@ class LocalScope:
     def enter_branch(self):
         assert not self._dead
         old = self._map
+        old_locs = self._last_store_loc
         self._map = list(old)
+        self._last_store_loc = list(old_locs)
         try:
             yield
         finally:
             self._map = old
+            self._last_store_loc = old_locs
 
 
 class _CurrentScope(threading.local):

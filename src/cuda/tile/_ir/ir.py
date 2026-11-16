@@ -69,21 +69,18 @@ class IRContext:
         return f"s{next(self._function_specialization_id_counter)}"
 
     #  Make a Var with a unique name based on `name`.
-    def make_var(self, name: str, loc: Loc) -> Var:
+    def make_var(self, name: str) -> Var:
         var_name = name
         while var_name in self._all_vars:
             var_name = f"{name}.{next(self._counter_by_name[name])}"
         self._all_vars[var_name] = name
-        return Var(var_name, loc, self)
+        return Var(var_name, self)
 
     def make_var_like(self, var: Var) -> Var:
-        return self.make_var(self.get_original_name(var.name), var.loc)
+        return self.make_var(self._all_vars[var.name])
 
-    def make_temp(self, loc: Loc) -> Var:
-        return self.make_var(f"${next(self._temp_counter)}", loc)
-
-    def get_original_name(self, var_name: str) -> str:
-        return self._all_vars[var_name]
+    def make_temp(self) -> Var:
+        return self.make_var(f"${next(self._temp_counter)}")
 
     def copy_type_information(self, src: Var, dst: Var):
         if src._type is not None:
@@ -102,6 +99,13 @@ class ConstantState(enum.Enum):
     NONCONSTANT = 2
 
 
+@dataclass(frozen=True)
+class TrackedVar:
+    var: Var
+    last_store_loc: Loc
+    name: str | None  # set if a named local variable, None otherwise
+
+
 @dataclass
 class PhiState:
     ty: Type | None = None
@@ -114,34 +118,37 @@ class PhiState:
     constant_state: list[ConstantState] | None = None
     constant_value: list[Any] | None = None
 
-    def propagate(self, src: Var, fail_eagerly: bool = False, allow_loose_typing: bool = True):
+    def propagate(self, src: TrackedVar,
+                  fail_eagerly: bool = False, allow_loose_typing: bool = True):
         # Type & loose type propagation
-        src_ty = src.get_type_allow_invalid()
-        src_loose_ty = src.get_loose_type_allow_invalid() if allow_loose_typing else src_ty
+        src_ty = src.var.get_type_allow_invalid()
+        src_loose_ty = src.var.get_loose_type_allow_invalid() if allow_loose_typing else src_ty
         if self.ty is None:
             self.ty = src_ty
             self.loose_ty = src_loose_ty
-            self.last_loc = src.loc
+            self.last_loc = src.last_store_loc
         elif isinstance(src_ty, InvalidType):
             if fail_eagerly and not isinstance(self.ty, InvalidType):
                 raise TileTypeError(src_ty.error_message, src_ty.loc)
             self.ty = self.loose_ty = src_ty
         elif not isinstance(self.ty, InvalidType):
-            var_name = src.get_original_name()
             if src_ty != self.ty:
-                if var_name == "$retval":
+                if src.name is None:
+                    what = "temporary value"
+                elif src.name == "$retval":
                     what = "return value"
                 else:
-                    what = f"`{var_name}`"
+                    what = f"`{src.name}`"
                 msg = (f"Type of {what} depends on path taken:"
-                       f" {src_ty} (line {src.loc.line}) vs. {self.ty} (line {self.last_loc.line})")
+                       f" {src_ty} (line {src.last_store_loc.line})"
+                       f" vs. {self.ty} (line {self.last_loc.line})")
                 if fail_eagerly:
-                    raise TileTypeError(msg, src.loc)
+                    raise TileTypeError(msg, src.last_store_loc)
                 else:
-                    self.ty = self.loose_ty = InvalidType(msg, loc=src.loc)
+                    self.ty = self.loose_ty = InvalidType(msg, loc=src.last_store_loc)
 
             # If the loose types don't match exactly, "unify" them to the concrete type
-            self.last_loc = src.loc
+            self.last_loc = src.last_store_loc
             if self.loose_ty != src_loose_ty:
                 self.loose_ty = self.ty
 
@@ -150,7 +157,7 @@ class PhiState:
             self.constant_state = None
             self.initial_constant_state = ConstantState.NONCONSTANT
         else:
-            agg_items = tuple(src.flatten_aggregate())
+            agg_items = tuple(src.var.flatten_aggregate())
             if self.constant_state is None:
                 self.constant_state = [self.initial_constant_state for _ in range(len(agg_items))]
                 self.constant_value = [None for _ in range(len(agg_items))]
@@ -187,9 +194,8 @@ _UNSET_CONSTANT = object()
 
 
 class Var(Generic[T]):
-    def __init__(self, name: str, loc: Loc, ctx: IRContext):
+    def __init__(self, name: str, ctx: IRContext):
         self.name = name
-        self.loc = loc
         self.ctx = ctx
         # Type information is stored in the Var rather than in the IRContext,
         # so that the IRContext doesn't reference the types. Otherwise, we would get
@@ -252,9 +258,6 @@ class Var(Generic[T]):
             assert self._loose_type is None
         self._loose_type = ty
 
-    def get_original_name(self) -> str:
-        return self.ctx.get_original_name(self.name)
-
     def is_aggregate(self) -> bool:
         return self._aggregate is not None
 
@@ -274,7 +277,7 @@ class Var(Generic[T]):
             yield self
 
     def __repr__(self):
-        return f"Var<{self.name} @{self.loc}>"
+        return f"Var<{self.name}>"
 
     def __str__(self) -> str:
         return self.name
@@ -345,6 +348,7 @@ def make_aggregate(value: AggregateValue,
 class LoopVarState:
     body_phi: PhiState
     result_phi: PhiState
+    name: str
 
     def finalize_loopvar_type(self, body_var: Var):
         # Body type should always be populated from the initial value's type.
@@ -365,8 +369,7 @@ class LoopVarState:
             body_var.set_loose_type(self.result_phi.loose_ty, force=True)
         elif self.body_phi.ty != self.result_phi.ty:
             # TODO: split the variable into two to actually support this case?
-            var_name = body_var.get_original_name()
-            raise TileTypeError(f"Variable {var_name} has changed its type inside a loop"
+            raise TileTypeError(f"Variable {self.name} has changed its type inside a loop"
                                 f" from {self.body_phi.ty} (line {self.body_phi.last_loc.line})"
                                 f" to {self.result_phi.ty} (line {self.result_phi.last_loc.line}")
 
@@ -408,7 +411,7 @@ class Builder:
         force_type = False
         if isinstance(result_ty, tuple):
             if result is None:
-                result = tuple(self.ir_ctx.make_temp(self._loc) for _ in result_ty)
+                result = tuple(self.ir_ctx.make_temp() for _ in result_ty)
             else:
                 result = tuple(result)
                 assert all(isinstance(v, Var) for v in result)
@@ -421,7 +424,7 @@ class Builder:
             result_vars = result
         else:
             if result is None:
-                result = self.ir_ctx.make_temp(self._loc)
+                result = self.ir_ctx.make_temp()
             else:
                 assert isinstance(result, Var)
                 force_type = True
@@ -443,7 +446,7 @@ class Builder:
                        result_var: Var | None = None) -> Var:
         force_type = True
         if result_var is None:
-            result_var = self.ir_ctx.make_temp(self._loc)
+            result_var = self.ir_ctx.make_temp()
             force_type = False
 
         if ty is not None:
@@ -837,11 +840,11 @@ class Block:
     def operations(self, ops: Sequence[Operation]):
         self._operations = list(ops)
 
-    def make_temp_var(self, loc: Loc) -> Var:
-        return self.ctx.make_temp(loc)
+    def make_temp_var(self) -> Var:
+        return self.ctx.make_temp()
 
-    def make_temp_vars(self, loc: Loc, count: int) -> Tuple[Var, ...]:
-        return tuple(self.ctx.make_temp(loc) for _ in range(count))
+    def make_temp_vars(self, count: int) -> Tuple[Var, ...]:
+        return tuple(self.ctx.make_temp() for _ in range(count))
 
     def to_string(self,
                   indent: int = 0,
@@ -863,10 +866,12 @@ class Block:
                 yield from b.traverse()
             yield op
 
-    def all_defined_vars(self) -> Iterator[Var]:
-        yield from self.params
+    def all_defined_vars(self) -> Iterator[tuple[Var, Loc]]:
+        for p in self.params:
+            yield p, self.loc
         for op in self:
-            yield from op.result_vars
+            for v in op.result_vars:
+                yield v, op.loc
             for block in op.nested_blocks:
                 yield from block.all_defined_vars()
 

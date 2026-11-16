@@ -2,6 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+from cuda.tile._exception import Loc
 from cuda.tile._ir.ir import Block, Mapper, Operation, Var
 from cuda.tile._ir.ops import AssumeDivBy, MakeTensorView, LoadPointer, StorePointer
 from cuda.tile._passes.dataflow_analysis import DataflowResult
@@ -24,14 +25,14 @@ def _rewrite_block(block: Block,
                    candidates: set[str]):
     new_ops = []
     for param in block.params:
-        _add_assume_divby(param, df_result, new_ops, mapper)
+        _add_assume_divby(param, df_result, new_ops, mapper, block.loc)
 
     for op in block:
         to_assume = tuple(var for var in op.result_vars if var.name in candidates)
         op.remap_operands(mapper)
         new_ops.append(op)
         for var in to_assume:
-            _add_assume_divby(var, df_result, new_ops, mapper)
+            _add_assume_divby(var, df_result, new_ops, mapper, op.loc)
         for b in op.nested_blocks:
             _rewrite_block(b, df_result, mapper, candidates)
 
@@ -41,7 +42,8 @@ def _rewrite_block(block: Block,
 def _add_assume_divby(x: Var,
                       df_result: DataflowResult,
                       op_list: list[Operation],
-                      mapper: Mapper) -> Var:
+                      mapper: Mapper,
+                      loc: Loc) -> Var:
     if mapper.get_var(x) is not x:
         return x
     # The constant-materialization pass runs before this pass. An exact constant is stronger than
@@ -57,7 +59,7 @@ def _add_assume_divby(x: Var,
         result_var.set_type(x.get_type())
         op = AssumeDivBy(divisor=power_of_2_d,
                          x=x,
-                         result_vars=(result_var,), loc=x.loc)
+                         result_vars=(result_var,), loc=loc)
         op_list.append(op)
         mapper.set_var(x, result_var)
         df_result.predicates[result_var.name] = df_result[x.name].replace(

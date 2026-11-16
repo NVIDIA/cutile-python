@@ -136,7 +136,7 @@ async def do_static_assert_impl(condition: Var, message_block: hir.Block) -> Non
     [jump] = info.jumps
     assert jump.jump_op is None
     [message] = jump.outputs
-    message = message.get_constant()
+    message = message.var.get_constant()
     assert isinstance(message, str)
     raise StaticAssertionError(message)
 

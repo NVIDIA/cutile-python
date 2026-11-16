@@ -656,9 +656,7 @@ def pointer_atomic_store(
 def pointer_with_offset(pointer: Var, offset: Var) -> Var:
     pointer_ty = require_pointer_type(pointer)
     if pointer_ty.opaque:
-        raise TypeCheckingError(
-            "Opaque pointers do not support pointer arithmetic", loc=pointer.loc
-        )
+        raise TypeCheckingError("Opaque pointers do not support pointer arithmetic")
     ty = require_scalar_type(offset)
     if not datatype.is_integral(ty.dtype):
         raise TypeCheckingError("Only integers can be used to take the offset of a pointer")

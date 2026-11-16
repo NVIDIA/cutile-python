@@ -82,7 +82,7 @@ class CFGFlattener:
     def flatten_continue(self, op: Continue, current: Block) -> Block:
         args = op.values
         if self.is_in_for_loop():
-            next_iv = self.ctx.make_temp(op.loc)
+            next_iv = self.ctx.make_temp()
             self.ctx.copy_type_information(self.loop_step, next_iv)
             current.append(
                 RawBinaryArithmeticOperation(
@@ -126,7 +126,7 @@ class CFGFlattener:
             )
         )
 
-        cv = self.ctx.make_temp(op.loc)
+        cv = self.ctx.make_temp()
         cv.set_type(ScalarTy(bool_))
 
         # Tile's range object requires the step to be positive so

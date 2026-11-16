@@ -15,7 +15,8 @@ from cuda.tile._exception import TileSyntaxError, Loc, FunctionDesc, make_static
 from cuda.tile._execution import is_function_wrapper, stub_aliases
 from cuda.tile._ir.hir import make_value, ResolvedName, UNKNOWN_NAME
 from cuda.tile._ir import hir, hir_stubs
-from cuda.tile._ir.type import ClosureDefaultPlaceholder, FormattedPiece, StringFormat
+from cuda.tile._ir.type import ClosureDefaultPlaceholder, FormattedPiece, StringFormat, \
+    StringFormatWithLocations
 from cuda.tile._passes.ast_util import ast_get_all_local_names
 from cuda.tile._stub import static_eval, static_assert, static_iter, static_exception
 
@@ -632,10 +633,12 @@ def _constant_expr(node: ast.Constant, ctx: Any) -> Any:
 @_register(_expr_handlers, ast.JoinedStr)
 def _fstring_expr(node: ast.JoinedStr, ctx: _Context) -> hir.Value:
     pieces = []
+    piece_locs = []
     var_hirs = []
     value_idx = 0
     for part in node.values:
         with ctx.change_loc(part):
+            piece_locs.append(ctx.current_loc)
             if isinstance(part, ast.Constant):
                 pieces.append(str(part.value))
             elif isinstance(part, ast.FormattedValue):
@@ -659,7 +662,8 @@ def _fstring_expr(node: ast.JoinedStr, ctx: _Context) -> hir.Value:
             else:
                 raise ctx.syntax_error("f-string: unsupported component")
     fmt = StringFormat(tuple(pieces))
-    return ctx.call(hir_stubs.build_formatted_string, (fmt, *var_hirs))
+    fmt_with_locs = StringFormatWithLocations(fmt, tuple(piece_locs))
+    return ctx.call(hir_stubs.build_formatted_string, (fmt_with_locs, *var_hirs))
 
 
 @_register(_expr_handlers, ast.Tuple)

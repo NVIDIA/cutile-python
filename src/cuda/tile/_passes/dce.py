@@ -82,7 +82,7 @@ def dead_code_elimination_pass(root_block: Block) -> None:
 #                      continue
 #
 def _make_control_flow_name(ctx: IRContext) -> str:
-    return ctx.make_var("$cf", Loc.unknown()).name
+    return ctx.make_var("$cf").name
 
 
 def _build_dataflow_graph(graph: Dict[str, List[str] | Tuple[str, ...]],
@@ -231,7 +231,7 @@ def _prune_block(block: Block,
                                                           strict=True))
                 new_initial_values = _select_by_mask(op.initial_values, mask)
                 new_initial_values = _replace_pruned_with_dummy(
-                        new_initial_values, used_vars, new_ops)
+                        new_initial_values, used_vars, op.loc, new_ops)
                 new_result_vars = _select_by_mask(op.result_vars, mask)
                 _prune_block(op.body, used_vars, op_to_cf_name, mask, ())
                 new_body_vars = _select_by_mask(op.body_vars, mask)
@@ -242,11 +242,11 @@ def _prune_block(block: Block,
                                                    result_vars=new_result_vars))
         elif isinstance(op, Continue):
             next_vars = _select_by_mask(op.values, loop_mask)
-            next_vars = _replace_pruned_with_dummy(next_vars, used_vars, new_ops)
+            next_vars = _replace_pruned_with_dummy(next_vars, used_vars, op.loc, new_ops)
             new_ops.append(Continue(result_vars=(), loc=op.loc, values=next_vars))
         elif isinstance(op, Break):
             output_vars = _select_by_mask(op.values, loop_mask)
-            output_vars = _replace_pruned_with_dummy(output_vars, used_vars, new_ops)
+            output_vars = _replace_pruned_with_dummy(output_vars, used_vars, op.loc, new_ops)
             new_ops.append(Break(result_vars=(), loc=op.loc, values=output_vars))
         elif isinstance(op, IfElse):
             if op_to_cf_name[op] in used_vars:
@@ -357,15 +357,16 @@ def _prune_block(block: Block,
 #
 def _replace_pruned_with_dummy(vars: Sequence[Var],
                                used_vars: Set[str],
+                               loc: Loc,
                                new_ops: list[Operation]) -> tuple[Var, ...]:
-    return tuple(v if v.name in used_vars else _make_dummy_like(v, new_ops)
+    return tuple(v if v.name in used_vars else _make_dummy_like(v, loc, new_ops)
                  for v in vars)
 
 
-def _make_dummy_like(v: Var, new_ops: list[Operation]) -> Var:
+def _make_dummy_like(v: Var, loc: Loc, new_ops: list[Operation]) -> Var:
     dummy_var = v.ctx.make_var_like(v)
     dummy_var.set_type(v.get_type())
-    new_ops.append(MakeDummy(result_vars=(dummy_var,), loc=dummy_var.loc))
+    new_ops.append(MakeDummy(result_vars=(dummy_var,), loc=loc))
     return dummy_var
 
 

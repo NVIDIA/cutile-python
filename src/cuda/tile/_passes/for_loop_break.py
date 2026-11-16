@@ -62,18 +62,18 @@ def lower_for_with_break(block: Block) -> None:
         if isinstance(op, Loop) and op.is_for_loop and _has_break(op.body):
             done_ty = type_of_constant_python_value(False, block.ctx.typing_hooks)
 
-            done_init = new_block.make_temp_var(op.loc)
+            done_init = new_block.make_temp_var()
             done_init.set_type(done_ty)
             new_block.append(TypedConst(value=False, result_vars=(done_init,), loc=op.loc))
 
-            done_true = new_block.make_temp_var(op.loc)
+            done_true = new_block.make_temp_var()
             done_true.set_type(type_of_constant_python_value(True, block.ctx.typing_hooks))
             new_block.append(TypedConst(value=True, result_vars=(done_true,), loc=op.loc))
 
-            done_body = op.body.make_temp_var(op.loc)
+            done_body = op.body.make_temp_var()
             done_body.set_type(done_ty)
 
-            done_result = new_block.make_temp_var(op.loc)
+            done_result = new_block.make_temp_var()
             done_result.set_type(done_ty)
 
             op.body.params = (*op.body.params, done_body)

@@ -37,7 +37,8 @@ def test_unused_loop_var():
 
     func_body = get_ir(kernel)
     loop, = [op for op in func_body if isinstance(op, Loop)]
-    assert [v.get_original_name() for v in loop.body_vars] == ["t"]
+    assert len(loop.body_vars) == 1
+    assert loop.body_vars[0].name.startswith("t")
 
 
 def test_unused_body_var():
@@ -56,7 +57,7 @@ def test_unused_body_var():
     loop, = [op for op in func_body if isinstance(op, Loop)]
 
     # The initial variable's defining op should be replaced with a dummy MakeDummy
-    t_idx = [v.get_original_name() for v in loop.body.params].index("t")
+    t_idx = next(i for i, v in enumerate(loop.body.params) if v.name.startswith("t"))
     assert isinstance(_get_defining_op(loop.initial_values[t_idx], func_body), MakeDummy)
 
     # The yielded variable's defining op should also be replaced with a dummy MakeDummy
@@ -98,6 +99,6 @@ def test_unused_result_var():
     loop, = [op for op in func_body if isinstance(op, Loop)]
 
     # The value yielded by "break" should be replaced with a dummy MakeDummy by DCE
-    t_idx = [v.get_original_name() for v in loop.body_vars].index("t")
+    t_idx = next(i for i, v in enumerate(loop.body_vars) if v.name.startswith("t"))
     break_op, = [op for op in func_body.traverse() if isinstance(op, Break)]
     assert isinstance(_get_defining_op(break_op.values[t_idx], func_body), MakeDummy)

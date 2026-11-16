@@ -47,18 +47,18 @@ def lower_for_with_return(block: Block, is_in_for_loop: bool = False) -> None:
         if isinstance(op, Loop) and (op.is_for_loop or is_in_for_loop) and _has_return(op.body):
             returned_ty = type_of_constant_python_value(False, block.ctx.typing_hooks)
 
-            returned_init = new_block.make_temp_var(op.loc)
+            returned_init = new_block.make_temp_var()
             returned_init.set_type(returned_ty)
             new_block.append(TypedConst(value=False, result_vars=(returned_init,), loc=op.loc))
 
-            returned_true = new_block.make_temp_var(op.loc)
+            returned_true = new_block.make_temp_var()
             returned_true.set_type(type_of_constant_python_value(True, block.ctx.typing_hooks))
             new_block.append(TypedConst(value=True, result_vars=(returned_true,), loc=op.loc))
 
-            returned_body = op.body.make_temp_var(op.loc)
+            returned_body = op.body.make_temp_var()
             returned_body.set_type(returned_ty)
 
-            returned_result = new_block.make_temp_var(op.loc)
+            returned_result = new_block.make_temp_var()
             returned_result.set_type(returned_ty)
 
             returned_values = op.body_vars

@@ -4,7 +4,7 @@
 
 from cuda.tile._ir.core_ops import build_formatted_string as tile_build_formatted_string
 from cuda.tile._ir.type import FormattedPiece
-from cuda.tile._ir.type import StringFormat
+from cuda.tile._ir.type import StringFormatWithLocations
 from cuda.tile._ir import hir_stubs
 import builtins
 
@@ -99,12 +99,12 @@ async def str_vector_impl(x: Var[VectorTy]):
 
 @impl(hir_stubs.build_formatted_string)
 async def build_formatted_string_impl(
-    format: StringFormat,
+    format: StringFormatWithLocations,
     values: tuple[Var, ...],
 ) -> Var:
     formatted_values = list(values)
 
-    for piece in format.pieces:
+    for piece in format.format.pieces:
         if not isinstance(piece, FormattedPiece):
             continue
         if piece.format_spec is not None:

@@ -12,7 +12,7 @@ def materialize_constants_pass(root_block: Block, dataflow_result: DataflowResul
     mapper = Mapper(root_block.ctx)
     new_ops: list[Operation] = []
 
-    for var in root_block.all_defined_vars():
+    for var, loc in root_block.all_defined_vars():
         if var.is_constant():
             continue
         value = dataflow_result.constant_value(var)
@@ -23,7 +23,7 @@ def materialize_constants_pass(root_block: Block, dataflow_result: DataflowResul
         var.ctx.copy_type_information(var, constant_var)
         mapper.set_var(var, constant_var)
         dataflow_result.predicates[constant_var.name] = dataflow_result[var.name]
-        new_ops.append(TypedConst(value=value, result_vars=(constant_var,), loc=var.loc))
+        new_ops.append(TypedConst(value=value, result_vars=(constant_var,), loc=loc))
 
     for op in root_block.traverse():
         op.remap_operands(mapper)

@@ -2328,7 +2328,7 @@ async def _get_reduce_scan_body_block(
             assert input_shape == x_ty.shape
         tile_0d_ty = TileTy(x_ty.dtype)
         for _ in range(2):
-            var = builder.ir_ctx.make_temp(builder.loc)
+            var = builder.ir_ctx.make_temp()
             var.set_type(tile_0d_ty)
             block_params.append(var)
         lhs_vars.append(block_params[-2])
@@ -2420,7 +2420,7 @@ def _make_reduce_scan_body(
         if tuple_mode:
             if not isinstance(res_ty, TupleTy):
                 raise TileTypeError(f"{op_name} function returns a value of type"
-                                    f" {res_ty}, but a tuple was expected", res.loc)
+                                    f" {res_ty}, but a tuple was expected")
             if len(res_ty.value_types) != len(xs):
                 raise TileTypeError(f"{op_name} function must return a tuple of {len(xs)} values"
                                     f" to match the number of inputs, but a tuple of length"

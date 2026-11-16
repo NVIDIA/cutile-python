@@ -29,8 +29,8 @@ from .._ir.core_ops import (
 from .._ir.arithmetic_ops import dtype_constructor
 from .._ir.scope import Scope, LocalScope, IntMap
 from .._ir.type import FunctionTy, BoundMethodTy, DTypeConstructor, ClosureTy, \
-    ClosureDefaultPlaceholder, StringFormat, TypeTy, TupleTy, BoundMethodValue, TupleValue, \
-    ClosureValue, DictTy, DictValue, var2sym, DataclassTy
+    ClosureDefaultPlaceholder, TypeTy, TupleTy, BoundMethodValue, TupleValue, \
+    ClosureValue, DictTy, DictValue, var2sym, DataclassTy, StringFormatWithLocations
 from .._ir.typing_support import get_signature, get_dataclass_info, find_method
 
 MAX_RECURSION_DEPTH = 1000
@@ -48,8 +48,9 @@ async def _hir2ir_coroutine(
 ):
     scope = _create_scope(func_hir, ir_ctx, call_site=None, parent_scopes=(),
                           concrete_func_desc=func_hir.desc)
-    for local_idx, var in zip(func_hir.param_local_indices, param_aggregate_vars, strict=True):
-        scope.local[local_idx] = var
+    for local_idx, var, param_loc in zip(func_hir.param_local_indices, param_aggregate_vars,
+                                         func_hir.param_locs, strict=True):
+        scope.local.store_local_variable(local_idx, var, param_loc)
 
     ir_builder = ir.Builder.get_current()
     with scope.make_current():
@@ -487,7 +488,7 @@ def _freeze_closure(retval: Var, dead_scope: LocalScope, builder: ir.Builder) ->
 
     depth = ty.captured_scopes[-1].depth
     frozen_locals = ty.func_hir.captures_by_depth[depth]
-    frozen_captures = tuple(dead_scope.get(idx, builder.loc) for idx in frozen_locals)
+    frozen_captures = tuple(dead_scope.get(idx, builder.loc).var for idx in frozen_locals)
     frozen_capture_types = tuple(v.get_type_allow_invalid() for v in frozen_captures)
 
     new_closure_val = ClosureValue(
@@ -520,14 +521,14 @@ def _check_recursive_call(call_loc: Loc):
 
 
 _ResolvedOperand = (Var | hir.Block | hir.Function
-                    | hir.StaticEvalExpression | StringFormat | hir.ResolvedName)
+                    | hir.StaticEvalExpression | StringFormatWithLocations | hir.ResolvedName)
 
 
 def _resolve_operand(x: hir.Operand, scope: Scope) -> _ResolvedOperand:
     if isinstance(x, hir.Value):
         return scope.hir2ir_varmap[x.id]
     elif isinstance(x, hir.Block | hir.Function | hir.StaticEvalExpression
-                    | StringFormat | hir.ResolvedName):
+                    | StringFormatWithLocations | hir.ResolvedName):
         return x
     else:
         return sym2var(x, constant_only=True)

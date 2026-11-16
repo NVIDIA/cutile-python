@@ -10,7 +10,7 @@ from typing import Tuple, Dict, Set, Optional
 
 from cuda.tile._ir.type import PartitionViewTy, TokenTy, ArrayValue
 from cuda.tile._memory_model import MemoryOrder
-from cuda.tile._exception import Loc, TileInternalError
+from cuda.tile._exception import TileInternalError
 from cuda.tile._ir.ir import Block, IRContext, Var, Operation, MemoryEffect
 from cuda.tile._ir.control_flow_ops import Break, Continue, EndBranch, IfElse, Loop
 from cuda.tile._ir.ops import (
@@ -143,7 +143,7 @@ def token_order_pass(root_block: Block, dataflow_result: DataflowResult):
     _get_block_memory_effects(root_block, dataflow_result, block_memory_effects)
     context = TokenOrderContext(dataflow_result, block_memory_effects)
 
-    root_tok = _make_token_var(root_block.ctx, root_block.loc)
+    root_tok = _make_token_var(root_block.ctx)
     token_map = defaultdict(lambda: root_tok)
     _to_token_order_in_block(root_block, context, token_map)
     root_block[:0] = (MakeToken(result_vars=(root_tok,), loc=root_block.loc),)
@@ -234,7 +234,7 @@ def _to_token_order_in_block(block: Block,
             operations.append(dataclasses.replace(op, token=input_tok))
 
             # Eagerly join with last_op_token
-            new_last_op_tok = _make_token_var(block.ctx, op.loc)
+            new_last_op_tok = _make_token_var(block.ctx)
             join_op = JoinTokens(tokens=(token_map[last_op_key], result_tok),
                                  result_vars=(new_last_op_tok,), loc=op.loc)
             operations.append(join_op)
@@ -311,9 +311,9 @@ def _to_token_order_in_block(block: Block,
 
             def append_new_carried_var(init_var: Var):
                 new_initial_values.append(init_var)
-                body_var = _make_token_var(block.ctx, op.loc)
+                body_var = _make_token_var(block.ctx)
                 new_body_params.append(body_var)
-                res_var = _make_token_var(block.ctx, op.loc)
+                res_var = _make_token_var(block.ctx)
                 new_result_vars.append(res_var)
                 return body_var, res_var
 
@@ -382,7 +382,7 @@ def _to_token_order_in_block(block: Block,
             new_result_vars = list(op.result_vars)
 
             def add_new_ifelse_result():
-                x = _make_token_var(block.ctx, op.loc)
+                x = _make_token_var(block.ctx)
                 new_result_vars.append(x)
                 return x
 
@@ -477,8 +477,8 @@ def _last_store_key(alias_set: AliasSet):
     return AliasTokenKey(alias_set, TokenRole.LAST_STORE)
 
 
-def _make_token_var(ir_ctx: IRContext, loc: Loc) -> Var:
-    var = ir_ctx.make_var("$token", loc)
+def _make_token_var(ir_ctx: IRContext) -> Var:
+    var = ir_ctx.make_var("$token")
     var.set_type(TokenTy())
     return var
 
@@ -525,7 +525,7 @@ def _get_input_token(token_key: TokenKey,
     if len(tokens_to_join) == 1:
         return tokens_to_join[0], None
 
-    ret_tok = _make_token_var(ctx, op.loc)
+    ret_tok = _make_token_var(ctx)
     ret_op = JoinTokens(tokens=tuple(tokens_to_join), result_vars=(ret_tok,), loc=op.loc)
     return ret_tok, ret_op
 
@@ -665,7 +665,7 @@ def _try_loop_parallel_store(
     if len(tokens_to_join) == 1:
         input_tok, maybe_input_tok_join_op = tokens_to_join[0], None
     else:
-        input_tok = _make_token_var(ctx, store_op.loc)
+        input_tok = _make_token_var(ctx)
         maybe_input_tok_join_op = JoinTokens(tokens=tuple(tokens_to_join),
                                              result_vars=(input_tok,), loc=store_op.loc)
 
@@ -674,7 +674,7 @@ def _try_loop_parallel_store(
 
     # Eagerly join with loop_last_op_tok
     loop_last_op_tok = token_map[last_op_key]
-    new_last_op_tok = _make_token_var(ctx, store_op.loc)
+    new_last_op_tok = _make_token_var(ctx)
     join_op = JoinTokens(tokens=(loop_last_op_tok, result_tok),
                          result_vars=(new_last_op_tok,), loc=store_op.loc)
 
