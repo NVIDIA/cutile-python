@@ -140,12 +140,14 @@ struct DTypeObject {
     X(float4_e2m1fn, 4, true, \
         "A 4-bit floating-point |numeric dtype| with 1 sign bit, " \
         "2 exponent bits, and 1 mantissa bit.") \
-    X(float6_e2m3fn, 6, true, \
-        "A 6-bit floating-point numeric dtype with 1 sign bit, " \
-        "2 exponent bits, and 3 mantissa bits.") \
-    X(float6_e3m2fn, 6, true, \
-        "A 6-bit floating-point numeric dtype with 1 sign bit, " \
-        "3 exponent bits, and 2 mantissa bits.")
+    X(float6_e2m3fn, 8, true, \
+        "A 6-bit floating-point numeric dtype with 1 sign bit, 2 exponent bits, " \
+        "and 3 mantissa bits (“6-bit representation stored in an 8-bit container, " \
+        "with the two most significant bits padded with zeros.”).") \
+    X(float6_e3m2fn, 8, true, \
+        "A 6-bit floating-point numeric dtype with 1 sign bit, 3 exponent bits, " \
+        "and 2 mantissa bits (“6-bit representation stored in an 8-bit container, " \
+        "with the two most significant bits padded with zeros.”).") \
 
 
 #define FOREACH_NUMERIC_DTYPE(X) \
