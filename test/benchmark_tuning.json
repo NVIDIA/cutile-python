@@ -71,6 +71,20 @@
           "params": {}
         }
       ],
+      "nvfp4_matmul": [
+        {
+          "config": {
+            "num_ctas": 2,
+            "tk": 256,
+            "tm": 256,
+            "tn": 256
+          },
+          "error_margin_us": 0.506053138982138,
+          "mean_us": 51.00799947977066,
+          "num_samples": 5,
+          "params": {}
+        }
+      ],
       "persistent_matmul": [
         {
           "config": {
