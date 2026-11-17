@@ -203,7 +203,7 @@ def _warn_fallback(gpu_name: str,
                    fallback_gpu_name: str,
                    bench_name: str) -> None:
     warnings.warn(
-        f"no tuned benchmark config for GPU {gpu_name}; using {bench_name} "
+        f"no tuned benchmark config for {bench_name} on GPU {gpu_name}; using "
         f"config tuned for {fallback_gpu_name}. {SAVE_TUNING_HINT}",
         stacklevel=3,
     )
@@ -227,24 +227,18 @@ def get_tuned_config(tune_fn: Callable[..., Any], **available_kwargs: Any) -> di
     bench_name = _benchmark_name_from_tune_fn(tune_fn)
     params = _tuning_params(tune_fn, available_kwargs)
 
-    gpu_entry = data["gpus"].get(gpu_name)
-    if gpu_entry is None:
-        fallback = _fallback_tuned_entry(data, bench_name, params)
-        if fallback is not None:
-            fallback_gpu_name, fallback_entry = fallback
-            _warn_fallback(gpu_name, fallback_gpu_name, bench_name)
-            return _config_from_entry(fallback_entry, bench_name, fallback_gpu_name)
-
-        raise RuntimeError(
-            f"Missing tuned benchmark config for {bench_name} on GPU {gpu_name}. "
-            f"{SAVE_TUNING_HINT}"
-        )
-
+    gpu_entry = data["gpus"].get(gpu_name, {})
     entry = _find_tuned_entry(gpu_entry, bench_name, params)
-    if entry is None:
-        raise RuntimeError(
-            f"Missing tuned benchmark config for {bench_name} on GPU {gpu_name}. "
-            f"{SAVE_TUNING_HINT}"
-        )
+    if entry is not None:
+        return _config_from_entry(entry, bench_name, gpu_name)
 
-    return _config_from_entry(entry, bench_name, gpu_name)
+    fallback = _fallback_tuned_entry(data, bench_name, params)
+    if fallback is not None:
+        fallback_gpu_name, fallback_entry = fallback
+        _warn_fallback(gpu_name, fallback_gpu_name, bench_name)
+        return _config_from_entry(fallback_entry, bench_name, fallback_gpu_name)
+
+    raise RuntimeError(
+        f"Missing tuned benchmark config for {bench_name} on GPU {gpu_name}. "
+        f"{SAVE_TUNING_HINT}"
+    )
