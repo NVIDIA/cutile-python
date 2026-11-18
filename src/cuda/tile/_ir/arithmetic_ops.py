@@ -506,7 +506,8 @@ class RawBinaryArithmeticOperation(Operation, opcode="raw_binary_arith"):
             case "floordiv", "int":
                 return bc.encode_DivIOp(ctx.builder, res_typeid, lhs, rhs,
                                         signedness=get_signedness(dtype),
-                                        rounding=bc.RoundingMode.NEGATIVE_INF)
+                                        rounding=bc.RoundingMode.NEGATIVE_INF if is_signed(dtype)
+                                        else bc.RoundingMode.ZERO)
             case "floordiv", "float":
                 quotient = bc.encode_DivFOp(ctx.builder, res_typeid, lhs, rhs,
                                             rounding_mode=rounding_mode,

@@ -15,7 +15,7 @@ from util import (
     launch_binary, assert_equal, assert_close, jit_kernel, filecheck,
     get_bytecode, raises_if
 )
-from conftest import float_dtypes, int_dtypes, bool_dtypes, dtype_id, requires_tileiras
+from conftest import float_dtypes, int_dtypes, uint_dtypes, bool_dtypes, dtype_id, requires_tileiras
 from cuda.tile._bytecode.version import BytecodeVersion
 from cuda.tile._exception import TileTypeError, TypeCheckingError
 from cuda.tile._ir.typing_support import to_dtype
@@ -625,6 +625,26 @@ def test_array_div(shape, tile, x_dtype, y_dtype, tmp_path, op_symbol, ref_impl,
                           tmp_path)
     launch_binary(kernel, x, y, z, tile)
     assert_equal(z, ref)
+
+
+@pytest.mark.parametrize("dtype", uint_dtypes, ids=dtype_id)
+def test_array_div_uint(shape, tile, dtype):
+    x = torch.randint(0, 100, shape, device="cuda:0").to(dtype)
+    y = torch.randint(1, 100, shape, device="cuda:0").to(dtype)
+    res = torch.zeros_like(x, device="cuda:0").to(dtype)
+    ref = (x.to(torch.int64) // y.to(torch.int64)).to(dtype)
+
+    @ct.kernel
+    def kern(x, y, res):
+        bid = ct.bid(0)
+        tx = ct.load(x, index=(bid,), shape=(tile,))
+        ty = ct.load(y, index=(bid,), shape=(tile,))
+        tr = ct.floordiv(tx, ty)
+        ct.store(res, index=(bid,), tile=tr)
+
+    grid = tuple(map(lambda d: ceil(d / tile), res.shape))
+    ct.launch(torch.cuda.current_stream(), grid, kern, (x, y, res))
+    assert_equal(res, ref)
 
 
 @pytest.mark.parametrize("op_symbol, ref_impl", [
