@@ -5,10 +5,12 @@
 from collections import defaultdict
 from typing import Optional, Set, Dict, DefaultDict, Mapping, NamedTuple
 
+from cuda.tile._datatype import is_signed
 from cuda.tile._ir.ir import Block, Var, Mapper, IRContext
 from cuda.tile._ir.control_flow_ops import Loop, IfElse, EndBranch, Continue
 from cuda.tile._ir.core_ops import TypedConst, Assign
 from cuda.tile._ir.arithmetic_ops import RawBinaryArithmeticOperation, RawComparisonOperation
+from cuda.tile._ir.type import TileTy
 
 
 class _Condition(NamedTuple):
@@ -97,15 +99,12 @@ def _split_loop(loop: Loop, cond: _Condition, if_ops_to_flatten: Set[IfElse], ne
     split_value = cond.rhs
     loc = loop.loc
     if _NEED_TO_ADJUST_RANGE[cond.cmp]:
-        one_var = new_block.make_temp_var()
-        new_block.append(TypedConst(value=1, result_vars=(one_var,), loc=loc))
-        one_var.set_type(range_dtype)
-        plus_one_var = new_block.make_temp_var()
-        new_block.append(RawBinaryArithmeticOperation(fn="add", lhs=split_value, rhs=one_var,
-                                                      result_vars=(plus_one_var,),
-                                                      loc=loc))
-        plus_one_var.set_type(range_dtype)
-        split_value = plus_one_var
+        # For `i > c` and `i <= c` the split point is `c + 1`, which wraps around
+        # when `c` is the maximum value of the induction variable's type. Saturate
+        # it to that maximum instead. Because `stop <= max`, the first loop then
+        # covers the whole range and the second loop is empty, which is exactly
+        # right since `i <= max` always holds and `i > max` never does.
+        split_value = _saturating_add_one(split_value, range_dtype, new_block, loc)
 
     first_loop_stop = new_block.make_temp_var()
     new_block.append(RawBinaryArithmeticOperation(fn="min", lhs=loop.stop, rhs=split_value,
@@ -132,6 +131,29 @@ def _split_loop(loop: Loop, cond: _Condition, if_ops_to_flatten: Set[IfElse], ne
                               intermediate_vars, loop.result_vars,
                               if_ops_to_flatten, second_branch, new_block.ctx)
     new_block.append(second_loop)
+
+
+def _saturating_add_one(value: Var, ty: TileTy, block: Block, loc) -> Var:
+    # min(value, max - 1) + 1 is value + 1 saturated at the type's maximum. The add
+    # can never overflow, so the result does not depend on wraparound semantics.
+    dtype = ty.dtype
+    max_value = (1 << (dtype.bitwidth - 1)) - 1 if is_signed(dtype) else (1 << dtype.bitwidth) - 1
+
+    def const(v):
+        var = block.make_temp_var()
+        block.append(TypedConst(value=v, result_vars=(var,), loc=loc))
+        var.set_type(ty)
+        return var
+
+    def binop(fn, lhs, rhs):
+        var = block.make_temp_var()
+        block.append(RawBinaryArithmeticOperation(fn=fn, lhs=lhs, rhs=rhs,
+                                                  result_vars=(var,), loc=loc))
+        var.set_type(ty)
+        return var
+
+    clamped = binop("min", value, const(max_value - 1))
+    return binop("add", clamped, const(1))
 
 
 def _clone_loop(loop: Loop, new_start: Var, new_stop: Var, new_step: Var,

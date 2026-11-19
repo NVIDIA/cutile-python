@@ -2,6 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+import pytest
 import torch
 
 import cuda.tile as ct
@@ -64,3 +65,40 @@ def test_dynamic_split_boundary():
     ct.launch(torch.cuda.current_stream(), (1,), dynamic_split_boundary_kernel, (output, 3))
     ref = torch.tensor([0, 1, 2, 30, 40, 50, 60], dtype=torch.int32, device="cuda:0")
     assert_equal(output, ref)
+
+
+@ct.kernel
+def split_gt_kernel(output, n: int, c: int):
+    acc = 0
+    for i in range(n):
+        if i > c:
+            acc = acc + 1000 + i
+        else:
+            acc = acc + i
+    ct.store(output, (0,), acc)
+
+
+@ct.kernel
+def split_le_kernel(output, n: int, c: int):
+    acc = 0
+    for i in range(n):
+        if i <= c:
+            acc = acc + 1000 + i
+        else:
+            acc = acc + i
+    ct.store(output, (0,), acc)
+
+
+@pytest.mark.parametrize("kind", ["gt", "le"])
+@pytest.mark.parametrize("c", [-1, 0, 1, 3, 4, 2**31 - 2, 2**31 - 1])
+def test_split_point_at_dtype_max(kind, c):
+    # The split point for `i > c` and `i <= c` is `c + 1`, which used to wrap
+    # around when `c` is the int32 maximum and send every iteration down the
+    # wrong branch.
+    n = 4
+    kernel = split_gt_kernel if kind == "gt" else split_le_kernel
+    output = torch.zeros((1,), dtype=torch.int32, device="cuda:0")
+    ct.launch(torch.cuda.current_stream(), (1,), kernel, (output, n, c))
+    taken = (lambda i: i > c) if kind == "gt" else (lambda i: i <= c)
+    ref = sum(1000 + i if taken(i) else i for i in range(n))
+    assert_equal(output, torch.tensor([ref], dtype=torch.int32, device="cuda:0"))
