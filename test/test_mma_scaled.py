@@ -9,7 +9,7 @@ import torch
 
 import cuda.tile as ct
 from cuda.tile._datatype import float4_e2m1fn, float8_e4m3fn, float8_e5m2, float8_e8m0fnu
-from cuda.tile._exception import TileTypeError
+from cuda.tile._exception import CompilerExecutionError, TileTypeError
 from cuda.tile._bytecode.version import BytecodeVersion
 from conftest import requires_tileiras
 from util import assert_close, require_blackwell_or_newer, require_rubin_cc107
@@ -73,6 +73,28 @@ def mma_scaled_general_kernel(X, X_scale, Y, Y_scale, Z,
     if packed_scale:
         y_scale = ct.unpack_from_bytes(y_scale.reshape((-1,)), ct.float8_e5m3fnu).reshape((tks, tn))
 
+    acc = ct.load(Z, index=(0, 0), shape=(tm, tn))
+    acc = ct.mma_scaled(x, x_scale, y, y_scale, acc)
+    ct.store(Z, index=(0, 0), tile=acc)
+
+
+@ct.kernel
+def mma_scaled_mixed_f8_f4_kernel(X, X_scale, Y, Y_scale, Z,
+                                  tm: ct.Constant[int], tn: ct.Constant[int],
+                                  tk: ct.Constant[int], tks: ct.Constant[int],
+                                  x_dtype_id: ct.Constant[int],
+                                  x_elem_per_byte: ct.Constant[int],
+                                  y_dtype_id: ct.Constant[int],
+                                  y_elem_per_byte: ct.Constant[int]):
+    x_dtype = (float4_e2m1fn, float8_e4m3fn, float8_e5m2)[x_dtype_id]
+    y_dtype = (float4_e2m1fn, float8_e4m3fn, float8_e5m2)[y_dtype_id]
+
+    x_bytes = ct.load(X, index=(0, 0), shape=(tm, tk // x_elem_per_byte)).reshape((-1,))
+    x = ct.unpack_from_bytes(x_bytes, x_dtype).reshape((tm, tk))
+    y_bytes = ct.load(Y, index=(0, 0), shape=(tk, tn // y_elem_per_byte)).reshape((-1,))
+    y = ct.unpack_from_bytes(y_bytes, y_dtype).reshape((tk, tn))
+    x_scale = ct.load(X_scale, index=(0, 0), shape=(tm, tks))
+    y_scale = ct.load(Y_scale, index=(0, 0), shape=(tks, tn))
     acc = ct.load(Z, index=(0, 0), shape=(tm, tn))
     acc = ct.mma_scaled(x, x_scale, y, y_scale, acc)
     ct.store(Z, index=(0, 0), tile=acc)
@@ -179,6 +201,35 @@ def test_mma_scaled_general_f4(scale_dtype, scaling_block_size):
     ref = (ref_X * ref_X_scale) @ (ref_Y * ref_Y_scale) + Z
     ct.launch(torch.cuda.current_stream(), (1,), mma_scaled_general_kernel,
               (X_packed, X_scale, Y_packed, Y_scale, Z, m, n, k, ks, 0, 2, False))
+    assert_close(Z, ref, atol=1e-2, rtol=1e-2)
+
+
+@pytest.mark.xfail(
+    raises=CompilerExecutionError,
+    strict=True,
+    reason="tileiras does not yet support mixed f8/f4 MMA")
+@pytest.mark.parametrize("input_dtype,dtype_id", [
+    (f8e4m3fn, 1), (f8e5m2, 2),
+], ids=str)
+def test_mma_scaled_mixed_f8_f4(input_dtype, dtype_id):
+    m, n, k = 16, 16, 64
+    scaling_block_size = 32
+    ks = k // scaling_block_size
+
+    X = torch.randn((m, k), device='cuda:0').to(input_dtype)
+    X_packed = X.view(torch.uint8)
+    Y_packed = torch.randint(0, 256, (k, n // 2), dtype=torch.uint8, device='cuda:0')
+    X_scale = torch.randn((m, ks), device='cuda:0').to(f8e8m0fnu)
+    Y_scale = torch.randn((ks, n), device='cuda:0').to(f8e8m0fnu)
+    Z = torch.randn((m, n), dtype=f32, device='cuda:0')
+
+    ref_X = X.to(f32)
+    ref_Y = _unpack_f4e2m1fn_to_f32(Y_packed, (k, n))
+    ref_X_scale = torch.repeat_interleave(X_scale, scaling_block_size, dim=1).to(f32)
+    ref_Y_scale = torch.repeat_interleave(Y_scale, scaling_block_size, dim=0).to(f32)
+    ref = (ref_X * ref_X_scale) @ (ref_Y * ref_Y_scale) + Z
+    ct.launch(torch.cuda.current_stream(), (1,), mma_scaled_mixed_f8_f4_kernel,
+              (X_packed, X_scale, Y_packed, Y_scale, Z, m, n, k, ks, dtype_id, 1, 0, 2))
     assert_close(Z, ref, atol=1e-2, rtol=1e-2)
 
 
