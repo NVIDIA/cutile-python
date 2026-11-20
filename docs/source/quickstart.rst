@@ -46,7 +46,7 @@ To use a specific version of ``tileiras`` python pacakge, i.e. `13.3` run
 
 .. code-block::  bash
 
-    pip install cuda-toolkit[tileiras,nvvm,nvcc]>=13.3
+    pip install "cuda-toolkit[tileiras,nvvm,nvcc]==13.3.*"
 
 
 Alternatively if you already have system-wide CUDA Toolkit (13.1+) installed,
