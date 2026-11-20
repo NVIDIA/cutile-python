@@ -292,6 +292,13 @@ def test_fence_proxy_async_split(order, restrict, expect):
             cl.FenceProxy.ASYNC,
             cl.FenceRestriction.mbarrier_initialize(),
         ),
+        (
+            cl.MemoryOrder.RELEASE,
+            cl.MemoryScope.BLOCK,
+            cl.FenceProxy.GENERIC,
+            cl.FenceProxy.ASYNC,
+            None,
+        ),
     ),
 )
 def test_fence_invalid_combination(order, scope, from_proxy, to_proxy, restriction):
@@ -306,7 +313,10 @@ def test_fence_invalid_combination(order, scope, from_proxy, to_proxy, restricti
 
     compile_empty_kernel_with_call(
         func,
-        raises=pytest.raises(Exception),
+        raises=pytest.raises(
+            TypeCheckingError,
+            match="Invalid fence combination",
+        ),
         **HOPPER_TARGET,
     )
 

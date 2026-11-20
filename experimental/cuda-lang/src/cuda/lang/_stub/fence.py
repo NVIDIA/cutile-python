@@ -83,9 +83,9 @@ def fence(
     :Target: Plain acquire-release or sequentially consistent fences require
         SM70 or newer. Split proxy fences, cluster scope, and restricted forms
         require SM90 or newer; specific proxy forms also depend on the
-        toolchain's PTX support. Use the combinations defined by the `PTX fence
-        reference
-        <https://docs.nvidia.com/cuda/parallel-thread-execution/#parallel-synchronization-and-communication-instructions-membar-fence>`_.
+        toolchain's PTX support. Use the combinations defined by the `PTX ISA
+        9.0 fence reference
+        <https://docs.nvidia.com/cuda/archive/13.0.2/parallel-thread-execution/index.html#parallel-synchronization-and-communication-instructions-membar>`_.
     :Participation: :ref:`Per-thread <api-participation>`.
     """
     ...
@@ -106,8 +106,8 @@ def fence_proxy_bidirectional(
             and a size of 128 bytes. See :meth:`FenceRestriction.address_range`.
 
     :Target: The async-proxy form requires SM90 or newer. Other forms follow
-        the `PTX proxy-fence requirements
-        <https://docs.nvidia.com/cuda/parallel-thread-execution/#parallel-synchronization-and-communication-instructions-membar-fence>`_.
+        the `PTX ISA 9.0 proxy-fence requirements
+        <https://docs.nvidia.com/cuda/archive/13.0.2/parallel-thread-execution/index.html#parallel-synchronization-and-communication-instructions-membar>`_.
     :Participation: :ref:`Per-thread <api-participation>`.
     :Ordering: For shared-to-global TMA, writers fence their stores before
         synchronizing and submitting the copy. See :ref:`lang-tma-proxy-fences`.

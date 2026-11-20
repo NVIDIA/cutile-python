@@ -51,6 +51,47 @@ _BIDIRECTIONAL_RESTRICTION_SUFFIX = {
     fence_stub._FenceRestrictionKind.GLOBAL: "global",
 }
 
+BLOCK_NO_RST = {MemoryScope.BLOCK: {None}}
+DEVICE_NO_RST = {MemoryScope.DEVICE: {None}}
+SYS_NO_RST = {MemoryScope.SYS: {None}}
+CLUSTER_NO_RST = {MemoryScope.CLUSTER: {None}}
+ALL_NO_RST = BLOCK_NO_RST | DEVICE_NO_RST | SYS_NO_RST | CLUSTER_NO_RST
+
+RST_MBARRIER_INIT = fence_stub._FenceRestrictionKind.MBARRIER_INIT
+RST_SHARED_BLOCK = fence_stub._FenceRestrictionKind.SHARED_BLOCK
+RST_SHARED_CLUSTER = fence_stub._FenceRestrictionKind.SHARED_CLUSTER
+
+
+# The supported combinations follow the constraints in
+# PTX ISA 9.0, section 9.7.13.4 (membar / fence):
+# https://docs.nvidia.com/cuda/archive/13.0.2/parallel-thread-execution/index.html#parallel-synchronization-and-communication-instructions-membar
+_VALID_FENCE_COMBINATIONS = {
+    FenceProxy.GENERIC: {
+        FenceProxy.GENERIC: {
+            MemoryOrder.RELEASE: {
+                MemoryScope.CLUSTER: {None, RST_MBARRIER_INIT, RST_SHARED_BLOCK},
+                **BLOCK_NO_RST, **DEVICE_NO_RST, **SYS_NO_RST},
+            MemoryOrder.ACQUIRE: {
+                MemoryScope.CLUSTER: {None, RST_SHARED_CLUSTER},
+                **BLOCK_NO_RST, **DEVICE_NO_RST, **SYS_NO_RST},
+            MemoryOrder.ACQ_REL: {**ALL_NO_RST},
+            MemoryOrder.SEQ_CST: {**ALL_NO_RST}
+        },
+        FenceProxy.ASYNC: {
+            MemoryOrder.RELEASE: {MemoryScope.CLUSTER: {RST_SHARED_BLOCK}},
+            MemoryOrder.ACQUIRE: {MemoryScope.CLUSTER: {RST_SHARED_CLUSTER}}
+        },
+        FenceProxy.TENSORMAP: {
+            MemoryOrder.RELEASE: {**ALL_NO_RST},
+            MemoryOrder.ACQUIRE: {
+                MemoryScope.CLUSTER: {fence_stub._FenceAddressRestriction},
+                MemoryScope.BLOCK: {fence_stub._FenceAddressRestriction},
+                MemoryScope.DEVICE: {fence_stub._FenceAddressRestriction},
+                MemoryScope.SYS: {fence_stub._FenceAddressRestriction}}
+        },
+    },
+}
+
 
 def fence_impl_registry() -> ImplRegistry:
     return _registry
@@ -192,6 +233,18 @@ def fence_impl(order, scope, from_proxy, to_proxy, restriction) -> None:
     from_proxy = require_constant_enum(from_proxy, FenceProxy)
     to_proxy = require_constant_enum(to_proxy, FenceProxy)
     restriction = require_fence_restriction(restriction)
+
+    valid = _VALID_FENCE_COMBINATIONS
+    valid_key = restriction
+    if not isinstance(restriction, fence_stub._FenceRestrictionKind) and restriction is not None:
+        valid_key = fence_stub._FenceAddressRestriction
+    for i in [from_proxy, to_proxy, order, scope]:
+        valid = valid.get(i, {})
+    if valid_key not in valid:
+        raise TypeCheckingError(
+            f"Invalid fence combination: from_proxy={from_proxy}, to_proxy={to_proxy}, "
+            f"order={order}, scope={scope}, restriction={restriction}"
+        )
 
     if from_proxy is FenceProxy.GENERIC and to_proxy is FenceProxy.GENERIC:
         lower_non_proxy_fence(order, scope, restriction)
