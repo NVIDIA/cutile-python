@@ -230,7 +230,7 @@ template <typename T>
 struct OwningAccessor {
     Accessor<T> accessor;
 
-    explicit OwningAccessor<T>(const Accessor<T>& accessor) : accessor(accessor) {}
+    explicit OwningAccessor(const Accessor<T>& accessor) : accessor(accessor) {}
 
     OwningAccessor(const OwningAccessor&) = delete;
     void operator=(const OwningAccessor&) = delete;
