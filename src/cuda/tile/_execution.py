@@ -115,7 +115,7 @@ class kernel(TileDispatcher):
                  /, *,
                  num_ctas: None | int | ByTarget[int] = None,
                  occupancy: None | int | ByTarget[int] = None,
-                 opt_level: None | int | ByTarget[int] = 3,
+                 opt_level: int | ByTarget[int] = 3,
                  num_worker_warps: None | int | ByTarget[int] = None):
         if not isinstance(function, FunctionType):
             raise TypeError("`kernel` decorator must be applied to a Python function")
