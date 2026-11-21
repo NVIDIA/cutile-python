@@ -198,3 +198,41 @@ def test_evict_lru(cache_env):
     remaining = [k for k in keys
                  if cache_lookup(cache_dir, k) is not None]
     assert remaining == keys[2:]
+
+
+def _populate_with_sizes(cache_dir, sizes):
+    import os
+    keys = []
+    for i, size in enumerate(sizes):
+        key = cache_key(str(i), "sm_90", 3, b"data")
+        keys.append(key)
+        cache_store(cache_dir, key, b"x" * size)
+    conn = sqlite3.connect(os.path.join(cache_dir, "cache.db"))
+    for i, key in enumerate(keys):
+        conn.execute("UPDATE cache SET atime = ? WHERE key = ?", (float(i), key))
+    conn.commit()
+    conn.close()
+    return keys
+
+
+@pytest.mark.parametrize("sizes, size_limit, expected_survivors", [
+    # Evicting only the oldest entry would leave 700 bytes > 600
+    ([300, 300, 400], 600, [2]),
+    # Neither entry fits together with the other
+    ([600, 600], 1000, [1]),
+    # Already within the limit: nothing is evicted
+    ([300, 300, 400], 1000, [0, 1, 2]),
+    # Exactly at the limit after evicting the oldest entry
+    ([300, 300, 400], 700, [1, 2]),
+    # A single entry larger than the limit cannot be kept, even if it is the newest
+    ([500, 2000], 1000, []),
+])
+def test_evict_lru_respects_size_limit(cache_env, sizes, size_limit, expected_survivors):
+    cache_dir, _ = cache_env
+    keys = _populate_with_sizes(cache_dir, sizes)
+
+    evict_lru(cache_dir, size_limit)
+
+    entries = list(cache_entries(cache_dir))
+    assert sum(e.size for e in entries) <= size_limit
+    assert sorted(e.key for e in entries) == sorted(keys[i] for i in expected_survivors)

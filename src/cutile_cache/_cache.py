@@ -268,11 +268,14 @@ def evict_lru(cache_dir: str, size_limit: int) -> None:
         conn = _connect(cache_dir)
         row_limit = 100
         while True:
+            # Evict the oldest entries until the remaining size is within the limit.
+            # An entry is evicted if the entries older than it do not free enough space.
             res = conn.execute("""
             DELETE FROM cache WHERE key IN (SELECT key FROM
-                (SELECT key, SUM(blob_size) OVER (ORDER BY atime, key) as cumul_size
+                (SELECT key, blob_size,
+                        SUM(blob_size) OVER (ORDER BY atime, key) as cumul_size
                     FROM cache ORDER BY atime, key limit ?)
-                WHERE cumul_size <= (SELECT SUM(blob_size) - ? FROM cache)
+                WHERE cumul_size - blob_size < (SELECT SUM(blob_size) - ? FROM cache)
             )
             """, (row_limit, size_limit))
             if res.rowcount < row_limit:
