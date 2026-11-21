@@ -107,7 +107,7 @@ def unswizzle_32_4_4(tile_swizzled_scale):
                                .reshape((m0 * m2 * m1, k0 * k1)))
 
 
-@ct.kernel(num_ctas=ct.ByTarget(sm_100=2))
+@ct.kernel(num_ctas=ct.ByTarget(sm_100=2, sm_103=2))
 def block_scaled_matmul_kernel(
                     A, A_scale, B, B_scale, C,
                     tm: ConstInt,         # Tile size along M dimension (rows of C)

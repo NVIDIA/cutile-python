@@ -9,7 +9,7 @@ from kernels.kernel_utils import swizzle_2d, unswizzle_32_4_4
 ConstInt = ct.Constant[int]
 
 
-@ct.kernel(num_ctas=ct.ByTarget(sm_100=2))
+@ct.kernel(num_ctas=ct.ByTarget(sm_100=2, sm_103=2))
 def block_scaled_matmul_kernel(
                     A, A_scale, B, B_scale, C,
                     tm: ConstInt,         # Tile size along M dimension (rows of C)
@@ -115,7 +115,7 @@ def block_scaled_matmul_kernel(
     ct.store(C, index=(bidx, bidy), tile=accumulator)
 
 
-@ct.kernel(num_ctas=ct.ByTarget(sm_100=2))
+@ct.kernel(num_ctas=ct.ByTarget(sm_100=2, sm_103=2))
 def nvfp4_block_scaled_matmul_kernel(
                     A, A_scale, A_global, B, B_scale, B_global, C,
                     tm: ConstInt,         # Tile size along M dimension (rows of C)
