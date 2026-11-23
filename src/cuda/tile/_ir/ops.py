@@ -2177,7 +2177,8 @@ class TileMmaScaled(Operation, opcode="tile_mma_scaled"):
 
 
 def _verify_scaling_block_size(ty: TileTy, scale_ty: TileTy, k_axis: int,
-                               name: str, scale_name: str):
+                               name: str, scale_name: str,
+                               allowed: Tuple[int, ...]):
     shape = ty.shape
     dtype = ty.dtype
     scale_shape = scale_ty.shape
@@ -2188,7 +2189,6 @@ def _verify_scaling_block_size(ty: TileTy, scale_ty: TileTy, k_axis: int,
             f"{scale_name} shape {scale_shape} is not compatible with {name} shape {shape}. "
             f"All dimensions except K axis {k_axis} must match")
 
-    allowed = datatype._get_mma_scaled_scaling_block_sizes(ty.dtype, scale_ty.dtype)
     scaling_block_size, rem = divmod(shape[k_axis], scale_shape[k_axis])
     if rem != 0 or scaling_block_size not in allowed:
         raise TileTypeError(
@@ -2215,12 +2215,14 @@ def mma_scaled_impl(x: Var, x_scale: Var, y: Var, y_scale: Var, acc: Var) -> Var
             raise TileTypeError(
                 f'Expect shape of `{name}` to be 2D or 3D, got {shape}')
 
-    datatype._resolve_mma_scaled_supported_dtype(
+    _, scaling_block_sizes = datatype._resolve_mma_scaled_supported_dtype(
         x_ty.dtype, x_scale_ty.dtype,
         y_ty.dtype, y_scale_ty.dtype,
         acc_ty.dtype)
-    _verify_scaling_block_size(x_ty, x_scale_ty, k_axis=-1, name="x", scale_name="x_scale")
-    _verify_scaling_block_size(y_ty, y_scale_ty, k_axis=-2, name="y", scale_name="y_scale")
+    _verify_scaling_block_size(x_ty, x_scale_ty, k_axis=-1, name="x", scale_name="x_scale",
+                               allowed=scaling_block_sizes)
+    _verify_scaling_block_size(y_ty, y_scale_ty, k_axis=-2, name="y", scale_name="y_scale",
+                               allowed=scaling_block_sizes)
 
     x_shape, y_shape, _, output_shape = _matmul_broadcast_shape(x_ty.shape, y_ty.shape)
     if acc_ty.shape != output_shape:
